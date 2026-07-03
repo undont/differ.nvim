@@ -210,12 +210,13 @@ end
 -- (in the diff window already bound buffer-locally). a no-op with a notice when no
 -- diff is active
 ---@param direction "next"|"prev"
-function M.goto_hunk(direction)
+---@param opts? { fallback?: fun(direction: "next"|"prev"): boolean|nil }
+function M.goto_hunk(direction, opts)
     local view = M.active_view()
     if not view then
         return vim.notify("differ: no diff view here", vim.log.levels.WARN)
     end
-    view:goto_hunk(direction)
+    view:goto_hunk(direction, opts)
 end
 
 return M

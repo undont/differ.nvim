@@ -701,12 +701,17 @@ function View:_focused_column()
     return self.columns[1]
 end
 
+local function run_hunk_fallback(direction, opts)
+    return opts and opts.fallback and opts.fallback(direction)
+end
+
 -- move the cursor to the next/prev hunk in the focused column. at a change-set
 -- boundary it flows into the adjacent file (no wrap); a log/history session is the
 -- exception: hunk nav stays within the current commit's diff (commits step via ]f/[f),
 -- so it stops at the first/last hunk rather than crossing into the next commit
 ---@param direction "next"|"prev"
-function View:goto_hunk(direction)
+---@param opts? { fallback?: fun(direction: "next"|"prev"): boolean|nil }
+function View:goto_hunk(direction, opts)
     local col = self:_focused_column()
     local win = col.winid or vim.api.nvim_get_current_win()
     local lnum = vim.api.nvim_win_get_cursor(col.winid or win)[1]
@@ -728,12 +733,16 @@ function View:goto_hunk(direction)
     if direction == "next" then
         -- past the last hunk: flow into the next file (no wrap), or notify at the last one
         if in_history or not self:step_file("next", false) then
-            vim.notify("differ: no next hunk", vim.log.levels.INFO)
+            if not run_hunk_fallback(direction, opts) then
+                vim.notify("differ: no next hunk", vim.log.levels.INFO)
+            end
         end
     elseif not in_history and self:step_file("prev", false) then
         self:_focus_last_hunk() -- landed on the previous file: continue the backward flow
     else
-        vim.notify("differ: no previous hunk", vim.log.levels.INFO)
+        if not run_hunk_fallback(direction, opts) then
+            vim.notify("differ: no previous hunk", vim.log.levels.INFO)
+        end
     end
 end
 

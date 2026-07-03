@@ -182,6 +182,39 @@ describe("view hunk navigation", function()
         assert.is_true(lhs["[c"])
         v:close()
     end)
+
+    it("uses goto_hunk fallback at hunk boundaries", function()
+        local v = two_hunk_view()
+        v:open()
+        local win = v.columns[1].winid
+        vim.api.nvim_win_set_cursor(win, { 9, 0 })
+        local called
+        _G.notifs = {}
+        v:goto_hunk("next", {
+            fallback = function(direction)
+                called = direction
+                return true
+            end,
+        })
+        assert.are.equal("next", called)
+        assert.are.equal(0, #_G.notifs)
+        v:close()
+    end)
+
+    it("notifies when goto_hunk fallback does not handle the boundary", function()
+        local v = two_hunk_view()
+        v:open()
+        local win = v.columns[1].winid
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        _G.notifs = {}
+        v:goto_hunk("prev", {
+            fallback = function()
+                return nil
+            end,
+        })
+        assert.are.equal("differ: no previous hunk", _G.notifs[1].msg)
+        v:close()
+    end)
 end)
 
 describe("view in-view keymaps", function()
