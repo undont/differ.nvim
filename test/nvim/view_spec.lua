@@ -487,6 +487,36 @@ describe("view re-source", function()
         assert.are_not.equal(col.map.from_new[5], cur)
         v:close()
     end)
+
+    it("origin-open can snap to a later hunk, not the file's first", function()
+        -- two far-apart changes; an origin line parked next to the second one must
+        -- snap to IT, not fall back to the first hunk in the file. this is the
+        -- open-on-origin path (`:Differ` invoked from inside a changed file): it
+        -- deliberately does not land on "the first hunk" the way a plain ]c-driven
+        -- file switch does, so a subsequent ]c can correctly find no hunk left in
+        -- this file and flow to the next one instead of appearing to skip a hunk
+        local old = "a\nOLD_A\nctx1\nctx2\nctx3\nctx4\nctx5\nOLD_B\nz\n"
+        local new = "a\nNEW_A\nctx1\nctx2\nctx3\nctx4\nctx5\nNEW_B\nz\n"
+        local v = View.new(model(old, new), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local col = v.columns[1]
+        assert.are.equal(2, #v.model.hunks)
+
+        v:focus_new_line(7, true) -- "ctx5", the unchanged line right above NEW_B
+        local cur = vim.api.nvim_win_get_cursor(col.winid)[1]
+        assert.are.equal(2, col.map.lines[cur].hunk) -- snapped to the second hunk, not the first
+
+        -- from there, ]c must not wrap back to the first hunk: nothing left after
+        -- the second hunk in this file, so the cursor stays put (a real caller with
+        -- a panel/next file would flow out instead)
+        v:goto_hunk("next")
+        assert.are.equal(cur, vim.api.nvim_win_get_cursor(col.winid)[1])
+        v:close()
+    end)
 end)
 
 describe("view jump-to-file", function()

@@ -23,7 +23,7 @@ end
 ---@param map differ.LineMap
 ---@param lnum integer
 ---@return integer
-local function hunk_at(map, lnum)
+function M.hunk_at(map, lnum)
     local k, prev = 0, nil
     for i = 1, math.min(lnum, #map.lines) do
         local h = map.lines[i].hunk
@@ -64,7 +64,7 @@ function M.diff()
     end
     local total = #view.model.hunks
     local lnum = vim.api.nvim_win_get_cursor(win)[1]
-    local k = math.max(hunk_at(map, lnum), total > 0 and 1 or 0)
+    local k = math.max(M.hunk_at(map, lnum), total > 0 and 1 or 0)
     -- a pending-review badge when this is a PR diff with an active draft, right-aligned
     -- next to the hunk counter in a bold warning colour so the draft state stands out
     -- while reviewing (not just in the compose window)
