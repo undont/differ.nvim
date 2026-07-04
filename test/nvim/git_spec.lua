@@ -61,6 +61,40 @@ describe("git.read / changed_files", function()
     end)
 end)
 
+describe("git.file_entries (rev-pair sources)", function()
+    it("unions in untracked files for a worktree new-side, but not a rev new-side", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- tracked, modified
+        write(root .. "/u.lua", "untracked\n") -- untracked, no diff can ever see it
+
+        local wt_entries = git_src.file_entries(git_src.resolve(rev.source({}), root), root)
+        table.sort(wt_entries, function(x, y)
+            return x.path < y.path
+        end)
+        assert.are.same({
+            { status = "M", path = "a.lua", additions = 1, deletions = 1 },
+            { status = "?", path = "u.lua", additions = 0, deletions = 0 },
+        }, wt_entries)
+
+        -- a rev-vs-rev source (no worktree side) never gains untracked files
+        git(root, "checkout", "-q", "-b", "feature")
+        git(root, "commit", "-q", "-am", "feature change")
+        local rev_source = git_src.resolve({
+            old = { kind = "rev", rev = "main", label = "main" },
+            new = {
+                kind = "rev",
+                rev = "HEAD",
+                label = "HEAD",
+            },
+        }, root)
+        local rev_entries = git_src.file_entries(rev_source, root)
+        assert.are.same(
+            { { status = "M", path = "a.lua", additions = 1, deletions = 1 } },
+            rev_entries
+        )
+    end)
+end)
+
 describe("git.open_file", function()
     it("reads the rename's old side from previous_path", function()
         local root = fresh_repo()

@@ -193,11 +193,12 @@ function M.parse_numstat(out)
     return counts
 end
 
--- parse `git diff --name-only --diff-filter=U -z` into the conflicted paths.
--- each path appears once; the trailing NUL leaves an empty field we drop
+-- parse a bare NUL-separated path list (`git diff --name-only -z`,
+-- `git ls-files -z`). each path appears once; the trailing NUL leaves an
+-- empty field we drop
 ---@param out string
 ---@return string[]
-function M.parse_unmerged(out)
+function M.parse_paths(out)
     local paths = {}
     for _, p in ipairs(nul_split(out)) do
         if p ~= "" then
@@ -205,6 +206,13 @@ function M.parse_unmerged(out)
         end
     end
     return paths
+end
+
+-- parse `git diff --name-only --diff-filter=U -z` into the conflicted paths
+---@param out string
+---@return string[]
+function M.parse_unmerged(out)
+    return M.parse_paths(out)
 end
 
 return M

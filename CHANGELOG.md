@@ -6,6 +6,88 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Untracked files no longer silently drop out of rev-pair diffs against the worktree (branch total `<a>...`, `:Differ <rev>`). `git diff` never lists them regardless of the refs passed to it, so the panel now unions in `git ls-files --others --exclude-standard` alongside the diffed set, with `?` status and 0/0 counts, matching the default view's Untracked section
+
+## [0.1.10] — 2026-06-30
+
+### Added
+
+- A dashed filler row fills the empty side of a split-layout hunk (an inserted/deleted block with nothing on the opposite side), so it reads as "no line here" instead of a blank void, matching the native vimdiff look
+- Diff buffers now carry a private `differdiff` filetype instead of the source file's, so foreign `FileType <lang>` autocmds (LSP, linters, semantic tokens) never attach to a throwaway `differ://` buffer. The source filetype is stashed in `b:differ_filetype`; `differ.lualine` ships a drop-in for lualine's filetype component that reads it (with a devicon), falling back to the native filetype everywhere else
+
+### Fixed
+
+- Jumping to the real file (`de`) a second time no longer throws `E37` when that buffer is already current and has unsaved changes; it switches to the already-loaded buffer instead of forcing a disk reload
+
+## [0.1.9] — 2026-06-28
+
+### Fixed
+
+- Opening a modified binary file (e.g. a changed gif/mp4) no longer crashes the editor. Its content was read as raw bytes, split on stray `0x0a` bytes into pathological pseudo-lines, and fed through the O(n·m) word-diff pairing, exhausting memory until nvim was killed. Binary content is now detected (a NUL byte in the first 8kb, git's own heuristic) and the diff is skipped: the renderers show a "Binary file not shown" placeholder, the git frontend still opens the entry despite zero hunks, and the winbar reads "binary"
+
+## [0.1.8] — 2026-06-28
+
+### Added
+
+- The merge tool advances through conflicts on `:w`: once a file's markers are gone it stages and opens the next conflicted file, reporting done and closing (back on the invoking tab) once none remain. `:Differ close` stops after the current file
+- The merge result buffer disables in-buffer markdown rendering (render-markdown.nvim) for the session, since a `.md` result was otherwise read as prose and the conflict marker runs concealed as nested block-quotes; restored on close
+- Panel `gg`/`G` now just move the cursor to the first/last visitable file row without opening it (`<CR>`/`o` opens the row under the cursor)
+- Log panel commit-aware navigation: `]]`/`[[` step between commit headers, `gg`/`G` jump to the first/last commit, `O`/`C`/`c` expand/collapse commits, none of which open a diff on landing
+- Bare `:Differ log` with no real file in the current buffer now shows the full HEAD history instead of warning
+- `:Differ panel` toggles the sidebar in place; a bare `:Differ` re-opens it
+- The panel footer shows `diff --stat` totals and fits the file-name column to the longest name
+
+## [0.1.7] — 2026-06-24
+
+### Added
+
+- `:Differ panel <pos>` repositions a live `:Differ log` sidebar in place instead of spawning a second, overlapping session; a bare `:Differ panel` over a live log session is now a no-op + notify rather than opening a worktree diff on top of it
+- A dedicated `history` config table (`position`/`height`/`width`, defaulting to the bottom edge) that the log openers read
+- The hunk-counter marker in the diff winbar renders the nerd-font git-diff glyph when `nvim-web-devicons` is present, falling back to the plain diamond otherwise
+- `:Differ log` reworked: defaults to the bottom strip (the wide sha/date/author/subject row fits on one line there); left/right positions render two lines per commit instead, clipping at the window edge with no ellipsis. `K` floats the full commit message plus author/date/hash
+- `:Differ` (the worktree-status panel) now lands on the first unstaged file rather than the first changed file, skipping a Staged section with nothing left to review; falls back to the first visitable file when everything is staged
+
+### Fixed
+
+- Refuse to stage a file when a formatter has reindented its conflict markers: a `BufWritePost` check detects an indented `<<<<<<<`/`>>>>>>>` region and bails out of the `git add` with a one-time warning, guarding against the column-0 parser silently reading zero conflicts
+- Hunk staging no longer corrupts the patch when applied after an earlier staged deletion. `patch.hunk` shifted both `@@` starts by the staged-hunk offset; under `--unidiff-zero` git relocates a single zero-context hunk by content and reads only one side's start, so a net-negative offset could drive the unused side below zero and git would reject the patch as corrupt. Now only the located side shifts per direction, leaving the other at its frozen, always-non-negative line number
+
+## [0.1.6] — 2026-06-24
+
+### Added
+
+- Staged hunks now paint as a dimmed deep diff (same-hue add/delete line and word spans, well under the live weights) instead of a flat muted background, so a staged hunk still shows what changed while reading as set aside. The cursor-line tint stays lifted above the staged fill so the focused line still lights up, and repaints after a stage/unstage toggle
+
+### Fixed
+
+- Opening a diff (or single-file `:Differ log`) on the file you're already in now lands the cursor on the exact line you were on, instead of snapping to the nearest hunk's top. A cursor on unchanged context still falls back to the first hunk. For history, only the first commit shown holds the line; later commit steps land on the first hunk since older content no longer maps to it
+
+## [0.1.5] — 2026-06-23
+
+### Added
+
+- A `g?` keymap cheatsheet on the merge result buffer, matching the panel, history, and diff views
+- `cursorline_tint` config option (default on): the cursor line now paints in a stronger shade of its own add/delete colour instead of a neutral overlay, so the change kind reads under the cursor
+
+### Changed
+
+- The diff view now opens directly on the first hunk rather than one line above it, since the cursor-line tint keeps the hunk's colour visible under the cursor
+
+### Fixed
+
+- The merge result buffer widens `timeoutlen` to a 1s floor while focused (restored on leave/close) so the multi-key conflict chords (`<leader>co`/`ct`/`cb`/`ca`, `dx`) don't drop under a short global `timeoutlen`
+- The merge result buffer opts out of format-on-save (`vim.b.disable_autoformat`) for the session, since a formatter running on `:w` could choke on or mangle unresolved conflict markers
+
+## [0.1.4] — 2026-06-23
+
+### Fixed
+
+- Panel fold state is now scoped per section rather than shared globally by bare directory path, so a directory name present in two sections (e.g. an untracked `src/` and an unstaged `src/`) no longer collapses both from a single toggle. The cursor is also re-anchored to the toggled directory row after re-render instead of being restored by absolute line number, which could land it in the footer once rows above it disappeared
+
+## [0.1.3] — 2026-06-23
+
 ### Added
 
 - Floating keymap cheatsheet (`g?`) on the diff window and the in-review edit window, alongside the panel and history surfaces that already had it. The cheatsheet rows come from the live keymaps, so a configured `lhs` shows correctly, and it lists only the keys actually bound for the active source (staging, edit-in-review, and the session's extra maps such as the PR unviewed nav and thread/comment verbs)

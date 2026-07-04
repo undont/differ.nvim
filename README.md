@@ -108,6 +108,8 @@ differ's only install step is building the Go sidecar, so point your manager's b
 | `:Differ <a>...` | merge-base(`<a>`, `HEAD`) vs worktree (branch total) |
 | `:Differ <a> <b>` | `<a>` vs `<b>` |
 
+Any source with worktree on the new side (the first three rows above) also lists untracked files: `git diff` can't see them no matter what refs you pass it, so differ unions in `git ls-files --others --exclude-standard` to fill the gap. They show with a `?` status and 0/0 counts, same as the default panel's Untracked section.
+
 ### Runtime controls
 
 These re-render the active view only. No refetch, no re-diff, and the state is local to that view.

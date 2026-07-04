@@ -161,6 +161,14 @@ function M.conflicted(root)
     return out and rev.parse_unmerged(out) or {}
 end
 
+-- repo-relative paths of untracked files, respecting .gitignore, in git's order
+---@param root string
+---@return string[]
+function M.untracked(root)
+    local out = git({ "ls-files", "--others", "--exclude-standard", "-z" }, root)
+    return out and rev.parse_paths(out) or {}
+end
+
 -- whether `relpath` is currently conflicted
 ---@param root string
 ---@param relpath string
@@ -329,7 +337,12 @@ local function numstat(args, root)
 end
 
 -- the change set as panel FileEntry records: one flat list with `+N -M` counts,
--- used for rev-pair sources. working-tree sources use status_sections instead
+-- used for rev-pair sources. working-tree sources use status_sections instead.
+-- `git diff` never lists untracked files regardless of the refs passed to it, so
+-- a worktree new-side (branch total, `:Differ <rev>`, ...) unions them in here;
+-- counts stay 0/0, matching the untracked entries status_sections produces for
+-- the default view. no overlap to dedupe: untracked means absent from the index,
+-- which `changed_files` always reads through, so the two lists are disjoint
 ---@param source differ.git.Source -- resolved
 ---@param root string
 ---@return differ.FileEntry[]
@@ -345,6 +358,11 @@ function M.file_entries(source, root)
             deletions = c.deletions or 0,
             previous_path = f.previous_path,
         }
+    end
+    if source.new.kind == "worktree" then
+        for _, path in ipairs(M.untracked(root)) do
+            out[#out + 1] = { path = path, status = "?", additions = 0, deletions = 0 }
+        end
     end
     return out
 end
