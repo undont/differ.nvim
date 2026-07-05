@@ -117,9 +117,12 @@ These re-render the active view only. No refetch, no re-diff, and the state is l
 | Command | Effect |
 |---|---|
 | `:Differ layout [stacked\|split]` | Set layout; no argument flips it |
-| `:Differ context <n>` | Set context lines around hunks |
-| `:Differ context full` | Show the whole file |
-| `:Differ context +` / `-` | Widen / narrow context by one |
+| `:Differ context <n>` | Set the fold threshold around hunks |
+| `:Differ context full` | Show the whole file, no folds |
+| `:Differ context +` / `-` | Widen / narrow the threshold by one |
+| `:Differ panel [left\|right\|top\|bottom]` | Reposition the live panel or history sidebar |
+
+Every line of the file is always in the buffer (search, yank, and motions all work); `context` only decides where a native fold forms once an unchanged run of lines exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `context full` skips fold creation entirely.
 
 Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me).
 
@@ -311,6 +314,19 @@ require("differ").diff({
   new_rev = "WORKTREE",
 })
 
+-- Open (or toggle) the file panel over a rev spec; opts are runtime, not
+-- setup config: position, listing ("tree"|"name"), height, width:
+require("differ").panel({ rev = "main...", position = "left" })
+
+-- Single-file history (opts.path defaults to the current buffer):
+require("differ").file_history({ path = "lua/foo.lua" })
+
+-- Branch-range history, driving commit -> file -> diff:
+require("differ").range_history({ range = "origin/HEAD...HEAD" })
+
+-- Open the PR frontend, jumping straight to a PR number:
+require("differ").pr_open({ number = 42 })
+
 -- Hunk nav with a fallback for the first/last hunk (or an in-history
 -- commit boundary), e.g. to step to the next/previous file:
 require("differ").goto_hunk("next", {
@@ -330,6 +346,8 @@ require("differ").goto_hunk("next", {
 require("differ").setup({
   layout = "stacked",            -- "stacked" | "split", toggleable per-view
   context = 10,                  -- context lines (math.huge = full file)
+  wrap = true,                   -- soft-wrap long lines in the diff view
+  diff_counter = true,           -- "hunk K/N" counter in the diff window's winbar
   cursorline_tint = true,        -- tint the cursor line by add/remove so the change
                                  -- kind reads under the cursor; false = plain neutral
   deep_diff = {
@@ -340,6 +358,19 @@ require("differ").setup({
   comments = {                   -- pr review threads
     inline = true,
     collapsed = false,
+  },
+  panel = {                      -- file panel default placement/size; `:Differ panel`
+                                 -- and the runtime Panel.current() setters override per-session
+    position = "right",          -- "bottom" | "top" | "left" | "right"
+    height = 9,                  -- top/bottom
+    width = 35,                  -- left/right
+    listing = "tree",            -- "tree" | "name"
+    progress = true,             -- "file K/N" position meter in the panel winbar
+  },
+  history = {                    -- log/history sidebar default placement/size
+    position = "bottom",
+    height = 10,                 -- top/bottom
+    width = 40,                  -- left/right
   },
   keymaps = {                    -- one flat action -> lhs table, shared across the diff,
     -- a value is a string, a list of strings, or false to disable. override globally
