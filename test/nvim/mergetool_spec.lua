@@ -141,6 +141,21 @@ describe(":Differ mergetool", function()
         end
     end)
 
+    it("notifies rather than opening when invoked outside a git repository", function()
+        require("differ.git") -- warm the require cache before chdir makes it unresolvable
+        local outside = vim.fn.tempname()
+        vim.fn.mkdir(outside, "p")
+        local cwd = vim.fn.getcwd()
+        vim.cmd("enew") -- an unnamed scratch buffer, so M.open falls back to cwd
+        vim.fn.chdir(outside)
+        _G.notifs = {}
+        merge.open({})
+        vim.fn.chdir(cwd)
+        assert.is_nil(merge.current())
+        assert.are.equal("differ: not inside a git repository", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+    end)
+
     it("opens a session over the conflicted current file", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")

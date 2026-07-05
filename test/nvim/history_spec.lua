@@ -63,6 +63,17 @@ local function view_in_origin(h)
     return require("differ.view").current()
 end
 
+-- fire a buffer's ]c / [c keymap by lhs, so the test exercises the real bound
+-- callback (and its opts.fallback), not a hand-rolled call to View:goto_hunk
+local function goto_hunk(bufnr, lhs)
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
+        if m.lhs == lhs and m.callback then
+            return m.callback()
+        end
+    end
+    error("no " .. lhs .. " keymap bound on buffer " .. bufnr)
+end
+
 describe("git.log_commits", function()
     it("lists a file's commits newest first with parsed fields", function()
         local root = repo_with_history()
@@ -161,12 +172,22 @@ describe(":Differ log (single-file history)", function()
         git_src.history({})
         local h = History.current()
         local v = view_in_origin(h)
+        local diff_buf = v.columns[1].bufnr
+        -- park exactly on the commit's only hunk so ]c / [c hit the boundary on the
+        -- very first press, regardless of where the origin buffer's cursor started
+        local hunk_start = require("differ.nav").next_hunk(v.columns[1].map, 0)
+        vim.api.nvim_win_set_cursor(h.origin_win, { hunk_start, 0 })
+
         -- the newest commit's diff is a single hunk; stepping past it must NOT flow into
         -- the next/previous commit (that's ]f/[f) — the selected commit stays put
-        v:goto_hunk("next")
+        _G.notifs = {}
+        goto_hunk(diff_buf, "]c")
         assert.are.equal(1, h.index)
-        v:goto_hunk("prev")
+        assert.are.equal("differ: no more hunks in this commit", _G.notifs[1].msg)
+        _G.notifs = {}
+        goto_hunk(diff_buf, "[c")
         assert.are.equal(1, h.index)
+        assert.are.equal("differ: no previous hunks in this commit", _G.notifs[1].msg)
         h:close()
     end)
 

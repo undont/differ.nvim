@@ -904,6 +904,39 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    it("notifies rather than re-applying when a hunk is already in the target state", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two far-apart edits
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk()
+        assert.is_true(v.staged_hunks[1])
+
+        -- s/u on a hunk already in the target state re-enter the review flow instead
+        -- (stage_hunk/unstage_hunk step past it), so _toggle_hunk itself is called
+        -- directly here to exercise its own already-staged/already-unstaged guard
+        _G.notifs = {}
+        v:_toggle_hunk(true)
+        assert.are.equal("differ: hunk already staged", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
+        assert.is_true(v.staged_hunks[1]) -- state untouched
+
+        v:_toggle_hunk(false) -- actually unstage it, so the mirror check below is real
+        assert.is_false(v.staged_hunks[1])
+        _G.notifs = {}
+        v:_toggle_hunk(false)
+        assert.are.equal("differ: hunk already unstaged", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
+        assert.is_false(v.staged_hunks[1]) -- state untouched
+        p:close()
+    end)
+
     it("stages an untracked file as one whole-file hunk instead of warning", function()
         local root = fresh_repo()
         write(root .. "/new.lua", "alpha\nbeta\n") -- untracked, the only change
@@ -1255,12 +1288,21 @@ describe(":Differ diff hunk staging", function()
         v:unstage_all()
         assert.are.equal("a.lua", v.model.path)
 
+        _G.notifs = {}
         v:step_file("next") -- ]f to z.lua (the last file)
         assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(0, #_G.notifs) -- a plain step, not a wrap
+
+        _G.notifs = {}
         v:step_file("next", false) -- review-style step: no wrap off the last file
         assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(0, #_G.notifs) -- wrap disabled, so no wrap notify either
+
+        _G.notifs = {}
         v:step_file("next") -- ]f / [f: wraps to the first
         assert.are.equal("a.lua", v.model.path)
+        assert.are.equal("differ: wrapped to the first file", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
         p:close()
     end)
 
@@ -1601,10 +1643,17 @@ describe(":Differ (open_first)", function()
         local v = require("differ.view").current()
         assert.are.equal("a.lua", v.model.path)
 
+        _G.notifs = {}
         v:step_file("next") -- ]f past the last file wraps to the first
         assert.are.equal("z.lua", require("differ.view").current().model.path)
+        assert.are.equal("differ: wrapped to the first file", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
+
+        _G.notifs = {}
         v:step_file("prev") -- [f past the first wraps back to the last
         assert.are.equal("a.lua", require("differ.view").current().model.path)
+        assert.are.equal("differ: wrapped to the last file", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
         p:close()
     end)
 

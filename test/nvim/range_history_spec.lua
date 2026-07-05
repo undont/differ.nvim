@@ -176,24 +176,32 @@ describe(":Differ log <range> (branch-range history)", function()
         local diff_buf = view_in_origin(h).columns[1].bufnr
         assert.are.equal("a.lua", view_in_origin(h).model.path)
 
+        _G.notifs = {}
         goto_hunk(diff_buf, "]c") -- past a.lua's only hunk: overflow into c3's second file
         assert.are.equal(2, h.index)
         assert.are.equal(2, h.file_index)
         assert.are.equal("c.lua", view_in_origin(h).model.path)
+        assert.are.equal(0, #_G.notifs) -- a plain step within the commit, not a boundary
 
+        _G.notifs = {}
         goto_hunk(diff_buf, "]c") -- past c.lua's only hunk too: c3 has no more files.
         -- must NOT flow into c4 (that's ]f/[f's job)
         assert.are.equal(2, h.index)
         assert.are.equal(2, h.file_index)
+        assert.are.equal("differ: no more hunks in this commit", _G.notifs[1].msg)
 
+        _G.notifs = {}
         goto_hunk(diff_buf, "[c") -- back over c3's own file boundary to a.lua, landing
         -- on its last (only) hunk
         assert.are.equal(1, h.file_index)
         assert.are.equal("a.lua", view_in_origin(h).model.path)
+        assert.are.equal(0, #_G.notifs) -- a plain step within the commit, not a boundary
 
+        _G.notifs = {}
         goto_hunk(diff_buf, "[c") -- a.lua's first file, first hunk: stop here
         assert.are.equal(2, h.index) -- still c3, not crossed back into c4
         assert.are.equal(1, h.file_index)
+        assert.are.equal("differ: no previous hunks in this commit", _G.notifs[1].msg)
         h:close()
     end)
 
