@@ -13,7 +13,7 @@
 [![macOS](https://img.shields.io/badge/macOS-supported-6e7681?style=flat&logo=apple&logoColor=white)]()
 [![Linux](https://img.shields.io/badge/Linux-supported-6e7681?style=flat&logo=linux&logoColor=white)]()
 
-[Features](#features) · [Status](#status) · [Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Development](#development)
+[Features](#features) · [Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Architecture](#architecture)
 
 </div>
 
@@ -310,6 +310,14 @@ require("differ").diff({
   old_rev = "HEAD",
   new_rev = "WORKTREE",
 })
+
+-- Hunk nav with a fallback for the first/last hunk (or an in-history
+-- commit boundary), e.g. to step to the next/previous file:
+require("differ").goto_hunk("next", {
+  fallback = function(direction)
+    return require("differ").active_view():step_file(direction)
+  end,
+})
 ```
 
 ---
@@ -426,24 +434,7 @@ test/
   nvim/             # headless-nvim specs (extmark/window assertions)
 ```
 
-The design lives in `docs/overview.md` and is kept in lock-step with the code.
-
 </details>
-
----
-
-## Development
-
-```sh
-make test        # both suites (unit + headless-nvim)
-make test-unit   # pure-Lua unit tests only (busted, no Neovim)
-make test-nvim   # headless-nvim tests (needs nlua on PATH)
-make lint        # luacheck + stylua --check
-make check       # full quality gate
-make help        # all targets
-```
-
-Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test. That is why text splitting is hand-rolled and word-diff fragmenting uses a pure LCS rather than `vim.diff`. Neovim-only behaviour (windows, extmarks, treesitter) is tested in `test/nvim`.
 
 ---
 
