@@ -11,6 +11,10 @@
 ---@class differ.FoldRange
 ---@field first integer -- 1-based buffer line, inclusive
 ---@field last integer
+---@field gap? integer -- boundary index this gap sits at (0 = before the first hunk,
+-- hi = between hunk hi and hi+1), stable across a context change
+-- regardless of whether the gap folds at any given context.
+-- merge.lua's regions-based folds don't set this
 
 ---@class differ.Column
 ---@field lines string[]            -- this column's buffer content (filler rows = "")

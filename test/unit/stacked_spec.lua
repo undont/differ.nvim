@@ -101,7 +101,7 @@ describe("render.stacked context collapsing", function()
             "9", -- 11 trailing context
         }, r.lines)
         -- the middle 3 lines (buffer rows 5..7) collapse under a native fold
-        assert.are.same({ { first = 5, last = 7 } }, r.folds)
+        assert.are.same({ { first = 5, last = 7, gap = 1 } }, r.folds)
     end)
 
     it("marks nothing foldable under full context", function()

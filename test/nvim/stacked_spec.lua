@@ -81,7 +81,7 @@ describe("render.stacked end-to-end content", function()
         local model = build("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nX\n3\n4\n5\n6\n7\nY\n9\n")
         local r = render(model, { context = 1 })
         assert.are.equal(11, #r.lines) -- nothing dropped (9 unchanged + X + Y)
-        assert.are.same({ { first = 5, last = 7 } }, r.folds) -- the 4,5,6 middle folds
+        assert.are.same({ { first = 5, last = 7, gap = 1 } }, r.folds) -- the 4,5,6 middle folds
     end)
 
     it("renders a placeholder for a binary file, never the raw bytes", function()

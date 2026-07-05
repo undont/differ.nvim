@@ -215,8 +215,8 @@ describe("render.split context collapsing", function()
         assert.are.equal(#r.old_lines, #r.new_lines)
         assert.are.equal(7, #r.old_lines) -- full content, nothing dropped
         -- lines 4..7 (the gap middle after hunk 1) fold; both columns share the range
-        assert.are.same({ { first = 4, last = 7 } }, r.old_folds)
-        assert.are.same({ { first = 4, last = 7 } }, r.new_folds)
+        assert.are.same({ { first = 4, last = 7, gap = 1 } }, r.old_folds)
+        assert.are.same({ { first = 4, last = 7, gap = 1 } }, r.new_folds)
     end)
 end)
 

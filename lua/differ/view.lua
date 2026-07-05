@@ -405,15 +405,18 @@ end
 
 -- (re)create the native folds for each column's window from its fold ranges, left
 -- open by default (the structure stays so zc/za collapse them on demand), unless
--- `closed` says otherwise. `closed[i]` (per column, matched by position among the
--- ranges that actually become a fold, i.e. skipping single-line ones the `f.last >
--- f.first` guard below never creates) re-closes the fold the user had manually
--- closed before a context change shifted the ranges; omit it to open everything (a
--- file switch or the initial open, where the previous fold state doesn't carry
--- over). reapplied only where the ranges or windows change: a context change
+-- `closed` says otherwise. `closed[i]` (per column, keyed by the fold's `gap`
+-- boundary index, not position in the list) re-closes the fold the user had
+-- manually closed before a context change shifted the ranges; omit it to open
+-- everything (a file switch or the initial open, where the previous fold state
+-- doesn't carry over). matching by `gap` rather than list position survives a
+-- neighbouring gap disappearing from the list entirely at the new context (not
+-- just becoming a non-real single-line range): a gap's boundary index is fixed
+-- by which hunks flank it, regardless of whether *that* gap folds at either
+-- context. reapplied only where the ranges or windows change: a context change
 -- (d= / d-), a file switch, a layout toggle, and open; never on scroll or redraw.
 -- with context = full the renderer returns no ranges.
----@param closed? boolean[][]  -- per-column, per-real-fold-index "was this one closed"
+---@param closed? table<integer, boolean>[]  -- per-column, keyed by fold.gap: "was this one closed"
 function View:_apply_folds(closed)
     for ci, col in ipairs(self.columns) do
         local win = col.winid
@@ -424,12 +427,10 @@ function View:_apply_folds(closed)
             set_wo(win, "foldenable", true)
             vim.api.nvim_win_call(win, function()
                 vim.cmd("silent! normal! zE") -- drop existing folds before rebuilding
-                local ri = 0 -- index among real (multi-line) folds only, matching the snapshot below
                 for _, f in ipairs(col.folds or {}) do
                     if f.last > f.first then
-                        ri = ri + 1
                         vim.cmd(("silent! %d,%dfold"):format(f.first, f.last)) -- :fold starts closed
-                        if not (was_closed and was_closed[ri]) then
+                        if not (was_closed and f.gap ~= nil and was_closed[f.gap]) then
                             vim.cmd(("silent! %dfoldopen"):format(f.first))
                         end
                     end
@@ -511,18 +512,18 @@ end
 function View:set_context(n)
     -- snapshot which folds are closed before rerender replaces col.folds with the
     -- ranges at the new context, so a manually-closed fold (zc/zm) survives the
-    -- boundary shift instead of reopening under the user
+    -- boundary shift instead of reopening under the user. keyed by fold.gap, not
+    -- list position, so a neighbouring gap vanishing at the new context can't
+    -- shift a later fold's key out from under it (see _apply_folds)
     local closed = {}
     for ci, col in ipairs(self.columns) do
         closed[ci] = {}
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_call(win, function()
-                local ri = 0 -- index among real (multi-line) folds only, matching _apply_folds
                 for _, f in ipairs(col.folds or {}) do
-                    if f.last > f.first then
-                        ri = ri + 1
-                        closed[ci][ri] = vim.fn.foldclosed(f.first) ~= -1
+                    if f.last > f.first and f.gap ~= nil then
+                        closed[ci][f.gap] = vim.fn.foldclosed(f.first) ~= -1
                     end
                 end
             end)
