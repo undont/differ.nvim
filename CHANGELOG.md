@@ -8,7 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `:Differ` and `:Differ <rev>` now also close a live `:Differ log`/history session when superseding, not just a live panel. Left dangling, the orphaned session made `goto_hunk` in an unrelated new diff view read its stale singleton and refuse to cross file boundaries on `]c`/`[c`
+- Manually closing a fold with `zc`/`zm` now survives a context change (`d-`/`d=`): folds are keyed by the fixed hunk-boundary index they sit at, rather than their position in the fold list, so a closed fold's identity, and its closed state, no longer shifts when a neighbouring fold appears or disappears at the new context
+- On `]c`/`[c` overflow in `:Differ log <range>`, hunk navigation now steps to the next/previous file within the current commit instead of just notifying and stopping; it still stops at the commit boundary itself, which stays `]f`/`[f`'s job
 - `:Differ log` and `:Differ log <range>` are now idempotent like `:Differ <rev>`: reinvoking over a live session supersedes it (closes the old one, opens the new) instead of just closing it and dropping the new request on the floor
+- History commit-edge, merge conflict-exhausted, and panel wrap-around navigation now notify explicitly instead of silently no-opping
 
 ## [0.1.13] — 2026-07-05
 
