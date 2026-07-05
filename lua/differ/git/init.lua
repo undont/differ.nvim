@@ -599,10 +599,23 @@ function M.panel(opts)
     -- hides/shows the sidebar in place. a bare `:Differ` just (re)opens — reveal a hidden
     -- sidebar and focus it, a no-op when already open, never toggling it shut. `:Differ
     -- close` ends the session
+    local has_rev = (type(opts.rev) == "string" and opts.rev ~= "")
+        or (type(opts.rev) == "table" and #opts.rev > 0)
+    if opts.supersede then
+        -- a log/history session isn't a Panel, so it's invisible to the check below;
+        -- `opts.supersede` is set for both a bare `:Differ` and `:Differ <rev>` (unlike
+        -- the has_rev-gated Panel branch, there's no "reveal" reading for History: it
+        -- has no show/toggle). without this, either gesture leaves a live log session
+        -- open, and its lingering `History.current()` then makes an unrelated view's
+        -- goto_hunk think it's still inside a single-commit history diff (in_history
+        -- stays true)
+        local history = require("differ.history").current()
+        if history then
+            history:close() -- close cascades to the diff view + session tab; current = nil
+        end
+    end
     local existing = Panel.current()
     if existing then
-        local has_rev = (type(opts.rev) == "string" and opts.rev ~= "")
-            or (type(opts.rev) == "table" and #opts.rev > 0)
         if opts.supersede and has_rev then
             existing:close() -- close cascades to the diff view + session tab; current = nil
         elseif opts.toggle then

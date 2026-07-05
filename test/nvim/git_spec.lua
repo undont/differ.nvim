@@ -1289,6 +1289,71 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    it(
+        "a superseding :Differ <rev> closes a live log session, not just leaves it dangling",
+        function()
+            local History = require("differ.history")
+            local root = fresh_repo()
+            write(root .. "/z.lua", "z1\nz2\n")
+            git(root, "add", "z.lua")
+            git(root, "commit", "-q", "-am", "two files")
+            write(root .. "/a.lua", "1x\nreturn x\n") -- a.lua: one hunk, unstaged
+            write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk, unstaged
+            vim.cmd.edit(root .. "/a.lua")
+
+            git_src.history({ path = root .. "/a.lua" }) -- :Differ log a.lua
+            assert.is_not_nil(History.current())
+            assert.is_true(History.current():is_open())
+
+            -- :Differ HEAD (a rev arg, so opts.supersede applies) must close the live log
+            -- session rather than leave its History.current() dangling alongside a fresh one
+            git_src.panel({ rev = { "HEAD" }, open_first = true, supersede = true })
+            assert.is_nil(History.current())
+            local p = Panel.current()
+            local v = view_in_origin(p)
+            assert.are.equal("a.lua", v.model.path)
+
+            -- a leftover History.current() used to make goto_hunk treat this unrelated rev
+            -- diff as still inside a single-commit history session, so ]c at the boundary
+            -- just notified "no next hunk" instead of flowing into the next file
+            vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+            _G.notifs = {}
+            v:goto_hunk("next")
+            assert.are.equal("z.lua", v.model.path)
+            assert.are.equal(0, #_G.notifs)
+            p:close()
+        end
+    )
+
+    it("a superseding bare :Differ also closes a live log session", function()
+        local History = require("differ.history")
+        local root = fresh_repo()
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "1x\nreturn x\n") -- a.lua: one hunk, unstaged
+        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk, unstaged
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.history({ path = root .. "/a.lua" }) -- :Differ log a.lua
+        assert.is_not_nil(History.current())
+
+        -- a bare `:Differ` (no rev) still passes opts.supersede = true from dispatch;
+        -- it must close the live log session the same as a `:Differ <rev>` does
+        git_src.panel({ rev = {}, open_first = true, supersede = true })
+        assert.is_nil(History.current())
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        _G.notifs = {}
+        v:goto_hunk("next")
+        assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(0, #_G.notifs)
+        p:close()
+    end)
+
     it("]c flowing forward lands on the new file's first hunk, not line 1", function()
         -- z.lua mirrors a file with a long header before its first real change: 30
         -- lines of context, a small hunk, more context, then a second hunk near the
