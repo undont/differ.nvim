@@ -73,7 +73,7 @@ describe("git.file_entries (rev-pair sources)", function()
         end)
         assert.are.same({
             { status = "M", path = "a.lua", additions = 1, deletions = 1 },
-            { status = "?", path = "u.lua", additions = 0, deletions = 0 },
+            { status = "?", path = "u.lua", additions = 1, deletions = 0 },
         }, wt_entries)
 
         -- a rev-vs-rev source (no worktree side) never gains untracked files
@@ -92,6 +92,39 @@ describe("git.file_entries (rev-pair sources)", function()
             { { status = "M", path = "a.lua", additions = 1, deletions = 1 } },
             rev_entries
         )
+    end)
+
+    it("counts an untracked file's real lines, but 0 for binary content", function()
+        local root = fresh_repo()
+        write(root .. "/multi.lua", "one\ntwo\nthree\n")
+        write(root .. "/bin.dat", "abc\0def")
+
+        local entries = git_src.file_entries(git_src.resolve(rev.source({}), root), root)
+        table.sort(entries, function(x, y)
+            return x.path < y.path
+        end)
+        assert.are.same({
+            { status = "?", path = "bin.dat", additions = 0, deletions = 0 },
+            { status = "?", path = "multi.lua", additions = 3, deletions = 0 },
+        }, entries)
+    end)
+end)
+
+describe("git.status_sections", function()
+    it("counts an untracked file's real lines, same as file_entries", function()
+        local root = fresh_repo()
+        write(root .. "/multi.lua", "one\ntwo\nthree\n")
+
+        local sections = git_src.status_sections(root)
+        local untracked
+        for _, sec in ipairs(sections) do
+            if sec.title == "Untracked" then
+                untracked = sec.entries
+            end
+        end
+        assert.are.same({
+            { path = "multi.lua", status = "?", additions = 3, deletions = 0, staged = false },
+        }, untracked)
     end)
 end)
 

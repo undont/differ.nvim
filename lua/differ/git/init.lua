@@ -8,6 +8,7 @@ local rev = require("differ.git.rev")
 local patch = require("differ.git.patch")
 local log = require("differ.git.log")
 local watch = require("differ.git.watch")
+local text_util = require("differ.util.text")
 
 local M = {}
 
@@ -167,6 +168,20 @@ end
 function M.untracked(root)
     local out = git({ "ls-files", "--others", "--exclude-standard", "-z" }, root)
     return out and rev.parse_paths(out) or {}
+end
+
+-- an untracked file has no diff to numstat, so every line reads as an addition;
+-- binary content counts as 0, matching how numstat's `-` markers already read
+-- binary tracked changes as 0/0
+---@param root string
+---@param relpath string
+---@return integer
+local function untracked_additions(root, relpath)
+    local content = M.read(WORKTREE, root, relpath)
+    if not content or text_util.is_binary(content) then
+        return 0
+    end
+    return #text_util.to_lines(content)
 end
 
 -- whether `relpath` is currently conflicted
@@ -339,10 +354,11 @@ end
 -- the change set as panel FileEntry records: one flat list with `+N -M` counts,
 -- used for rev-pair sources. working-tree sources use status_sections instead.
 -- `git diff` never lists untracked files regardless of the refs passed to it, so
--- a worktree new-side (branch total, `:Differ <rev>`, ...) unions them in here;
--- counts stay 0/0, matching the untracked entries status_sections produces for
--- the default view. no overlap to dedupe: untracked means absent from the index,
--- which `changed_files` always reads through, so the two lists are disjoint
+-- a worktree new-side (branch total, `:Differ <rev>`, ...) unions them in here,
+-- with a real line count (see untracked_additions) so they carry their weight in
+-- the panel's --stat totals. no overlap to dedupe: untracked means absent from
+-- the index, which `changed_files` always reads through, so the two lists are
+-- disjoint
 ---@param source differ.git.Source -- resolved
 ---@param root string
 ---@return differ.FileEntry[]
@@ -361,7 +377,12 @@ function M.file_entries(source, root)
     end
     if source.new.kind == "worktree" then
         for _, path in ipairs(M.untracked(root)) do
-            out[#out + 1] = { path = path, status = "?", additions = 0, deletions = 0 }
+            out[#out + 1] = {
+                path = path,
+                status = "?",
+                additions = untracked_additions(root, path),
+                deletions = 0,
+            }
         end
     end
     return out
@@ -382,8 +403,13 @@ function M.status_sections(root)
     local staged, unstaged, untracked = {}, {}, {}
     for _, s in ipairs(entries) do
         if s.x == "?" then
-            untracked[#untracked + 1] =
-                { path = s.path, status = "?", additions = 0, deletions = 0, staged = false }
+            untracked[#untracked + 1] = {
+                path = s.path,
+                status = "?",
+                additions = untracked_additions(root, s.path),
+                deletions = 0,
+                staged = false,
+            }
         else
             -- previous_path only belongs to whichever side carries the rename:
             -- an "RM" file is renamed HEAD↔index but plain-modified index↔worktree

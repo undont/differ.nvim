@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Untracked files now count their real lines as additions in the panel's `--stat` totals and per-file `+N` counts, instead of a hardcoded `0/0`. An untracked file has no old side to diff against, so every line in it is genuinely an addition; binary content still counts as `0`, matching how binary tracked changes have always been reported
+
+## [0.1.11] — 2026-07-04
+
+### Fixed
+
 - Untracked files no longer silently drop out of rev-pair diffs against the worktree (branch total `<a>...`, `:Differ <rev>`). `git diff` never lists them regardless of the refs passed to it, so the panel now unions in `git ls-files --others --exclude-standard` alongside the diffed set, with `?` status and 0/0 counts, matching the default view's Untracked section
 
 ## [0.1.10] — 2026-06-30
