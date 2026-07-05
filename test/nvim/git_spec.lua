@@ -61,6 +61,73 @@ describe("git.read / changed_files", function()
     end)
 end)
 
+describe("git.file_entries (rev-pair sources)", function()
+    it("unions in untracked files for a worktree new-side, but not a rev new-side", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- tracked, modified
+        write(root .. "/u.lua", "untracked\n") -- untracked, no diff can ever see it
+
+        local wt_entries = git_src.file_entries(git_src.resolve(rev.source({}), root), root)
+        table.sort(wt_entries, function(x, y)
+            return x.path < y.path
+        end)
+        assert.are.same({
+            { status = "M", path = "a.lua", additions = 1, deletions = 1 },
+            { status = "?", path = "u.lua", additions = 1, deletions = 0 },
+        }, wt_entries)
+
+        -- a rev-vs-rev source (no worktree side) never gains untracked files
+        git(root, "checkout", "-q", "-b", "feature")
+        git(root, "commit", "-q", "-am", "feature change")
+        local rev_source = git_src.resolve({
+            old = { kind = "rev", rev = "main", label = "main" },
+            new = {
+                kind = "rev",
+                rev = "HEAD",
+                label = "HEAD",
+            },
+        }, root)
+        local rev_entries = git_src.file_entries(rev_source, root)
+        assert.are.same(
+            { { status = "M", path = "a.lua", additions = 1, deletions = 1 } },
+            rev_entries
+        )
+    end)
+
+    it("counts an untracked file's real lines, but 0 for binary content", function()
+        local root = fresh_repo()
+        write(root .. "/multi.lua", "one\ntwo\nthree\n")
+        write(root .. "/bin.dat", "abc\0def")
+
+        local entries = git_src.file_entries(git_src.resolve(rev.source({}), root), root)
+        table.sort(entries, function(x, y)
+            return x.path < y.path
+        end)
+        assert.are.same({
+            { status = "?", path = "bin.dat", additions = 0, deletions = 0 },
+            { status = "?", path = "multi.lua", additions = 3, deletions = 0 },
+        }, entries)
+    end)
+end)
+
+describe("git.status_sections", function()
+    it("counts an untracked file's real lines, same as file_entries", function()
+        local root = fresh_repo()
+        write(root .. "/multi.lua", "one\ntwo\nthree\n")
+
+        local sections = git_src.status_sections(root)
+        local untracked
+        for _, sec in ipairs(sections) do
+            if sec.title == "Untracked" then
+                untracked = sec.entries
+            end
+        end
+        assert.are.same({
+            { path = "multi.lua", status = "?", additions = 3, deletions = 0, staged = false },
+        }, untracked)
+    end)
+end)
+
 describe("git.open_file", function()
     it("reads the rename's old side from previous_path", function()
         local root = fresh_repo()
@@ -1214,10 +1281,54 @@ describe(":Differ diff hunk staging", function()
 
         v:goto_hunk("next") -- past a.lua's only (last) hunk: flow into z.lua
         assert.are.equal("z.lua", v.model.path)
+        -- lands on a real hunk row in the file it stepped into, not just anywhere in it
+        assert.is_not_nil(v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk)
         v:goto_hunk("prev") -- before z.lua's only (first) hunk: flow back into a.lua
         assert.are.equal("a.lua", v.model.path)
-        -- and it lands on a real hunk row in the file it stepped into
         assert.is_not_nil(v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk)
+        p:close()
+    end)
+
+    it("]c flowing forward lands on the new file's first hunk, not line 1", function()
+        -- z.lua mirrors a file with a long header before its first real change: 30
+        -- lines of context, a small hunk, more context, then a second hunk near the
+        -- end. a hunk-at-line-1 fixture can't tell "landed on the first hunk" apart
+        -- from "cursor just carried over from wherever it was" -- this one can.
+        local root = fresh_repo()
+        local base = {}
+        for i = 1, 30 do
+            base[#base + 1] = "ctx" .. i
+        end
+        base[#base + 1] = "OLD_A"
+        for i = 31, 60 do
+            base[#base + 1] = "ctx" .. i
+        end
+        base[#base + 1] = "OLD_B"
+        write(root .. "/z.lua", table.concat(base, "\n") .. "\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+
+        local changed = vim.deepcopy(base)
+        changed[31] = "NEW_A"
+        changed[#changed] = "NEW_B"
+        write(root .. "/a.lua", "1x\n2\n") -- a.lua: one hunk near the top
+        write(root .. "/z.lua", table.concat(changed, "\n") .. "\n") -- z.lua: two hunks
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+
+        v:goto_hunk("next") -- past a.lua's only hunk: flow into z.lua
+        assert.are.equal("z.lua", v.model.path)
+        local first = v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]]
+        assert.are.equal(1, first and first.hunk) -- z.lua's first hunk, not a leftover cursor row
+
+        v:goto_hunk("next") -- z.lua's second hunk, not a skip out to a (nonexistent) next file
+        assert.are.equal("z.lua", v.model.path)
+        local second = v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]]
+        assert.are.equal(2, second and second.hunk)
         p:close()
     end)
 
