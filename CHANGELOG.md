@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.13] — 2026-07-05
+
+### Added
+
+- `require("differ").goto_hunk(direction, opts)` takes an optional `opts.fallback`, run when hunk navigation would otherwise just notify at a first/last hunk or in-history commit boundary. Lets a caller extend that boundary behaviour, e.g. stepping to the next/previous file during a log/history session, without changing the default
+
+## [0.1.12] — 2026-07-05
+
 ### Fixed
 
 - Untracked files now count their real lines as additions in the panel's `--stat` totals and per-file `+N` counts, instead of a hardcoded `0/0`. An untracked file has no old side to diff against, so every line in it is genuinely an addition; binary content still counts as `0`, matching how binary tracked changes have always been reported
