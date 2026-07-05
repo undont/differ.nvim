@@ -720,41 +720,44 @@ end
 -- the next/prev file row from `lnum`. wraps past the ends by default so ]f / [f
 -- stepping is cyclic (you often open mid-list); `wrap == false` bounds it instead,
 -- returning nil at the first/last file so the staging review flow stops at the ends.
--- nil too when there are no file rows at all
+-- nil too when there are no file rows at all. the second return reports whether
+-- reaching it actually crossed an end, so goto_file can notify on a wrap
 ---@param lnum integer
 ---@param direction "next"|"prev"
 ---@param wrap? boolean  -- default true; false stops at the list ends
----@return integer|nil
+---@return integer|nil row, boolean wrapped
 function Panel:_file_row(lnum, direction, wrap)
     local n = #self.meta
     if n == 0 then
-        return nil
+        return nil, false
     end
     local step = direction == "prev" and -1 or 1
-    if wrap == false then
-        local i = lnum + step
-        while i >= 1 and i <= n do
-            if self.meta[i] and self.meta[i].kind == "file" then
-                return i
-            end
-            i = i + step
+    local i = lnum + step
+    while i >= 1 and i <= n do
+        if self.meta[i] and self.meta[i].kind == "file" then
+            return i, false
         end
-        return nil
+        i = i + step
+    end
+    if wrap == false then
+        return nil, false
     end
     for k = 1, n do
-        local i = ((lnum - 1 + step * k) % n) + 1
-        local m = self.meta[i]
+        local j = ((lnum - 1 + step * k) % n) + 1
+        local m = self.meta[j]
         if m and m.kind == "file" then
-            return i
+            return j, true
         end
     end
-    return nil
+    return nil, false
 end
 
 -- ]f / [f: move to the next/prev file row and open it (lockstep file stepping).
--- wraps at the ends by default; `wrap == false` (the staging review flow) stops at
--- them. `keep_focus` is threaded to `_open` so in-view stepping stays in the diff
--- window. returns whether a file was actually opened (false at a no-wrap list end)
+-- wraps at the ends by default (notifying, since it's otherwise not obvious you
+-- cycled back rather than simply moved); `wrap == false` (the staging review flow)
+-- stops at them instead. `keep_focus` is threaded to `_open` so in-view stepping
+-- stays in the diff window. returns whether a file was actually opened (false at a
+-- no-wrap list end)
 ---@param direction "next"|"prev"
 ---@param keep_focus boolean|nil
 ---@param wrap? boolean  -- default true; false stops at the list ends
@@ -765,7 +768,7 @@ function Panel:goto_file(direction, keep_focus, wrap)
     local from = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1]
         or self.selected_row
         or self:_first_file_line()
-    local i = self:_file_row(from, direction, wrap)
+    local i, wrapped = self:_file_row(from, direction, wrap)
     if not i then
         return false
     end
@@ -778,6 +781,13 @@ function Panel:goto_file(direction, keep_focus, wrap)
     self:_open(self.meta[i].entry, keep_focus)
     if self.on_step then
         self.on_step(direction, left, self.meta[i].entry)
+    end
+    if wrapped then
+        vim.notify(
+            direction == "next" and "differ: wrapped to the first file"
+                or "differ: wrapped to the last file",
+            vim.log.levels.INFO
+        )
     end
     return true
 end

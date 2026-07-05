@@ -1029,7 +1029,10 @@ function View:_toggle_hunk(want_staged)
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
     if (self.staged_hunks[idx] or false) == want_staged then
-        return vim.notify("differ: hunk already " .. (want_staged and "staged" or "unstaged"))
+        return vim.notify(
+            "differ: hunk already " .. (want_staged and "staged" or "unstaged"),
+            vim.log.levels.INFO
+        )
     end
     if self:_apply_hunk(idx, want_staged) then
         self.staging.refresh()

@@ -434,16 +434,17 @@ local function goto_conflict(dir)
             target = r -- keep the last one below the cursor
         end
     end
-    if not target and #session.regions > 0 then -- wrap
+    if #session.regions == 0 then
+        return notify("no conflicts remain")
+    end
+    if not target then -- wrap
         target = dir == "next" and session.regions[1] or session.regions[#session.regions]
     end
-    if target then
-        vim.api.nvim_win_set_cursor(session.result_win, { target.result_start, 0 })
-        vim.api.nvim_win_call(session.result_win, function()
-            vim.cmd("normal! zz")
-        end)
-        on_cursor_moved()
-    end
+    vim.api.nvim_win_set_cursor(session.result_win, { target.result_start, 0 })
+    vim.api.nvim_win_call(session.result_win, function()
+        vim.cmd("normal! zz")
+    end)
+    on_cursor_moved()
 end
 
 -- the conflict at the cursor, else the first one at or below it (so a take-this from just
@@ -910,7 +911,7 @@ function M.open(opts)
     local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
     local root = git.root(anchor)
     if not root then
-        return notify("not in a git repository", vim.log.levels.WARN)
+        return notify("not inside a git repository", vim.log.levels.WARN)
     end
 
     local conflicted = git.conflicted(root)

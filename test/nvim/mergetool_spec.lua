@@ -428,6 +428,18 @@ describe(":Differ mergetool navigation", function()
         assert.are.equal(starts[1], cur()) -- wrapped back to the first
     end)
 
+    it("notifies rather than silently no-opping ]x once every conflict is resolved", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        fire(s.result_buf, "differ: take ours") -- the file's only conflict, now resolved
+        assert.are.equal(0, #s.regions)
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflict")
+        assert.are.equal("differ: no conflicts remain", _G.notifs[1].msg)
+    end)
+
     it("scroll-binds the merge windows for tandem scrolling", function()
         local root = conflict_repo_multi()
         vim.cmd.edit(root .. "/f.txt")

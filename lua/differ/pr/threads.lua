@@ -19,12 +19,6 @@ local function namespace()
     return ns
 end
 
----@param msg string
----@param level integer|nil
-local function notify(msg, level)
-    vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
-end
-
 -- ── pure helpers (unit-tested) ──────────────────────────────────────────────────
 
 -- github anchors a thread on a side; map LEFT/RIGHT to the column side the line map
@@ -339,10 +333,7 @@ function M.refresh(session)
         end
         session.threads_loading = false
         if err then
-            return notify(
-                "could not load review threads: " .. (err.message or err.code or "error"),
-                vim.log.levels.WARN
-            )
+            return require("differ.pr").notify_err(err)
         end
         -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on type
         -- rather than `list or {}`

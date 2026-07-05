@@ -647,16 +647,26 @@ end
 -- goto_hunk's fallback at a hunk-nav boundary, shared by the diff window's own
 -- ]c/[c (view.lua) and the history panel's copy: steps within the current commit,
 -- then (stepping backward, having landed on a different file) focuses that file's
--- last hunk so the flow continues the same way the panel's does
+-- last hunk so the flow continues the same way the panel's does. at the commit's own
+-- edge (file mode has none to step to; range mode's file list is exhausted), notifies
+-- with the commit-specific wording instead of falling through to goto_hunk's generic
+-- "no next/previous hunk" — always handled here, so the caller never notifies itself
 ---@param direction "next"|"prev"
 ---@param view differ.View|nil the driven view, to focus its last hunk going backward
----@return boolean moved
+---@return true handled -- goto_hunk should not also notify
 function History:goto_hunk_fallback(direction, view)
-    local moved = self:step_within_commit(direction, true)
-    if moved and direction == "prev" and view then
-        view:_focus_last_hunk()
+    if self:step_within_commit(direction, true) then
+        if direction == "prev" and view then
+            view:_focus_last_hunk()
+        end
+        return true
     end
-    return moved
+    vim.notify(
+        direction == "next" and "differ: no more hunks in this commit"
+            or "differ: no previous hunks in this commit",
+        vim.log.levels.INFO
+    )
+    return true
 end
 
 -- scroll the *diff view* a quarter page (the origin window), not the panel list,

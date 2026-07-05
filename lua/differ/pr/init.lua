@@ -998,7 +998,7 @@ function M.checkout()
         local git = require("differ.git")
         local root = s.root or git.root(vim.fn.getcwd())
         if not root then
-            return notify("not in a git repository", vim.log.levels.WARN)
+            return notify("not inside a git repository", vim.log.levels.WARN)
         end
         local ok, err = git.checkout(root, ref)
         if not ok then
