@@ -990,10 +990,11 @@ end
 ---@return differ.History|nil
 function M.history(opts)
     local History = require("differ.history")
+    -- re-running `:Differ log` over a live session supersedes it (mirrors `:Differ
+    -- <rev>`'s panel idempotency): close the old one and fall through to open the new
     local open = History.current()
-    if open and open:is_open() then
+    if open then
         open:close()
-        return nil
     end
 
     -- the cursor line :Differ log was invoked from, to open the first commit's diff at
@@ -1089,10 +1090,11 @@ end
 ---@return differ.History|nil
 function M.range_history(opts)
     local History = require("differ.history")
+    -- re-running `:Differ log <range>` over a live session supersedes it (mirrors
+    -- `:Differ <rev>`'s panel idempotency): close the old one, open the new
     local open = History.current()
-    if open and open:is_open() then
+    if open then
         open:close()
-        return nil
     end
 
     local range = opts.range

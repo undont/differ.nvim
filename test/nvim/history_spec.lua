@@ -310,17 +310,21 @@ describe(":Differ log (single-file history)", function()
         h:close()
     end)
 
-    it("toggles closed when reinvoked and tears down the driven view", function()
+    it("supersedes a live session when reinvoked, tearing down the previous driven view", function()
         local root = repo_with_history()
         vim.cmd.edit(root .. "/a.lua")
         git_src.history({})
-        local h = History.current()
-        local v = view_in_origin(h)
-        assert.is_true(v:is_open())
+        local h1 = History.current()
+        local v1 = view_in_origin(h1)
+        assert.is_true(v1:is_open())
 
-        git_src.history({}) -- reinvoke: closes the open session
-        assert.is_nil(History.current())
-        assert.is_false(v:is_open())
+        git_src.history({}) -- reinvoke: closes the old session and opens a fresh one
+        local h2 = History.current()
+        assert.is_not_nil(h2)
+        assert.are_not.equal(h1, h2)
+        assert.is_false(v1:is_open())
+        assert.is_true(view_in_origin(h2):is_open())
+        h2:close()
     end)
 end)
 

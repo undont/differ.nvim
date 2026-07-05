@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `:Differ log` and `:Differ log <range>` are now idempotent like `:Differ <rev>`: reinvoking over a live session supersedes it (closes the old one, opens the new) instead of just closing it and dropping the new request on the floor
+
 ## [0.1.13] — 2026-07-05
 
 ### Added
