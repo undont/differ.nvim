@@ -132,7 +132,7 @@ local function render(checks)
             close()
             vim.ui.open(url)
         else
-            notify("this check has no url")
+            notify("this check has no url", vim.log.levels.WARN)
         end
     end
     vim.keymap.set("n", "<CR>", open_under_cursor, { buffer = buf, nowait = true })

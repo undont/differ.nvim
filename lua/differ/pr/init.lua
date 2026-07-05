@@ -315,7 +315,7 @@ end
 function M.toggle_thread()
     local anchor = cursor_anchor()
     if not anchor then
-        return notify("no review thread on this line")
+        return notify("no thread on this line")
     end
     local threads = require("differ.pr.threads")
     threads.toggle_group(session, anchor)
@@ -359,7 +359,7 @@ end
 function M.resolve()
     local anchor = cursor_anchor()
     if not anchor then
-        return notify("no review thread on this line")
+        return notify("no thread on this line")
     end
     local target
     for _, t in ipairs(anchor.threads) do
@@ -610,8 +610,8 @@ local function open_session(pr, detail, opts)
             end,
             desc = "previous unviewed file",
         },
-        { spec = diff_km.next_thread, fn = M.next_thread, desc = "next review thread" },
-        { spec = diff_km.prev_thread, fn = M.prev_thread, desc = "previous review thread" },
+        { spec = diff_km.next_thread, fn = M.next_thread, desc = "next thread" },
+        { spec = diff_km.prev_thread, fn = M.prev_thread, desc = "previous thread" },
         { spec = diff_km.toggle_thread, fn = M.toggle_thread, desc = "toggle thread" },
         { spec = diff_km.resolve_thread, fn = M.resolve, desc = "resolve thread" },
         -- commenting: ga single (normal) / range (visual), gp reply to a thread
