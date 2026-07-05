@@ -541,6 +541,17 @@ function View:adjust_context(delta)
     self:set_context(math.max(0, self.context + delta))
 end
 
+-- goto_hunk's fallback for the diff window's own ]c/[c: past the last/first hunk,
+-- defer to a live history session's own fallback (steps within the current commit
+-- in range mode; a no-op everywhere else, leaving the plain stop-and-notify boundary)
+---@param direction "next"|"prev"
+---@param view differ.View
+---@return boolean moved
+local function history_hunk_fallback(direction, view)
+    local history = require("differ.history").current()
+    return history ~= nil and history:goto_hunk_fallback(direction, view)
+end
+
 -- per-window appearance + buffer-local motions. our own dual-rail gutter replaces
 -- the native gutter; ]c / [c jump between hunks via the active column's map
 ---@param winid integer
@@ -575,10 +586,18 @@ function View:_setup_window(winid, bufnr)
     })
     local km = self.keymaps
     bind(bufnr, km.next_hunk, function()
-        self:goto_hunk("next")
+        self:goto_hunk("next", {
+            fallback = function(direction)
+                return history_hunk_fallback(direction, self)
+            end,
+        })
     end, "differ: next hunk")
     bind(bufnr, km.prev_hunk, function()
-        self:goto_hunk("prev")
+        self:goto_hunk("prev", {
+            fallback = function(direction)
+                return history_hunk_fallback(direction, self)
+            end,
+        })
     end, "differ: previous hunk")
     bind(bufnr, km.more_context, function()
         self:adjust_context(1)

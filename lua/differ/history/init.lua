@@ -625,6 +625,40 @@ function History:step(direction, keep_focus)
     return false
 end
 
+-- ]c / [c overflow (the goto_hunk fallback): step to the next/prev file within
+-- the current commit only, stopping at its edges rather than crossing into the
+-- adjacent commit like ]f / [f does. range mode only; file mode has no
+-- sub-commit files to step through, so it's always a no-op there
+---@param direction "next"|"prev"
+---@param keep_focus boolean|nil
+---@return boolean moved
+function History:step_within_commit(direction, keep_focus)
+    if self.mode ~= "range" then
+        return false
+    end
+    local fi = (self.file_index or 1) + (direction == "next" and 1 or -1)
+    if fi < 1 or fi > #self:_files(self.index) then
+        return false
+    end
+    self:_open_file(self.index, fi, keep_focus)
+    return true
+end
+
+-- goto_hunk's fallback at a hunk-nav boundary, shared by the diff window's own
+-- ]c/[c (view.lua) and the history panel's copy: steps within the current commit,
+-- then (stepping backward, having landed on a different file) focuses that file's
+-- last hunk so the flow continues the same way the panel's does
+---@param direction "next"|"prev"
+---@param view differ.View|nil the driven view, to focus its last hunk going backward
+---@return boolean moved
+function History:goto_hunk_fallback(direction, view)
+    local moved = self:step_within_commit(direction, true)
+    if moved and direction == "prev" and view then
+        view:_focus_last_hunk()
+    end
+    return moved
+end
+
 -- scroll the *diff view* a quarter page (the origin window), not the panel list,
 -- mirroring the file panel (default f / b)
 ---@param direction "down"|"up"
@@ -747,11 +781,16 @@ function History:_setup_window()
             self:set_all_folds(false)
         end, "expand all commits")
     end
+    -- past the last/first hunk: overflow into the next/prev file within the commit
+    -- (range mode; file mode's fallback is always a no-op, so it just stops)
+    local function hunk_fallback(direction)
+        return self:goto_hunk_fallback(direction, require("differ").active_view())
+    end
     map(km.next_hunk, function()
-        require("differ").goto_hunk("next")
+        require("differ").goto_hunk("next", { fallback = hunk_fallback })
     end, "next hunk")
     map(km.prev_hunk, function()
-        require("differ").goto_hunk("prev")
+        require("differ").goto_hunk("prev", { fallback = hunk_fallback })
     end, "previous hunk")
     map(km.details, function()
         self:show_details()
