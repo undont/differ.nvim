@@ -43,6 +43,7 @@ local function git(args, cwd)
     return res.stdout
 end
 
+-- strip trailing whitespace from a git output line (e.g. rev-parse, show, log)
 local function chomp(s)
     return (s:gsub("%s+$", ""))
 end
@@ -117,9 +118,63 @@ local function resolve_ref(ref, root)
     return { kind = "rev", rev = chomp(out), label = ref.label }
 end
 
+-- worktree bytes as `git add` would store them (the clean filter: eol
+-- conversion, text attrs, custom filters), so worktree-side diffs compare in
+-- the repo domain, like `git diff`, and the hunk patches built from the model
+-- stage the same blob a `git add` of the file would write. runs the real
+-- `git add` against a throwaway copy of the index and reads the entry back, so
+-- every conversion rule (safe-crlf stickiness included) is git's own, not a
+-- reimplementation. gated on a CR byte in non-binary content: LF-only content
+-- can't convert differently, so the common case pays nothing. any failure
+-- falls back to the raw bytes (the old behaviour)
+---@param root string
+---@param relpath string
+---@param data string
+---@return string
+local function as_staged(root, relpath, data)
+    if not data:find("\r", 1, true) or text_util.is_binary(data) then
+        return data
+    end
+    local index = git({ "rev-parse", "--git-path", "index" }, root)
+    if not index then
+        return data
+    end
+    index = chomp(index)
+    if index:sub(1, 1) ~= "/" then
+        index = root .. "/" .. index -- --git-path can print relative to the cwd
+    end
+    local tmp = vim.fn.tempname()
+    local src = io.open(index, "rb") -- absent in a fresh repo: git add creates tmp
+    if src then
+        local blob = src:read("*a")
+        src:close()
+        local dst = io.open(tmp, "wb")
+        if not dst then
+            return data
+        end
+        dst:write(blob)
+        dst:close()
+    end
+    local env = { GIT_INDEX_FILE = tmp }
+    local add = vim.system({ "git", "add", "--", relpath }, { cwd = root, env = env }):wait()
+    if add.code ~= 0 then
+        os.remove(tmp)
+        return data
+    end
+    -- raw read, no text=true: that would strip the CRs git chose to keep
+    local show = vim.system({ "git", "show", ":" .. relpath }, { cwd = root, env = env }):wait()
+    os.remove(tmp)
+    if show.code ~= 0 or not show.stdout then
+        return data
+    end
+    return show.stdout
+end
+
 -- read a side's content for `relpath` (repo-root-relative). returns the content
 -- (possibly ""), or nil when the file is absent on that side (added/deleted);
--- callers treat nil as an empty file so the diff renders an add/delete
+-- callers treat nil as an empty file so the diff renders an add/delete.
+-- the worktree side reads through the clean filter (as_staged) so it lands in
+-- the same domain as the index/rev sides
 ---@param ref differ.git.Ref
 ---@param root string
 ---@param relpath string
@@ -136,7 +191,7 @@ function M.read(ref, root, relpath)
         end
         local data = fd:read("*a")
         fd:close()
-        return data
+        return as_staged(root, relpath, data)
     end
     -- index (stage 0) is `:path`; a rev is `<rev>:path`
     local spec = (ref.kind == "index" and ":" or (ref.rev .. ":")) .. relpath
