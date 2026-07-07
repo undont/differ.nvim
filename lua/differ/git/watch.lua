@@ -17,6 +17,8 @@ Watcher.__index = Watcher
 ---@field handles table<string, userdata> -- fs_event handles keyed by "git"/"file"
 ---@field file_dir string|nil
 ---@field timer userdata|nil
+---@field watch_file fun(self: differ.git.Watcher, path: string|nil)
+---@field stop fun(self: differ.git.Watcher)
 
 -- start watching `git_dir`; the file watch is attached later via watch_file
 ---@param opts { git_dir: string, on_change: fun() }

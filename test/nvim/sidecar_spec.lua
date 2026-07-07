@@ -28,6 +28,9 @@ end
 
 describe("sidecar client", function()
     if not has_binary() then
+        -- one-arg pending(name) is valid busted;
+        -- the type stub only declares pending(name, block)
+        ---@diagnostic disable-next-line: missing-parameter
         pending("bin/differ-sidecar not built (run `make go-build`)")
         return
     end

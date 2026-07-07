@@ -89,7 +89,9 @@ local function close_session_tab(tab)
     if #vim.api.nvim_list_tabpages() == 1 then
         vim.cmd("tabnew")
     end
-    pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(tab))
+    pcall(function()
+        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(tab))
+    end)
 end
 
 -- repo root containing `path` (a file or directory), or nil if not in a repo
@@ -722,12 +724,13 @@ function M.panel(opts)
             origin_rel = resolved:sub(#root + 2)
         end
     end
-    -- normalise the rev spec to an arg list (explicit branches so the type narrows)
+    -- normalise the rev spec to an arg list (bind to a local so type() narrows it)
+    local rev_opt = opts.rev
     local args ---@type string[]
-    if type(opts.rev) == "table" then
-        args = opts.rev
-    elseif opts.rev then
-        args = { opts.rev }
+    if type(rev_opt) == "table" then
+        args = rev_opt
+    elseif rev_opt then
+        args = { rev_opt }
     else
         args = {}
     end

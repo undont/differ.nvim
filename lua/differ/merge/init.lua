@@ -266,12 +266,13 @@ end
 -- splice both recompute from one source
 ---@param active integer|nil  -- the live index of the conflict under the cursor
 local function paint_result(active)
-    vim.api.nvim_buf_clear_namespace(session.result_buf, merge_ns, 0, -1)
-    for _, r in ipairs(session.regions) do
+    local s = assert(session)
+    vim.api.nvim_buf_clear_namespace(s.result_buf, merge_ns, 0, -1)
+    for _, r in ipairs(s.regions) do
         local on = r.index == active
         local function fill(side, first, last)
             local pair = SECTION_HL[side]
-            paint_lines(session.result_buf, first, last, on and pair.active or pair.normal)
+            paint_lines(s.result_buf, first, last, on and pair.active or pair.normal)
         end
         fill("ours", r.result_start, (r.mark_base or r.mark_sep) - 1)
         if r.mark_base then
@@ -310,18 +311,20 @@ end
 -- keymap splices stay consistent), plus the buffer's current lines
 ---@return differ.merge.Region[], string[]
 local function live_regions()
-    local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
+    local s = assert(session)
+    local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
     return require("differ.git.conflict").parse(lines), lines
 end
 
 -- the live index of the conflict under the result cursor, else nil
 ---@return integer|nil
 local function active_index()
-    if not vim.api.nvim_win_is_valid(session.result_win) then
+    local s = assert(session)
+    if not vim.api.nvim_win_is_valid(s.result_win) then
         return nil
     end
-    local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
-    for _, r in ipairs(session.regions) do
+    local cur = vim.api.nvim_win_get_cursor(s.result_win)[1]
+    for _, r in ipairs(s.regions) do
         if cur >= r.result_start and cur <= r.result_end then
             return r.index
         end
@@ -334,16 +337,17 @@ end
 -- maintains it itself (so this no-ops), but an arbitrary hand-edit + write rebuilds it to
 -- the identity so the pane sync stays consistent (degrading to live-index = original-index)
 local function repaint_result()
+    local s = assert(session)
     local regions = live_regions()
-    session.regions = regions
-    if not session.order or #session.order ~= #regions then
-        session.order = {}
+    s.regions = regions
+    if not s.order or #s.order ~= #regions then
+        s.order = {}
         for i = 1, #regions do
-            session.order[i] = i
+            s.order[i] = i
         end
     end
-    session.active_index = active_index()
-    paint_result(session.active_index)
+    s.active_index = active_index()
+    paint_result(s.active_index)
 end
 
 -- run fn with scrollbind off on every merge window, then restore it. the panes are
@@ -352,15 +356,16 @@ end
 -- cursor off the conflict, stalling ]x), so centring happens with the bind lifted
 ---@param fn fun()
 local function without_scrollbind(fn)
+    local s = assert(session)
     local saved = {}
     local function each(f)
-        for _, inp in ipairs(session.inputs) do
+        for _, inp in ipairs(s.inputs) do
             if vim.api.nvim_win_is_valid(inp.win) then
                 f(inp.win)
             end
         end
-        if vim.api.nvim_win_is_valid(session.result_win) then
-            f(session.result_win)
+        if vim.api.nvim_win_is_valid(s.result_win) then
+            f(s.result_win)
         end
     end
     each(function(w)
@@ -604,7 +609,9 @@ function M.close()
         if #vim.api.nvim_list_tabpages() == 1 then
             vim.cmd("tabnew")
         end
-        pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(s.session_tab))
+        pcall(function()
+            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(s.session_tab))
+        end)
     end
     if vim.api.nvim_tabpage_is_valid(s.return_tab) then
         vim.api.nvim_set_current_tabpage(s.return_tab)
@@ -727,12 +734,22 @@ function lay_out(root, relpath, model, layout)
         end
     end
 
+    -- the render layer always yields a result column; assert so the buf type narrows
+    -- (and a broken render fails loudly here rather than nil-derefing later)
+    assert(result_buf, "merge: render produced no result column")
+
     local win_side = { [result_win] = "result" }
     for _, win in ipairs(input_wins) do
         dress(win)
         set_local(win, "signcolumn", "yes:1") -- room for the ▌ slab sign
     end
     dress(result_win)
+
+    -- nav + take-this resolution live on the result buffer (the working surface), from
+    -- the configurable merge keymaps; falls back to the flat defaults when setup
+    -- wasn't called, like the diff view does
+    local cfg = require("differ").get_config()
+    local km = cfg.keymaps.merge or require("differ.config").defaults.keymaps
 
     local first = model.regions[1]
     session = {
@@ -756,6 +773,7 @@ function lay_out(root, relpath, model, layout)
         win_side = win_side,
         return_tab = return_tab,
         session_tab = session_tab,
+        keymaps = km, -- for the g? cheatsheet
         diag_aug = suppress_diagnostics(result_buf), -- the markers aren't valid source
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
     }
@@ -772,12 +790,6 @@ function lay_out(root, relpath, model, layout)
     apply_folds(result_win, result_col and result_col.folds)
     paint_result(nil)
 
-    -- nav + take-this resolution live on the result buffer (the working surface), from
-    -- the configurable merge keymaps; falls back to the flat defaults when setup
-    -- wasn't called, like the diff view does
-    local cfg = require("differ").get_config()
-    local km = cfg.keymaps.merge or require("differ.config").defaults.keymaps
-    session.keymaps = km -- for the g? cheatsheet
     -- the result is the real file, so a format-on-save would run on :w and choke on (or
     -- mangle) the conflict markers. set conform's buffer-local opt-out for the session,
     -- restored on close; honoured by any format_on_save gate that checks the flag
