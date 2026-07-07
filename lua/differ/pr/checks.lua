@@ -98,7 +98,11 @@ local function render(checks)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     local ns = vim.api.nvim_create_namespace("differ.checks")
     for i, hl in ipairs(hls) do
-        vim.api.nvim_buf_add_highlight(buf, ns, hl, i - 1, 0, -1)
+        vim.api.nvim_buf_set_extmark(buf, ns, i - 1, 0, {
+            end_row = i,
+            end_col = 0,
+            hl_group = hl,
+        })
     end
     vim.bo[buf].modifiable = false
     vim.bo[buf].bufhidden = "wipe"
