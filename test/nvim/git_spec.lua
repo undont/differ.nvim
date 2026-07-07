@@ -92,8 +92,18 @@ describe("git.read_stage", function()
         write(root .. "/f.txt", "a\r\nOURS\r\nc\r\n")
         git(root, "commit", "-q", "-am", "ours")
         -- merging conflicts (non-zero exit), which is expected here: use raw
-        -- vim.system directly rather than the asserting `git` helper above
-        vim.system({ "git", "merge", "feature" }, { cwd = root, text = true }):wait()
+        -- vim.system directly rather than the asserting `git` helper above, but still
+        -- pin identity so the merge doesn't abort before conflicting on runners with no
+        -- global gitconfig
+        vim.system({
+            "git",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "user.name=t",
+            "merge",
+            "feature",
+        }, { cwd = root, text = true }):wait()
 
         assert.are.equal("a\r\nb\r\nc\r\n", git_src.read_stage(root, "f.txt", 1)) -- base
         assert.are.equal("a\r\nOURS\r\nc\r\n", git_src.read_stage(root, "f.txt", 2)) -- ours
