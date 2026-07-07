@@ -4,6 +4,8 @@
 .luarc.local.json
 docs/overview.md
 /.plans
+/.DS_Store
+/.tools/
 
 # generated demo fixtures (rebuilt by .demo/setup.sh); the gif/mp4 are committed
 /.demo/fixture/
