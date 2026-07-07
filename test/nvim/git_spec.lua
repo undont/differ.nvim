@@ -59,6 +59,46 @@ describe("git.read / changed_files", function()
         local files = git_src.changed_files(rev.source({}), root)
         assert.are.same({ { status = "M", path = "a.lua" } }, files)
     end)
+
+    it("keeps CRLF bytes intact for a rev read and an index read", function()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        write(root .. "/f.txt", "a\r\nb\r\nc\r\n")
+        git(root, "add", "f.txt")
+        git(root, "commit", "-q", "-m", "base")
+        write(root .. "/f.txt", "a\r\nB\r\nc\r\n")
+        git(root, "add", "f.txt") -- stage the CRLF edit into the index, worktree untouched
+
+        local head = { kind = "rev", rev = "HEAD", label = "HEAD" }
+        local index = { kind = "index", label = "INDEX" }
+        assert.are.equal("a\r\nb\r\nc\r\n", git_src.read(head, root, "f.txt"))
+        assert.are.equal("a\r\nB\r\nc\r\n", git_src.read(index, root, "f.txt"))
+    end)
+end)
+
+describe("git.read_stage", function()
+    it("keeps CRLF bytes intact for each conflict stage (base/ours/theirs)", function()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        write(root .. "/f.txt", "a\r\nb\r\nc\r\n")
+        git(root, "add", "f.txt")
+        git(root, "commit", "-q", "-m", "base")
+        git(root, "checkout", "-q", "-b", "feature")
+        write(root .. "/f.txt", "a\r\nTHEIRS\r\nc\r\n")
+        git(root, "commit", "-q", "-am", "theirs")
+        git(root, "checkout", "-q", "main")
+        write(root .. "/f.txt", "a\r\nOURS\r\nc\r\n")
+        git(root, "commit", "-q", "-am", "ours")
+        -- merging conflicts (non-zero exit), which is expected here: use raw
+        -- vim.system directly rather than the asserting `git` helper above
+        vim.system({ "git", "merge", "feature" }, { cwd = root, text = true }):wait()
+
+        assert.are.equal("a\r\nb\r\nc\r\n", git_src.read_stage(root, "f.txt", 1)) -- base
+        assert.are.equal("a\r\nOURS\r\nc\r\n", git_src.read_stage(root, "f.txt", 2)) -- ours
+        assert.are.equal("a\r\nTHEIRS\r\nc\r\n", git_src.read_stage(root, "f.txt", 3)) -- theirs
+    end)
 end)
 
 describe("git.read (worktree clean filter)", function()

@@ -29,7 +29,10 @@ local function notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
 end
 
--- run git in `cwd`. returns stdout on success, or nil + stderr on failure
+-- run git in `cwd`. returns stdout on success, or nil + stderr on failure.
+-- `text = true` normalises `\r\n` to `\n` in stdout, which is right for plumbing
+-- output (status/numstat/rev-parse/name-status/...) but would corrupt file
+-- content read via `git show`; content reads use git_raw instead
 ---@param args string[]
 ---@param cwd string
 ---@return string|nil stdout, string|nil stderr
@@ -37,6 +40,22 @@ local function git(args, cwd)
     local cmd = { "git" }
     vim.list_extend(cmd, args)
     local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    if res.code ~= 0 then
+        return nil, res.stderr
+    end
+    return res.stdout
+end
+
+-- like `git`, but without `text = true`: stdout comes back byte-true (CRLF kept
+-- intact) instead of newline-normalised. use for content-bearing reads (`git
+-- show` on the index/a rev/a conflict stage), never for plumbing output
+---@param args string[]
+---@param cwd string
+---@return string|nil stdout, string|nil stderr
+local function git_raw(args, cwd)
+    local cmd = { "git" }
+    vim.list_extend(cmd, args)
+    local res = vim.system(cmd, { cwd = cwd }):wait()
     if res.code ~= 0 then
         return nil, res.stderr
     end
@@ -195,7 +214,7 @@ function M.read(ref, root, relpath)
     end
     -- index (stage 0) is `:path`; a rev is `<rev>:path`
     local spec = (ref.kind == "index" and ":" or (ref.rev .. ":")) .. relpath
-    return git({ "show", spec }, root) -- nil if the path is absent in that tree
+    return git_raw({ "show", spec }, root) -- nil if the path is absent in that tree
 end
 
 -- one conflict stage's full content for `relpath`: 1=base, 2=ours, 3=theirs.
@@ -206,7 +225,7 @@ end
 ---@param stage 1|2|3
 ---@return string
 function M.read_stage(root, relpath, stage)
-    return git({ "show", (":%d:"):format(stage) .. relpath }, root) or ""
+    return git_raw({ "show", (":%d:"):format(stage) .. relpath }, root) or ""
 end
 
 -- repo-relative paths of the unmerged (conflicted) files, in git's order
