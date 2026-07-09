@@ -61,9 +61,11 @@ lua-fmt: ## Format Lua sources with stylua
 lua-fmt-check: ## Verify Lua formatting without writing
 	@stylua --check lua plugin test
 
+# checks lua/ only; test specs deliberately pass invalid inputs. lua_ls config
+# discovery is path-sensitive, so point at the repo-root .luarc.json explicitly
 lua-typecheck: $(LUALS_BIN) ## Type-check Lua with pinned lua_ls (informational; not in `check` yet)
 	@$(INFO) "Type-checking Lua (lua_ls $(LUALS_VERSION))"
-	@$(LUALS_BIN) --check . --checklevel=Warning --logpath=.tools/luals-report
+	@$(LUALS_BIN) --check lua --configpath=$(CURDIR)/.luarc.json --checklevel=Warning --logpath=.tools/luals-report
 	@$(OK) "Lua type-check clean"
 
 # fetch the pinned lua_ls into .tools on first use; the whole tree is gitignored
