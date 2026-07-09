@@ -222,10 +222,10 @@ local function show_file(entry, focus_line)
         if err then
             return notify_err(err)
         end
-        if not (session and session.panel and session.panel:is_open()) then
-            return -- session torn down while the blob was in flight
+        if session ~= s or not (s.panel and s.panel:is_open()) then
+            return -- session torn down (or replaced) while the blob was in flight
         end
-        session.versions[entry.path] = vers
+        s.versions[entry.path] = vers
         render(vers)
     end)
 end
