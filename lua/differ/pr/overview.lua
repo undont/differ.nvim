@@ -88,8 +88,9 @@ end
 
 -- buffer-local keymaps; they read the live session each time so the reused buffer never
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
--- backs out of the PR, gx opens the PR url. <CR> on a thread row enters the review at
--- that thread's file/line; elsewhere it opens the url
+-- backs into the review when one is open (else out of the PR), gx opens the PR url.
+-- <CR> on a thread row enters the review at that thread's file/line; elsewhere it
+-- opens the url
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -140,8 +141,14 @@ local function set_keymaps(b)
     vim.keymap.set("n", "r", function()
         enter(true)
     end, opts)
+    -- q layers like a child page: arrived from the review (a panel exists), it backs
+    -- into the review (the stashed position restores); pre-review it ends the session
     for _, lhs in ipairs({ "q", "<Esc>" }) do
         vim.keymap.set("n", lhs, function()
+            local s = live()
+            if s and s.panel then
+                return require("differ.pr").view({ number = s.pr.number })
+            end
             require("differ.pr").end_session()
         end, opts)
     end

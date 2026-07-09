@@ -452,6 +452,29 @@ function M.goto_anchor(target)
     return landed
 end
 
+-- the diff cursor as a one-shot anchor { path, side, line }, or nil without an open
+-- diff. reads the new-side column's window cursor (valid even when focus is on the
+-- panel) and maps the row to its nearest new-side source line, so a back-to-overview
+-- hop can restore the position on re-entry
+---@param s table
+---@return table|nil
+local function diff_anchor(s)
+    local view = s.view
+    if not (view and view:is_open() and view.model) then
+        return nil
+    end
+    local col = view:column_for("new")
+    if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
+        return nil
+    end
+    local row = vim.api.nvim_win_get_cursor(col.winid)[1]
+    local line = require("differ.nav").file_line(col.map, row)
+    if not line then
+        return nil
+    end
+    return { path = view.model.path, side = "RIGHT", line = line }
+end
+
 -- thin, scriptable wrappers over the review/comment modules, acting on the live session
 function M.comment()
     if session then
@@ -580,6 +603,7 @@ local function open_session(pr, detail, opts)
         thread_active = nil, -- the anchor key (bufnr:row) the cursor expands (peek)
         review_id = nil, -- the active pending-review node id; nil = immediate mode
         pending_focus = nil, -- one-shot { path, side, line } for resume position-restore
+        overview_return = nil, -- one-shot diff anchor stashed by a back-to-overview hop
         session_tab = session_tab, -- the tab hosting both the overview page and the review
         overview_win = vim.api.nvim_get_current_win(), -- the page window (pre-panel)
         ---@type differ.View|nil
@@ -593,6 +617,7 @@ local function open_session(pr, detail, opts)
     -- they reach the buffer via the extra_keymaps seam, not the fixed action set
     local panel_km, diff_km = cfg.keymaps.panel, cfg.keymaps.diff
     local panel_extra = {
+        { spec = panel_km.overview, fn = M.overview, desc = "PR overview" },
         { spec = panel_km.toggle_viewed, fn = toggle_viewed, desc = "toggle viewed" },
         {
             spec = panel_km.next_unviewed,
@@ -635,6 +660,8 @@ local function open_session(pr, detail, opts)
         { spec = diff_km.comment, fn = M.comment_range, desc = "comment on selection", mode = "x" },
         { spec = diff_km.reply, fn = M.reply, desc = "reply to thread" },
         { spec = diff_km.delete_comment, fn = M.delete_comment, desc = "delete comment" },
+        -- back to the PR home, stashing the diff position for the return trip
+        { spec = diff_km.overview, fn = M.overview, desc = "PR overview" },
     }
 
     -- build the file panel + driven diff into the session tab. deferred so the overview
@@ -708,7 +735,11 @@ local function enter_files(review, focus)
         session.panel:show() -- revealing a sidebar hidden by a back-to-overview hop
     end
     require("differ.pr.overview").disarm() -- the page window is the diff's now
-    if not (focus and M.goto_anchor(focus)) then
+    -- an explicit focus (thread jump) wins over the back-hop stash; either way the
+    -- stash is consumed, so a later plain entry doesn't replay a stale position
+    local target = focus or session.overview_return
+    session.overview_return = nil
+    if not (target and M.goto_anchor(target)) then
         session.panel:select(true)
     end
     if review then
@@ -846,10 +877,13 @@ function M.review(opts)
     return M.open({ number = session.pr.number, land = "files", review = true })
 end
 
--- :Differ pr overview — go back to the PR home from the review (closes the diff +
--- hides the panel, keeping the session), or re-show it while already on the page
+-- :Differ pr overview (and the diff/panel `go`) — go back to the PR home from the
+-- review (closes the diff + hides the panel, keeping the session), or re-show it while
+-- already on the page. the diff position is stashed so re-entering the files restores
+-- it; re-showing from the page keeps an earlier stash rather than clobbering it
 function M.overview()
     M.with_session(function(s)
+        s.overview_return = diff_anchor(s) or s.overview_return
         require("differ.pr.overview").open(s)
     end)
 end

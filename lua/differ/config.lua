@@ -94,6 +94,7 @@ M.defaults = {
         prev_unviewed = "[u",
         next_thread = "]t", -- pr diff: jump to the next/prev review-thread anchor
         prev_thread = "[t",
+        overview = "go", -- pr diff + panel: back to the PR overview home (shadows native go, goto-byte)
         -- both buffer-local to the read-only pr diff, so the g-family shadowing is
         -- deliberate and inert: gc = native comment op (no source to toggle), gr =
         -- native lsp prefix (no lsp on a synthetic diff buffer)
