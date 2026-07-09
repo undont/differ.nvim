@@ -1481,8 +1481,8 @@ function View:open()
 end
 
 -- tear down a single column's window (if any) and buffer. `keep_win` spares that
--- window from closing (jump-to-file repurposes it for the real file), still
--- dropping the now-hidden synthetic buffer
+-- window from closing (the pr overview repurposes it for the page), still dropping
+-- the synthetic buffer
 ---@param col differ.ViewColumn|nil
 ---@param keep_win integer|nil
 function View:_discard(col, keep_win)
@@ -1504,13 +1504,27 @@ function View:_discard(col, keep_win)
         pcall(vim.api.nvim_win_close, col.winid, true)
         self._suppress_close = false
     end
+    -- the forced wipe below closes any window still showing the buffer, which would
+    -- defeat keep_win; hand that window a throwaway first (the caller repaints over
+    -- it, and bufhidden=wipe drops it then)
+    if
+        col.winid
+        and col.winid == keep_win
+        and vim.api.nvim_win_is_valid(col.winid)
+        and vim.api.nvim_win_get_buf(col.winid) == col.bufnr
+    then
+        local placeholder = vim.api.nvim_create_buf(false, true)
+        vim.bo[placeholder].bufhidden = "wipe"
+        vim.api.nvim_win_set_buf(col.winid, placeholder)
+    end
     if vim.api.nvim_buf_is_valid(col.bufnr) then
         vim.api.nvim_buf_delete(col.bufnr, { force = true })
     end
 end
 
 -- close all windows and delete all buffers owned by the view. `keep_win` leaves
--- one window open (jump-to-file, which has already loaded the real file into it)
+-- one window open for the caller to repurpose (the pr overview paints its page
+-- into it)
 ---@param keep_win integer|nil
 function View:close(keep_win)
     self._closing = true -- block the WinClosed guard for the duration of teardown
