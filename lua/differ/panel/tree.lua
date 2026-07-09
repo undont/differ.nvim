@@ -12,7 +12,7 @@ local M = {}
 ---@field deletions integer
 ---@field staged boolean|nil       -- which local section it belongs to
 ---@field previous_path string|nil -- renames/copies
----@Field viewed boolean|nil       -- PR only
+---@field viewed boolean|nil       -- PR only
 
 ---@class differ.panel.Node
 ---@field kind "dir"|"file"
