@@ -103,6 +103,14 @@ function M.root(path)
     return out and chomp(out) or nil
 end
 
+-- the repo's current HEAD sha, or nil outside a repo
+---@param root string
+---@return string|nil
+function M.head_sha(root)
+    local out = git({ "rev-parse", "HEAD" }, root)
+    return out and chomp(out) or nil
+end
+
 -- check out a PR's head branch locally (client-side action): fetch the ref from
 -- origin, then check it out. fetch first so the branch exists even before its first
 -- local pull; if a local branch of that name already tracks the ref, checkout lands on

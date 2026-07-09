@@ -452,6 +452,40 @@ function M.goto_anchor(target)
     return landed
 end
 
+-- warn when the local checkout isn't the PR head, once per session: the worktree file
+-- the edit verbs open can then differ from the pinned blob the diff shows
+-- (:Differ pr checkout aligns them). re-checked on every edit (HEAD can move
+-- mid-session); the flag only silences repeats after a warning has fired
+local function warn_head_mismatch()
+    if not session or session.head_warned or not session.root then
+        return
+    end
+    local local_head = require("differ.git").head_sha(session.root)
+    local pr_head = session.pr_meta.head_sha
+    if local_head and pr_head and local_head ~= pr_head then
+        session.head_warned = true
+        notify(
+            "local checkout isn't the PR head; the file on disk may differ from the diff"
+                .. " (:Differ pr checkout)",
+            vim.log.levels.WARN
+        )
+    end
+end
+
+-- df on the pr diff: edit the worktree file in a split beside the pinned-blob diff,
+-- keeping the session. the diff keeps showing the pinned head (what the remote has);
+-- the edit shows on the PR once pushed and the head moves
+function M.edit_split()
+    if not (session and session.view and session.view:is_open()) then
+        return notify("no active pull request diff")
+    end
+    if not session.root then
+        return notify("editing needs a local checkout of this repo", vim.log.levels.WARN)
+    end
+    warn_head_mismatch()
+    session.view:edit_beside()
+end
+
 -- the diff cursor as a one-shot anchor { path, side, line }, or nil without an open
 -- diff. reads the new-side column's window cursor (valid even when focus is on the
 -- panel) and maps the row to its nearest new-side source line, so a back-to-overview
@@ -662,6 +696,13 @@ local function open_session(pr, detail, opts)
         { spec = diff_km.delete_comment, fn = M.delete_comment, desc = "delete comment" },
         -- back to the PR home, stashing the diff position for the return trip
         { spec = diff_km.overview, fn = M.overview, desc = "PR overview" },
+        -- edit-in-review on the pinned-blob diff (the generic bind is gated to
+        -- uncommitted sources, so the lhs is free here)
+        {
+            spec = diff_km.edit_file,
+            fn = M.edit_split,
+            desc = "edit the real file (in review)",
+        },
     }
 
     -- build the file panel + driven diff into the session tab. deferred so the overview

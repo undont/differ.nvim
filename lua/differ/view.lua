@@ -1188,23 +1188,10 @@ function View:edit_file()
             vim.log.levels.WARN
         )
     end
-    local root = self.model.root
-    if not root then
-        return vim.notify("differ: editing needs a file-backed source", vim.log.levels.WARN)
+    local t = self:_edit_target()
+    if not t then
+        return
     end
-    local abs = root .. "/" .. self.model.path
-    if vim.fn.filereadable(abs) == 0 then
-        -- e.g. a pure deletion: no new-side file on disk to edit
-        return vim.notify(
-            ("differ: %s is not on disk"):format(self.model.path),
-            vim.log.levels.WARN
-        )
-    end
-
-    local col = self:_focused_column()
-    local win = (col.winid and vim.api.nvim_win_is_valid(col.winid)) and col.winid
-        or vim.api.nvim_get_current_win()
-    local target, tcol = self:_file_pos(col, win)
 
     -- staged diff: unstage the file and re-source to its unstaged index↔worktree view
     -- so the edit lands on a diff that reflects it. driven explicitly (the watcher's
@@ -1218,7 +1205,41 @@ function View:edit_file()
         end
     end
 
-    self:_open_edit_window(abs, target, tcol, col.winid)
+    self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
+end
+
+-- edit-beside for committed sources (the pr review): the same split mechanics as
+-- edit_file but without the uncommitted-source gate. the caller owns the policy; the
+-- split shows the worktree file while the diff keeps its pinned source, so no live
+-- re-source follows a :w
+function View:edit_beside()
+    local t = self:_edit_target()
+    if not t then
+        return
+    end
+    self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
+end
+
+-- resolve the on-disk file + the cursor's mapped new-side position for the edit
+-- verbs, or nil (with a notification) when the source has no root or the file isn't
+-- on disk (e.g. a pure deletion)
+---@return { abs: string, target: integer|nil, tcol: integer, anchor_win: integer|nil }|nil
+function View:_edit_target()
+    local root = self.model.root
+    if not root then
+        vim.notify("differ: editing needs a file-backed source", vim.log.levels.WARN)
+        return nil
+    end
+    local abs = root .. "/" .. self.model.path
+    if vim.fn.filereadable(abs) == 0 then
+        vim.notify(("differ: %s is not on disk"):format(self.model.path), vim.log.levels.WARN)
+        return nil
+    end
+    local col = self:_focused_column()
+    local win = (col.winid and vim.api.nvim_win_is_valid(col.winid)) and col.winid
+        or vim.api.nvim_get_current_win()
+    local target, tcol = self:_file_pos(col, win)
+    return { abs = abs, target = target, tcol = tcol, anchor_win = col.winid }
 end
 
 -- open (or reuse) the edit window and load `abs` at `target`. split off the diff
