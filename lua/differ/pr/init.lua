@@ -194,15 +194,17 @@ local function show_file(entry, focus_line)
         end
         prefetch_around(entry) -- warm the neighbours so the next step is instant
         require("differ.pr.threads").refresh(s) -- (re)paint inline comment threads
-        -- resume position restore: once the target file is rendered, drop the
-        -- cursor on the pending comment's mapped row, then clear the one-shot focus
+        -- anchor position restore (resume / overview jump / overview hop): once the
+        -- target file is rendered, drop the cursor on the anchor's mapped row, then
+        -- clear the one-shot focus. anchor_row degrades an out-of-context line to the
+        -- nearest rendered one, so an anchor outside the diff context still lands close
         local pf = session.pending_focus
         if pf and pf.path == entry.path and session.view and session.view:is_open() then
             session.pending_focus = nil
             local side = pf.side == "LEFT" and "old" or "new"
             local col = session.view:column_for(side)
             local idx = col and (side == "old" and col.map.from_old or col.map.from_new)
-            local row = idx and idx[pf.line]
+            local row = idx and require("differ.pr.threads").anchor_row(idx, pf.line)
             if row and col.winid and vim.api.nvim_win_is_valid(col.winid) then
                 vim.api.nvim_win_set_cursor(col.winid, { row, 0 })
             end
@@ -434,14 +436,20 @@ function M.handle_conflict(on_ready)
 end
 
 -- select a file + drop the cursor on a (side, line) anchor, mapped after the file
--- renders (used by resume position-restore). a one-shot via session.pending_focus
+-- renders (used by resume position-restore and the overview's thread jump). a one-shot
+-- via session.pending_focus; false when the path isn't in the panel (focus cleared)
 ---@param target { path: string, side: string, line: integer }
+---@return boolean
 function M.goto_anchor(target)
     if not (session and session.panel) then
-        return
+        return false
     end
     session.pending_focus = target
-    session.panel:goto_path(target.path, true) -- sources the file; render applies the focus
+    local landed = session.panel:goto_path(target.path, true) -- sources the file; render applies the focus
+    if not landed then
+        session.pending_focus = nil
+    end
+    return landed
 end
 
 -- thin, scriptable wrappers over the review/comment modules, acting on the live session
@@ -684,10 +692,12 @@ local function open_session(pr, detail, opts)
 end
 
 -- enter the review proper (panel + diff) for the live session, building the panel on
--- first entry or revealing it after a back-to-overview hop, then landing on the first
--- file. used by the overview's e/r and by view/review re-entry on a live session
+-- first entry or revealing it after a back-to-overview hop, then landing on `focus`'s
+-- anchor when given (overview thread jump) or on the panel's current file. used by the
+-- overview's e/r and <CR>, and by view/review re-entry on a live session
 ---@param review boolean|nil
-local function enter_files(review)
+---@param focus { path: string, side: string, line: integer }|nil
+local function enter_files(review, focus)
     if not session then
         return
     end
@@ -698,12 +708,22 @@ local function enter_files(review)
         session.panel:show() -- revealing a sidebar hidden by a back-to-overview hop
     end
     require("differ.pr.overview").disarm() -- the page window is the diff's now
-    session.panel:select(true)
+    if not (focus and M.goto_anchor(focus)) then
+        session.panel:select(true)
+    end
     if review then
         require("differ.pr.review").start(session) -- idempotent
     elseif first then
         adopt_pending_review(session.pr)
     end
+end
+
+-- enter the review at a thread anchor (the overview's <CR> on a timeline thread)
+---@param target { path: string, side: string, line: integer }
+function M.enter_at(target)
+    M.with_session(function()
+        enter_files(false, target)
+    end)
 end
 
 -- M.show(pr): fetch the PR and open its session. opts threads the landing target into

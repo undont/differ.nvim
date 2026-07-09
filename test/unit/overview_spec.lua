@@ -68,6 +68,54 @@ describe("ui.overview.timeline (merge + sort)", function()
         assert.are.equal("review", items[2].kind)
         assert.are.equal("comment", items[1].kind)
     end)
+
+    it("interleaves code threads on their first comment's timestamp", function()
+        local items = overview.timeline({
+            comments = {
+                { author = "a", body = "later", created_at = "2026-01-03T00:00:00Z" },
+            },
+            reviews = {},
+            threads = {
+                {
+                    path = "lua/differ/init.lua",
+                    side = "RIGHT",
+                    line = 12,
+                    resolved = false,
+                    comments = {
+                        { author = "t", body = "nit", created_at = "2026-01-01T00:00:00Z" },
+                        { author = "a", body = "ack", created_at = "2026-01-02T00:00:00Z" },
+                    },
+                },
+            },
+        })
+        assert.are.equal(2, #items)
+        assert.are.equal("thread", items[1].kind) -- 01-01, before the comment
+        assert.are.equal("t", items[1].author)
+        assert.are.equal("nit", items[1].body)
+        assert.are.equal("lua/differ/init.lua", items[1].path)
+        assert.are.equal("RIGHT", items[1].side)
+        assert.are.equal(12, items[1].line)
+        assert.are.equal(1, items[1].replies)
+    end)
+
+    it("drops a pending draft thread", function()
+        local items = overview.timeline({
+            comments = {},
+            reviews = {},
+            threads = {
+                {
+                    path = "x.lua",
+                    side = "RIGHT",
+                    line = 1,
+                    is_pending = true,
+                    comments = {
+                        { author = "me", body = "wip", created_at = "2026-01-01T00:00:00Z" },
+                    },
+                },
+            },
+        })
+        assert.are.equal(0, #items)
+    end)
 end)
 
 describe("ui.overview.build (shapes that must not error)", function()
@@ -113,6 +161,84 @@ describe("ui.overview.build (shapes that must not error)", function()
         })
         assert.is_truthy(#built.lines >= 1)
         assert.are.equal("#42 add the overview", line(built, 1))
+    end)
+end)
+
+describe("ui.overview.build (thread sections + anchors)", function()
+    local function thread_data(over)
+        local t = extend({
+            path = "lua/differ/init.lua",
+            side = "RIGHT",
+            line = 12,
+            resolved = false,
+            comments = {
+                {
+                    author = "t",
+                    body = "first line\nsecond line",
+                    created_at = "2026-01-01T00:00:00Z",
+                },
+                { author = "a", body = "ack", created_at = "2026-01-02T00:00:00Z" },
+            },
+        }, over or {})
+        return {
+            meta = BASE_META,
+            unresolved = 1,
+            total_threads = 1,
+            timeline = { comments = {}, reviews = {}, threads = { t } },
+        }
+    end
+
+    it("renders the thread header with path:line and the unresolved tag", function()
+        local built = build(thread_data())
+        local want = "── @t commented on lua/differ/init.lua:12 · unresolved"
+            .. " · 2026-01-01T00:00:00Z ──"
+        assert.is_truthy(row_of(built, want))
+    end)
+
+    it("tags a resolved thread quietly", function()
+        local built = build(thread_data({ resolved = true }))
+        local want = "── @t commented on lua/differ/init.lua:12 · resolved"
+            .. " · 2026-01-01T00:00:00Z ──"
+        local row = row_of(built, want)
+        assert.is_truthy(row)
+        -- the unresolved tag rides differOverviewChanges; resolved must not
+        for _, h in ipairs(built.highlights) do
+            if h.row == row - 1 then
+                assert.are_not.equal("differOverviewChanges", h.hl)
+            end
+        end
+    end)
+
+    it("emits the first comment's body and a reply count", function()
+        local built = build(thread_data())
+        assert.is_truthy(row_of(built, "first line"))
+        assert.is_truthy(row_of(built, "second line"))
+        assert.is_truthy(row_of(built, "… 1 reply"))
+    end)
+
+    it("records the anchor's row span covering header through replies", function()
+        local built = build(thread_data())
+        assert.are.equal(1, #built.anchors)
+        local a = built.anchors[1]
+        assert.are.equal("lua/differ/init.lua", a.path)
+        assert.are.equal("RIGHT", a.side)
+        assert.are.equal(12, a.line)
+        local header = row_of(
+            built,
+            "── @t commented on lua/differ/init.lua:12 · unresolved · 2026-01-01T00:00:00Z ──"
+        )
+        assert.are.equal(header, a.row_start)
+        assert.are.equal(row_of(built, "… 1 reply"), a.row_end)
+    end)
+
+    it("returns an empty anchor list without threads", function()
+        local built = build({
+            meta = BASE_META,
+            unresolved = 0,
+            total_threads = 0,
+            timeline = { comments = {}, reviews = {} },
+        })
+        assert.are.same({}, built.anchors)
     end)
 end)
 

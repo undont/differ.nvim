@@ -312,32 +312,50 @@ function M.apply_box(session, view, g, reltime)
     })
 end
 
--- ensure the PR's threads are fetched (once, PR-wide), then paint the current file.
--- threads are additive, so a fetch error notifies but never blocks the diff. called on
--- every show_file render so a file switch re-anchors from the cached list
+-- ensure the PR's threads are fetched (once, PR-wide), then run cb(err). callers
+-- while a fetch is in flight queue behind it; a fetch error notifies once and runs
+-- the queue with the error (threads stay nil, so the additive surfaces degrade and a
+-- later ensure retries). the overview and the diff overlay share this, so landing on
+-- either warms the other
+---@param session table
+---@param cb fun(err: table|nil)
+function M.ensure(session, cb)
+    if session.threads then
+        return cb(nil)
+    end
+    if session.threads_waiters then
+        table.insert(session.threads_waiters, cb)
+        return
+    end
+    session.threads_waiters = { cb }
+    client.get_threads(session.pr, function(err, list)
+        if require("differ.pr").current_session() ~= session then
+            return -- session torn down (or replaced) while the fetch was in flight
+        end
+        local waiters = session.threads_waiters or {}
+        session.threads_waiters = nil
+        if err then
+            require("differ.pr").notify_err(err)
+        else
+            -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on
+            -- type rather than `list or {}`
+            session.threads = type(list) == "table" and list or {}
+        end
+        for _, fn in ipairs(waiters) do
+            fn(err)
+        end
+    end)
+end
+
+-- fetch (via ensure) then paint the current file. threads are additive, so a fetch
+-- error never blocks the diff (apply over nil threads just clears the overlay). called
+-- on every show_file render so a file switch re-anchors from the cached list
 ---@param session table
 function M.refresh(session)
     if not (session and session.view) then
         return
     end
-    if session.threads then
-        return M.apply(session)
-    end
-    if session.threads_loading then
-        return -- a fetch is in flight; its callback paints the then-current file
-    end
-    session.threads_loading = true
-    client.get_threads(session.pr, function(err, list)
-        if not session then
-            return -- session torn down while the fetch was in flight
-        end
-        session.threads_loading = false
-        if err then
-            return require("differ.pr").notify_err(err)
-        end
-        -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on type
-        -- rather than `list or {}`
-        session.threads = type(list) == "table" and list or {}
+    M.ensure(session, function()
         M.apply(session)
     end)
 end

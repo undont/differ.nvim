@@ -1,8 +1,10 @@
--- pure builder for the PR overview page. data in -> { lines, highlights } out,
--- no vim state, so it's unit-tested like ui/thread.lua. the timeline merges comments +
--- review verdicts and sorts by created_at; relative time is injected (opts.reltime) to
--- keep the builder deterministic. scope guard: comments + review verdicts only — no
--- reactions, labels, assignees, or events
+-- pure builder for the PR overview page. data in -> { lines, highlights, anchors }
+-- out, no vim state, so it's unit-tested like ui/thread.lua. the timeline merges
+-- comments, review verdicts and code threads and sorts by created_at; relative time is
+-- injected (opts.reltime) to keep the builder deterministic. a thread item carries its
+-- code anchor (path/side/line) and `anchors` records the row span of each, so the vim
+-- layer can jump from a timeline row into the review. scope guard: comments, verdicts
+-- and threads only — no reactions, labels, assignees, or events
 
 local M = {}
 
@@ -38,9 +40,12 @@ local function split_lines(s)
     return out
 end
 
--- merge comments + reviews into one chronological list of { kind, author, body, ts,
--- state? }, sorted ascending by created_at (lexical sort is correct for ISO-8601 UTC)
----@param tl { comments: table[], reviews: table[] }
+-- merge comments + reviews + code threads into one chronological list of { kind,
+-- author, body, ts, state?, path?, side?, line?, resolved?, replies? }, sorted
+-- ascending by created_at (lexical sort is correct for ISO-8601 UTC). a thread rides
+-- its first comment (author/body/ts) plus the code anchor; a pending draft thread is
+-- the viewer's WIP, not a timeline entry (like a PENDING review)
+---@param tl { comments: table[], reviews: table[], threads: table[]|nil }
 ---@return table[]
 local function timeline(tl)
     local items = {}
@@ -56,6 +61,22 @@ local function timeline(tl)
             ts = r.created_at,
             state = r.state,
         }
+    end
+    for _, t in ipairs(tl.threads or {}) do
+        if not t.is_pending then
+            local first = (t.comments or {})[1] or {}
+            items[#items + 1] = {
+                kind = "thread",
+                author = first.author,
+                body = first.body,
+                ts = first.created_at,
+                path = t.path,
+                side = t.side,
+                line = t.line,
+                resolved = t.resolved == true, -- vim.NIL-safe
+                replies = math.max(0, #(t.comments or {}) - 1),
+            }
+        end
     end
     table.sort(items, function(a, b)
         return (a.ts or "") < (b.ts or "")
@@ -77,10 +98,12 @@ local function verdict_of(item)
     return { label = "commented", hl = "differOverviewMeta" }
 end
 
--- build the overview buffer content.
+-- build the overview buffer content. `anchors` maps each thread item to its 1-based
+-- row span ({ row_start, row_end, path, side, line }), so <CR> anywhere in the section
+-- can jump to the code anchor. a highlight is { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
 ---@param opts { reltime?: fun(ts: string): string }|nil
----@return { lines: string[], highlights: table[] }  -- highlight: { row, col_start, col_end, hl } (0-based row)
+---@return { lines: string[], highlights: table[], anchors: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
@@ -152,27 +175,61 @@ function M.build(data, opts)
 
     push({ { RULE, "differOverviewMeta" } })
 
-    -- timeline: one section per item, a blank row between sections
+    -- timeline: one section per item, a blank row between sections. a thread section's
+    -- row span is recorded so the vim layer can jump from any of its rows to the anchor
+    local anchors = {}
     for i, item in ipairs(timeline(data.timeline or {})) do
         if i > 1 then
             push({ { "", "differOverviewBody" } })
         end
-        local v = verdict_of(item)
-        push({
-            { "── ", "differOverviewMeta" },
-            { "@" .. (item.author or "?"), "differOverviewAuthor" },
-            { " ", "differOverviewMeta" },
-            { v.label, v.hl },
-            { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
-        })
+        local row_start = #lines + 1
+        if item.kind == "thread" then
+            push({
+                { "── ", "differOverviewMeta" },
+                { "@" .. (item.author or "?"), "differOverviewAuthor" },
+                { " commented on ", "differOverviewMeta" },
+                { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
+                {
+                    item.resolved and " · resolved" or " · unresolved",
+                    item.resolved and "differOverviewMeta" or "differOverviewChanges",
+                },
+                { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
+            })
+        else
+            local v = verdict_of(item)
+            push({
+                { "── ", "differOverviewMeta" },
+                { "@" .. (item.author or "?"), "differOverviewAuthor" },
+                { " ", "differOverviewMeta" },
+                { v.label, v.hl },
+                { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
+            })
+        end
         if item.body and item.body ~= "" then
             for _, line in ipairs(split_lines(item.body)) do
                 push({ { line, "differOverviewBody" } })
             end
         end
+        if item.kind == "thread" then
+            if item.replies and item.replies > 0 then
+                push({
+                    {
+                        ("… %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
+                        "differOverviewMeta",
+                    },
+                })
+            end
+            anchors[#anchors + 1] = {
+                row_start = row_start,
+                row_end = #lines,
+                path = item.path,
+                side = item.side,
+                line = item.line,
+            }
+        end
     end
 
-    return { lines = lines, highlights = highlights }
+    return { lines = lines, highlights = highlights, anchors = anchors }
 end
 
 return M

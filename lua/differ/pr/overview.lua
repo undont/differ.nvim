@@ -1,10 +1,12 @@
 -- the PR overview home: a read-only pre-review page with the PR summary + a
--- minimal timeline (conversation comments + submitted review verdicts). it is a step
--- *before* the review proper — no file panel, just a dedicated page filling the session
--- tab. e/r enter the review (build the panel + diff), q backs out. the pure layout
+-- minimal timeline (conversation comments, submitted review verdicts, and code
+-- threads). it is a step *before* the review proper — no file panel, just a dedicated
+-- page filling the session tab. e/r enter the review (build the panel + diff), <CR> on
+-- a thread row enters it at that thread's file/line, q backs out. the pure layout
 -- lives in ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
--- fetches). only get_timeline is a new round-trip — the meta comes from session.pr_meta
--- (enriched in pr/init), the thread count from session.threads, checks reuse slice 5
+-- fetches). get_timeline is a round-trip and threads are ensured (shared, PR-wide,
+-- also feeding the header count) — the meta comes from session.pr_meta (enriched in
+-- pr/init), checks reuse slice 5
 
 local client = require("differ.pr.client")
 local ui = require("differ.ui.overview")
@@ -20,8 +22,10 @@ end
 local GUARD = "differ.pr.overview.guard"
 
 -- one reusable scratch buffer for the page; keymaps act on the live session via
--- pr.current_session(), so the buffer survives a session swap
+-- pr.current_session(), so the buffer survives a session swap. `anchors` is the last
+-- built row->thread-anchor index (<CR> reads it at press time)
 local buf = nil
+local anchors = nil
 
 -- a timestamp -> the display string, honouring the configured relative/absolute mode
 ---@return fun(ts: string): string
@@ -84,7 +88,8 @@ end
 
 -- buffer-local keymaps; they read the live session each time so the reused buffer never
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
--- backs out of the PR, gx/<CR> open the PR url
+-- backs out of the PR, gx opens the PR url. <CR> on a thread row enters the review at
+-- that thread's file/line; elsewhere it opens the url
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -99,6 +104,22 @@ local function set_keymaps(b)
             require("differ.pr").notify("no PR url", vim.log.levels.WARN)
         end
     end
+    -- the thread anchor whose row span covers the cursor, or nil off a thread section
+    local function anchor_at_cursor()
+        local row = vim.api.nvim_win_get_cursor(0)[1]
+        for _, a in ipairs(anchors or {}) do
+            if row >= a.row_start and row <= a.row_end then
+                return a
+            end
+        end
+    end
+    local function select_or_url()
+        local a = anchor_at_cursor()
+        if a and live() then
+            return require("differ.pr").enter_at({ path = a.path, side = a.side, line = a.line })
+        end
+        open_url()
+    end
     local function enter(review)
         local s = live()
         if not s then
@@ -112,7 +133,7 @@ local function set_keymaps(b)
     end
     local opts = { buffer = b, nowait = true, silent = true }
     vim.keymap.set("n", "gx", open_url, opts)
-    vim.keymap.set("n", "<CR>", open_url, opts)
+    vim.keymap.set("n", "<CR>", select_or_url, opts)
     vim.keymap.set("n", "e", function()
         enter(false)
     end, opts)
@@ -141,8 +162,9 @@ local function setup_window(win)
     set_wo(win, "list", false)
 end
 
--- (re)build the scratch buffer, paint the built lines + highlight spans
----@param built { lines: string[], highlights: table[] }
+-- (re)build the scratch buffer, paint the built lines + highlight spans, keep the
+-- fresh thread-anchor index for <CR>
+---@param built { lines: string[], highlights: table[], anchors: table[] }
 local function paint(built)
     if not (buf and vim.api.nvim_buf_is_valid(buf)) then
         buf = vim.api.nvim_create_buf(false, true)
@@ -152,6 +174,7 @@ local function paint(built)
         pcall(vim.api.nvim_buf_set_name, buf, "differ://overview")
         set_keymaps(buf)
     end
+    anchors = built.anchors
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, built.lines)
     vim.bo[buf].modifiable = false
@@ -209,7 +232,11 @@ local function render(session, timeline, checks)
         checks = checks,
         unresolved = unresolved,
         total_threads = total,
-        timeline = timeline,
+        timeline = {
+            comments = timeline.comments,
+            reviews = timeline.reviews,
+            threads = session.threads, -- ensured by open; nil degrades to none
+        },
     }, { reltime = time_formatter() })
 
     local win = target_window(session)
@@ -225,8 +252,10 @@ local function render(session, timeline, checks)
     arm_guard(session, win)
 end
 
--- M.open(session): fetch the timeline, reuse threads + checks, render the page. guards
--- the session is still live at every async hop (it can be torn down mid-fetch)
+-- M.open(session): fetch the timeline, ensure threads (shared with the diff overlay;
+-- feeds the header count + the timeline's thread sections), reuse cached checks, render
+-- the page. guards the session is still live at every async hop (it can be torn down
+-- mid-fetch); threads and checks degrade rather than block the page
 ---@param session table|nil
 function M.open(session)
     if not session then
@@ -244,19 +273,24 @@ function M.open(session)
             comments = type(tl) == "table" and type(tl.comments) == "table" and tl.comments or {},
             reviews = type(tl) == "table" and type(tl.reviews) == "table" and tl.reviews or {},
         }
-        if session.checks then
-            return render(session, timeline, session.checks)
-        end
-        -- no cached checks: fetch once, cache on the session, then render (degrade to
-        -- nil if the fetch fails — the rollup line just reads "n/a")
-        client.get_checks(session.pr, function(cerr, checks)
+        require("differ.pr.threads").ensure(session, function()
             if not still_live(session) then
                 return
             end
-            if not cerr and type(checks) == "table" then
-                session.checks = checks
+            if session.checks then
+                return render(session, timeline, session.checks)
             end
-            render(session, timeline, session.checks)
+            -- no cached checks: fetch once, cache on the session, then render (degrade
+            -- to nil if the fetch fails — the rollup line just reads "n/a")
+            client.get_checks(session.pr, function(cerr, checks)
+                if not still_live(session) then
+                    return
+                end
+                if not cerr and type(checks) == "table" then
+                    session.checks = checks
+                end
+                render(session, timeline, session.checks)
+            end)
         end)
     end)
 end
