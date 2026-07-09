@@ -161,6 +161,10 @@ end
 ---@param entry differ.FileEntry
 ---@param focus_line integer|nil
 local function show_file(entry, focus_line)
+    local s = session
+    if not s then
+        return
+    end
     local function render(vers)
         local base, head = vers.base or {}, vers.head or {}
         local model = require("differ.model.diff").build({
@@ -181,15 +185,15 @@ local function show_file(entry, focus_line)
                 -- re-apply the thread overlay after a layout/context re-render, and
                 -- expand the thread under the cursor as it moves
                 on_rerender = function()
-                    require("differ.pr.threads").apply(session)
+                    require("differ.pr.threads").apply(s)
                 end,
                 on_cursor = function()
-                    require("differ.pr.threads").on_cursor(session)
+                    require("differ.pr.threads").on_cursor(s)
                 end,
             })
         end
         prefetch_around(entry) -- warm the neighbours so the next step is instant
-        require("differ.pr.threads").refresh(session) -- (re)paint inline comment threads
+        require("differ.pr.threads").refresh(s) -- (re)paint inline comment threads
         -- resume position restore: once the target file is rendered, drop the
         -- cursor on the pending comment's mapped row, then clear the one-shot focus
         local pf = session.pending_focus
@@ -313,14 +317,15 @@ end
 -- overrides the cursor-peek default until toggled back; re-apply swaps the boxes in
 -- place (stacked) or shows/hides the float (split), and a no-op off a thread row
 function M.toggle_thread()
+    local s = session
     local anchor = cursor_anchor()
-    if not anchor then
+    if not s or not anchor then
         return notify("no thread on this line")
     end
     local threads = require("differ.pr.threads")
-    threads.toggle_group(session, anchor)
-    threads.apply(session)
-    threads.on_cursor(session) -- reopen/close the split float to match the new state
+    threads.toggle_group(s, anchor)
+    threads.apply(s)
+    threads.on_cursor(s) -- reopen/close the split float to match the new state
 end
 
 -- ]t/[t: move the cursor to the next/prev thread anchor in the current diff column,
@@ -357,8 +362,9 @@ end
 -- several threads, so it acts on the first open one (else the first, to unresolve);
 -- the sidecar flushes its thread cache after the mutation
 function M.resolve()
+    local s = session
     local anchor = cursor_anchor()
-    if not anchor then
+    if not s or not anchor then
         return notify("no thread on this line")
     end
     local target
@@ -375,8 +381,8 @@ function M.resolve()
     local threads = require("differ.pr.threads")
     local new_state = not target.resolved
     target.resolved = new_state
-    threads.apply(session)
-    client.resolve_thread(session.pr, target.thread_id, new_state, function(err, res)
+    threads.apply(s)
+    client.resolve_thread(s.pr, target.thread_id, new_state, function(err, res)
         if not (session and session.view and session.view:is_open()) then
             return -- session torn down while the mutation was in flight
         end
@@ -568,7 +574,9 @@ local function open_session(pr, detail, opts)
         pending_focus = nil, -- one-shot { path, side, line } for resume position-restore
         session_tab = session_tab, -- the tab hosting both the overview page and the review
         overview_win = vim.api.nvim_get_current_win(), -- the page window (pre-panel)
+        ---@type differ.View|nil
         view = nil,
+        ---@type differ.Panel|nil
         panel = nil, -- nil until the user enters the files (build_panel below)
     }
 
@@ -767,9 +775,12 @@ function M.open(opts)
     if opts.land == "files" and session_matches(opts) then
         return enter_files(opts.review)
     end
-    repo.resolve(opts, function(err, coords)
+    repo.resolve(opts --[[@as { coords?: { owner: string, repo: string } }]], function(err, coords)
         if err then
             return notify_err(err)
+        end
+        if not coords then
+            return
         end
         if opts.number then
             return M.show(
@@ -1050,7 +1061,9 @@ function M.resume(arg)
     local function open_then_reattach(pr)
         M.show(pr, {
             after = function()
-                require("differ.pr.review").reattach(session)
+                if session then
+                    require("differ.pr.review").reattach(session)
+                end
             end,
         })
     end

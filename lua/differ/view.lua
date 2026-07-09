@@ -55,6 +55,7 @@ local armed_view = nil
 ---@field winid integer|nil
 ---@field map differ.LineMap
 ---@field side differ.ColumnSide
+---@field folds? differ.FoldRange[]
 
 -- the hunk-staging capability the git frontend supplies per source. the
 -- view keeps its diff frozen and marks staged hunks in place rather than re-reading

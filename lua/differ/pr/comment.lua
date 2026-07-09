@@ -109,7 +109,7 @@ function M.comment(session)
     local row = vim.api.nvim_win_get_cursor(win)[1]
     local anchor, err = M.row_anchor(col.map, row, col.side)
     if not anchor then
-        return notify(err)
+        return notify(err or "no commentable line here")
     end
     M.compose(session, { anchor = anchor, anchor_win = win })
 end
@@ -127,7 +127,7 @@ function M.comment_range(session)
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
     local anchor, err = M.range_anchor(col.map, r1, r2, col.side)
     if not anchor then
-        return notify(err)
+        return notify(err or "no commentable line here")
     end
     M.compose(session, { anchor = anchor, anchor_win = win })
 end
@@ -194,7 +194,7 @@ end
 -- active, "posts immediately" otherwise. opts.initial pre-fills the body (the
 -- conflict re-prompt), opts.stale flags the head moved
 ---@param session table
----@param opts { anchor?: table, in_reply_to?: string, initial?: string, stale?: boolean }
+---@param opts { anchor?: table, anchor_win?: integer, in_reply_to?: string, initial?: string, stale?: boolean }
 function M.compose(session, opts)
     local base = opts.in_reply_to and "Reply"
         or (session.review_id and "Comment (draft)" or "Comment (posts immediately)")

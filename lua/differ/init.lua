@@ -82,7 +82,7 @@ function M.diff_model(model, opts)
             counter = cfg.diff_counter,
             cursorline_tint = cfg.cursorline_tint,
             deep_diff = cfg.deep_diff,
-            keymaps = cfg.keymaps.diff,
+            keymaps = cfg.keymaps.diff --[[@as table]],
             staging = opts.staging,
             can_stage = opts.can_stage,
             on_edit_unstage = opts.on_edit_unstage,
