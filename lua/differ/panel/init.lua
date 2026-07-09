@@ -106,18 +106,18 @@ Panel.__index = Panel
 ---@field keymaps? table<string, string|string[]|false> -- resolved panel action -> lhs
 ---@field extra_keymaps? differ.panel.ExtraMap[] -- session maps (pr viewed nav)
 ---@field on_step? fun(direction: "next"|"prev", left: differ.FileEntry|nil, new: differ.FileEntry)
-
----@class differ.panel.ExtraMap
----@field spec string|string[]|false  -- resolved lhs (a keymaps value)
----@field fn fun()
----@field desc string
----@field mode? string|string[] -- keymap mode (default normal; pr range-comment uses "x")
 ---@field icons? boolean -- filetype devicons (default true when available)
 ---@field listing? "tree"|"name"
 ---@field position? "bottom"|"top"|"left"|"right"
 ---@field height? integer
 ---@field width? integer
 ---@field progress? boolean -- file-position meter in the panel winbar (default on)
+
+---@class differ.panel.ExtraMap
+---@field spec string|string[]|false  -- resolved lhs (a keymaps value)
+---@field fn fun()
+---@field desc string
+---@field mode? string|string[] -- keymap mode (default normal; pr range-comment uses "x")
 
 -- build a panel (buffer only; the window is created on :open, so it's headless-
 -- constructible for tests)
@@ -832,7 +832,7 @@ function Panel:focus_first_unstaged()
     local i = self:_file_row(0, "next", false)
     while i do
         local e = self.meta[i].entry
-        if not e.staged and not is_blank_rename(e) then
+        if e and not e.staged and not is_blank_rename(e) then
             pcall(vim.api.nvim_win_set_cursor, self.winid, { i, 0 })
             return
         end
@@ -1023,7 +1023,7 @@ end
 
 -- window appearance + buffer-local keymaps
 function Panel:_setup_window()
-    local win = self.winid
+    local win = assert(self.winid)
     -- window-local only: a plain vim.wo[win] write also sets the global default
     -- (omits scope), leaking the panel's chrome onto every other window
     set_wo(win, "number", false)

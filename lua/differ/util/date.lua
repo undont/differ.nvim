@@ -56,7 +56,7 @@ function M.format(epoch, opts)
     if opts.relative then
         return M.relative(epoch, opts.now)
     end
-    return os.date(opts.time and "%Y-%m-%d %H:%M" or "%Y-%m-%d", epoch)
+    return os.date(opts.time and "%Y-%m-%d %H:%M" or "%Y-%m-%d", epoch) --[[@as string]]
 end
 
 -- parse an RFC3339 / ISO-8601 timestamp to an epoch (local-time interpretation;
@@ -77,9 +77,9 @@ function M.parse_iso(ts)
         return nil
     end
     return os.time({
-        year = tonumber(y),
-        month = tonumber(mo),
-        day = tonumber(d),
+        year = tonumber(y) --[[@as integer]],
+        month = tonumber(mo) --[[@as integer]],
+        day = tonumber(d) --[[@as integer]],
         hour = tonumber(h),
         min = tonumber(mi),
         sec = tonumber(s),

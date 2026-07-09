@@ -749,7 +749,7 @@ function lay_out(root, relpath, model, layout)
     -- the configurable merge keymaps; falls back to the flat defaults when setup
     -- wasn't called, like the diff view does
     local cfg = require("differ").get_config()
-    local km = cfg.keymaps.merge or require("differ.config").defaults.keymaps
+    local km = (cfg.keymaps.merge or require("differ.config").defaults.keymaps) --[[@as differ.KeymapSet]]
 
     local first = model.regions[1]
     session = {

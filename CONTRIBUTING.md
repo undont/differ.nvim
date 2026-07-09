@@ -11,17 +11,20 @@ Thanks for considering a contribution to differ.nvim.
 ## Before opening a PR
 
 ```sh
-make check       # lint + vet + full test suite (Lua + Go)
+make check       # lint + type-check + vet + full test suite (Lua + Go)
 ```
 
 Or run pieces individually:
 
 ```sh
-make test        # Lua (unit + headless-nvim) + Go tests
-make lint        # luacheck + stylua --check + golangci-lint
-make fmt         # format Lua and Go sources
-make help        # full target list
+make test           # Lua (unit + headless-nvim) + Go tests
+make lint           # luacheck + stylua --check + golangci-lint
+make lua-typecheck  # lua_ls type-check over lua/ (pinned; fetched on first run)
+make fmt            # format Lua and Go sources
+make help           # full target list
 ```
+
+The Lua type-check runs a version-pinned lua-language-server, downloaded into gitignored `.tools/` on first use (needs `curl` and network access, once). It covers `lua/` only and must be clean; CI enforces it. luacheck and lua_ls are independent and can disagree: a fix that satisfies one can trip the other, so run both before pushing.
 
 Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead. See `docs/manual-testing.md` for the manual checklist covering what the automated suites don't reach.
 

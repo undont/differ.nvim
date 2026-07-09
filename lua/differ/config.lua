@@ -12,6 +12,10 @@
 ---@field height integer  -- used for top/bottom
 ---@field width integer   -- used for left/right
 
+-- a resolved per-surface keymap table: action -> lhs (a string, a multi-lhs list,
+-- or false to disable). the shape `resolve_keymaps` produces per surface
+---@alias differ.KeymapSet table<string, string|string[]|false>
+
 ---@class differ.Config
 ---@field layout differ.Layout
 ---@field context integer

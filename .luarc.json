@@ -6,9 +6,10 @@
         "${3rd}/busted/library",
         "${3rd}/luassert/library"
     ],
-    "workspace.ignoreDir": [".luacheckrc"],
+    "workspace.ignoreDir": [".luacheckrc", ".tools"],
     "diagnostics.globals": ["vim"],
     "diagnostics.disable": [
-        "redundant-parameter"
+        "redundant-parameter",
+        "need-check-nil"
     ]
 }

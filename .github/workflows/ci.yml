@@ -60,6 +60,21 @@ jobs:
         with:
           args: lua
 
+  lua-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # the Makefile fetches a version-pinned lua_ls into .tools; cache it on
+      # the pin (keying on the Makefile line that declares it)
+      - uses: actions/cache@v4
+        with:
+          path: .tools/lua-language-server-*
+          key: luals-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Type-check
+        run: make lua-typecheck
+
   lua-test:
     runs-on: ubuntu-latest
     strategy:

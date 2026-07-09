@@ -738,7 +738,7 @@ end
 
 -- window appearance + buffer-local keymaps
 function History:_setup_window()
-    local win = self.winid
+    local win = assert(self.winid)
     set_wo(win, "number", false)
     set_wo(win, "relativenumber", false)
     set_wo(win, "signcolumn", "no")

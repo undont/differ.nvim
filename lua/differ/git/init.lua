@@ -1012,7 +1012,7 @@ function M.panel(opts)
         footer = footer_label(args, root),
         actions = actions,
         on_external_change = refresh_external,
-        keymaps = cfg.keymaps.panel,
+        keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,
         height = opts.height or panel_cfg.height,
@@ -1123,7 +1123,7 @@ function M.history(opts)
     local history = History.new({
         commits = commits,
         path = vim.fn.fnamemodify(file, ":~"),
-        keymaps = cfg.keymaps.history,
+        keymaps = cfg.keymaps.history --[[@as differ.KeymapSet]],
         relative_dates = cfg.relative_dates,
         position = opts.position or hist_cfg.position,
         height = hist_cfg.height,
@@ -1196,7 +1196,7 @@ function M.range_history(opts)
         commits = commits,
         mode = "range",
         path = range, -- the header shows the range in place of a file path
-        keymaps = cfg.keymaps.history,
+        keymaps = cfg.keymaps.history --[[@as differ.KeymapSet]],
         relative_dates = cfg.relative_dates,
         position = opts.position or hist_cfg.position,
         height = hist_cfg.height,

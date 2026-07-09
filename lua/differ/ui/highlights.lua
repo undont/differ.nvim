@@ -10,6 +10,7 @@
 local M = {}
 
 -- static links: body diff layers and structural panel chrome
+---@diagnostic disable-next-line: undefined-doc-name
 ---@type table<string, vim.api.keyset.highlight>
 local LINKS = {
     -- thread overlay: all thread groups (range background, panel-tinted chrome,
@@ -106,6 +107,7 @@ end
 -- map the panel's status/count groups onto the palette (status letters,
 -- "Status presentation", and the right-aligned +N -M counts)
 ---@param p table<string, integer>
+---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
 local function status_groups(p)
     return {
@@ -128,6 +130,7 @@ end
 -- resolved receded (grey), pending draft (orange); meta is dim; body keeps the normal
 -- fg. all share the one panel bg blended off Normal
 ---@param p table<string, integer>
+---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
 local function thread_groups(p)
     local base = bg_of({ "Normal" }, 0x14161b)
@@ -152,6 +155,7 @@ end
 -- verdict + author groups ride the palette (approved green, requested-changes orange,
 -- author blue) so a review verdict reads at a glance. the title links Title in LINKS
 ---@param p table<string, integer>
+---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
 local function overview_groups(p)
     return {
@@ -170,6 +174,7 @@ end
 -- adds: active vs inactive intensities (the block under the cursor at full strength, the
 -- rest faint), the ▌ input-slab sign, a stronger input body tint, and the resolved flash
 ---@param p table<string, integer>
+---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
 local function merge_groups(p)
     local base = bg_of({ "Normal" }, 0x14161b)
@@ -206,6 +211,7 @@ end
 -- on light ones, no per-theme branching. word spans are bg-only (no fg/bold) so the
 -- syntax foreground shows through. these replace the old DiffAdd/DiffDelete links
 ---@param p table<string, integer>
+---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
 local function diff_bg_groups(p)
     local base = bg_of({ "Normal" }, 0x14161b)

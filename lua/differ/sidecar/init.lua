@@ -14,6 +14,7 @@ local MAX_ATTEMPTS = 5
 local M = {}
 
 ---@class differ.sidecar.Client
+---@diagnostic disable-next-line: undefined-doc-name
 ---@field proc vim.SystemObj|nil
 ---@field running boolean
 ---@field ready boolean        -- hello handshake completed
@@ -76,6 +77,7 @@ end
 
 local function send(obj)
     if client and client.proc then
+        ---@diagnostic disable-next-line: undefined-field
         client.proc:write(vim.json.encode(obj) .. "\n")
     end
 end
@@ -296,6 +298,7 @@ function M.stop()
     client.running = false
     if client.proc then
         pcall(function()
+            ---@diagnostic disable-next-line: undefined-field
             client.proc:kill(15)
         end)
     end

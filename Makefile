@@ -21,8 +21,15 @@ GO_BIN  := bin/differ-sidecar
 GO_VERSION := $(shell git describe --tags --always 2>/dev/null | sed 's/^v//' || echo dev)
 GO_LDFLAGS := -X github.com/undont/differ.nvim/internal/protocol.Binary=$(GO_VERSION)
 
+# pinned lua-language-server: its diagnostics shift between releases (a version bump
+# alone can turn a clean tree red), so the version is fixed here and fetched into
+# .tools rather than taken from PATH/Mason. bump deliberately
+LUALS_VERSION := 3.18.2
+LUALS_DIR     := .tools/lua-language-server-$(LUALS_VERSION)
+LUALS_BIN     := $(LUALS_DIR)/bin/lua-language-server
+
 .PHONY: help \
-	lua-test lua-test-unit lua-test-nvim lua-lint lua-fmt lua-fmt-check \
+	lua-test lua-test-unit lua-test-nvim lua-lint lua-typecheck lua-fmt lua-fmt-check \
 	go-build go-test go-vet go-lint go-fmt go-fmt-check \
 	test lint fmt fmt-check check clean \
 	demo demo-fixtures
@@ -53,6 +60,24 @@ lua-fmt: ## Format Lua sources with stylua
 
 lua-fmt-check: ## Verify Lua formatting without writing
 	@stylua --check lua plugin test
+
+# checks lua/ only; test specs deliberately pass invalid inputs. lua_ls config
+# discovery is path-sensitive, so point at the repo-root .luarc.json explicitly
+lua-typecheck: $(LUALS_BIN) ## Type-check Lua with pinned lua_ls
+	@$(INFO) "Type-checking Lua (lua_ls $(LUALS_VERSION))"
+	@$(LUALS_BIN) --check lua --configpath=$(CURDIR)/.luarc.json --checklevel=Warning --logpath=.tools/luals-report
+	@$(OK) "Lua type-check clean"
+
+# fetch the pinned lua_ls into .tools on first use; the whole tree is gitignored
+$(LUALS_BIN):
+	@$(INFO) "Fetching lua-language-server $(LUALS_VERSION)"
+	@mkdir -p $(LUALS_DIR)
+	@os=$$(uname -s | tr 'A-Z' 'a-z'); \
+	arch=$$(uname -m); \
+	case "$$arch" in x86_64) arch=x64;; aarch64|arm64) arch=arm64;; esac; \
+	case "$$os" in darwin|linux) ;; *) printf "$(RED)unsupported OS: $$os$(NC)\n"; exit 1;; esac; \
+	url="https://github.com/LuaLS/lua-language-server/releases/download/$(LUALS_VERSION)/lua-language-server-$(LUALS_VERSION)-$$os-$$arch.tar.gz"; \
+	curl -fsSL "$$url" | tar -xz -C $(LUALS_DIR) && $(OK) "Installed lua_ls $(LUALS_VERSION)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 ##@ Go sidecar
@@ -97,7 +122,7 @@ fmt: lua-fmt go-fmt ## Format the whole codebase (Lua + Go)
 
 fmt-check: lua-fmt-check go-fmt-check ## Verify formatting across the codebase
 
-check: lint go-vet test ## Run the full quality gate
+check: lint lua-typecheck go-vet test ## Run the full quality gate
 
 clean: ## Remove build artefacts
 	@rm -rf bin differ-sidecar

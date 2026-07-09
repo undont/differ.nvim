@@ -82,7 +82,7 @@ function M.diff_model(model, opts)
             counter = cfg.diff_counter,
             cursorline_tint = cfg.cursorline_tint,
             deep_diff = cfg.deep_diff,
-            keymaps = cfg.keymaps.diff,
+            keymaps = cfg.keymaps.diff --[[@as table]],
             staging = opts.staging,
             can_stage = opts.can_stage,
             on_edit_unstage = opts.on_edit_unstage,
@@ -210,7 +210,7 @@ end
 -- (in the diff window already bound buffer-locally). a no-op with a notice when no
 -- diff is active
 ---@param direction "next"|"prev"
----@param opts? { fallback?: fun(direction: "next"|"prev"): boolean|nil }
+---@param opts? differ.HunkNavOpts
 function M.goto_hunk(direction, opts)
     local view = M.active_view()
     if not view then
