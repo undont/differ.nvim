@@ -832,7 +832,7 @@ function Panel:focus_first_unstaged()
     local i = self:_file_row(0, "next", false)
     while i do
         local e = self.meta[i].entry
-        if not e.staged and not is_blank_rename(e) then
+        if e and not e.staged and not is_blank_rename(e) then
             pcall(vim.api.nvim_win_set_cursor, self.winid, { i, 0 })
             return
         end

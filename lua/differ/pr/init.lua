@@ -179,8 +179,8 @@ local function show_file(entry, focus_line)
             session.view:set_source(model, nil, focus_line and { focus_line = focus_line } or nil)
         else
             session.view = require("differ").diff_model(model, {
-                staging = false,
-                can_stage = false,
+                can_stage = false, -- read-only pr diff, no hunk staging
+
                 extra_keymaps = session.diff_extra_keymaps, -- ]u/[u on the diff surface
                 -- re-apply the thread overlay after a layout/context re-render, and
                 -- expand the thread under the cursor as it moves
@@ -639,7 +639,7 @@ local function open_session(pr, detail, opts)
             sections = { { title = ("#%d %s"):format(pr.number, title), entries = entries } },
             root = ("%s/%s"):format(pr.owner, pr.repo),
             footer = detail.url or detail.head_ref,
-            keymaps = cfg.keymaps.panel,
+            keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
             extra_keymaps = panel_extra,
             on_step = on_step,
             listing = panel_cfg.listing,

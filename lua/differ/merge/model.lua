@@ -26,7 +26,7 @@ local M = {}
 ---@return differ.MergeModel|nil, string|nil err
 function M.build(root, relpath, head)
     local git = require("differ.git")
-    local result_text = git.read({ kind = "worktree" }, root, relpath)
+    local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
         return nil, "file is not in the working tree"
     end

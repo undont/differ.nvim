@@ -241,7 +241,7 @@ end
 -- right buffer (the thread overlay). a stacked view's single "unified" column backs
 -- both sides; a split returns the matching old/new column
 ---@param side differ.ColumnSide
----@return { bufnr: integer, map: differ.LineMap, side: differ.ColumnSide }|nil
+---@return differ.ViewColumn|nil
 function View:column_for(side)
     for _, col in ipairs(self.columns) do
         if col.side == side or col.side == "unified" then
@@ -760,8 +760,12 @@ end
 -- boundary it flows into the adjacent file (no wrap); a log/history session is the
 -- exception: hunk nav stays within the current commit's diff (commits step via ]f/[f),
 -- so it stops at the first/last hunk rather than crossing into the next commit
+-- `fallback` runs past the first/last hunk (a history session steps within its commit)
+---@class differ.HunkNavOpts
+---@field fallback? fun(direction: "next"|"prev"): boolean|nil
+
 ---@param direction "next"|"prev"
----@param opts? { fallback?: fun(direction: "next"|"prev"): boolean|nil }
+---@param opts? differ.HunkNavOpts
 function View:goto_hunk(direction, opts)
     local col = self:_focused_column()
     local win = col.winid or vim.api.nvim_get_current_win()

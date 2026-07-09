@@ -210,7 +210,7 @@ end
 -- (in the diff window already bound buffer-locally). a no-op with a notice when no
 -- diff is active
 ---@param direction "next"|"prev"
----@param opts? { fallback?: fun(direction: "next"|"prev"): boolean|nil }
+---@param opts? differ.HunkNavOpts
 function M.goto_hunk(direction, opts)
     local view = M.active_view()
     if not view then
