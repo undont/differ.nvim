@@ -706,13 +706,22 @@ function View:show_help()
     local function pair(a, b)
         return fmt(a) .. " / " .. fmt(b)
     end
+    -- an extra map that reuses a fixed lhs overrides its bind (extras bind later), so
+    -- the fixed row is dropped in favour of the extra's own. goto_file is the one
+    -- fixed action a session overrides today (the pr zoom edit)
+    local shadowed = {}
+    for _, m in ipairs(self.extra_keymaps or {}) do
+        shadowed[fmt(m.spec)] = true
+    end
     local rows = {
         { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
         { pair(km.next_file, km.prev_file), "next / previous file" },
         { pair(km.scroll_down, km.scroll_up), "scroll down / up" },
         { pair(km.more_context, km.less_context), "more / less context" },
-        { fmt(km.goto_file), "go to the real file" },
     }
+    if not shadowed[fmt(km.goto_file)] then
+        rows[#rows + 1] = { fmt(km.goto_file), "go to the real file" }
+    end
     if self:_editable_source() then
         rows[#rows + 1] = { fmt(km.edit_file), "edit the real file (in review)" }
     end
@@ -1218,6 +1227,70 @@ function View:edit_beside()
         return
     end
     self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
+end
+
+-- zoom-edit (the pr `de`): open the real on-disk file full-screen in its own tabpage
+-- at the cursor's mapped new-side line, leaving the invoking tab untouched; the
+-- diff, panel and cursor are exactly as left when the zoom closes. a repeat while the
+-- zoom tab is open refocuses it rather than stacking tabs
+function View:edit_tab()
+    local t = self:_edit_target()
+    if not t then
+        return
+    end
+    local return_tab = vim.api.nvim_get_current_tabpage()
+    if self.zoom_tab and vim.api.nvim_tabpage_is_valid(self.zoom_tab) then
+        vim.api.nvim_set_current_tabpage(self.zoom_tab)
+    else
+        vim.cmd.tabnew()
+        self.zoom_tab = vim.api.nvim_get_current_tabpage()
+        self:_arm_zoom_return(self.zoom_tab, return_tab)
+    end
+    -- if abs is already loaded (e.g. unsaved edits from an earlier zoom), switch to
+    -- that buffer instead of :edit, which would refuse with E37 over the changes
+    local bufnr = vim.fn.bufnr(t.abs)
+    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+        local prev = vim.api.nvim_get_current_buf()
+        vim.api.nvim_win_set_buf(0, bufnr)
+        -- drop the fresh tabnew scratch so repeated zooms don't leak no-name buffers
+        if
+            prev ~= bufnr
+            and vim.api.nvim_buf_get_name(prev) == ""
+            and not vim.bo[prev].modified
+        then
+            pcall(vim.api.nvim_buf_delete, prev, {})
+        end
+    else
+        vim.cmd.edit(vim.fn.fnameescape(t.abs))
+    end
+    if t.target then
+        place_cursor(t.target, t.tcol)
+    end
+end
+
+-- hop back to `return_tab` once the zoom tab closes (:q on its last window).
+-- TabClosed reports shifting tab numbers, not handles, so the callback just checks
+-- the zoom tab's validity; the hop is scheduled because the closing tab is still
+-- collapsing when the autocmd fires. splits inside the zoom tab don't trigger it,
+-- only the tab itself going away does
+---@param zoom_tab integer
+---@param return_tab integer
+function View:_arm_zoom_return(zoom_tab, return_tab)
+    local group = vim.api.nvim_create_augroup("differ.view.zoom", { clear = true })
+    vim.api.nvim_create_autocmd("TabClosed", {
+        group = group,
+        callback = function()
+            if vim.api.nvim_tabpage_is_valid(zoom_tab) then
+                return -- some other tab closed
+            end
+            pcall(vim.api.nvim_del_augroup_by_id, group)
+            vim.schedule(function()
+                if vim.api.nvim_tabpage_is_valid(return_tab) then
+                    vim.api.nvim_set_current_tabpage(return_tab)
+                end
+            end)
+        end,
+    })
 end
 
 -- resolve the on-disk file + the cursor's mapped new-side position for the edit

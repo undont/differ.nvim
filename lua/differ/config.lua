@@ -120,8 +120,8 @@ M.defaults = {
         unstage_all = "U",
         more_context = "d=", -- diff
         less_context = "d-",
-        edit_file = "df", -- diff: edit-in-review, uncommitted (worktree/staged) diffs
-        goto_file = "de", -- diff: open the real file and end the session
+        edit_file = "df", -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
+        goto_file = "de", -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
         discard = "X", -- panel
         refresh = "R",
         toggle_fold = "za", -- history (range mode)

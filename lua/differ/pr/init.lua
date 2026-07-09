@@ -472,18 +472,39 @@ local function warn_head_mismatch()
     end
 end
 
+-- the shared guards for the pr edit verbs: an open diff and a local checkout
+---@return table|nil view
+local function editable_view()
+    if not (session and session.view and session.view:is_open()) then
+        notify("no active pull request diff")
+        return nil
+    end
+    if not session.root then
+        notify("editing needs a local checkout of this repo", vim.log.levels.WARN)
+        return nil
+    end
+    warn_head_mismatch()
+    return session.view
+end
+
 -- df on the pr diff: edit the worktree file in a split beside the pinned-blob diff,
 -- keeping the session. the diff keeps showing the pinned head (what the remote has);
 -- the edit shows on the PR once pushed and the head moves
 function M.edit_split()
-    if not (session and session.view and session.view:is_open()) then
-        return notify("no active pull request diff")
+    local view = editable_view()
+    if view then
+        view:edit_beside()
     end
-    if not session.root then
-        return notify("editing needs a local checkout of this repo", vim.log.levels.WARN)
+end
+
+-- de on the pr diff: zoom-edit the worktree file in its own tab; closing it (:q)
+-- returns to the review exactly as left. overrides the generic jump_to_file bind,
+-- which would tear the session down (leave-and-go is almost never right mid-review)
+function M.edit_zoom()
+    local view = editable_view()
+    if view then
+        view:edit_tab()
     end
-    warn_head_mismatch()
-    session.view:edit_beside()
 end
 
 -- the diff cursor as a one-shot anchor { path, side, line }, or nil without an open
@@ -702,6 +723,13 @@ local function open_session(pr, detail, opts)
             spec = diff_km.edit_file,
             fn = M.edit_split,
             desc = "edit the real file (in review)",
+        },
+        -- zoom-edit in its own tab; same lhs as the generic jump_to_file bind, which
+        -- extras override (they bind later)
+        {
+            spec = diff_km.goto_file,
+            fn = M.edit_zoom,
+            desc = "edit the real file (zoom tab)",
         },
     }
 
