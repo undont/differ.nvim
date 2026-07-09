@@ -154,6 +154,7 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `d=` / `d-` | More / less context |
 | `df` | Edit-in-review (uncommitted diffs) |
 | `de` | Open the real file and end the session |
+| `go` | PR review only: back to the [PR overview](#pr-overview) |
 
 **Panel** (the file list)
 
@@ -197,6 +198,21 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `gx` | Delete the latest comment in the thread |
 | `gc` | Collapse / expand the thread |
 | `gr` | Resolve / unresolve the thread |
+| `go` | Back to the [PR overview](#pr-overview) |
+| `df` | Edit the real file in a split beside the (pinned) diff, keeping the review |
+| `de` | Zoom-edit the real file full-screen in its own tab; `:q` returns to the review |
+
+`df`/`de` edit the worktree file on disk, not the reviewed blob, so keep your checkout on the PR's head branch (`:Differ pr checkout`) or the two can drift; differ warns once a session if they don't match.
+
+<a name="pr-overview"></a>
+**PR overview** (`:Differ pr <n>`'s landing page, a read-only summary + timeline)
+
+| Key | Action |
+|---|---|
+| `e` / `r` | Enter the review (files) / enter and start a review |
+| `<CR>` | On a thread row: jump into the review at that comment; elsewhere: open the PR in the browser |
+| `gx` | Open the PR in the browser |
+| `q` / `<Esc>` | Back into the review if one is open, else end the session |
 
 **Merge tool** (the result buffer)
 
@@ -394,8 +410,8 @@ require("differ").setup({
     stage = "s", unstage = "u",  -- diff (hunk-level), panel (file-level)
     stage_all = "S", unstage_all = "U",
     more_context = "d=", less_context = "d-",  -- diff
-    edit_file = "df",            -- diff: edit-in-review, uncommitted (worktree/staged) diffs
-    goto_file = "de",            -- diff: open the real file and end the session
+    edit_file = "df",            -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
+    goto_file = "de",            -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
     discard = "X", refresh = "R",  -- panel
     toggle_fold = "za",          -- history (range mode)
     -- pr review (pr diff + panel)
@@ -407,6 +423,7 @@ require("differ").setup({
     delete_comment = "gx",       -- pr diff: delete the latest comment of the thread
     toggle_thread = "gc",        -- pr diff: collapse/expand the thread under the cursor
     resolve_thread = "gr",       -- pr diff: resolve/unresolve the thread under the cursor
+    overview = "go",             -- pr diff + panel: back to the PR overview home
     -- merge tool, bound on the result buffer
     next_conflict = "]x", prev_conflict = "[x",
     choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
