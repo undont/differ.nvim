@@ -43,10 +43,12 @@ end
 local MAX_HUNK = 6 -- tail rows of a thread's diff hunk shown under its header
 
 -- the thread box chrome, mirroring ui/thread.lua's left-spine style so a code thread
--- reads as one contained unit (github's outline) instead of loose page text
+-- reads as one contained unit (github's outline) instead of loose page text. hunk rows
+-- sit HUNK_INDENT deeper than the body text, so the code reads as its own inset slab
 local TOP = "┌─ "
 local SPINE = "│ "
 local BOT = "└─ "
+local HUNK_INDENT = "   "
 
 -- a thread's diff-hunk items: the tail of the hunk (it ends at the commented line),
 -- capped to MAX_HUNK and keeping the @@ header + a ⋯ elision marker when truncated, so
@@ -255,18 +257,19 @@ function M.build(data, opts)
             -- directly, since push only emits column spans); code rows are collected
             -- marker-stripped for the treesitter snippet pass; @@/⋯ recede grey
             local items = hunk_items(item.diff_hunk)
-            local hunk = { path = item.path, col_offset = #SPINE + 1, lines = {} }
+            local lead = SPINE .. HUNK_INDENT
+            local hunk = { path = item.path, col_offset = #lead + 1, lines = {} }
             for _, it in ipairs(items) do
                 local row0 = #lines -- 0-based index of the line push is about to add
                 if it.kind == "elision" then
-                    push({ { SPINE, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
+                    push({ { lead, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
                 elseif it.kind == "header" then
                     push({
-                        { SPINE, "differOverviewMeta" },
+                        { lead, "differOverviewMeta" },
                         { it.text, "differOverviewDiffContext" },
                     })
                 else
-                    push({ { SPINE, "differOverviewMeta" }, { it.text, nil } })
+                    push({ { lead, "differOverviewMeta" }, { it.text, nil } })
                     if it.line_hl then
                         highlights[#highlights + 1] = { row = row0, line_hl = it.line_hl }
                     end

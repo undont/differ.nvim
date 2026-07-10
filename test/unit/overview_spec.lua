@@ -293,16 +293,16 @@ describe("ui.overview.build (thread diff hunk)", function()
             "@@ -7,6 +7,9 @@ def add(a, b):\n     return a + b\n+def subtract(a, b):\n-    gone"
         local built = build(hunk_data(hunk))
 
-        local header = row_of(built, "│ @@ -7,6 +7,9 @@ def add(a, b):")
+        local header = row_of(built, "│    @@ -7,6 +7,9 @@ def add(a, b):")
         assert.is_truthy(header)
         assert.is_true(hls_on(built, header).differOverviewDiffContext)
 
         -- +/- rows reuse the diff's own full-width line tints
-        local add = row_of(built, "│ +def subtract(a, b):")
+        local add = row_of(built, "│    +def subtract(a, b):")
         assert.is_truthy(add)
         assert.is_true(hls_on(built, add).differLineAdd)
 
-        local del = row_of(built, "│ -    gone")
+        local del = row_of(built, "│    -    gone")
         assert.is_truthy(del)
         assert.is_true(hls_on(built, del).differLineDelete)
 
@@ -317,18 +317,18 @@ describe("ui.overview.build (thread diff hunk)", function()
         end
         local built = build(hunk_data(table.concat(lines, "\n")))
 
-        assert.is_truthy(row_of(built, "│ @@ -1,20 +1,20 @@ fn")) -- header kept
-        assert.is_truthy(row_of(built, "│ ⋯")) -- elision marker
-        assert.is_truthy(row_of(built, "│ +l20")) -- last line kept
-        assert.is_nil(row_of(built, "│ +l1")) -- early lines dropped
+        assert.is_truthy(row_of(built, "│    @@ -1,20 +1,20 @@ fn")) -- header kept
+        assert.is_truthy(row_of(built, "│    ⋯")) -- elision marker
+        assert.is_truthy(row_of(built, "│    +l20")) -- last line kept
+        assert.is_nil(row_of(built, "│    +l1")) -- early lines dropped
         -- MAX_HUNK rows total: @@ + ⋯ + 4 tail lines
-        assert.is_truthy(row_of(built, "│ +l17"))
-        assert.is_nil(row_of(built, "│ +l16"))
+        assert.is_truthy(row_of(built, "│    +l17"))
+        assert.is_nil(row_of(built, "│    +l16"))
     end)
 
     it("renders no hunk rows when the thread has no diff hunk", function()
         local built = build(hunk_data(nil))
-        assert.is_nil(row_of(built, "│ ⋯"))
+        assert.is_nil(row_of(built, "│    ⋯"))
         assert.is_truthy(row_of(built, "│ needs a guard?")) -- body still there
     end)
 
@@ -336,7 +336,7 @@ describe("ui.overview.build (thread diff hunk)", function()
         local built = build(hunk_data("@@ -7,6 +7,9 @@\n+added"))
         assert.are.equal(1, #built.anchors)
         local a = built.anchors[1]
-        local add = row_of(built, "│ +added")
+        local add = row_of(built, "│    +added")
         assert.is_truthy(add)
         assert.is_true(add >= a.row_start and add <= a.row_end)
     end)
@@ -348,14 +348,14 @@ describe("ui.overview.build (thread diff hunk)", function()
         assert.are.equal(1, #built.hunks)
         local h = built.hunks[1]
         assert.are.equal("app.py", h.path)
-        -- captures shift right past "│ " plus the +/-/space marker
-        assert.are.equal(#"│ " + 1, h.col_offset)
+        -- captures shift right past the spine + inset plus the +/-/space marker
+        assert.are.equal(#"│    " + 1, h.col_offset)
         assert.are.equal(2, #h.lines) -- the @@ header is not code
         assert.are.equal("    return a + b", h.lines[1].text)
         assert.are.equal("def subtract(a, b):", h.lines[2].text)
         -- rows are 0-based buffer rows pointing at the pushed spine rows
-        assert.are.equal(row_of(built, "│      return a + b") - 1, h.lines[1].row)
-        assert.are.equal(row_of(built, "│ +def subtract(a, b):") - 1, h.lines[2].row)
+        assert.are.equal(row_of(built, "│         return a + b") - 1, h.lines[1].row)
+        assert.are.equal(row_of(built, "│    +def subtract(a, b):") - 1, h.lines[2].row)
     end)
 
     it("records no snippet for a thread without a hunk", function()
