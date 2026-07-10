@@ -66,6 +66,7 @@ end
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
+---@field on_repurpose? fun(buf: integer): boolean
 
 ---@param model differ.DiffModel
 ---@param opts? differ.DiffModelOpts

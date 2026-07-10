@@ -1250,8 +1250,16 @@ function View:edit_tab()
         self:_arm_zoom_return(self.zoom_tab, return_tab)
     end
     -- if abs is already loaded (e.g. unsaved edits from an earlier zoom), switch to
-    -- that buffer instead of :edit, which would refuse with E37 over the changes
-    local bufnr = vim.fn.bufnr(t.abs)
+    -- that buffer instead of :edit, which would refuse with E37 over the changes.
+    -- bufnr() pattern-matches, so a substring or regex-metachar path could resolve the
+    -- wrong buffer; match the full name exactly instead
+    local bufnr = -1
+    for _, b in ipairs(vim.api.nvim_list_bufs()) do
+        if vim.api.nvim_buf_get_name(b) == t.abs then
+            bufnr = b
+            break
+        end
+    end
     if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
         local prev = vim.api.nvim_get_current_buf()
         vim.api.nvim_win_set_buf(0, bufnr)
@@ -1279,7 +1287,8 @@ end
 ---@param zoom_tab integer
 ---@param return_tab integer
 function View:_arm_zoom_return(zoom_tab, return_tab)
-    local group = vim.api.nvim_create_augroup("differ.view.zoom", { clear = true })
+    -- key on self.id so a second view's zoom doesn't clobber this one's guard
+    local group = vim.api.nvim_create_augroup("differ.view.zoom." .. self.id, { clear = true })
     vim.api.nvim_create_autocmd("TabClosed", {
         group = group,
         callback = function()
@@ -1440,6 +1449,7 @@ function View:_on_diff_lost()
         -- reached by a Ctrl-O jump / :edit into the diff window): let it re-enter that
         -- page in place instead of tearing the session down
         if repurposed and self.on_repurpose and self.on_repurpose(repurposed) then
+            self._closing = false -- kept alive as an in-session page, like every other keep-alive
             return
         end
         -- end the session, carrying any swapped-in buffer out to the launch tab
