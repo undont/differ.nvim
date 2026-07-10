@@ -153,7 +153,10 @@ end
 
 -- overview page groups: the meta chrome is dim, the body keeps Normal, and the
 -- verdict + author groups ride the palette (approved green, requested-changes orange,
--- author blue) so a review verdict reads at a glance. the title links Title in LINKS
+-- author blue) so a review verdict reads at a glance. the title links Title in LINKS. a
+-- code thread's inline diff hunk reuses the diff's own line tints for its +/- rows (so
+-- it reads like differ's normal diff); only the @@ header + context need a group here,
+-- receding to grey
 ---@param p table<string, integer>
 ---@diagnostic disable-next-line: undefined-doc-name
 ---@return table<string, vim.api.keyset.highlight>
@@ -164,6 +167,7 @@ local function overview_groups(p)
         differOverviewApproved = { fg = p.green },
         differOverviewChanges = { fg = p.orange },
         differOverviewAuthor = { fg = p.blue },
+        differOverviewDiffContext = { fg = p.grey },
     }
 end
 

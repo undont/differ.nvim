@@ -102,7 +102,7 @@ end
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
 -- backs into the review when one is open (else out of the PR), gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it
--- opens the url. g? floats the keymap cheatsheet
+-- opens the url. ]t/[t hop between thread boxes; g? floats the keymap cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -154,11 +154,30 @@ local function set_keymaps(b)
             require("differ.pr").view({ number = s.pr.number })
         end
     end
+    -- ]t/[t: hop the cursor between thread boxes (their top rules), mirroring the
+    -- diff's thread nav. no wrap; [t inside a box lands on its own header first
+    ---@param direction "next"|"prev"
+    local function goto_thread(direction)
+        local row = vim.api.nvim_win_get_cursor(0)[1]
+        local best
+        for _, a in ipairs(anchors or {}) do
+            local r = a.row_start
+            if direction == "next" and r > row and (not best or r < best) then
+                best = r
+            elseif direction == "prev" and r < row and (not best or r > best) then
+                best = r
+            end
+        end
+        if best then
+            vim.api.nvim_win_set_cursor(0, { best, 0 })
+        end
+    end
     -- g?: a floating keymap cheatsheet, dismissed with <Esc> / q / g?
     local function show_help()
         require("differ.ui.help").show({
             " e / r      enter review / enter + start a review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
+            " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
             " q          back into the review / end the session",
             " g?         this help",
@@ -172,6 +191,12 @@ local function set_keymaps(b)
     end, opts)
     vim.keymap.set("n", "r", function()
         enter(true)
+    end, opts)
+    vim.keymap.set("n", "]t", function()
+        goto_thread("next")
+    end, opts)
+    vim.keymap.set("n", "[t", function()
+        goto_thread("prev")
     end, opts)
     vim.keymap.set("n", "g?", show_help, opts)
     -- q layers like a child page: arrived from the review (a panel exists), it backs
@@ -201,9 +226,9 @@ local function setup_window(win)
     set_wo(win, "list", false)
 end
 
--- (re)build the scratch buffer, paint the built lines + highlight spans, keep the
--- fresh thread-anchor index for <CR>
----@param built { lines: string[], highlights: table[], anchors: table[] }
+-- (re)build the scratch buffer, paint the built lines + highlight spans + the
+-- treesitter pass over the hunk snippets, keep the fresh thread-anchor index for <CR>
+---@param built { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
 local function paint(built)
     if not (buf and vim.api.nvim_buf_is_valid(buf)) then
         buf = vim.api.nvim_create_buf(false, true)
@@ -219,11 +244,21 @@ local function paint(built)
     vim.bo[buf].modifiable = false
     vim.api.nvim_buf_clear_namespace(buf, namespace(), 0, -1)
     for _, h in ipairs(built.highlights) do
-        vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, h.col_start, {
-            end_col = h.col_end,
-            hl_group = h.hl,
-        })
+        -- a full-width line tint (the hunk's +/- rows, mirroring the diff) vs a
+        -- column span (everything else)
+        if h.line_hl then
+            vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, 0, {
+                line_hl_group = h.line_hl,
+            })
+        else
+            vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, h.col_start, {
+                end_col = h.col_end,
+                hl_group = h.hl,
+            })
+        end
     end
+    -- treesitter over the hunk code (parsed from the stripped source, never the page)
+    require("differ.syntax").apply_snippets(buf, built.hunks)
 end
 
 -- the window the page takes over: the pre-review page window, or — coming back from the

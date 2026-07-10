@@ -300,6 +300,48 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    it("]t/[t hop the cursor between thread boxes", function()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[2] = {
+            id = "t2",
+            thread_id = "th_2",
+            path = "a.txt",
+            side = "RIGHT",
+            line = 3,
+            resolved = false,
+            is_pending = false,
+            comments = {
+                {
+                    id = "c2",
+                    node_id = "gid2",
+                    author = "reviewer",
+                    body = "and this",
+                    created_at = "2026-01-02T00:00:00Z",
+                },
+            },
+        }
+        responses.get_threads = { result = threads }
+        local restore = open_overview(responses)
+
+        local buf = overview_buf()
+        local first = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        local second = row_containing(buf, "commented on a.txt:3")
+        assert.is_truthy(first)
+        assert.is_truthy(second)
+
+        local win = pr.current_session().overview_win
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        assert.is_true(fire_lhs(buf, "]t"))
+        assert.are.equal(first, vim.api.nvim_win_get_cursor(win)[1])
+        assert.is_true(fire_lhs(buf, "]t"))
+        assert.are.equal(second, vim.api.nvim_win_get_cursor(win)[1])
+        assert.is_true(fire_lhs(buf, "[t"))
+        assert.are.equal(first, vim.api.nvim_win_get_cursor(win)[1])
+
+        restore()
+    end)
+
     it("q ends a fresh pre-review session, but re-enters the review after a go-hop", function()
         local restore = open_overview(default_responses())
         assert.is_true(fire_lhs(overview_buf(), "q"))

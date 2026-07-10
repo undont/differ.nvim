@@ -188,17 +188,17 @@ describe("ui.overview.build (thread sections + anchors)", function()
         }
     end
 
-    it("renders the thread header with path:line and the unresolved tag", function()
+    it("renders the thread header on the box's top rule with the unresolved tag", function()
         local built = build(thread_data())
-        local want = "── @t commented on lua/differ/init.lua:12 · unresolved"
-            .. " · 2026-01-01T00:00:00Z ──"
+        local want = "┌─ @t commented on lua/differ/init.lua:12 · unresolved"
+            .. " · 2026-01-01T00:00:00Z"
         assert.is_truthy(row_of(built, want))
     end)
 
     it("tags a resolved thread quietly", function()
         local built = build(thread_data({ resolved = true }))
-        local want = "── @t commented on lua/differ/init.lua:12 · resolved"
-            .. " · 2026-01-01T00:00:00Z ──"
+        local want = "┌─ @t commented on lua/differ/init.lua:12 · resolved"
+            .. " · 2026-01-01T00:00:00Z"
         local row = row_of(built, want)
         assert.is_truthy(row)
         -- the unresolved tag rides differOverviewChanges; resolved must not
@@ -209,14 +209,14 @@ describe("ui.overview.build (thread sections + anchors)", function()
         end
     end)
 
-    it("emits the first comment's body and a reply count", function()
+    it("emits the first comment's body on spine rows and a reply count footer", function()
         local built = build(thread_data())
-        assert.is_truthy(row_of(built, "first line"))
-        assert.is_truthy(row_of(built, "second line"))
-        assert.is_truthy(row_of(built, "… 1 reply"))
+        assert.is_truthy(row_of(built, "│ first line"))
+        assert.is_truthy(row_of(built, "│ second line"))
+        assert.is_truthy(row_of(built, "└─ ↳ 1 reply"))
     end)
 
-    it("records the anchor's row span covering header through replies", function()
+    it("records the anchor's row span covering the whole box", function()
         local built = build(thread_data())
         assert.are.equal(1, #built.anchors)
         local a = built.anchors[1]
@@ -225,10 +225,10 @@ describe("ui.overview.build (thread sections + anchors)", function()
         assert.are.equal(12, a.line)
         local header = row_of(
             built,
-            "── @t commented on lua/differ/init.lua:12 · unresolved · 2026-01-01T00:00:00Z ──"
+            "┌─ @t commented on lua/differ/init.lua:12 · unresolved · 2026-01-01T00:00:00Z"
         )
         assert.are.equal(header, a.row_start)
-        assert.are.equal(row_of(built, "… 1 reply"), a.row_end)
+        assert.are.equal(row_of(built, "└─ ↳ 1 reply"), a.row_end)
     end)
 
     it("returns an empty anchor list without threads", function()
@@ -239,6 +239,128 @@ describe("ui.overview.build (thread sections + anchors)", function()
             timeline = { comments = {}, reviews = {} },
         })
         assert.are.same({}, built.anchors)
+    end)
+end)
+
+describe("ui.overview.build (thread diff hunk)", function()
+    -- a thread carrying `hunk` as its root comment's diff context
+    local function hunk_data(hunk)
+        return {
+            meta = BASE_META,
+            unresolved = 1,
+            total_threads = 1,
+            timeline = {
+                comments = {},
+                reviews = {},
+                threads = {
+                    {
+                        path = "app.py",
+                        side = "RIGHT",
+                        line = 13,
+                        resolved = false,
+                        comments = {
+                            {
+                                author = "t",
+                                body = "needs a guard?",
+                                created_at = "2026-01-01T00:00:00Z",
+                                diff_hunk = hunk,
+                            },
+                        },
+                    },
+                },
+            },
+        }
+    end
+
+    -- the hl groups on the built row at 1-based `row`
+    local function hls_on(built, row)
+        local out = {}
+        for _, h in ipairs(built.highlights) do
+            if h.row == row - 1 then
+                if h.hl then
+                    out[h.hl] = true
+                end
+                if h.line_hl then
+                    out[h.line_hl] = true
+                end
+            end
+        end
+        return out
+    end
+
+    it("renders the hunk on spine rows, line-tinting + and - like the diff", function()
+        local hunk =
+            "@@ -7,6 +7,9 @@ def add(a, b):\n     return a + b\n+def subtract(a, b):\n-    gone"
+        local built = build(hunk_data(hunk))
+
+        local header = row_of(built, "│ @@ -7,6 +7,9 @@ def add(a, b):")
+        assert.is_truthy(header)
+        assert.is_true(hls_on(built, header).differOverviewDiffContext)
+
+        -- +/- rows reuse the diff's own full-width line tints
+        local add = row_of(built, "│ +def subtract(a, b):")
+        assert.is_truthy(add)
+        assert.is_true(hls_on(built, add).differLineAdd)
+
+        local del = row_of(built, "│ -    gone")
+        assert.is_truthy(del)
+        assert.is_true(hls_on(built, del).differLineDelete)
+
+        -- the hunk sits above the comment body (a spine row inside the box)
+        assert.is_true(add < row_of(built, "│ needs a guard?"))
+    end)
+
+    it("caps a long hunk to the tail, keeping the @@ header and a ⋯ marker", function()
+        local lines = { "@@ -1,20 +1,20 @@ fn" }
+        for i = 1, 20 do
+            lines[#lines + 1] = "+l" .. i
+        end
+        local built = build(hunk_data(table.concat(lines, "\n")))
+
+        assert.is_truthy(row_of(built, "│ @@ -1,20 +1,20 @@ fn")) -- header kept
+        assert.is_truthy(row_of(built, "│ ⋯")) -- elision marker
+        assert.is_truthy(row_of(built, "│ +l20")) -- last line kept
+        assert.is_nil(row_of(built, "│ +l1")) -- early lines dropped
+        -- MAX_HUNK rows total: @@ + ⋯ + 4 tail lines
+        assert.is_truthy(row_of(built, "│ +l17"))
+        assert.is_nil(row_of(built, "│ +l16"))
+    end)
+
+    it("renders no hunk rows when the thread has no diff hunk", function()
+        local built = build(hunk_data(nil))
+        assert.is_nil(row_of(built, "│ ⋯"))
+        assert.is_truthy(row_of(built, "│ needs a guard?")) -- body still there
+    end)
+
+    it("keeps the hunk rows inside the thread's jump anchor span", function()
+        local built = build(hunk_data("@@ -7,6 +7,9 @@\n+added"))
+        assert.are.equal(1, #built.anchors)
+        local a = built.anchors[1]
+        local add = row_of(built, "│ +added")
+        assert.is_truthy(add)
+        assert.is_true(add >= a.row_start and add <= a.row_end)
+    end)
+
+    it("records marker-stripped code lines for the syntax snippet pass", function()
+        local hunk = "@@ -7,6 +7,9 @@\n     return a + b\n+def subtract(a, b):"
+        local built = build(hunk_data(hunk))
+
+        assert.are.equal(1, #built.hunks)
+        local h = built.hunks[1]
+        assert.are.equal("app.py", h.path)
+        -- captures shift right past "│ " plus the +/-/space marker
+        assert.are.equal(#"│ " + 1, h.col_offset)
+        assert.are.equal(2, #h.lines) -- the @@ header is not code
+        assert.are.equal("    return a + b", h.lines[1].text)
+        assert.are.equal("def subtract(a, b):", h.lines[2].text)
+        -- rows are 0-based buffer rows pointing at the pushed spine rows
+        assert.are.equal(row_of(built, "│      return a + b") - 1, h.lines[1].row)
+        assert.are.equal(row_of(built, "│ +def subtract(a, b):") - 1, h.lines[2].row)
+    end)
+
+    it("records no snippet for a thread without a hunk", function()
+        local built = build(hunk_data(nil))
+        assert.are.same({}, built.hunks)
     end)
 end)
 

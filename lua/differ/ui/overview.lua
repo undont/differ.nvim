@@ -40,6 +40,56 @@ local function split_lines(s)
     return out
 end
 
+local MAX_HUNK = 6 -- tail rows of a thread's diff hunk shown under its header
+
+-- the thread box chrome, mirroring ui/thread.lua's left-spine style so a code thread
+-- reads as one contained unit (github's outline) instead of loose page text
+local TOP = "┌─ "
+local SPINE = "│ "
+local BOT = "└─ "
+
+-- a thread's diff-hunk items: the tail of the hunk (it ends at the commented line),
+-- capped to MAX_HUNK and keeping the @@ header + a ⋯ elision marker when truncated, so
+-- a code comment reads with its diff like github's. a code item carries its line tint
+-- (+ adds, - deletes, the diff's own groups) and the marker-stripped source text, which
+-- feeds the treesitter snippet pass. an empty hunk yields no items
+---@param hunk string|nil
+---@return { kind: "header"|"elision"|"code", text?: string, line_hl?: string, code?: string }[]
+local function hunk_items(hunk)
+    if not hunk or hunk == "" then
+        return {}
+    end
+    local lines = split_lines(hunk)
+    local items = {}
+    local function emit(line)
+        local c = line:sub(1, 1)
+        if c == "@" then
+            items[#items + 1] = { kind = "header", text = line }
+        else
+            items[#items + 1] = {
+                kind = "code",
+                text = line,
+                code = line:sub(2), -- the marker stripped, for the syntax pass
+                line_hl = (c == "+" and "differLineAdd")
+                    or (c == "-" and "differLineDelete")
+                    or nil,
+            }
+        end
+    end
+    if #lines <= MAX_HUNK then
+        for _, l in ipairs(lines) do
+            emit(l)
+        end
+    else
+        emit(lines[1]) -- the @@ header keeps the function/line context
+        items[#items + 1] = { kind = "elision" }
+        for i = #lines - (MAX_HUNK - 2) + 1, #lines do
+            emit(lines[i])
+        end
+    end
+    return items
+end
+
 -- merge comments + reviews + code threads into one chronological list of { kind,
 -- author, body, ts, state?, path?, side?, line?, resolved?, replies? }, sorted
 -- ascending by created_at (lexical sort is correct for ISO-8601 UTC). a thread rides
@@ -73,6 +123,7 @@ local function timeline(tl)
                 path = t.path,
                 side = t.side,
                 line = t.line,
+                diff_hunk = first.diff_hunk, -- the root comment's, rendered under the header
                 resolved = t.resolved == true, -- vim.NIL-safe
                 replies = math.max(0, #(t.comments or {}) - 1),
             }
@@ -103,7 +154,7 @@ end
 -- can jump to the code anchor. a highlight is { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
 ---@param opts { reltime?: fun(ts: string): string }|nil
----@return { lines: string[], highlights: table[], anchors: table[] }
+---@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
@@ -176,8 +227,12 @@ function M.build(data, opts)
     push({ { RULE, "differOverviewMeta" } })
 
     -- timeline: one section per item, a blank row between sections. a thread section's
-    -- row span is recorded so the vim layer can jump from any of its rows to the anchor
+    -- row span is recorded so the vim layer can jump from any of its rows to the anchor.
+    -- a code thread renders as a left-spine box (top rule header, spine rows for the
+    -- hunk + body, footer rule with the reply count), so it reads as one contained unit;
+    -- plain comments and verdicts keep the flat ── header ── style
     local anchors = {}
+    local hunks = {}
     for i, item in ipairs(timeline(data.timeline or {})) do
         if i > 1 then
             push({ { "", "differOverviewBody" } })
@@ -185,7 +240,7 @@ function M.build(data, opts)
         local row_start = #lines + 1
         if item.kind == "thread" then
             push({
-                { "── ", "differOverviewMeta" },
+                { TOP, "differOverviewMeta" },
                 { "@" .. (item.author or "?"), "differOverviewAuthor" },
                 { " commented on ", "differOverviewMeta" },
                 { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
@@ -193,8 +248,57 @@ function M.build(data, opts)
                     item.resolved and " · resolved" or " · unresolved",
                     item.resolved and "differOverviewMeta" or "differOverviewChanges",
                 },
-                { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
+                { " · " .. reltime(item.ts or ""), "differOverviewMeta" },
             })
+            -- the code the comment anchors to, github-style, on spine rows between
+            -- header and body. +/- rows carry the diff's full-width line tints (recorded
+            -- directly, since push only emits column spans); code rows are collected
+            -- marker-stripped for the treesitter snippet pass; @@/⋯ recede grey
+            local items = hunk_items(item.diff_hunk)
+            local hunk = { path = item.path, col_offset = #SPINE + 1, lines = {} }
+            for _, it in ipairs(items) do
+                local row0 = #lines -- 0-based index of the line push is about to add
+                if it.kind == "elision" then
+                    push({ { SPINE, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
+                elseif it.kind == "header" then
+                    push({
+                        { SPINE, "differOverviewMeta" },
+                        { it.text, "differOverviewDiffContext" },
+                    })
+                else
+                    push({ { SPINE, "differOverviewMeta" }, { it.text, nil } })
+                    if it.line_hl then
+                        highlights[#highlights + 1] = { row = row0, line_hl = it.line_hl }
+                    end
+                    hunk.lines[#hunk.lines + 1] = { row = row0, text = it.code }
+                end
+            end
+            if #hunk.lines > 0 and item.path then
+                hunks[#hunks + 1] = hunk
+            end
+            if item.body and item.body ~= "" then
+                if #items > 0 then
+                    push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
+                end
+                for _, line in ipairs(split_lines(item.body)) do
+                    push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+                end
+            end
+            local footer = { { BOT, "differOverviewMeta" } }
+            if item.replies and item.replies > 0 then
+                footer[#footer + 1] = {
+                    ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
+                    "differOverviewMeta",
+                }
+            end
+            push(footer)
+            anchors[#anchors + 1] = {
+                row_start = row_start,
+                row_end = #lines,
+                path = item.path,
+                side = item.side,
+                line = item.line,
+            }
         else
             local v = verdict_of(item)
             push({
@@ -204,32 +308,15 @@ function M.build(data, opts)
                 { v.label, v.hl },
                 { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
             })
-        end
-        if item.body and item.body ~= "" then
-            for _, line in ipairs(split_lines(item.body)) do
-                push({ { line, "differOverviewBody" } })
+            if item.body and item.body ~= "" then
+                for _, line in ipairs(split_lines(item.body)) do
+                    push({ { line, "differOverviewBody" } })
+                end
             end
-        end
-        if item.kind == "thread" then
-            if item.replies and item.replies > 0 then
-                push({
-                    {
-                        ("… %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
-                        "differOverviewMeta",
-                    },
-                })
-            end
-            anchors[#anchors + 1] = {
-                row_start = row_start,
-                row_end = #lines,
-                path = item.path,
-                side = item.side,
-                line = item.line,
-            }
         end
     end
 
-    return { lines = lines, highlights = highlights, anchors = anchors }
+    return { lines = lines, highlights = highlights, anchors = anchors, hunks = hunks }
 end
 
 return M

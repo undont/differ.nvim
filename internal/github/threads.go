@@ -45,6 +45,7 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 					Author:    cm.Author.Login,
 					Body:      cm.Body,
 					CreatedAt: cm.CreatedAt,
+					DiffHunk:  cm.DiffHunk,
 				})
 			}
 			if len(n.Comments.Nodes) > 0 {
