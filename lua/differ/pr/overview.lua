@@ -21,6 +21,10 @@ end
 
 local GUARD = "differ.pr.overview.guard"
 
+-- the page's scratch-buffer name, owned here; the review's on_repurpose asks
+-- M.owns_buffer rather than matching this literal itself
+local BUFNAME = "differ://overview"
+
 -- one reusable scratch buffer for the page; keymaps act on the live session via
 -- pr.current_session(), so the buffer survives a session swap. `anchors` is the last
 -- built row->thread-anchor index (<CR> reads it at press time)
@@ -60,6 +64,14 @@ end
 ---@return boolean
 local function still_live(session)
     return require("differ.pr").current_session() == session
+end
+
+-- whether `b` is the page's scratch buffer, by its stable name. the review's
+-- on_repurpose asks this to re-enter the page rather than end the session on a jump back
+---@param b integer|nil
+---@return boolean
+function M.owns_buffer(b)
+    return b ~= nil and vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == BUFNAME
 end
 
 -- drop the navigate-away guard. the page window becomes the diff's on entry, so the
@@ -159,15 +171,13 @@ local function set_keymaps(b)
     ---@param direction "next"|"prev"
     local function goto_thread(direction)
         local row = vim.api.nvim_win_get_cursor(0)[1]
-        local best
+        -- reuse the diff's pure nav: feed each thread's top row keyed on this buffer so
+        -- the nearest-past/no-wrap scan is the one code path (differ.pr.threads)
+        local rows = {}
         for _, a in ipairs(anchors or {}) do
-            local r = a.row_start
-            if direction == "next" and r > row and (not best or r < best) then
-                best = r
-            elseif direction == "prev" and r < row and (not best or r > best) then
-                best = r
-            end
+            rows[#rows + 1] = { bufnr = b, row = a.row_start }
         end
+        local best = require("differ.pr.threads").next_anchor(rows, b, row, direction)
         if best then
             vim.api.nvim_win_set_cursor(0, { best, 0 })
         end
@@ -235,7 +245,7 @@ local function paint(built)
         vim.bo[buf].buftype = "nofile"
         vim.bo[buf].bufhidden = "hide"
         vim.bo[buf].filetype = "markdown"
-        pcall(vim.api.nvim_buf_set_name, buf, "differ://overview")
+        pcall(vim.api.nvim_buf_set_name, buf, BUFNAME)
         set_keymaps(buf)
     end
     anchors = built.anchors

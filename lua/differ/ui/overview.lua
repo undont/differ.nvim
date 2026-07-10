@@ -235,87 +235,103 @@ function M.build(data, opts)
     -- plain comments and verdicts keep the flat ── header ── style
     local anchors = {}
     local hunks = {}
+
+    -- a code thread as a left-spine box: a top-rule header, the root comment's diff hunk
+    -- on inset spine rows, the body, a footer rule with the reply count. records the row
+    -- span in `anchors` (the <CR> jump target) and any code rows in `hunks` (the syntax
+    -- pass). closes over push/lines/highlights/hunks/anchors, so it stays a pure builder
+    ---@param item table
+    local function render_thread(item)
+        local row_start = #lines + 1
+        push({
+            { TOP, "differOverviewMeta" },
+            { "@" .. (item.author or "?"), "differOverviewAuthor" },
+            { " commented on ", "differOverviewMeta" },
+            { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
+            {
+                item.resolved and " · resolved" or " · unresolved",
+                item.resolved and "differOverviewMeta" or "differOverviewChanges",
+            },
+            { " · " .. reltime(item.ts or ""), "differOverviewMeta" },
+        })
+        -- the code the comment anchors to, github-style, on spine rows between header and
+        -- body. +/- rows carry the diff's full-width line tints (recorded directly, since
+        -- push only emits column spans); code rows are collected marker-stripped for the
+        -- treesitter snippet pass; @@/⋯ recede grey
+        local items = hunk_items(item.diff_hunk)
+        local lead = SPINE .. HUNK_INDENT
+        local hunk = { path = item.path, col_offset = #lead + 1, lines = {} }
+        for _, it in ipairs(items) do
+            local row0 = #lines -- 0-based index of the line push is about to add
+            if it.kind == "elision" then
+                push({ { lead, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
+            elseif it.kind == "header" then
+                push({
+                    { lead, "differOverviewMeta" },
+                    { it.text, "differOverviewDiffContext" },
+                })
+            else
+                push({ { lead, "differOverviewMeta" }, { it.text, nil } })
+                if it.line_hl then
+                    highlights[#highlights + 1] = { row = row0, line_hl = it.line_hl }
+                end
+                hunk.lines[#hunk.lines + 1] = { row = row0, text = it.code }
+            end
+        end
+        if #hunk.lines > 0 and item.path then
+            hunks[#hunks + 1] = hunk
+        end
+        if item.body and item.body ~= "" then
+            if #items > 0 then
+                push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
+            end
+            for _, line in ipairs(split_lines(item.body)) do
+                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            end
+        end
+        local footer = { { BOT, "differOverviewMeta" } }
+        if item.replies and item.replies > 0 then
+            footer[#footer + 1] = {
+                ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
+                "differOverviewMeta",
+            }
+        end
+        push(footer)
+        anchors[#anchors + 1] = {
+            row_start = row_start,
+            row_end = #lines,
+            path = item.path,
+            side = item.side,
+            line = item.line,
+        }
+    end
+
+    -- a plain comment / review verdict as a flat ── header ── with its body below
+    ---@param item table
+    local function render_flat(item)
+        local v = verdict_of(item)
+        push({
+            { "── ", "differOverviewMeta" },
+            { "@" .. (item.author or "?"), "differOverviewAuthor" },
+            { " ", "differOverviewMeta" },
+            { v.label, v.hl },
+            { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
+        })
+        if item.body and item.body ~= "" then
+            for _, line in ipairs(split_lines(item.body)) do
+                push({ { line, "differOverviewBody" } })
+            end
+        end
+    end
+
     for i, item in ipairs(timeline(data.timeline or {})) do
         if i > 1 then
             push({ { "", "differOverviewBody" } })
         end
-        local row_start = #lines + 1
         if item.kind == "thread" then
-            push({
-                { TOP, "differOverviewMeta" },
-                { "@" .. (item.author or "?"), "differOverviewAuthor" },
-                { " commented on ", "differOverviewMeta" },
-                { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
-                {
-                    item.resolved and " · resolved" or " · unresolved",
-                    item.resolved and "differOverviewMeta" or "differOverviewChanges",
-                },
-                { " · " .. reltime(item.ts or ""), "differOverviewMeta" },
-            })
-            -- the code the comment anchors to, github-style, on spine rows between
-            -- header and body. +/- rows carry the diff's full-width line tints (recorded
-            -- directly, since push only emits column spans); code rows are collected
-            -- marker-stripped for the treesitter snippet pass; @@/⋯ recede grey
-            local items = hunk_items(item.diff_hunk)
-            local lead = SPINE .. HUNK_INDENT
-            local hunk = { path = item.path, col_offset = #lead + 1, lines = {} }
-            for _, it in ipairs(items) do
-                local row0 = #lines -- 0-based index of the line push is about to add
-                if it.kind == "elision" then
-                    push({ { lead, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
-                elseif it.kind == "header" then
-                    push({
-                        { lead, "differOverviewMeta" },
-                        { it.text, "differOverviewDiffContext" },
-                    })
-                else
-                    push({ { lead, "differOverviewMeta" }, { it.text, nil } })
-                    if it.line_hl then
-                        highlights[#highlights + 1] = { row = row0, line_hl = it.line_hl }
-                    end
-                    hunk.lines[#hunk.lines + 1] = { row = row0, text = it.code }
-                end
-            end
-            if #hunk.lines > 0 and item.path then
-                hunks[#hunks + 1] = hunk
-            end
-            if item.body and item.body ~= "" then
-                if #items > 0 then
-                    push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
-                end
-                for _, line in ipairs(split_lines(item.body)) do
-                    push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
-                end
-            end
-            local footer = { { BOT, "differOverviewMeta" } }
-            if item.replies and item.replies > 0 then
-                footer[#footer + 1] = {
-                    ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
-                    "differOverviewMeta",
-                }
-            end
-            push(footer)
-            anchors[#anchors + 1] = {
-                row_start = row_start,
-                row_end = #lines,
-                path = item.path,
-                side = item.side,
-                line = item.line,
-            }
+            render_thread(item)
         else
-            local v = verdict_of(item)
-            push({
-                { "── ", "differOverviewMeta" },
-                { "@" .. (item.author or "?"), "differOverviewAuthor" },
-                { " ", "differOverviewMeta" },
-                { v.label, v.hl },
-                { " · " .. reltime(item.ts or "") .. " ──", "differOverviewMeta" },
-            })
-            if item.body and item.body ~= "" then
-                for _, line in ipairs(split_lines(item.body)) do
-                    push({ { line, "differOverviewBody" } })
-                end
-            end
+            render_flat(item)
         end
     end
 

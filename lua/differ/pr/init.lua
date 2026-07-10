@@ -194,10 +194,7 @@ local function show_file(entry, focus_line)
                 -- window; it's a live surface of this session, so re-enter it in place
                 -- (like `go`) rather than letting the diff's close guard end the session
                 on_repurpose = function(buf)
-                    if
-                        not (session and buf and vim.api.nvim_buf_is_valid(buf))
-                        or vim.api.nvim_buf_get_name(buf) ~= "differ://overview"
-                    then
+                    if not (session and require("differ.pr.overview").owns_buffer(buf)) then
                         return false
                     end
                     M.overview()
