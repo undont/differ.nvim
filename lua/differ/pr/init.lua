@@ -190,6 +190,19 @@ local function show_file(entry, focus_line)
                 on_cursor = function()
                     require("differ.pr.threads").on_cursor(s)
                 end,
+                -- a Ctrl-O jump (or :edit) can swap the overview page back into the diff
+                -- window; it's a live surface of this session, so re-enter it in place
+                -- (like `go`) rather than letting the diff's close guard end the session
+                on_repurpose = function(buf)
+                    if
+                        not (session and buf and vim.api.nvim_buf_is_valid(buf))
+                        or vim.api.nvim_buf_get_name(buf) ~= "differ://overview"
+                    then
+                        return false
+                    end
+                    M.overview()
+                    return true
+                end,
             })
         end
         prefetch_around(entry) -- warm the neighbours so the next step is instant
@@ -522,6 +535,12 @@ local function diff_anchor(s)
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
         return nil
     end
+    -- the diff window may already show a foreign buffer (a Ctrl-O jump swapped the
+    -- overview back in): its cursor row is meaningless against the diff's line map, so
+    -- there's no diff position to stash
+    if vim.api.nvim_win_get_buf(col.winid) ~= col.bufnr then
+        return nil
+    end
     local row = vim.api.nvim_win_get_cursor(col.winid)[1]
     local line = require("differ.nav").file_line(col.map, row)
     if not line then
@@ -760,6 +779,7 @@ local function open_session(pr, detail, opts)
                     session.view:close()
                 end
                 close_session_tab(session_tab)
+                require("differ.pr.overview").teardown() -- wipe the reused page buffer
                 session = nil
             end,
         }):open()
@@ -818,11 +838,13 @@ local function enter_files(review, focus)
     end
 end
 
--- enter the review at a thread anchor (the overview's <CR> on a timeline thread)
+-- enter the review at a thread anchor (the overview's <CR>/e/r on a timeline thread).
+-- review starts a pending review on entry (the overview's r), like review <n>
 ---@param target { path: string, side: string, line: integer }
-function M.enter_at(target)
+---@param review boolean|nil
+function M.enter_at(target, review)
     M.with_session(function()
-        enter_files(false, target)
+        enter_files(review or false, target)
     end)
 end
 
@@ -993,6 +1015,7 @@ function M.end_session()
     local tab = session.session_tab
     session = nil
     close_session_tab(tab)
+    require("differ.pr.overview").teardown() -- wipe the reused page buffer
 end
 
 -- ── PR lifecycle ───────────────────────────────────────────────────────────────────

@@ -21,7 +21,7 @@
 
 ---
 
-You can already get most of this from existing plugins, just not all of it in one tool with the same feel. That's what I wanted, so I built it.
+You can already get most of this from existing plugins, just not all of it in one tool with the same feel. I wanted to see how feasible it would be, and what the result *could* feel like.
 
 Everything runs through one renderer, so staging a hunk and replying to a review comment behave like the same tool, because they are. The default view is a stacked dual-rail layout: one scroll surface with old and new lines interleaved per hunk and both line numbers in the gutter. Side-by-side is a keystroke away from the same model. Word-level highlighting and Treesitter syntax are on by default.
 
@@ -209,10 +209,11 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 
 | Key | Action |
 |---|---|
-| `e` / `r` | Enter the review (files) / enter and start a review |
+| `e` / `r` | Enter the review / enter and start a review; on a thread row, at that comment's file |
 | `<CR>` | On a thread row: jump into the review at that comment; elsewhere: open the PR in the browser |
 | `gx` | Open the PR in the browser |
-| `q` / `<Esc>` | Back into the review if one is open, else end the session |
+| `q` | Back into the review if one is open, else end the session |
+| `g?` | Help |
 
 **Merge tool** (the result buffer)
 

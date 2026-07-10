@@ -68,6 +68,18 @@ function M.disarm()
     pcall(vim.api.nvim_del_augroup_by_name, GUARD)
 end
 
+-- wipe the reused scratch buffer + its anchor index on session teardown. the buffer is
+-- bufhidden=hide and outlives the window, so without this a Ctrl-O jump can resurface a
+-- stale page whose <CR>/gx act on current_session() (nil after teardown -> "no PR url",
+-- or a since-swapped session). paint rebuilds a fresh buffer for the next session
+function M.teardown()
+    M.disarm()
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+    buf, anchors = nil, nil
+end
+
 -- end the session if the page window is closed while still pre-review (no panel built).
 -- once the review is entered the window is the diff's, so the guard is disarmed first
 ---@param session table
@@ -90,7 +102,7 @@ end
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
 -- backs into the review when one is open (else out of the PR), gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it
--- opens the url
+-- opens the url. g? floats the keymap cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -121,16 +133,36 @@ local function set_keymaps(b)
         end
         open_url()
     end
+    -- e/r: enter the review. on a thread row, jump into that thread's file/line (like
+    -- <CR>) so the comment's diff opens directly; elsewhere enter at the panel's file. r
+    -- also starts a review either way
     local function enter(review)
         local s = live()
         if not s then
             return
+        end
+        local a = anchor_at_cursor()
+        if a then
+            return require("differ.pr").enter_at(
+                { path = a.path, side = a.side, line = a.line },
+                review
+            )
         end
         if review then
             require("differ.pr").review({ number = s.pr.number })
         else
             require("differ.pr").view({ number = s.pr.number })
         end
+    end
+    -- g?: a floating keymap cheatsheet, dismissed with <Esc> / q / g?
+    local function show_help()
+        require("differ.ui.help").show({
+            " e / r      enter review / enter + start a review (thread row: at its file)",
+            " <CR>       thread row: jump into the review here, else open the PR url",
+            " gx         open the PR in the browser",
+            " q          back into the review / end the session",
+            " g?         this help",
+        }, { title = " Differ: overview " })
     end
     local opts = { buffer = b, nowait = true, silent = true }
     vim.keymap.set("n", "gx", open_url, opts)
@@ -141,17 +173,17 @@ local function set_keymaps(b)
     vim.keymap.set("n", "r", function()
         enter(true)
     end, opts)
+    vim.keymap.set("n", "g?", show_help, opts)
     -- q layers like a child page: arrived from the review (a panel exists), it backs
-    -- into the review (the stashed position restores); pre-review it ends the session
-    for _, lhs in ipairs({ "q", "<Esc>" }) do
-        vim.keymap.set("n", lhs, function()
-            local s = live()
-            if s and s.panel then
-                return require("differ.pr").view({ number = s.pr.number })
-            end
-            require("differ.pr").end_session()
-        end, opts)
-    end
+    -- into the review (the stashed position restores); pre-review it ends the session.
+    -- only q, not <Esc>: <Esc> is too easy to fumble into an accidental exit
+    vim.keymap.set("n", "q", function()
+        local s = live()
+        if s and s.panel then
+            return require("differ.pr").view({ number = s.pr.number })
+        end
+        require("differ.pr").end_session()
+    end, opts)
 end
 
 -- the page's window-local chrome: a clean reading surface (no diff gutter), markdown

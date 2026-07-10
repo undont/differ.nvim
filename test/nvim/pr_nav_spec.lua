@@ -212,6 +212,26 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    it("e on a thread row enters the review at that thread's anchored diff row", function()
+        local restore = open_overview(default_responses())
+
+        local buf = overview_buf()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+        assert.is_true(fire_lhs(buf, "e"))
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s.view ~= nil and s.view:is_open() and s.pending_focus == nil
+        end))
+
+        local s = pr.current_session()
+        local col = s.view:column_for("new")
+        assert.are.equal(col.map.from_new[THREAD_LINE], vim.api.nvim_win_get_cursor(col.winid)[1])
+
+        restore()
+    end)
+
     it("go from the diff lands back on the overview, session alive, panel closed", function()
         local restore = open_overview(default_responses())
         enter_at_thread()
@@ -256,6 +276,26 @@ describe("pr overview <-> review navigation loop", function()
         -- the view re-sources on re-entry, so re-read the column rather than reusing `col`
         local reentered = s.view:column_for("new")
         assert.are.equal(reentered.map.from_new[3], vim.api.nvim_win_get_cursor(reentered.winid)[1])
+
+        restore()
+    end)
+
+    it("Ctrl-O onto the overview re-enters the page, session alive", function()
+        local restore = open_overview(default_responses())
+        enter_at_thread()
+
+        local s = pr.current_session()
+        local col = s.view:column_for("new")
+        local ov = overview_buf()
+        local before = overview_tick()
+        -- simulate the Ctrl-O jump: the overview buffer swaps back into the diff window,
+        -- which fires the diff's BufWinLeave close guard
+        vim.api.nvim_win_set_buf(col.winid, ov)
+        wait_overview(before)
+
+        assert.are.equal(s, pr.current_session()) -- not torn down
+        assert.is_false(s.panel:is_open()) -- hidden; we're on the page
+        assert.is_nil(s.view) -- the review view was closed on the hop
 
         restore()
     end)

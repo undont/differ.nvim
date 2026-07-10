@@ -89,6 +89,7 @@ function M.diff_model(model, opts)
             extra_keymaps = opts.extra_keymaps,
             on_rerender = opts.on_rerender,
             on_cursor = opts.on_cursor,
+            on_repurpose = opts.on_repurpose,
         })
         :open()
 end

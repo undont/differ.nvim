@@ -86,6 +86,7 @@ local armed_view = nil
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
 ---@field on_cursor fun()|nil  -- session hook on cursor move in a diff window (pr thread cursor-expand)
+---@field on_repurpose fun(buf: integer): boolean|nil  -- claim a buffer swapped into diff window; true skips teardown
 ---@field edit_win integer|nil  -- transient editable real-file window (edit-in-review)
 ---@field id integer  -- per-view id, for the close-guard augroup name
 ---@field _suppress_close boolean  -- true while we close a diff window ourselves (relayout/teardown)
@@ -108,6 +109,7 @@ View.__index = View
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
+---@field on_repurpose? fun(buf: integer): boolean
 
 -- build a view for a model. buffers and data are created here; windows are not
 -- touched until :open(), so a View can be constructed headlessly for tests
@@ -138,6 +140,7 @@ function View.new(model, opts)
         extra_keymaps = opts.extra_keymaps,
         on_rerender = opts.on_rerender,
         on_cursor = opts.on_cursor,
+        on_repurpose = opts.on_repurpose,
         staged_hunks = {},
         id = next_id(),
         _suppress_close = false,
@@ -1431,6 +1434,12 @@ function View:_on_diff_lost()
         end
         if all_shown then
             self._closing = false
+            return
+        end
+        -- a session may own the swapped-in buffer as an in-session page (pr's overview,
+        -- reached by a Ctrl-O jump / :edit into the diff window): let it re-enter that
+        -- page in place instead of tearing the session down
+        if repurposed and self.on_repurpose and self.on_repurpose(repurposed) then
             return
         end
         -- end the session, carrying any swapped-in buffer out to the launch tab

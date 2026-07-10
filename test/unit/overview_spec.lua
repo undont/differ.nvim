@@ -319,7 +319,7 @@ describe("ui.overview.build (header counts + rollup)", function()
             total_threads = 5,
             timeline = { comments = {}, reviews = {} },
         })
-        assert.is_truthy(row_of(built, "checks: success · threads: 2 unresolved / 5"))
+        assert.is_truthy(row_of(built, "checks: success · threads: 2 unresolved / 5 · help: g?"))
     end)
 
     it("degrades to n/a when checks are absent", function()
@@ -330,7 +330,7 @@ describe("ui.overview.build (header counts + rollup)", function()
             total_threads = 0,
             timeline = { comments = {}, reviews = {} },
         })
-        assert.is_truthy(row_of(built, "checks: n/a · threads: 0 unresolved / 0"))
+        assert.is_truthy(row_of(built, "checks: n/a · threads: 0 unresolved / 0 · help: g?"))
     end)
 end)
 

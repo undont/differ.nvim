@@ -131,7 +131,7 @@ function M.build(data, opts)
         lines[#lines + 1] = table.concat(parts)
     end
 
-    -- header: title, the state/author/mergeable meta line, the checks + threads line
+    -- header: title, the state/author/mergeable meta line, the checks + threads + help line
     local number = meta.number and ("#" .. meta.number .. " ") or ""
     push({ { number .. (meta.title or "untitled"), "differOverviewTitle" } })
 
@@ -154,7 +154,7 @@ function M.build(data, opts)
     local rollup_word = (rollup ~= nil and rollup ~= "") and tostring(rollup):lower() or "n/a"
     push({
         {
-            ("checks: %s · threads: %d unresolved / %d"):format(
+            ("checks: %s · threads: %d unresolved / %d · help: g?"):format(
                 rollup_word,
                 data.unresolved or 0,
                 data.total_threads or 0
