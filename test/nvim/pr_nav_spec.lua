@@ -367,3 +367,261 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 end)
+
+-- enter the review at the panel's first file (the overview's e), waiting for the diff
+local function enter_review()
+    assert.is_true(fire_lhs(overview_buf(), "e"))
+    assert.is_true(vim.wait(1000, function()
+        local s = pr.current_session()
+        return s ~= nil and s.view ~= nil and s.view:is_open()
+    end))
+    return pr.current_session()
+end
+
+-- a throwaway worktree holding `rel` on disk, so the edit verbs (which open the real
+-- file at model.root/path) have something readable. redirect the view's model.root here
+---@param rel string
+---@param content string
+local function make_worktree_file(rel, content)
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    local abs = root .. "/" .. rel
+    local f = assert(io.open(abs, "w"))
+    f:write(content)
+    f:close()
+    return {
+        root = root,
+        abs = abs,
+        cleanup = function()
+            vim.fn.delete(root, "rf")
+        end,
+    }
+end
+
+-- descriptions of the two edit binds on the diff surface (see session.diff_extra_keymaps)
+local EDIT_SPLIT = "edit the real file (in review)"
+local EDIT_ZOOM = "edit the real file (zoom tab)"
+
+describe("pr edit verbs (df/de)", function()
+    local review_tab
+
+    after_each(function()
+        -- drop any stray zoom tabs the test left open before tearing the session down
+        review_tab = nil
+        for _, t in ipairs(vim.api.nvim_list_tabpages()) do
+            if t ~= vim.api.nvim_list_tabpages()[1] and vim.api.nvim_tabpage_is_valid(t) then
+                pcall(vim.api.nvim_set_current_tabpage, t)
+                pcall(vim.cmd, "tabclose")
+            end
+        end
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("df opens the worktree file in a split beside the diff, session.view untouched", function()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
+        s.view.model.root = tmp.root
+
+        local view = s.view
+        local diff_buf = view:column_for("new").bufnr
+        local tabs_before = #vim.api.nvim_list_tabpages()
+        local wins_before = #vim.api.nvim_tabpage_list_wins(0)
+
+        assert.is_true(fire(diff_buf, EDIT_SPLIT))
+
+        -- a split in the same tab, not a new tab
+        assert.are.equal(tabs_before, #vim.api.nvim_list_tabpages())
+        assert.is_true(#vim.api.nvim_tabpage_list_wins(0) > wins_before)
+        -- the edit window holds the real file, distinct from the diff buffer
+        local edit_buf = vim.api.nvim_win_get_buf(view.edit_win)
+        assert.are_not.equal(diff_buf, edit_buf)
+        assert.is_truthy(vim.api.nvim_buf_get_name(edit_buf):match("a%.txt$"))
+        -- the session + its view are the same objects, still open
+        assert.are.equal(s, pr.current_session())
+        assert.are.equal(view, s.view)
+        assert.is_true(view:is_open())
+
+        tmp.cleanup()
+        restore()
+    end)
+
+    it("de zoom-edits in its own tab; closing it returns to the review tab", function()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
+        s.view.model.root = tmp.root
+        review_tab = vim.api.nvim_get_current_tabpage()
+
+        local view = s.view
+        assert.is_true(fire(view:column_for("new").bufnr, EDIT_ZOOM))
+
+        local zoom_tab = view.zoom_tab
+        assert.is_truthy(zoom_tab)
+        assert.is_true(vim.api.nvim_tabpage_is_valid(zoom_tab))
+        assert.are.equal(zoom_tab, vim.api.nvim_get_current_tabpage())
+        assert.are_not.equal(review_tab, zoom_tab)
+        assert.is_truthy(vim.api.nvim_buf_get_name(0):match("a%.txt$"))
+
+        -- :q the zoom tab lands back on the review tab (the return hop is scheduled)
+        vim.cmd("tabclose")
+        assert.is_true(vim.wait(1000, function()
+            return vim.api.nvim_get_current_tabpage() == review_tab
+        end))
+
+        tmp.cleanup()
+        restore()
+    end)
+
+    it("a repeat de while the zoom tab is open refocuses instead of stacking tabs", function()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
+        s.view.model.root = tmp.root
+        review_tab = vim.api.nvim_get_current_tabpage()
+
+        local view = s.view
+        local diff_buf = view:column_for("new").bufnr
+        assert.is_true(fire(diff_buf, EDIT_ZOOM))
+        local zoom_tab = view.zoom_tab
+        local tabs_after_first = #vim.api.nvim_list_tabpages()
+
+        -- back on the review, press de again: the same zoom tab is refocused
+        vim.api.nvim_set_current_tabpage(review_tab)
+        assert.is_true(fire(diff_buf, EDIT_ZOOM))
+
+        assert.are.equal(zoom_tab, view.zoom_tab)
+        assert.are.equal(zoom_tab, vim.api.nvim_get_current_tabpage())
+        assert.are.equal(tabs_after_first, #vim.api.nvim_list_tabpages())
+
+        tmp.cleanup()
+        restore()
+    end)
+
+    it("df on the overview (no open diff) notifies and no-ops", function()
+        local restore = open_overview(default_responses())
+        local s = pr.current_session()
+        assert.is_nil(s.view) -- pre-review page: no diff yet
+
+        local before = #_G.notifs
+        pr.edit_split()
+
+        assert.is_true(#_G.notifs > before)
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("no active pull request diff", 1, true))
+
+        restore()
+    end)
+
+    it("df without a local checkout (no session.root) notifies and no-ops", function()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        s.root = nil -- simulate a repo with no local checkout
+
+        local before = #_G.notifs
+        pr.edit_split()
+
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("editing needs a local checkout", 1, true))
+        assert.is_nil(s.view.edit_win) -- no edit window opened
+        assert.is_true(#_G.notifs > before)
+
+        restore()
+    end)
+end)
+
+describe("pr overview resilient navigation", function()
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- a thread anchored on a path the PR's file list doesn't carry (a comment on a file
+    -- outside the diff). the anchor jump can't land it, so entry must fall back to the
+    -- panel's own file rather than erroring, and clear the one-shot focus
+    local function ghost_responses()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[1].path = "ghost.txt"
+        threads[1].line = 5
+        responses.get_threads = { result = threads }
+        return responses
+    end
+
+    it("<CR> on an out-of-list thread falls back to the panel entry, focus cleared", function()
+        local restore = open_overview(ghost_responses())
+
+        local buf = overview_buf()
+        local row = row_containing(buf, "commented on ghost.txt:5")
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+        assert.is_true(fire_lhs(buf, "<CR>"))
+
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s.view ~= nil and s.view:is_open()
+        end))
+        local s = pr.current_session()
+        assert.is_nil(s.pending_focus) -- the failed jump cleared the one-shot
+        assert.are.equal("a.txt", s.view.model.path) -- landed on the panel's real file
+
+        restore()
+    end)
+
+    it("e on an out-of-list thread falls back without error, focus cleared", function()
+        local restore = open_overview(ghost_responses())
+
+        local buf = overview_buf()
+        local row = row_containing(buf, "commented on ghost.txt:5")
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+        assert.is_true(fire_lhs(buf, "e"))
+
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s.view ~= nil and s.view:is_open()
+        end))
+        local s = pr.current_session()
+        assert.is_nil(s.pending_focus)
+        assert.are.equal("a.txt", s.view.model.path)
+
+        restore()
+    end)
+end)
+
+-- the sole floating window (relative ~= ""), or nil
+local function float_win()
+    for _, w in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_get_config(w).relative ~= "" then
+            return w
+        end
+    end
+end
+
+describe("pr overview cheatsheet (g?)", function()
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("g? floats the keymap help; q dismisses it", function()
+        local restore = open_overview(default_responses())
+
+        assert.is_nil(float_win())
+        assert.is_true(fire_lhs(overview_buf(), "g?"))
+
+        local float = float_win()
+        assert.is_truthy(float)
+        local fbuf = vim.api.nvim_win_get_buf(float)
+        local text = table.concat(vim.api.nvim_buf_get_lines(fbuf, 0, -1, false), "\n")
+        assert.is_truthy(text:find("enter review", 1, true))
+        assert.is_truthy(text:find("this help", 1, true))
+
+        assert.is_true(fire_lhs(fbuf, "q")) -- the float's own dismiss key
+        assert.is_false(vim.api.nvim_win_is_valid(float))
+
+        restore()
+    end)
+end)
