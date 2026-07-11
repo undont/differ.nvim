@@ -1065,6 +1065,22 @@ function M.panel(opts)
     return panel
 end
 
+-- close any live local session (panel or history) so a fresh history opener supersedes it
+-- in place rather than stacking a second session in its own tab. the two kinds are tracked
+-- by independent singletons, so an opener tears down both to keep a single live session. the
+-- panel opener doesn't share this: its bare `:Differ` / `:Differ panel` gestures reveal or
+-- toggle a live panel, so it supersedes history and panel on its own terms
+local function supersede_local_session()
+    local panel = require("differ.panel").current()
+    if panel then
+        panel:close()
+    end
+    local history = require("differ.history").current()
+    if history then
+        history:close()
+    end
+end
+
 -- :Differ log [path] / the `dh` verb: single-file history. lists the file's
 -- commits in a dedicated history panel; selecting/stepping a commit re-sources the
 -- one driven View to that commit vs its parent. read-only (no staging). `opts.path`
@@ -1075,12 +1091,10 @@ end
 ---@return differ.History|nil
 function M.history(opts)
     local History = require("differ.history")
-    -- re-running `:Differ log` over a live session supersedes it (mirrors `:Differ
-    -- <rev>`'s panel idempotency): close the old one and fall through to open the new
-    local open = History.current()
-    if open then
-        open:close()
-    end
+    -- re-running `:Differ log` over any live local session supersedes it (mirrors `:Differ
+    -- <rev>`'s panel idempotency): close a live panel (`:Differ base`/`<rev>`) or history and
+    -- fall through to open the new one, so we never stack a second session in its own tab
+    supersede_local_session()
 
     -- the cursor line :Differ log was invoked from, to open the first commit's diff at
     -- that line when history is for the file we're sitting in (resolved below)
@@ -1175,12 +1189,10 @@ end
 ---@return differ.History|nil
 function M.range_history(opts)
     local History = require("differ.history")
-    -- re-running `:Differ log <range>` over a live session supersedes it (mirrors
-    -- `:Differ <rev>`'s panel idempotency): close the old one, open the new
-    local open = History.current()
-    if open then
-        open:close()
-    end
+    -- re-running `:Differ log <range>` over any live local session supersedes it (mirrors
+    -- `:Differ <rev>`'s panel idempotency): close a live panel (`:Differ base`/`<rev>`) or
+    -- history, then open the new one, so we never stack a second session in its own tab
+    supersede_local_session()
 
     local range = opts.range
     if not range or range == "" then
