@@ -213,7 +213,7 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `<CR>` | On a thread row: jump into the review at that comment; elsewhere: open the PR in the browser |
 | `]t` / `[t` | Next / previous thread |
 | `gx` | Open the PR in the browser |
-| `q` | Back into the review if one is open, else end the session |
+| `q` | Back into the review when one is in progress (closing the page window ends the session) |
 | `g?` | Help |
 
 Code-comment threads render as a contained box (GitHub's outline, differ's left-spine style) with the diff hunk they anchor to inline: the tail of the hunk, capped, `⋯` when trimmed, `+`/`-` lines carrying the diff's own tints and the code treesitter-highlighted when a parser is installed. Plain PR comments and review verdicts stay flat page text, which is how you tell them apart at a glance.

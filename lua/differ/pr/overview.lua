@@ -2,7 +2,8 @@
 -- minimal timeline (conversation comments, submitted review verdicts, and code
 -- threads). it is a step *before* the review proper — no file panel, just a dedicated
 -- page filling the session tab. e/r enter the review (build the panel + diff), <CR> on
--- a thread row enters it at that thread's file/line, q backs out. the pure layout
+-- a thread row enters it at that thread's file/line, q backs into an in-progress
+-- review. the pure layout
 -- lives in ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
 -- fetches). get_timeline is a round-trip and threads are ensured (shared, PR-wide,
 -- also feeding the header count) — the meta comes from session.pr_meta (enriched in
@@ -92,8 +93,11 @@ function M.teardown()
     buf, anchors = nil, nil
 end
 
--- end the session if the page window is closed while still pre-review (no panel built).
--- once the review is entered the window is the diff's, so the guard is disarmed first
+-- end the session when the page window is closed: pre-review that's the only exit (q
+-- is inert there); with a live review it matches the diff's close guard, so :q on the
+-- layered page leaves the PR rather than stranding a hidden panel. deferred like the
+-- view's guard, tab/panel teardown isn't allowed inside WinClosed. entering the review
+-- disarms first (the window is repurposed, not closed)
 ---@param session table
 ---@param win integer
 local function arm_guard(session, win)
@@ -102,23 +106,31 @@ local function arm_guard(session, win)
         group = group,
         pattern = tostring(win),
         callback = function()
-            local s = require("differ.pr").current_session()
-            if s == session and not s.panel then
-                require("differ.pr").end_session()
-            end
+            vim.schedule(function()
+                -- re-check at run time: teardown or a session swap may have won the race
+                if require("differ.pr").current_session() == session then
+                    require("differ.pr").end_session()
+                end
+            end)
         end,
     })
 end
 
 -- buffer-local keymaps; they read the live session each time so the reused buffer never
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
--- backs into the review when one is open (else out of the PR), gx opens the PR url.
--- <CR> on a thread row enters the review at that thread's file/line; elsewhere it
--- opens the url. ]t/[t hop between thread boxes; g? floats the keymap cheatsheet
+-- backs into the review when one is open, gx opens the PR url. <CR> on a thread row
+-- enters the review at that thread's file/line; elsewhere it opens the url. ]t/[t hop
+-- between thread boxes; g? floats the keymap cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
         return require("differ.pr").current_session()
+    end
+    -- stash the page cursor on the session before entering the review; render consumes
+    -- the one-shot, so a go/C-o hop back lands where the page was left
+    ---@param s table
+    local function stash_cursor(s)
+        s.overview_cursor = vim.api.nvim_win_get_cursor(0)
     end
     local function open_url()
         local s = live()
@@ -140,7 +152,9 @@ local function set_keymaps(b)
     end
     local function select_or_url()
         local a = anchor_at_cursor()
-        if a and live() then
+        local s = live()
+        if a and s then
+            stash_cursor(s)
             return require("differ.pr").enter_at({ path = a.path, side = a.side, line = a.line })
         end
         open_url()
@@ -153,6 +167,7 @@ local function set_keymaps(b)
         if not s then
             return
         end
+        stash_cursor(s)
         local a = anchor_at_cursor()
         if a then
             return require("differ.pr").enter_at(
@@ -189,7 +204,7 @@ local function set_keymaps(b)
             " <CR>       thread row: jump into the review here, else open the PR url",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
-            " q          back into the review / end the session",
+            " q          back into the review (when one is in progress)",
             " g?         this help",
         }, { title = " Differ: overview " })
     end
@@ -209,15 +224,15 @@ local function set_keymaps(b)
         goto_thread("prev")
     end, opts)
     vim.keymap.set("n", "g?", show_help, opts)
-    -- q layers like a child page: arrived from the review (a panel exists), it backs
-    -- into the review (the stashed position restores); pre-review it ends the session.
-    -- only q, not <Esc>: <Esc> is too easy to fumble into an accidental exit
+    -- q dismisses the page back into the review when one is open (the stashed position
+    -- restores); pre-review it does nothing, :q is the exit there (the WinClosed guard
+    -- ends the session)
     vim.keymap.set("n", "q", function()
         local s = live()
         if s and s.panel then
-            return require("differ.pr").view({ number = s.pr.number })
+            stash_cursor(s)
+            require("differ.pr").view({ number = s.pr.number })
         end
-        require("differ.pr").end_session()
     end, opts)
 end
 
@@ -332,7 +347,14 @@ local function render(session, timeline, checks)
     vim.api.nvim_win_set_buf(win, buf)
     setup_window(win)
     vim.api.nvim_set_current_win(win)
-    vim.api.nvim_win_set_cursor(win, { 1, 0 })
+    -- a hop back from the review restores the stashed page cursor; a fresh open lands
+    -- at the top. row clamped (the rebuilt page can shrink), col pcall'd the same way
+    local cur = session.overview_cursor
+    session.overview_cursor = nil
+    local row = math.min(cur and cur[1] or 1, vim.api.nvim_buf_line_count(buf))
+    if not pcall(vim.api.nvim_win_set_cursor, win, { row, cur and cur[2] or 0 }) then
+        vim.api.nvim_win_set_cursor(win, { row, 0 })
+    end
     arm_guard(session, win)
 end
 

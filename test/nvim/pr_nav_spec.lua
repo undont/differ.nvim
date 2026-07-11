@@ -342,10 +342,11 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
-    it("q ends a fresh pre-review session, but re-enters the review after a go-hop", function()
+    it("q no-ops pre-review, but re-enters the review after a go-hop", function()
         local restore = open_overview(default_responses())
         assert.is_true(fire_lhs(overview_buf(), "q"))
-        assert.is_nil(pr.current_session())
+        assert.is_not_nil(pr.current_session())
+        pr.end_session()
         restore()
 
         restore = open_overview(default_responses())

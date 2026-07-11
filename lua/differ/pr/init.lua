@@ -675,6 +675,7 @@ local function open_session(pr, detail, opts)
         review_id = nil, -- the active pending-review node id; nil = immediate mode
         pending_focus = nil, -- one-shot { path, side, line } for resume position-restore
         overview_return = nil, -- one-shot diff anchor stashed by a back-to-overview hop
+        overview_cursor = nil, -- one-shot page {row, col} stashed on entering the review
         session_tab = session_tab, -- the tab hosting both the overview page and the review
         overview_win = vim.api.nvim_get_current_win(), -- the page window (pre-panel)
         ---@type differ.View|nil
