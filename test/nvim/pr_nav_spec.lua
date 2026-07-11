@@ -399,6 +399,70 @@ local function make_worktree_file(rel, content)
     }
 end
 
+describe("pr overview cursor + window-close guard", function()
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("a go-hop back restores the page cursor where the review was entered", function()
+        local restore = open_overview(default_responses())
+        local buf = overview_buf()
+        local win = pr.current_session().overview_win
+        assert.are.same({ 1, 0 }, vim.api.nvim_win_get_cursor(win)) -- fresh open: top
+
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(win, { row, 2 })
+        local s = enter_review()
+
+        local before = overview_tick()
+        assert.is_true(fire(s.view:column_for("new").bufnr, "PR overview"))
+        wait_overview(before)
+        assert.are.same({ row, 2 }, vim.api.nvim_win_get_cursor(s.overview_win))
+
+        -- q back into the review stashes afresh, so a second hop restores the new spot
+        local header = row_containing(buf, "threads:")
+        assert.is_truthy(header)
+        vim.api.nvim_win_set_cursor(s.overview_win, { header, 0 })
+        assert.is_true(fire_lhs(buf, "q"))
+        assert.is_true(vim.wait(1000, function()
+            return s.view ~= nil and s.view:is_open()
+        end))
+
+        before = overview_tick()
+        assert.is_true(fire(s.view:column_for("new").bufnr, "PR overview"))
+        wait_overview(before)
+        assert.are.same({ header, 0 }, vim.api.nvim_win_get_cursor(s.overview_win))
+
+        restore()
+    end)
+
+    it("closing the page window pre-review ends the session", function()
+        local restore = open_overview(default_responses())
+        vim.api.nvim_win_close(pr.current_session().overview_win, true)
+        assert.is_true(vim.wait(1000, function()
+            return pr.current_session() == nil
+        end))
+        restore()
+    end)
+
+    it("closing the page window with a live review also ends the session", function()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        local before = overview_tick()
+        assert.is_true(fire(s.view:column_for("new").bufnr, "PR overview"))
+        wait_overview(before)
+
+        vim.api.nvim_win_close(s.overview_win, true)
+        assert.is_true(vim.wait(1000, function()
+            return pr.current_session() == nil
+        end))
+        restore()
+    end)
+end)
+
 -- descriptions of the two edit binds on the diff surface (see session.diff_extra_keymaps)
 local EDIT_SPLIT = "edit the real file (in review)"
 local EDIT_ZOOM = "edit the real file (zoom tab)"
