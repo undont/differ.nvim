@@ -88,3 +88,45 @@ describe("syntax pass (split)", function()
         v:close()
     end)
 end)
+
+-- apply_snippets projects treesitter captures onto arbitrary buffer rows (the overview's
+-- boxed hunk lines), parsed from the stripped source text and shifted right by col_offset
+-- to clear the box spine + inset. same namespace/helpers as the View syntax pass
+describe("apply_snippets (overview hunk syntax)", function()
+    local syntax = require("differ.syntax")
+
+    -- a scratch buffer wide enough at each row that the shifted extmarks land (a col past
+    -- the line's end is silently dropped inside apply_snippets)
+    local function scratch(lines)
+        local b = vim.api.nvim_create_buf(false, true)
+        vim.api.nvim_buf_set_lines(b, 0, -1, false, lines)
+        return b
+    end
+
+    it("projects captures onto the snippet rows, shifted by col_offset", function()
+        local offset = 5
+        local pad = string.rep(" ", offset)
+        local b = scratch({ pad .. "local x = 1", pad .. "keep()" })
+        syntax.apply_snippets(b, {
+            {
+                path = "x.lua",
+                col_offset = offset,
+                lines = {
+                    { text = "local x = 1", row = 0 },
+                    { text = "keep()", row = 1 },
+                },
+            },
+        })
+        local marks = syntax_marks(b)
+        assert.is_true(has(marks, 0, "@keyword.lua", offset)) -- `local`, shifted past the inset
+        assert.is_true(has(marks, 1, "@function.call.lua")) -- keep() on the next snippet row
+    end)
+
+    it("is a no-op for a path with no treesitter language", function()
+        local b = scratch({ "local x = 1" })
+        syntax.apply_snippets(b, {
+            { path = "x", col_offset = 0, lines = { { text = "local x = 1", row = 0 } } },
+        })
+        assert.are.same({}, syntax_marks(b))
+    end)
+end)

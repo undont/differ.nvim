@@ -72,13 +72,15 @@ type Thread struct {
 }
 
 // ThreadComment is one comment in a Thread. ID is the numeric comment id; NodeID is
-// the GraphQL node id (the delete_comment target).
+// the GraphQL node id (the delete_comment target). DiffHunk is the diff context the
+// comment anchors to (the root comment's feeds the overview).
 type ThreadComment struct {
 	ID        int64  `json:"id"`
 	NodeID    string `json:"node_id"`
 	Author    string `json:"author"`
 	Body      string `json:"body"`
 	CreatedAt string `json:"created_at"`
+	DiffHunk  string `json:"diff_hunk,omitempty"`
 }
 
 // PendingReview is the get_pending_review result; ReviewID is nil when the viewer

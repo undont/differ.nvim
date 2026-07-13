@@ -1,10 +1,13 @@
 -- the PR overview home: a read-only pre-review page with the PR summary + a
--- minimal timeline (conversation comments + submitted review verdicts). it is a step
--- *before* the review proper — no file panel, just a dedicated page filling the session
--- tab. e/r enter the review (build the panel + diff), q backs out. the pure layout
+-- minimal timeline (conversation comments, submitted review verdicts, and code
+-- threads). it is a step *before* the review proper — no file panel, just a dedicated
+-- page filling the session tab. e/r enter the review (build the panel + diff), <CR> on
+-- a thread row enters it at that thread's file/line, q backs into an in-progress
+-- review. the pure layout
 -- lives in ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
--- fetches). only get_timeline is a new round-trip — the meta comes from session.pr_meta
--- (enriched in pr/init), the thread count from session.threads, checks reuse slice 5
+-- fetches). get_timeline is a round-trip and threads are ensured (shared, PR-wide,
+-- also feeding the header count) — the meta comes from session.pr_meta (enriched in
+-- pr/init), checks reuse slice 5
 
 local client = require("differ.pr.client")
 local ui = require("differ.ui.overview")
@@ -19,9 +22,15 @@ end
 
 local GUARD = "differ.pr.overview.guard"
 
+-- the page's scratch-buffer name, owned here; the review's on_repurpose asks
+-- M.owns_buffer rather than matching this literal itself
+local BUFNAME = "differ://overview"
+
 -- one reusable scratch buffer for the page; keymaps act on the live session via
--- pr.current_session(), so the buffer survives a session swap
+-- pr.current_session(), so the buffer survives a session swap. `anchors` is the last
+-- built row->thread-anchor index (<CR> reads it at press time)
 local buf = nil
+local anchors = nil
 
 -- a timestamp -> the display string, honouring the configured relative/absolute mode
 ---@return fun(ts: string): string
@@ -58,14 +67,37 @@ local function still_live(session)
     return require("differ.pr").current_session() == session
 end
 
+-- whether `b` is the page's scratch buffer, by its stable name. the review's
+-- on_repurpose asks this to re-enter the page rather than end the session on a jump back
+---@param b integer|nil
+---@return boolean
+function M.owns_buffer(b)
+    return b ~= nil and vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == BUFNAME
+end
+
 -- drop the navigate-away guard. the page window becomes the diff's on entry, so the
 -- guard must not fire when the view repurposes it
 function M.disarm()
     pcall(vim.api.nvim_del_augroup_by_name, GUARD)
 end
 
--- end the session if the page window is closed while still pre-review (no panel built).
--- once the review is entered the window is the diff's, so the guard is disarmed first
+-- wipe the reused scratch buffer + its anchor index on session teardown. the buffer is
+-- bufhidden=hide and outlives the window, so without this a Ctrl-O jump can resurface a
+-- stale page whose <CR>/gx act on current_session() (nil after teardown -> "no PR url",
+-- or a since-swapped session). paint rebuilds a fresh buffer for the next session
+function M.teardown()
+    M.disarm()
+    if buf and vim.api.nvim_buf_is_valid(buf) then
+        pcall(vim.api.nvim_buf_delete, buf, { force = true })
+    end
+    buf, anchors = nil, nil
+end
+
+-- end the session when the page window is closed: pre-review that's the only exit (q
+-- is inert there); with a live review it matches the diff's close guard, so :q on the
+-- layered page leaves the PR rather than stranding a hidden panel. deferred like the
+-- view's guard, tab/panel teardown isn't allowed inside WinClosed. entering the review
+-- disarms first (the window is repurposed, not closed)
 ---@param session table
 ---@param win integer
 local function arm_guard(session, win)
@@ -74,21 +106,31 @@ local function arm_guard(session, win)
         group = group,
         pattern = tostring(win),
         callback = function()
-            local s = require("differ.pr").current_session()
-            if s == session and not s.panel then
-                require("differ.pr").end_session()
-            end
+            vim.schedule(function()
+                -- re-check at run time: teardown or a session swap may have won the race
+                if require("differ.pr").current_session() == session then
+                    require("differ.pr").end_session()
+                end
+            end)
         end,
     })
 end
 
 -- buffer-local keymaps; they read the live session each time so the reused buffer never
 -- acts on a stale session. e enters the review (files), r enters + starts a review, q
--- backs out of the PR, gx/<CR> open the PR url
+-- backs into the review when one is open, gx opens the PR url. <CR> on a thread row
+-- enters the review at that thread's file/line; elsewhere it opens the url. ]t/[t hop
+-- between thread boxes; g? floats the keymap cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
         return require("differ.pr").current_session()
+    end
+    -- stash the page cursor on the session before entering the review; render consumes
+    -- the one-shot, so a go/C-o hop back lands where the page was left
+    ---@param s table
+    local function stash_cursor(s)
+        s.overview_cursor = vim.api.nvim_win_get_cursor(0)
     end
     local function open_url()
         local s = live()
@@ -99,10 +141,39 @@ local function set_keymaps(b)
             require("differ.pr").notify("no PR url", vim.log.levels.WARN)
         end
     end
+    -- the thread anchor whose row span covers the cursor, or nil off a thread section
+    local function anchor_at_cursor()
+        local row = vim.api.nvim_win_get_cursor(0)[1]
+        for _, a in ipairs(anchors or {}) do
+            if row >= a.row_start and row <= a.row_end then
+                return a
+            end
+        end
+    end
+    local function select_or_url()
+        local a = anchor_at_cursor()
+        local s = live()
+        if a and s then
+            stash_cursor(s)
+            return require("differ.pr").enter_at({ path = a.path, side = a.side, line = a.line })
+        end
+        open_url()
+    end
+    -- e/r: enter the review. on a thread row, jump into that thread's file/line (like
+    -- <CR>) so the comment's diff opens directly; elsewhere enter at the panel's file. r
+    -- also starts a review either way
     local function enter(review)
         local s = live()
         if not s then
             return
+        end
+        stash_cursor(s)
+        local a = anchor_at_cursor()
+        if a then
+            return require("differ.pr").enter_at(
+                { path = a.path, side = a.side, line = a.line },
+                review
+            )
         end
         if review then
             require("differ.pr").review({ number = s.pr.number })
@@ -110,20 +181,59 @@ local function set_keymaps(b)
             require("differ.pr").view({ number = s.pr.number })
         end
     end
+    -- ]t/[t: hop the cursor between thread boxes (their top rules), mirroring the
+    -- diff's thread nav. no wrap; [t inside a box lands on its own header first
+    ---@param direction "next"|"prev"
+    local function goto_thread(direction)
+        local row = vim.api.nvim_win_get_cursor(0)[1]
+        -- reuse the diff's pure nav: feed each thread's top row keyed on this buffer so
+        -- the nearest-past/no-wrap scan is the one code path (differ.pr.threads)
+        local rows = {}
+        for _, a in ipairs(anchors or {}) do
+            rows[#rows + 1] = { bufnr = b, row = a.row_start }
+        end
+        local best = require("differ.pr.threads").next_anchor(rows, b, row, direction)
+        if best then
+            vim.api.nvim_win_set_cursor(0, { best, 0 })
+        end
+    end
+    -- g?: a floating keymap cheatsheet, dismissed with <Esc> / q / g?
+    local function show_help()
+        require("differ.ui.help").show({
+            " e / r      enter review / enter + start a review (thread row: at its file)",
+            " <CR>       thread row: jump into the review here, else open the PR url",
+            " ]t / [t    next / previous thread",
+            " gx         open the PR in the browser",
+            " q          back into the review (when one is in progress)",
+            " g?         this help",
+        }, { title = " Differ: overview " })
+    end
     local opts = { buffer = b, nowait = true, silent = true }
     vim.keymap.set("n", "gx", open_url, opts)
-    vim.keymap.set("n", "<CR>", open_url, opts)
+    vim.keymap.set("n", "<CR>", select_or_url, opts)
     vim.keymap.set("n", "e", function()
         enter(false)
     end, opts)
     vim.keymap.set("n", "r", function()
         enter(true)
     end, opts)
-    for _, lhs in ipairs({ "q", "<Esc>" }) do
-        vim.keymap.set("n", lhs, function()
-            require("differ.pr").end_session()
-        end, opts)
-    end
+    vim.keymap.set("n", "]t", function()
+        goto_thread("next")
+    end, opts)
+    vim.keymap.set("n", "[t", function()
+        goto_thread("prev")
+    end, opts)
+    vim.keymap.set("n", "g?", show_help, opts)
+    -- q dismisses the page back into the review when one is open (the stashed position
+    -- restores); pre-review it does nothing, :q is the exit there (the WinClosed guard
+    -- ends the session)
+    vim.keymap.set("n", "q", function()
+        local s = live()
+        if s and s.panel then
+            stash_cursor(s)
+            require("differ.pr").view({ number = s.pr.number })
+        end
+    end, opts)
 end
 
 -- the page's window-local chrome: a clean reading surface (no diff gutter), markdown
@@ -141,27 +251,39 @@ local function setup_window(win)
     set_wo(win, "list", false)
 end
 
--- (re)build the scratch buffer, paint the built lines + highlight spans
----@param built { lines: string[], highlights: table[] }
+-- (re)build the scratch buffer, paint the built lines + highlight spans + the
+-- treesitter pass over the hunk snippets, keep the fresh thread-anchor index for <CR>
+---@param built { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
 local function paint(built)
     if not (buf and vim.api.nvim_buf_is_valid(buf)) then
         buf = vim.api.nvim_create_buf(false, true)
         vim.bo[buf].buftype = "nofile"
         vim.bo[buf].bufhidden = "hide"
         vim.bo[buf].filetype = "markdown"
-        pcall(vim.api.nvim_buf_set_name, buf, "differ://overview")
+        pcall(vim.api.nvim_buf_set_name, buf, BUFNAME)
         set_keymaps(buf)
     end
+    anchors = built.anchors
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, built.lines)
     vim.bo[buf].modifiable = false
     vim.api.nvim_buf_clear_namespace(buf, namespace(), 0, -1)
     for _, h in ipairs(built.highlights) do
-        vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, h.col_start, {
-            end_col = h.col_end,
-            hl_group = h.hl,
-        })
+        -- a full-width line tint (the hunk's +/- rows, mirroring the diff) vs a
+        -- column span (everything else)
+        if h.line_hl then
+            vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, 0, {
+                line_hl_group = h.line_hl,
+            })
+        else
+            vim.api.nvim_buf_set_extmark(buf, namespace(), h.row, h.col_start, {
+                end_col = h.col_end,
+                hl_group = h.hl,
+            })
+        end
     end
+    -- treesitter over the hunk code (parsed from the stripped source, never the page)
+    require("differ.syntax").apply_snippets(buf, built.hunks)
 end
 
 -- the window the page takes over: the pre-review page window, or — coming back from the
@@ -209,7 +331,11 @@ local function render(session, timeline, checks)
         checks = checks,
         unresolved = unresolved,
         total_threads = total,
-        timeline = timeline,
+        timeline = {
+            comments = timeline.comments,
+            reviews = timeline.reviews,
+            threads = session.threads, -- ensured by open; nil degrades to none
+        },
     }, { reltime = time_formatter() })
 
     local win = target_window(session)
@@ -221,12 +347,21 @@ local function render(session, timeline, checks)
     vim.api.nvim_win_set_buf(win, buf)
     setup_window(win)
     vim.api.nvim_set_current_win(win)
-    vim.api.nvim_win_set_cursor(win, { 1, 0 })
+    -- a hop back from the review restores the stashed page cursor; a fresh open lands
+    -- at the top. row clamped (the rebuilt page can shrink), col pcall'd the same way
+    local cur = session.overview_cursor
+    session.overview_cursor = nil
+    local row = math.min(cur and cur[1] or 1, vim.api.nvim_buf_line_count(buf))
+    if not pcall(vim.api.nvim_win_set_cursor, win, { row, cur and cur[2] or 0 }) then
+        vim.api.nvim_win_set_cursor(win, { row, 0 })
+    end
     arm_guard(session, win)
 end
 
--- M.open(session): fetch the timeline, reuse threads + checks, render the page. guards
--- the session is still live at every async hop (it can be torn down mid-fetch)
+-- M.open(session): fetch the timeline, ensure threads (shared with the diff overlay;
+-- feeds the header count + the timeline's thread sections), reuse cached checks, render
+-- the page. guards the session is still live at every async hop (it can be torn down
+-- mid-fetch); threads and checks degrade rather than block the page
 ---@param session table|nil
 function M.open(session)
     if not session then
@@ -244,19 +379,24 @@ function M.open(session)
             comments = type(tl) == "table" and type(tl.comments) == "table" and tl.comments or {},
             reviews = type(tl) == "table" and type(tl.reviews) == "table" and tl.reviews or {},
         }
-        if session.checks then
-            return render(session, timeline, session.checks)
-        end
-        -- no cached checks: fetch once, cache on the session, then render (degrade to
-        -- nil if the fetch fails — the rollup line just reads "n/a")
-        client.get_checks(session.pr, function(cerr, checks)
+        require("differ.pr.threads").ensure(session, function()
             if not still_live(session) then
                 return
             end
-            if not cerr and type(checks) == "table" then
-                session.checks = checks
+            if session.checks then
+                return render(session, timeline, session.checks)
             end
-            render(session, timeline, session.checks)
+            -- no cached checks: fetch once, cache on the session, then render (degrade
+            -- to nil if the fetch fails — the rollup line just reads "n/a")
+            client.get_checks(session.pr, function(cerr, checks)
+                if not still_live(session) then
+                    return
+                end
+                if not cerr and type(checks) == "table" then
+                    session.checks = checks
+                end
+                render(session, timeline, session.checks)
+            end)
         end)
     end)
 end

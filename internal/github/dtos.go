@@ -112,6 +112,7 @@ type commentGQL struct {
 	Body           string   `json:"body"`
 	CreatedAt      string   `json:"createdAt"`
 	State          string   `json:"state"`
+	DiffHunk       string   `json:"diffHunk"` // the diff context the comment anchors to
 }
 
 // pendingReviewGQL is the get_pending_review GraphQL response: the viewer's single

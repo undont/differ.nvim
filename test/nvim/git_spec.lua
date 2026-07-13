@@ -1780,3 +1780,48 @@ describe(":Differ (open_first)", function()
         assert.is_false(v:is_open()) -- on_close closed the driven view
     end)
 end)
+
+-- a panel and a history are tracked by independent singletons in their own tabs, so an
+-- opener that only superseded its own kind left the other stacked underneath. `:Differ log`
+-- over a live `:Differ base` panel then needed two `:Differ close`s (the first closed the
+-- stale panel, the second the visible history)
+describe(":Differ session supersession (cross-kind)", function()
+    local Panel = require("differ.panel")
+    local History = require("differ.history")
+
+    it("`:Differ log` supersedes a live panel, so one git.close ends the session", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua") -- the origin buffer; supersede returns focus here so
+        local ntabs = #vim.api.nvim_list_tabpages() -- range history resolves this repo by anchor
+
+        git_src.panel({ rev = {}, open_first = true }) -- the base/worktree panel
+        assert.is_not_nil(Panel.current())
+
+        git_src.range_history({ range = "HEAD" }) -- `:Differ log` on top
+        assert.is_nil(Panel.current()) -- superseded, not stacked
+        assert.is_not_nil(History.current()) -- exactly the history remains
+        assert.are.equal(ntabs + 1, #vim.api.nvim_list_tabpages()) -- one session tab, never two
+
+        git_src.close() -- a single :Differ close ends it
+        assert.is_nil(History.current())
+        assert.is_nil(Panel.current())
+        assert.are.equal(ntabs, #vim.api.nvim_list_tabpages()) -- session tab dropped
+    end)
+
+    it("`:Differ log <file>` also supersedes a live panel", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        assert.is_not_nil(Panel.current())
+
+        git_src.history({ path = root .. "/a.lua" }) -- explicit path: repo resolves unambiguously
+        assert.is_nil(Panel.current()) -- superseded
+        assert.is_not_nil(History.current())
+
+        git_src.close()
+        assert.is_nil(History.current())
+    end)
+end)

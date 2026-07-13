@@ -190,19 +190,31 @@ local function show_file(entry, focus_line)
                 on_cursor = function()
                     require("differ.pr.threads").on_cursor(s)
                 end,
+                -- a Ctrl-O jump (or :edit) can swap the overview page back into the diff
+                -- window; it's a live surface of this session, so re-enter it in place
+                -- (like `go`) rather than letting the diff's close guard end the session
+                on_repurpose = function(buf)
+                    if not (session and require("differ.pr.overview").owns_buffer(buf)) then
+                        return false
+                    end
+                    M.overview()
+                    return true
+                end,
             })
         end
         prefetch_around(entry) -- warm the neighbours so the next step is instant
         require("differ.pr.threads").refresh(s) -- (re)paint inline comment threads
-        -- resume position restore: once the target file is rendered, drop the
-        -- cursor on the pending comment's mapped row, then clear the one-shot focus
+        -- anchor position restore (resume / overview jump / overview hop): once the
+        -- target file is rendered, drop the cursor on the anchor's mapped row, then
+        -- clear the one-shot focus. anchor_row degrades an out-of-context line to the
+        -- nearest rendered one, so an anchor outside the diff context still lands close
         local pf = session.pending_focus
         if pf and pf.path == entry.path and session.view and session.view:is_open() then
             session.pending_focus = nil
             local side = pf.side == "LEFT" and "old" or "new"
             local col = session.view:column_for(side)
             local idx = col and (side == "old" and col.map.from_old or col.map.from_new)
-            local row = idx and idx[pf.line]
+            local row = idx and require("differ.pr.threads").anchor_row(idx, pf.line)
             if row and col.winid and vim.api.nvim_win_is_valid(col.winid) then
                 vim.api.nvim_win_set_cursor(col.winid, { row, 0 })
             end
@@ -434,14 +446,104 @@ function M.handle_conflict(on_ready)
 end
 
 -- select a file + drop the cursor on a (side, line) anchor, mapped after the file
--- renders (used by resume position-restore). a one-shot via session.pending_focus
+-- renders (used by resume position-restore and the overview's thread jump). a one-shot
+-- via session.pending_focus; false when the path isn't in the panel (focus cleared)
 ---@param target { path: string, side: string, line: integer }
+---@return boolean
 function M.goto_anchor(target)
     if not (session and session.panel) then
-        return
+        return false
     end
     session.pending_focus = target
-    session.panel:goto_path(target.path, true) -- sources the file; render applies the focus
+    local landed = session.panel:goto_path(target.path, true) -- sources the file; render applies the focus
+    if not landed then
+        session.pending_focus = nil
+    end
+    return landed
+end
+
+-- warn when the local checkout isn't the PR head, once per session: the worktree file
+-- the edit verbs open can then differ from the pinned blob the diff shows
+-- (:Differ pr checkout aligns them). re-checked on every edit (HEAD can move
+-- mid-session); the flag only silences repeats after a warning has fired
+local function warn_head_mismatch()
+    if not session or session.head_warned or not session.root then
+        return
+    end
+    local local_head = require("differ.git").head_sha(session.root)
+    local pr_head = session.pr_meta.head_sha
+    if local_head and pr_head and local_head ~= pr_head then
+        session.head_warned = true
+        notify(
+            "local checkout isn't the PR head; the file on disk may differ from the diff"
+                .. " (:Differ pr checkout)",
+            vim.log.levels.WARN
+        )
+    end
+end
+
+-- the shared guards for the pr edit verbs: an open diff and a local checkout
+---@return table|nil view
+local function editable_view()
+    if not (session and session.view and session.view:is_open()) then
+        notify("no active pull request diff")
+        return nil
+    end
+    if not session.root then
+        notify("editing needs a local checkout of this repo", vim.log.levels.WARN)
+        return nil
+    end
+    warn_head_mismatch()
+    return session.view
+end
+
+-- df on the pr diff: edit the worktree file in a split beside the pinned-blob diff,
+-- keeping the session. the diff keeps showing the pinned head (what the remote has);
+-- the edit shows on the PR once pushed and the head moves
+function M.edit_split()
+    local view = editable_view()
+    if view then
+        view:edit_beside()
+    end
+end
+
+-- de on the pr diff: zoom-edit the worktree file in its own tab; closing it (:q)
+-- returns to the review exactly as left. overrides the generic jump_to_file bind,
+-- which would tear the session down (leave-and-go is almost never right mid-review)
+function M.edit_zoom()
+    local view = editable_view()
+    if view then
+        view:edit_tab()
+    end
+end
+
+-- the diff cursor as a one-shot anchor { path, side, line }, or nil without an open
+-- diff. reads the new-side column's window cursor (valid even when focus is on the
+-- panel) and maps the row to its nearest new-side source line, so a back-to-overview
+-- hop can restore the position on re-entry
+---@param s table
+---@return table|nil
+local function diff_anchor(s)
+    local view = s.view
+    if not (view and view:is_open() and view.model) then
+        return nil
+    end
+    local col = view:column_for("new")
+    if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
+        return nil
+    end
+    -- the diff window may already show a foreign buffer (a Ctrl-O jump swapped the
+    -- overview back in): its cursor row is meaningless against the diff's line map, so
+    -- there's no diff position to stash
+    if vim.api.nvim_win_get_buf(col.winid) ~= col.bufnr then
+        return nil
+    end
+    local row = vim.api.nvim_win_get_cursor(col.winid)[1]
+    local line = require("differ.nav").file_line(col.map, row)
+    if not line then
+        return nil
+    end
+    return { path = view.model.path, side = "RIGHT", line = line }
 end
 
 -- thin, scriptable wrappers over the review/comment modules, acting on the live session
@@ -572,6 +674,8 @@ local function open_session(pr, detail, opts)
         thread_active = nil, -- the anchor key (bufnr:row) the cursor expands (peek)
         review_id = nil, -- the active pending-review node id; nil = immediate mode
         pending_focus = nil, -- one-shot { path, side, line } for resume position-restore
+        overview_return = nil, -- one-shot diff anchor stashed by a back-to-overview hop
+        overview_cursor = nil, -- one-shot page {row, col} stashed on entering the review
         session_tab = session_tab, -- the tab hosting both the overview page and the review
         overview_win = vim.api.nvim_get_current_win(), -- the page window (pre-panel)
         ---@type differ.View|nil
@@ -585,6 +689,7 @@ local function open_session(pr, detail, opts)
     -- they reach the buffer via the extra_keymaps seam, not the fixed action set
     local panel_km, diff_km = cfg.keymaps.panel, cfg.keymaps.diff
     local panel_extra = {
+        { spec = panel_km.overview, fn = M.overview, desc = "PR overview" },
         { spec = panel_km.toggle_viewed, fn = toggle_viewed, desc = "toggle viewed" },
         {
             spec = panel_km.next_unviewed,
@@ -627,6 +732,22 @@ local function open_session(pr, detail, opts)
         { spec = diff_km.comment, fn = M.comment_range, desc = "comment on selection", mode = "x" },
         { spec = diff_km.reply, fn = M.reply, desc = "reply to thread" },
         { spec = diff_km.delete_comment, fn = M.delete_comment, desc = "delete comment" },
+        -- back to the PR home, stashing the diff position for the return trip
+        { spec = diff_km.overview, fn = M.overview, desc = "PR overview" },
+        -- edit-in-review on the pinned-blob diff (the generic bind is gated to
+        -- uncommitted sources, so the lhs is free here)
+        {
+            spec = diff_km.edit_file,
+            fn = M.edit_split,
+            desc = "edit the real file (in review)",
+        },
+        -- zoom-edit in its own tab; same lhs as the generic jump_to_file bind, which
+        -- extras override (they bind later)
+        {
+            spec = diff_km.goto_file,
+            fn = M.edit_zoom,
+            desc = "edit the real file (zoom tab)",
+        },
     }
 
     -- build the file panel + driven diff into the session tab. deferred so the overview
@@ -656,6 +777,7 @@ local function open_session(pr, detail, opts)
                     session.view:close()
                 end
                 close_session_tab(session_tab)
+                require("differ.pr.overview").teardown() -- wipe the reused page buffer
                 session = nil
             end,
         }):open()
@@ -684,10 +806,12 @@ local function open_session(pr, detail, opts)
 end
 
 -- enter the review proper (panel + diff) for the live session, building the panel on
--- first entry or revealing it after a back-to-overview hop, then landing on the first
--- file. used by the overview's e/r and by view/review re-entry on a live session
+-- first entry or revealing it after a back-to-overview hop, then landing on `focus`'s
+-- anchor when given (overview thread jump) or on the panel's current file. used by the
+-- overview's e/r and <CR>, and by view/review re-entry on a live session
 ---@param review boolean|nil
-local function enter_files(review)
+---@param focus { path: string, side: string, line: integer }|nil
+local function enter_files(review, focus)
     if not session then
         return
     end
@@ -698,12 +822,28 @@ local function enter_files(review)
         session.panel:show() -- revealing a sidebar hidden by a back-to-overview hop
     end
     require("differ.pr.overview").disarm() -- the page window is the diff's now
-    session.panel:select(true)
+    -- an explicit focus (thread jump) wins over the back-hop stash; either way the
+    -- stash is consumed, so a later plain entry doesn't replay a stale position
+    local target = focus or session.overview_return
+    session.overview_return = nil
+    if not (target and M.goto_anchor(target)) then
+        session.panel:select(true)
+    end
     if review then
         require("differ.pr.review").start(session) -- idempotent
     elseif first then
         adopt_pending_review(session.pr)
     end
+end
+
+-- enter the review at a thread anchor (the overview's <CR>/e/r on a timeline thread).
+-- review starts a pending review on entry (the overview's r), like review <n>
+---@param target { path: string, side: string, line: integer }
+---@param review boolean|nil
+function M.enter_at(target, review)
+    M.with_session(function()
+        enter_files(review or false, target)
+    end)
 end
 
 -- M.show(pr): fetch the PR and open its session. opts threads the landing target into
@@ -826,10 +966,13 @@ function M.review(opts)
     return M.open({ number = session.pr.number, land = "files", review = true })
 end
 
--- :Differ pr overview — go back to the PR home from the review (closes the diff +
--- hides the panel, keeping the session), or re-show it while already on the page
+-- :Differ pr overview (and the diff/panel `go`) — go back to the PR home from the
+-- review (closes the diff + hides the panel, keeping the session), or re-show it while
+-- already on the page. the diff position is stashed so re-entering the files restores
+-- it; re-showing from the page keeps an earlier stash rather than clobbering it
 function M.overview()
     M.with_session(function(s)
+        s.overview_return = diff_anchor(s) or s.overview_return
         require("differ.pr.overview").open(s)
     end)
 end
@@ -870,6 +1013,7 @@ function M.end_session()
     local tab = session.session_tab
     session = nil
     close_session_tab(tab)
+    require("differ.pr.overview").teardown() -- wipe the reused page buffer
 end
 
 -- ── PR lifecycle ───────────────────────────────────────────────────────────────────

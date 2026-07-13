@@ -94,6 +94,7 @@ M.defaults = {
         prev_unviewed = "[u",
         next_thread = "]t", -- pr diff: jump to the next/prev review-thread anchor
         prev_thread = "[t",
+        overview = "go", -- pr diff + panel: back to the PR overview home (shadows native go, goto-byte)
         -- both buffer-local to the read-only pr diff, so the g-family shadowing is
         -- deliberate and inert: gc = native comment op (no source to toggle), gr =
         -- native lsp prefix (no lsp on a synthetic diff buffer)
@@ -119,8 +120,8 @@ M.defaults = {
         unstage_all = "U",
         more_context = "d=", -- diff
         less_context = "d-",
-        edit_file = "df", -- diff: edit-in-review, uncommitted (worktree/staged) diffs
-        goto_file = "de", -- diff: open the real file and end the session
+        edit_file = "df", -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
+        goto_file = "de", -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
         discard = "X", -- panel
         refresh = "R",
         toggle_fold = "za", -- history (range mode)
