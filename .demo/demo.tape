@@ -12,13 +12,14 @@
 # <leader>d*/<leader>p* launchers (leader is Space); a keycast HUD (bottom-right, from
 # init.lua) shows the keys as they're pressed. Covers the multi-file diff, the s/s staging
 # flow across files, panel repositioning, file-level staging, file history, layout toggle,
-# the 3-way merge tool, and the GitHub PR review flow (list, overview, draft review,
-# reply to a third user's thread, resolve, comment, approve).
+# the 3-way merge tool, and the GitHub PR review flow (list, overview with boxed code
+# threads, enter the review at a thread, reply, resolve, the overview round-trip,
+# comment, approve).
 #
 # NOTE: focus/nav steps assume the panel is on the RIGHT (Ctrl+W h -> diff, Ctrl+W l
-# -> panel) and that `[f` lands back on palette.lua. The PR scene assumes review entry
-# focuses the diff so `]t`/`gc`/`gp`/`gr`/`ga` land there (add a `Ctrl+W h` before `]t`
-# if not). Watch one pass and nudge the sleeps; if the keycast HUD covers anything, move
+# -> panel) and that `[f` lands back on palette.lua. The PR scene enters the review with
+# `r` from the overview thread, which lands focus on the diff so `gp`/`gr`/`ga` land
+# there. Watch one pass and nudge the sleeps; if the keycast HUD covers anything, move
 # its anchor in .demo/init.lua.
 
 Output .demo/demo.gif
@@ -202,27 +203,24 @@ Type "nvim -u ../init.lua lua/theme.lua"
 Enter
 Sleep 2s
 
-# List the open PRs (from the sidecar) and pick #42 — lands on the overview: title,
-# body, green CI checks, and the conversation timeline (octocat's note + review).
+# List the open PRs (from the sidecar) and pick #42. It lands on the overview: title,
+# body, green CI checks, the conversation timeline (octocat's note + review), and code
+# threads rendered as boxed units that carry their diff hunk inline.
 Space
 Type "pl"
 Sleep 1.8s
 Type "1"
-Sleep 3.2s
+Sleep 2.4s
 
-# Start a review (Space pr): the file panel + diff build into the session tab, and new
-# comments compose as drafts until the review is submitted.
-Space
-Type "pr"
-Sleep 2.8s
-
-# The panel lists files alphabetically, so the review lands on palette.lua; step to
-# theme.lua (]f), where octocat's thread lives, then jump to it (]t). the cursor peek
-# expands the thread inline — threads collapse when the cursor leaves to keep the file
-# scannable, so the cursor stays on the line through the reply.
-Type "]f"
-Sleep 1.6s
+# Hop to octocat's boxed thread (]t) and read it.
 Type "]t"
+Sleep 2.4s
+
+# r enters and starts the review at that thread's file and line, landing straight on
+# octocat's comment in theme.lua with no file-stepping. New comments compose as drafts
+# until submitted; the cursor peek expands the thread inline (it collapses when the cursor
+# leaves), so the cursor stays on the line through the reply.
+Type "r"
 Sleep 2.8s
 
 # Reply to it — the compose split opens in insert mode; Ctrl+S submits. the cursor stays
@@ -237,6 +235,13 @@ Sleep 3.4s
 # Resolve the thread now that it's addressed.
 Type "gr"
 Sleep 2.2s
+
+# Pop back to the overview (go) to see the thread now reading resolved, then q drops
+# straight back into the review where we left off (the stashed diff position restores).
+Type "go"
+Sleep 2.2s
+Type "q"
+Sleep 1.8s
 
 # Add a fresh comment of our own: step to a changed line and comment on it.
 Type "]c"
