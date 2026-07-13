@@ -7,7 +7,9 @@ name: Release
 #   anything else    -> no release
 # or trigger manually from the Actions tab with an explicit version (e.g. v0.1.0).
 # the sidecar is built on install (lazy `build` hook), so releases ship no binaries,
-# just a tag + generated notes for changelog and lazy.nvim `version=` pinning.
+# just a tag for lazy.nvim `version=` pinning. lazy's update changelog comes from the
+# commit messages (hence the prefixes); these generated notes are only for the GitHub
+# Releases page, and CHANGELOG.md is hand-maintained.
 
 on:
   push:

@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- A PR overview page: the conversation timeline plus code threads rendered as boxed units (a left-spine box with a top-rule header, spine body rows, and a reply-count footer) that carry their diff hunk inline. The hunk tail is capped (keeping the `@@` header and an elision marker when trimmed), tinted with the diff's own +/- line colours, and treesitter-highlighted from the marker-stripped source rather than the page buffer. `]t`/`[t` hop between thread boxes
+- Enter the review straight from an overview thread: `<CR>`, `e`, or `r` on a thread row open the review at that comment's file and line, landing on the comment with no file-stepping
+- A review to overview round-trip: `go` pops from the review back to the overview, and `q` drops back into the review where you left off, restoring the stashed diff position and the overview's own cursor on the hop back
+- `df` edits the real file in an in-review split on the pinned-blob diff; `de` opens a zoom tab to edit and returns to the review on close
+- A floating keymap cheatsheet (`g?`) on the overview page, advertised by a `help: g?` header hint
+
+### Fixed
+
+- `:Differ log` now supersedes a live panel when it opens over one, instead of stacking a history session on top of it
+- `q` on the overview dismisses the page only; `esc` no longer closes it (too easy to fumble). Window close on teardown is guarded so the kept window is spared the view-teardown buffer wipe
+- The reused overview buffer is wiped on teardown so a stale `ctrl-o` jump can't resurface a dead page ("no PR url"); `ctrl-o` back onto the overview re-enters it live via a view `on_repurpose` hook
+- Zoom-edit now looks up its buffer exactly and scopes its augroup per view, so a second zoom-edit can't attach to the wrong buffer
+
+## [0.1.17] — 2026-07-09
+
+### Changed
+
+- Internal: a gated `lua_ls` type-check in CI, pinned and cleaned, with nilable session/rev/pcall types narrowed across the runtime (no behaviour change)
+
+## [0.1.16] — 2026-07-08
+
+### Fixed
+
+- Content-bearing git reads are now byte-true instead of newline-normalised, so CRLF files stage and diff correctly; worktree-side reads run through git's own clean filter (eol conversion, text attrs, custom filters) so hunk staging compares against the bytes `git add` would store. Gated on a CR byte in non-binary content, leaving LF-only content untouched
+- The checks panel replaces the deprecated `nvim_buf_add_highlight`
+
+## [0.1.15] — 2026-07-05
+
+### Changed
+
+- Aligned PR notify wording and level: the checks float's "no url" case now warns, matching the other "no url to act on" guards, and the thread guards drop the redundant "review" qualifier ("no thread on this line"), matching the wording used elsewhere in the PR diff
+
+## [0.1.14] — 2026-07-05
+
 ### Fixed
 
 - `:Differ` and `:Differ <rev>` now also close a live `:Differ log`/history session when superseding, not just a live panel. Left dangling, the orphaned session made `goto_hunk` in an unrelated new diff view read its stale singleton and refuse to cross file boundaries on `]c`/`[c`

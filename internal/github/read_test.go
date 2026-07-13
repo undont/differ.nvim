@@ -125,8 +125,8 @@ const threadsGraphQL = `{"data":{"repository":{"pullRequest":{"reviewThreads":{
   "nodes":[
     {"id":"THREAD_A","isResolved":false,"path":"a.go","line":12,"startLine":null,"diffSide":"RIGHT","startDiffSide":null,
      "comments":{"nodes":[
-       {"fullDatabaseId":"1001","author":{"login":"alice"},"body":"first","createdAt":"2026-01-01","state":"SUBMITTED"},
-       {"fullDatabaseId":"1002","author":{"login":"bob"},"body":"reply","createdAt":"2026-01-02","state":"SUBMITTED"}
+       {"fullDatabaseId":"1001","author":{"login":"alice"},"body":"first","createdAt":"2026-01-01","state":"SUBMITTED","diffHunk":"@@ -10,3 +10,4 @@\n ctx\n+added"},
+       {"fullDatabaseId":"1002","author":{"login":"bob"},"body":"reply","createdAt":"2026-01-02","state":"SUBMITTED","diffHunk":"@@ -30,1 +30,2 @@\n+reply"}
      ]}},
     {"id":"THREAD_B","isResolved":true,"path":"b.go","line":40,"startLine":38,"diffSide":"RIGHT","startDiffSide":"RIGHT",
      "comments":{"nodes":[
@@ -160,6 +160,9 @@ func TestGetThreads(t *testing.T) {
 	}
 	if len(a.Comments) != 2 || a.Comments[1].ID != 1002 || a.Comments[1].Author != "bob" {
 		t.Errorf("thread A comments wrong: %+v", a.Comments)
+	}
+	if a.Comments[0].DiffHunk != "@@ -10,3 +10,4 @@\n ctx\n+added" || a.Comments[1].DiffHunk != "@@ -30,1 +30,2 @@\n+reply" {
+		t.Errorf("thread A comment diff hunks wrong: %+v", a.Comments)
 	}
 
 	b := threads[1]

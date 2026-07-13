@@ -126,4 +126,42 @@ function M.apply(bufnr, column, model)
     end
 end
 
+-- apply the syntax pass to detached code snippets (the overview's diff hunks): parse
+-- each snippet's marker-stripped source as one text and paint the captures onto its
+-- recorded buffer rows, shifted right by col_offset (the spine + marker prefix). same
+-- derived-buffer rule as apply: never parse the page itself. clears the namespace once,
+-- so one call per repaint covers every snippet; a path with no parser is skipped and
+-- its hunk stays plain
+---@param bufnr integer
+---@param snippets { path: string, col_offset: integer, lines: { row: integer, text: string }[] }[]|nil
+function M.apply_snippets(bufnr, snippets)
+    vim.api.nvim_buf_clear_namespace(bufnr, ns, 0, -1)
+    for _, s in ipairs(snippets or {}) do
+        local lang = #s.lines > 0 and resolve_lang(s.path) or nil
+        if lang then
+            local texts = {}
+            for i, l in ipairs(s.lines) do
+                texts[i] = l.text
+            end
+            for _, c in ipairs(captures_for(table.concat(texts, "\n"), lang)) do
+                local target = s.lines[c.row + 1]
+                if target then
+                    pcall(
+                        vim.api.nvim_buf_set_extmark,
+                        bufnr,
+                        ns,
+                        target.row,
+                        c.col_start + s.col_offset,
+                        {
+                            end_col = c.col_end + s.col_offset,
+                            hl_group = c.hl,
+                            priority = PRIORITY,
+                        }
+                    )
+                end
+            end
+        end
+    end
+end
+
 return M

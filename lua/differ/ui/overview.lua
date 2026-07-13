@@ -1,8 +1,10 @@
--- pure builder for the PR overview page. data in -> { lines, highlights } out,
--- no vim state, so it's unit-tested like ui/thread.lua. the timeline merges comments +
--- review verdicts and sorts by created_at; relative time is injected (opts.reltime) to
--- keep the builder deterministic. scope guard: comments + review verdicts only — no
--- reactions, labels, assignees, or events
+-- pure builder for the PR overview page. data in -> { lines, highlights, anchors }
+-- out, no vim state, so it's unit-tested like ui/thread.lua. the timeline merges
+-- comments, review verdicts and code threads and sorts by created_at; relative time is
+-- injected (opts.reltime) to keep the builder deterministic. a thread item carries its
+-- code anchor (path/side/line) and `anchors` records the row span of each, so the vim
+-- layer can jump from a timeline row into the review. scope guard: comments, verdicts
+-- and threads only — no reactions, labels, assignees, or events
 
 local M = {}
 
@@ -38,9 +40,64 @@ local function split_lines(s)
     return out
 end
 
--- merge comments + reviews into one chronological list of { kind, author, body, ts,
--- state? }, sorted ascending by created_at (lexical sort is correct for ISO-8601 UTC)
----@param tl { comments: table[], reviews: table[] }
+local MAX_HUNK = 6 -- tail rows of a thread's diff hunk shown under its header
+
+-- the thread box chrome, mirroring ui/thread.lua's left-spine style so a code thread
+-- reads as one contained unit (github's outline) instead of loose page text. hunk rows
+-- sit HUNK_INDENT deeper than the body text, so the code reads as its own inset slab
+local TOP = "┌─ "
+local SPINE = "│ "
+local BOT = "└─ "
+local HUNK_INDENT = "   "
+
+-- a thread's diff-hunk items: the tail of the hunk (it ends at the commented line),
+-- capped to MAX_HUNK and keeping the @@ header + a ⋯ elision marker when truncated, so
+-- a code comment reads with its diff like github's. a code item carries its line tint
+-- (+ adds, - deletes, the diff's own groups) and the marker-stripped source text, which
+-- feeds the treesitter snippet pass. an empty hunk yields no items
+---@param hunk string|nil
+---@return { kind: "header"|"elision"|"code", text?: string, line_hl?: string, code?: string }[]
+local function hunk_items(hunk)
+    if not hunk or hunk == "" then
+        return {}
+    end
+    local lines = split_lines(hunk)
+    local items = {}
+    local function emit(line)
+        local c = line:sub(1, 1)
+        if c == "@" then
+            items[#items + 1] = { kind = "header", text = line }
+        else
+            items[#items + 1] = {
+                kind = "code",
+                text = line,
+                code = line:sub(2), -- the marker stripped, for the syntax pass
+                line_hl = (c == "+" and "differLineAdd")
+                    or (c == "-" and "differLineDelete")
+                    or nil,
+            }
+        end
+    end
+    if #lines <= MAX_HUNK then
+        for _, l in ipairs(lines) do
+            emit(l)
+        end
+    else
+        emit(lines[1]) -- the @@ header keeps the function/line context
+        items[#items + 1] = { kind = "elision" }
+        for i = #lines - (MAX_HUNK - 2) + 1, #lines do
+            emit(lines[i])
+        end
+    end
+    return items
+end
+
+-- merge comments + reviews + code threads into one chronological list of { kind,
+-- author, body, ts, state?, path?, side?, line?, resolved?, replies? }, sorted
+-- ascending by created_at (lexical sort is correct for ISO-8601 UTC). a thread rides
+-- its first comment (author/body/ts) plus the code anchor; a pending draft thread is
+-- the viewer's WIP, not a timeline entry (like a PENDING review)
+---@param tl { comments: table[], reviews: table[], threads: table[]|nil }
 ---@return table[]
 local function timeline(tl)
     local items = {}
@@ -56,6 +113,23 @@ local function timeline(tl)
             ts = r.created_at,
             state = r.state,
         }
+    end
+    for _, t in ipairs(tl.threads or {}) do
+        if not t.is_pending then
+            local first = (t.comments or {})[1] or {}
+            items[#items + 1] = {
+                kind = "thread",
+                author = first.author,
+                body = first.body,
+                ts = first.created_at,
+                path = t.path,
+                side = t.side,
+                line = t.line,
+                diff_hunk = first.diff_hunk, -- the root comment's, rendered under the header
+                resolved = t.resolved == true, -- vim.NIL-safe
+                replies = math.max(0, #(t.comments or {}) - 1),
+            }
+        end
     end
     table.sort(items, function(a, b)
         return (a.ts or "") < (b.ts or "")
@@ -77,10 +151,12 @@ local function verdict_of(item)
     return { label = "commented", hl = "differOverviewMeta" }
 end
 
--- build the overview buffer content.
+-- build the overview buffer content. `anchors` maps each thread item to its 1-based
+-- row span ({ row_start, row_end, path, side, line }), so <CR> anywhere in the section
+-- can jump to the code anchor. a highlight is { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
 ---@param opts { reltime?: fun(ts: string): string }|nil
----@return { lines: string[], highlights: table[] }  -- highlight: { row, col_start, col_end, hl } (0-based row)
+---@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
@@ -108,7 +184,7 @@ function M.build(data, opts)
         lines[#lines + 1] = table.concat(parts)
     end
 
-    -- header: title, the state/author/mergeable meta line, the checks + threads line
+    -- header: title, the state/author/mergeable meta line, the checks + threads + help line
     local number = meta.number and ("#" .. meta.number .. " ") or ""
     push({ { number .. (meta.title or "untitled"), "differOverviewTitle" } })
 
@@ -131,7 +207,7 @@ function M.build(data, opts)
     local rollup_word = (rollup ~= nil and rollup ~= "") and tostring(rollup):lower() or "n/a"
     push({
         {
-            ("checks: %s · threads: %d unresolved / %d"):format(
+            ("checks: %s · threads: %d unresolved / %d · help: g?"):format(
                 rollup_word,
                 data.unresolved or 0,
                 data.total_threads or 0
@@ -152,11 +228,87 @@ function M.build(data, opts)
 
     push({ { RULE, "differOverviewMeta" } })
 
-    -- timeline: one section per item, a blank row between sections
-    for i, item in ipairs(timeline(data.timeline or {})) do
-        if i > 1 then
-            push({ { "", "differOverviewBody" } })
+    -- timeline: one section per item, a blank row between sections. a thread section's
+    -- row span is recorded so the vim layer can jump from any of its rows to the anchor.
+    -- a code thread renders as a left-spine box (top rule header, spine rows for the
+    -- hunk + body, footer rule with the reply count), so it reads as one contained unit;
+    -- plain comments and verdicts keep the flat ── header ── style
+    local anchors = {}
+    local hunks = {}
+
+    -- a code thread as a left-spine box: a top-rule header, the root comment's diff hunk
+    -- on inset spine rows, the body, a footer rule with the reply count. records the row
+    -- span in `anchors` (the <CR> jump target) and any code rows in `hunks` (the syntax
+    -- pass). closes over push/lines/highlights/hunks/anchors, so it stays a pure builder
+    ---@param item table
+    local function render_thread(item)
+        local row_start = #lines + 1
+        push({
+            { TOP, "differOverviewMeta" },
+            { "@" .. (item.author or "?"), "differOverviewAuthor" },
+            { " commented on ", "differOverviewMeta" },
+            { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
+            {
+                item.resolved and " · resolved" or " · unresolved",
+                item.resolved and "differOverviewMeta" or "differOverviewChanges",
+            },
+            { " · " .. reltime(item.ts or ""), "differOverviewMeta" },
+        })
+        -- the code the comment anchors to, github-style, on spine rows between header and
+        -- body. +/- rows carry the diff's full-width line tints (recorded directly, since
+        -- push only emits column spans); code rows are collected marker-stripped for the
+        -- treesitter snippet pass; @@/⋯ recede grey
+        local items = hunk_items(item.diff_hunk)
+        local lead = SPINE .. HUNK_INDENT
+        local hunk = { path = item.path, col_offset = #lead + 1, lines = {} }
+        for _, it in ipairs(items) do
+            local row0 = #lines -- 0-based index of the line push is about to add
+            if it.kind == "elision" then
+                push({ { lead, "differOverviewMeta" }, { "⋯", "differOverviewDiffContext" } })
+            elseif it.kind == "header" then
+                push({
+                    { lead, "differOverviewMeta" },
+                    { it.text, "differOverviewDiffContext" },
+                })
+            else
+                push({ { lead, "differOverviewMeta" }, { it.text, nil } })
+                if it.line_hl then
+                    highlights[#highlights + 1] = { row = row0, line_hl = it.line_hl }
+                end
+                hunk.lines[#hunk.lines + 1] = { row = row0, text = it.code }
+            end
         end
+        if #hunk.lines > 0 and item.path then
+            hunks[#hunks + 1] = hunk
+        end
+        if item.body and item.body ~= "" then
+            if #items > 0 then
+                push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
+            end
+            for _, line in ipairs(split_lines(item.body)) do
+                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            end
+        end
+        local footer = { { BOT, "differOverviewMeta" } }
+        if item.replies and item.replies > 0 then
+            footer[#footer + 1] = {
+                ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
+                "differOverviewMeta",
+            }
+        end
+        push(footer)
+        anchors[#anchors + 1] = {
+            row_start = row_start,
+            row_end = #lines,
+            path = item.path,
+            side = item.side,
+            line = item.line,
+        }
+    end
+
+    -- a plain comment / review verdict as a flat ── header ── with its body below
+    ---@param item table
+    local function render_flat(item)
         local v = verdict_of(item)
         push({
             { "── ", "differOverviewMeta" },
@@ -172,7 +324,18 @@ function M.build(data, opts)
         end
     end
 
-    return { lines = lines, highlights = highlights }
+    for i, item in ipairs(timeline(data.timeline or {})) do
+        if i > 1 then
+            push({ { "", "differOverviewBody" } })
+        end
+        if item.kind == "thread" then
+            render_thread(item)
+        else
+            render_flat(item)
+        end
+    end
+
+    return { lines = lines, highlights = highlights, anchors = anchors, hunks = hunks }
 end
 
 return M
