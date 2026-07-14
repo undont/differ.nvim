@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A review to overview round-trip: `go` pops from the review back to the overview, and `q` drops back into the review where you left off, restoring the stashed diff position and the overview's own cursor on the hop back
 - `df` edits the real file in an in-review split on the pinned-blob diff; `de` opens a zoom tab to edit and returns to the review on close
 - A floating keymap cheatsheet (`g?`) on the overview page, advertised by a `help: g?` header hint
+- Per-section `+/-` totals on the file panel's section headers (Staged/Unstaged/Untracked), summed fold-independently and pinned to the same column as the per-file counts and the `--stat` help-line total. Consecutive sections are separated by a blank line so a header doesn't butt up against the previous section's files
 
 ### Fixed
 
