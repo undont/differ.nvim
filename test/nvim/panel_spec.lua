@@ -42,6 +42,31 @@ describe("panel rendering", function()
         p:close()
     end)
 
+    it("omits the section +/- aggregate by default, carries it when opted in", function()
+        local secs = { { title = "Staged", entries = { fe("a.lua", "M", 3, 1) } } }
+        local header = function(p)
+            for _, m in ipairs(p.meta) do
+                if m.kind == "header" then
+                    return m
+                end
+            end
+        end
+        -- default: section_diffstat off, so the header meta carries no totals
+        local off = Panel.new({ sections = secs, on_select = function() end })
+        off:render()
+        assert.is_nil(header(off).add_total)
+        assert.is_nil(header(off).del_total)
+        -- opted in: the fold-independent +/- totals ride the header meta
+        local on = Panel.new({
+            sections = secs,
+            section_diffstat = true,
+            on_select = function() end,
+        })
+        on:render()
+        assert.are.equal(3, header(on).add_total)
+        assert.are.equal(1, header(on).del_total)
+    end)
+
     it("toggle_listing toggles tree <-> name", function()
         local p = panel({ fe("a.lua"), fe("src/b.lua") })
         p:open()

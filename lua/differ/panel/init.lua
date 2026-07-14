@@ -64,6 +64,7 @@ local STATUS_HL = {
 ---@field origin_win integer|nil
 ---@field return_tab integer|nil
 ---@field progress boolean  -- file-position meter in the panel winbar
+---@field section_diffstat boolean  -- per-section +/- totals on the header row
 ---@field sections differ.panel.Section[]
 ---@field listing "tree"|"name"
 ---@field collapsed table<string, table<string, boolean>>  -- section key -> dir path -> folded
@@ -112,6 +113,7 @@ Panel.__index = Panel
 ---@field height? integer
 ---@field width? integer
 ---@field progress? boolean -- file-position meter in the panel winbar (default on)
+---@field section_diffstat? boolean -- per-section +/- header totals (default off)
 
 ---@class differ.panel.ExtraMap
 ---@field spec string|string[]|false  -- resolved lhs (a keymaps value)
@@ -159,6 +161,7 @@ function Panel.new(opts)
         height = opts.height or 7,
         width = opts.width or 35,
         progress = opts.progress ~= false, -- default on; only an explicit false disables it
+        section_diffstat = opts.section_diffstat == true, -- default off; only an explicit true enables it
         collapsed = {},
         lines = {},
         meta = {},
@@ -260,8 +263,10 @@ function Panel:render()
             title = sec.title,
             prefix = strip ~= "" and strip or nil,
             count = #sec.entries,
-            add = sec_add,
-            del = sec_del,
+            -- header aggregate is opt-in: nil skips it, so render/highlight and the
+            -- width reserve all fall back to the plain header when it's off
+            add = self.section_diffstat and sec_add or nil,
+            del = self.section_diffstat and sec_del or nil,
             -- fold state is namespaced per section: the same dir path can list under
             -- two sections at once (e.g. an untracked src/ and an unstaged src/), so a
             -- shared key would collapse both rows from one toggle

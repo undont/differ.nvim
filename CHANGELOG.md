@@ -8,12 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Per-section `+/-` totals on the file panel's section headers (Staged/Unstaged/Untracked), summed fold-independently and pinned to the same column as the per-file counts and the `--stat` help-line total. Opt-in via `panel.section_diffstat = true` (off by default). Consecutive sections are separated by a blank line so a header doesn't butt up against the previous section's files
+ 
+## [0.1.18] — 2026-07-13
+
+### Added
+
 - A PR overview page: the conversation timeline plus code threads rendered as boxed units (a left-spine box with a top-rule header, spine body rows, and a reply-count footer) that carry their diff hunk inline. The hunk tail is capped (keeping the `@@` header and an elision marker when trimmed), tinted with the diff's own +/- line colours, and treesitter-highlighted from the marker-stripped source rather than the page buffer. `]t`/`[t` hop between thread boxes
 - Enter the review straight from an overview thread: `<CR>`, `e`, or `r` on a thread row open the review at that comment's file and line, landing on the comment with no file-stepping
 - A review to overview round-trip: `go` pops from the review back to the overview, and `q` drops back into the review where you left off, restoring the stashed diff position and the overview's own cursor on the hop back
 - `df` edits the real file in an in-review split on the pinned-blob diff; `de` opens a zoom tab to edit and returns to the review on close
 - A floating keymap cheatsheet (`g?`) on the overview page, advertised by a `help: g?` header hint
-- Per-section `+/-` totals on the file panel's section headers (Staged/Unstaged/Untracked), summed fold-independently and pinned to the same column as the per-file counts and the `--stat` help-line total. Consecutive sections are separated by a blank line so a header doesn't butt up against the previous section's files
 
 ### Fixed
 

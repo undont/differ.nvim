@@ -6,6 +6,7 @@
 ---@field width integer   -- used for left/right
 ---@field listing "tree"|"name"
 ---@field progress boolean  -- file-position meter in the panel winbar
+---@field section_diffstat boolean  -- per-section +/- totals pinned on the header row
 
 ---@class differ.Config.History
 ---@field position "bottom"|"top"|"left"|"right"
@@ -66,6 +67,9 @@ M.defaults = {
         width = 35, -- left/right
         listing = "tree",
         progress = true, -- "file K/N" position meter in the panel winbar
+        -- per-section "+A -B" totals stacked above each section's file counts.
+        -- off by default: opt in for the extra header column
+        section_diffstat = false,
     },
     -- the log/history sidebar's default placement and size. a commit row is wide
     -- (sha · date · author · subject), so it defaults to the bottom strip where the
