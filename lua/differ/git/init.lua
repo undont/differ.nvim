@@ -1026,6 +1026,7 @@ function M.panel(opts)
         height = opts.height or panel_cfg.height,
         width = opts.width or panel_cfg.width,
         progress = panel_cfg.progress,
+        section_diffstat = panel_cfg.section_diffstat,
         on_select = function(entry)
             if show_entry(entry) then
                 return

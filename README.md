@@ -34,7 +34,7 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - **Stacked dual-rail layout** with one scroll surface, old and new lines interleaved per hunk, and a dual line-number gutter via `statuscolumn`
 - **Side-by-side layout** from the same hunk model, switchable at runtime as a pure re-render
 - **PR review in the diff** with inline comment threads, pending-review drafts, thread resolve, per-file viewed-state, CI checks, and lifecycle actions (merge, checkout, ready/draft, close), backed by a Go sidecar that owns the GitHub API
-- **File panel and staging** in a persistent sidebar with the changed-file tree, status icons, +/- counts, and hunk- and file-level staging
+- **File panel and staging** in a persistent sidebar with the changed-file tree, status icons, +/- counts (per file, and per section via `panel.section_diffstat`), and hunk- and file-level staging
 - **File history** for single files and branch ranges, walked commit-by-commit, each step a diff through the same engine
 - **3-way merge tool** running base/ours/theirs through the n-column renderer, resolved into the working-tree file
 - **Word-level highlighting** and **Treesitter syntax** on by default, so the diff reads like source instead of a grey block
@@ -386,6 +386,7 @@ require("differ").setup({
     width = 35,                  -- left/right
     listing = "tree",            -- "tree" | "name"
     progress = true,             -- "file K/N" position meter in the panel winbar
+    section_diffstat = false,    -- per-section "+A -B" totals on the section headers
   },
   history = {                    -- log/history sidebar default placement/size
     position = "bottom",

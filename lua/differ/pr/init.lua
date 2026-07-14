@@ -768,6 +768,7 @@ local function open_session(pr, detail, opts)
             height = panel_cfg.height,
             width = panel_cfg.width,
             progress = panel_cfg.progress,
+            section_diffstat = panel_cfg.section_diffstat,
             on_select = function(entry)
                 show_file(entry)
             end,

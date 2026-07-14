@@ -43,6 +43,49 @@ describe("panel.render.lines", function()
         assert.are.equal("Unstaged (2)", out.lines[1])
     end)
 
+    it("carries the section +/- aggregate onto the header meta", function()
+        -- block.add/block.del ride the header meta so the runtime layer can pin them
+        -- to the right edge (like the per-file counts); they never enter the line text
+        local root = tree.build({ entry("a.lua", "M", 3, 1), entry("b.lua", "M", 5, 0) })
+        local out = render.lines({
+            { title = "Staged", add = 8, del = 1, rows = tree.rows(root, "tree", {}) },
+        })
+        assert.are.equal("Staged (2)", out.lines[1])
+        local m = out.meta[1]
+        assert.are.equal("header", m.kind)
+        assert.are.equal(8, m.add_total)
+        assert.are.equal(1, m.del_total)
+    end)
+
+    it("leaves the header aggregate nil when the block omits add/del", function()
+        local root = tree.build({ entry("a.lua") })
+        local out = render.lines({ { title = "Unstaged", rows = tree.rows(root, "tree", {}) } })
+        assert.is_nil(out.meta[1].add_total)
+        assert.is_nil(out.meta[1].del_total)
+    end)
+
+    it("separates consecutive sections with a blank line, none before the first", function()
+        local a = tree.build({ entry("a.lua") })
+        local b = tree.build({ entry("b.lua") })
+        local out = render.lines({
+            { title = "Staged", rows = tree.rows(a, "tree", {}) },
+            { title = "Unstaged", rows = tree.rows(b, "tree", {}) },
+        })
+        -- no leading blank (no top header precedes the first section)
+        assert.are.same({ "Staged (1)", "M a.lua", "", "Unstaged (1)", "M b.lua" }, out.lines)
+        assert.are.equal("blank", out.meta[3].kind)
+    end)
+
+    it("does not double-blank a section that follows the top header's blank", function()
+        local root = tree.build({ entry("a.lua") })
+        local out = render.lines(
+            { { title = "Staged", rows = tree.rows(root, "tree", {}) } },
+            { path = "~/repo", help = "g?" }
+        )
+        -- top header ends in a blank; the section must not add a second one
+        assert.are.same({ "~/repo", "Help: g?", "", "Staged (1)", "M a.lua" }, out.lines)
+    end)
+
     it("renders a file row with status letter and points cols at it", function()
         local root = tree.build({ entry("a.lua", "M") })
         local out = render.lines({ { title = nil, rows = tree.rows(root, "tree", {}) } })

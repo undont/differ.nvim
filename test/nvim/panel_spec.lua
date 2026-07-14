@@ -42,6 +42,31 @@ describe("panel rendering", function()
         p:close()
     end)
 
+    it("omits the section +/- aggregate by default, carries it when opted in", function()
+        local secs = { { title = "Staged", entries = { fe("a.lua", "M", 3, 1) } } }
+        local header = function(p)
+            for _, m in ipairs(p.meta) do
+                if m.kind == "header" then
+                    return m
+                end
+            end
+        end
+        -- default: section_diffstat off, so the header meta carries no totals
+        local off = Panel.new({ sections = secs, on_select = function() end })
+        off:render()
+        assert.is_nil(header(off).add_total)
+        assert.is_nil(header(off).del_total)
+        -- opted in: the fold-independent +/- totals ride the header meta
+        local on = Panel.new({
+            sections = secs,
+            section_diffstat = true,
+            on_select = function() end,
+        })
+        on:render()
+        assert.are.equal(3, header(on).add_total)
+        assert.are.equal(1, header(on).del_total)
+    end)
+
     it("toggle_listing toggles tree <-> name", function()
         local p = panel({ fe("a.lua"), fe("src/b.lua") })
         p:open()
@@ -207,17 +232,19 @@ describe("panel navigation", function()
             on_select = function() end,
         })
         p:open()
-        -- both sections carry a src/ dir; toggling one must not collapse the other
-        vim.api.nvim_win_set_cursor(p.winid, { 5, 0 }) -- the Untracked src/ row
+        -- both sections carry a src/ dir; toggling one must not collapse the other.
+        -- a blank line separates the sections, so the Untracked src/ row is line 6
+        vim.api.nvim_win_set_cursor(p.winid, { 6, 0 }) -- the Untracked src/ row
         p:select()
         assert.are.same({
             "Unstaged (1)",
             "▾ src/",
             " M a.lua",
+            "", -- section separator
             "Untracked (1)",
             "▸ src/", -- only this one folded
         }, lines(p))
-        assert.are.equal(5, vim.api.nvim_win_get_cursor(p.winid)[1]) -- cursor stayed on it
+        assert.are.equal(6, vim.api.nvim_win_get_cursor(p.winid)[1]) -- cursor stayed on it
         p:close()
     end)
 
