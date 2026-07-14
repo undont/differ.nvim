@@ -32,11 +32,15 @@ local FOLD_OPEN, FOLD_CLOSED = "▾", "▸"
 ---@field viewed_end integer|nil
 ---@field prefix_col integer|nil  -- header rows: byte col where the dimmed common-prefix subtitle begins
 ---@field prefix_end integer|nil
+---@field add_total integer|nil   -- header rows: section additions, pinned right like the per-file counts
+---@field del_total integer|nil   -- header rows: section deletions
 
 ---@class differ.panel.Block
 ---@field title string|nil               -- section header, nil = no header row
 ---@field prefix string|nil              -- common dir stripped in tree mode, shown as a subtitle
 ---@field count integer|nil              -- file count for the header; defaults to the visible file rows
+---@field add integer|nil                -- section additions total (fold-independent); nil skips the header aggregate
+---@field del integer|nil                -- section deletions total
 ---@field rows differ.panel.Row[]
 
 ---@param rows differ.panel.Row[]
@@ -85,11 +89,25 @@ function M.lines(blocks, header, icon_for, footer, width)
     end
     for bi, block in ipairs(blocks) do
         if block.title or block.prefix then
+            -- breathe a blank line before each section so headers don't butt up
+            -- against the previous section's files. skipped when nothing precedes
+            -- (first block, no top header) or the previous line is already blank
+            -- (the top header's own trailing blank), so no double gap opens up
+            if #lines > 0 and lines[#lines] ~= "" then
+                lines[#lines + 1] = ""
+                meta[#meta + 1] = { kind = "blank" }
+            end
             -- count is the section's true file total (fold-independent); fall back
             -- to the visible file rows when the caller doesn't supply it (tests)
             local n = block.count or count_files(block.rows)
             local head = block.title and ("%s (%d)"):format(block.title, n) or ""
-            local m = { kind = "header", section = bi, title = block.title }
+            local m = {
+                kind = "header",
+                section = bi,
+                title = block.title,
+                add_total = block.add,
+                del_total = block.del,
+            }
             if block.prefix then
                 local sep = head ~= "" and " · " or ""
                 m.prefix_col = #head -- byte col where the dimmed " · prefix" begins

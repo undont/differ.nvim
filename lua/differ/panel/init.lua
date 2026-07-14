@@ -243,18 +243,25 @@ function Panel:render()
     local add_total, del_total = 0, 0
     for bi, sec in ipairs(self.sections) do
         local root, strip = self:_section_root(sec)
+        -- per-section +/- totals, summed like the global ones (fold-independent),
+        -- pinned on the section header as a column total above its files' counts
+        local sec_add, sec_del = 0, 0
         for _, row in ipairs(tree.rows(root, "tree", {})) do -- fully expanded
             if row.kind == "file" then
                 total = total + 1
                 abs_of[row.entry] = total
                 add_total = add_total + (row.entry.additions or 0)
                 del_total = del_total + (row.entry.deletions or 0)
+                sec_add = sec_add + (row.entry.additions or 0)
+                sec_del = sec_del + (row.entry.deletions or 0)
             end
         end
         blocks[#blocks + 1] = {
             title = sec.title,
             prefix = strip ~= "" and strip or nil,
             count = #sec.entries,
+            add = sec_add,
+            del = sec_del,
             -- fold state is namespaced per section: the same dir path can list under
             -- two sections at once (e.g. an untracked src/ and an unstaged src/), so a
             -- shared key would collapse both rows from one toggle
@@ -286,6 +293,13 @@ function Panel:render()
                 local e = m.entry
                 local reserve = (e.additions and (e.additions > 0 or e.deletions > 0))
                         and #("+" .. e.additions) + #("-" .. e.deletions) + 2
+                    or 0
+                needed = math.max(needed, #out.lines[i] + reserve)
+            elseif m.kind == "header" then
+                -- the section aggregate pins to the same column, so its width counts
+                -- too: a wide "+N -M" on a short header must not clip off the edge
+                local reserve = ((m.add_total or 0) > 0 or (m.del_total or 0) > 0)
+                        and #("+" .. m.add_total) + #("-" .. m.del_total) + 2
                     or 0
                 needed = math.max(needed, #out.lines[i] + reserve)
             end
@@ -374,6 +388,23 @@ function Panel:_highlight()
                     m.prefix_col,
                     { end_col = m.prefix_end, hl_group = "differPanelContext" }
                 )
+            end
+            -- section +/- aggregate, pinned to the same content column as the per-file
+            -- counts so it stacks directly above them as a column total (virt_text, not
+            -- line text, same as the --stat help line and the file rows)
+            if (m.add_total or 0) > 0 or (m.del_total or 0) > 0 then
+                local add = ("+%d"):format(m.add_total)
+                local del = ("-%d"):format(m.del_total)
+                local reserve = #add + #del + 2
+                vim.api.nvim_buf_set_extmark(self.bufnr, ns, row, 0, {
+                    virt_text = {
+                        { add, "differPanelCountAdd" },
+                        { " ", "Normal" },
+                        { del, "differPanelCountDelete" },
+                        { " ", "Normal" },
+                    },
+                    virt_text_win_col = math.max((self.content_width or 0) - reserve, 0),
+                })
             end
         elseif m.kind == "footrev" then
             vim.api.nvim_buf_set_extmark(

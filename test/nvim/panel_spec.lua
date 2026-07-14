@@ -207,17 +207,19 @@ describe("panel navigation", function()
             on_select = function() end,
         })
         p:open()
-        -- both sections carry a src/ dir; toggling one must not collapse the other
-        vim.api.nvim_win_set_cursor(p.winid, { 5, 0 }) -- the Untracked src/ row
+        -- both sections carry a src/ dir; toggling one must not collapse the other.
+        -- a blank line separates the sections, so the Untracked src/ row is line 6
+        vim.api.nvim_win_set_cursor(p.winid, { 6, 0 }) -- the Untracked src/ row
         p:select()
         assert.are.same({
             "Unstaged (1)",
             "▾ src/",
             " M a.lua",
+            "", -- section separator
             "Untracked (1)",
             "▸ src/", -- only this one folded
         }, lines(p))
-        assert.are.equal(5, vim.api.nvim_win_get_cursor(p.winid)[1]) -- cursor stayed on it
+        assert.are.equal(6, vim.api.nvim_win_get_cursor(p.winid)[1]) -- cursor stayed on it
         p:close()
     end)
 
