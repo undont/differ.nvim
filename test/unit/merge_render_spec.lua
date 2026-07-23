@@ -55,11 +55,11 @@ describe("render.merge (default layout)", function()
     end)
 end)
 
-describe("render.merge (diff3_mixed layout)", function()
+describe("render.merge (diff4 layout)", function()
     it("adds the base column between ours and theirs and locates its slab", function()
         local m = model()
         m.regions[1].base = { "b" }
-        local r = merge.render(m, { layout = "diff3_mixed" })
+        local r = merge.render(m, { layout = "diff4" })
         assert.are.equal(4, #r.columns)
         assert.are.equal("base", r.columns[2].side)
         assert.are.same({ { index = 1, first = 2, last = 2 } }, by_side(r, "base").regions)

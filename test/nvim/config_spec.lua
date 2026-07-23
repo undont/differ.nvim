@@ -18,3 +18,16 @@ describe("config.resolve history", function()
         assert.are.equal("right", cfg.panel.position) -- the panel table is independent
     end)
 end)
+
+describe("config.resolve merge", function()
+    it("defaults the merge tool to the two-input layout", function()
+        assert.are.equal("default", config.resolve(nil).merge.layout)
+    end)
+
+    it("takes a diff4 override without disturbing the rest", function()
+        local cfg = config.resolve({ merge = { layout = "diff4" } })
+        assert.are.equal("diff4", cfg.merge.layout)
+        assert.are.equal("bottom", cfg.history.position) -- the other tables are independent
+        assert.are.equal("right", cfg.panel.position)
+    end)
+end)

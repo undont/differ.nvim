@@ -1,5 +1,5 @@
 -- the merge-tool session: lay the 3-way render into windows — ours / theirs on
--- top (plus base under the diff3_mixed layout), the result spine full-width below — drive
+-- top (plus base under the diff4 layout), the result spine full-width below — drive
 -- conflict navigation (]x/[x), and resolve per conflict (take ours/theirs/both/base/none),
 -- splicing the chosen slab into the result and stripping the markers. the result column is
 -- the real worktree file: :w writes it and auto-stages once no markers remain, then advances
@@ -53,7 +53,7 @@ local INPUT_HL = {
 ---@field total integer                   -- original conflict count (for the winbar N/M)
 ---@field active_index integer|nil        -- live index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
----@field layout "default"|"diff3_mixed"  -- the chosen layout, reused when advancing to the next file
+---@field layout "default"|"diff4"  -- the chosen layout, reused when advancing to the next file
 ---@field result_win integer
 ---@field result_buf integer              -- the real worktree file (editable)
 ---@field bufs integer[]                  -- the scratch input buffers (deleted on close)
@@ -656,7 +656,7 @@ local function show_help()
     require("differ.ui.help").show(lines, { title = " Differ: merge ", dismiss = dismiss })
 end
 
----@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff3_mixed")
+---@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff4")
 local lay_out
 
 -- once a file resolves + stages, open the next conflicted file (git's order, the staged file
@@ -665,7 +665,7 @@ local lay_out
 -- rather than looping. no commit hint: the merge may be a rebase/cherry-pick/etc., so naming
 -- one command would be wrong as often as right
 ---@param root string
----@param layout "default"|"diff3_mixed"
+---@param layout "default"|"diff4"
 local function advance(root, layout)
     local remaining = require("differ.git").conflicted(root)
     if #remaining == 0 then
@@ -684,7 +684,7 @@ end
 ---@param root string
 ---@param relpath string
 ---@param model differ.MergeModel
----@param layout "default"|"diff3_mixed"
+---@param layout "default"|"diff4"
 function lay_out(root, relpath, model, layout)
     if session then -- re-open over a live session
         M.close()
@@ -912,12 +912,12 @@ function lay_out(root, relpath, model, layout)
 end
 
 -- resolve root + the target relpath, then build + open. with no path the current file is
--- used when it's conflicted, else the sole conflicted file, else a picker over them
----@param opts { path?: string, layout?: "default"|"diff3_mixed" }|nil
+-- used when it's conflicted, else the sole conflicted file, else a picker over them. an
+-- explicit opts.layout wins over the configured merge.layout
+---@param opts { path?: string, layout?: "default"|"diff4" }|nil
 function M.open(opts)
     opts = opts or {}
     local git = require("differ.git")
-    local layout = opts.layout or "default"
 
     local file = vim.api.nvim_buf_get_name(0)
     local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
@@ -930,6 +930,9 @@ function M.open(opts)
     if #conflicted == 0 then
         return notify("no conflicted files to resolve")
     end
+
+    local merge_cfg = require("differ").get_config().merge or {}
+    local layout = opts.layout or merge_cfg.layout or "default"
 
     local function go(relpath)
         local model, err = require("differ.merge.model").build(root, relpath, nil)

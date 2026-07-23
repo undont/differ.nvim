@@ -95,14 +95,14 @@ local function locate_regions(lines, regions, key)
     return out
 end
 
--- build the merge columns. base is shown only under the diff3_mixed layout (it's read
+-- build the merge columns. base is shown only under the diff4 layout (it's read
 -- + carried regardless, so the toggle costs nothing); the result column is always last
 ---@param model differ.MergeModel
----@param opts { layout?: "default"|"diff3_mixed" }|nil
+---@param opts { layout?: "default"|"diff4" }|nil
 ---@return differ.merge.RenderResult
 function M.render(model, opts)
     opts = opts or {}
-    local show_base = opts.layout == "diff3_mixed"
+    local show_base = opts.layout == "diff4"
 
     local ours = to_lines(model.ours_text)
     local theirs = to_lines(model.theirs_text)

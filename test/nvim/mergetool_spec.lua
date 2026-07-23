@@ -196,10 +196,10 @@ describe(":Differ mergetool", function()
         assert.are.equal(first, vim.api.nvim_win_get_cursor(s.result_win)[1])
     end)
 
-    it("shows the base column under diff3_mixed", function()
+    it("shows the base column under diff4", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
-        merge.open({ layout = "diff3_mixed" })
+        merge.open({ layout = "diff4" })
         assert.are.equal(4, #vim.api.nvim_tabpage_list_wins(0))
     end)
 
@@ -665,5 +665,36 @@ describe(":Differ mergetool UX", function()
         end)
         local after = vim.api.nvim_buf_get_extmarks(s.result_buf, flash_ns, 0, -1, {})
         assert.are.equal(0, #after)
+    end)
+end)
+
+describe(":Differ mergetool layout config", function()
+    local differ = require("differ")
+    local saved
+
+    before_each(function()
+        saved = differ.config
+        differ.config = require("differ.config").resolve({ merge = { layout = "diff4" } })
+    end)
+
+    after_each(function()
+        differ.config = saved
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    it("opens the configured layout when no argument names one", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        assert.are.equal(4, #vim.api.nvim_tabpage_list_wins(0))
+    end)
+
+    it("lets an explicit layout beat the configured one", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "default" })
+        assert.are.equal(3, #vim.api.nvim_tabpage_list_wins(0))
     end)
 end)

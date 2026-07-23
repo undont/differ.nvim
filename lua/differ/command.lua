@@ -212,14 +212,12 @@ function M.close()
     require("differ.git").close()
 end
 
--- :Differ mergetool [path|diff3_mixed]: 3-way conflict resolution. no arg targets
--- the current file (else the sole conflicted file, else a picker); `diff3_mixed` shows the
--- base column too. read-only navigation for now; resolution + write land in slice 3
+-- :Differ mergetool [path]: 3-way conflict resolution. no arg targets the current
+-- file (else the sole conflicted file, else a picker). the pane layout follows the
+-- configured merge.layout (`default` or `diff4`); there's no ad-hoc layout argument,
+-- so the sole arg is always a path
 ---@param arg string|nil
 function M.mergetool(arg)
-    if arg == "diff3_mixed" then
-        return require("differ.merge").open({ layout = "diff3_mixed" })
-    end
     require("differ.merge").open({ path = (arg ~= "" and arg) or nil })
 end
 
@@ -379,7 +377,6 @@ local VALUES = {
     sidecar = { "stop" },
     cache = { "clear" },
     log = { "base" },
-    mergetool = { "diff3_mixed" },
 }
 
 -- second-level completion under `pr <group>`: the review-draft actions, and the
