@@ -50,6 +50,7 @@ local INPUT_HL = {
 ---@field path string
 ---@field regions differ.merge.Region[]   -- re-derived from the live result buffer
 ---@field order integer[]                 -- live region position -> original conflict index
+---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
 ---@field total integer                   -- original conflict count (for the winbar N/M)
 ---@field active_index integer|nil        -- live index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
@@ -487,6 +488,11 @@ local function resolve_choice(choice)
     if not region then
         return notify("no conflict under the cursor")
     end
+    -- the live buffer parse carries no base under the default conflictStyle, so take-base
+    -- reads the slab recovered at build time, mapped live index -> original via `order`
+    if choice == "base" and not region.base then
+        region.base = session.base_slabs[session.order[region.index]]
+    end
     local new_lines, delta = require("differ.merge.resolve").splice(lines, region, choice)
     if not new_lines then
         return notify("no base version in this conflict", vim.log.levels.WARN)
@@ -757,6 +763,7 @@ function lay_out(root, relpath, model, layout)
         path = relpath,
         regions = model.regions,
         order = {},
+        base_slabs = {},
         total = #model.regions,
         active_index = nil,
         labels = {
@@ -779,6 +786,12 @@ function lay_out(root, relpath, model, layout)
     }
     for i = 1, #model.regions do
         session.order[i] = i
+    end
+    -- recovered base slabs by original conflict index: the default conflictStyle leaves no
+    -- base in the live result parse, so take-base looks the slab up here (nil where the
+    -- re-merge couldn't recover one, which take-base reports as no base version)
+    for _, r in ipairs(model.regions) do
+        session.base_slabs[r.index] = r.base
     end
 
     -- paint the panes + lay down the (latent) folds

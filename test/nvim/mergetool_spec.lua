@@ -698,3 +698,49 @@ describe(":Differ mergetool layout config", function()
         assert.are.equal(3, #vim.api.nvim_tabpage_list_wins(0))
     end)
 end)
+
+describe(":Differ mergetool diff4 base pane", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    it("locates and paints the base pane under the default conflict style", function()
+        local root = conflict_repo() -- default merge style: the markers carry no base slab
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        local base = input(s, "base")
+        assert.is_not_nil(base)
+        assert.is_true(#base.regions > 0) -- recovered, so the slab is located
+        local marks =
+            vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(base.win), merge_ns, 0, -1, {})
+        assert.is_true(#marks > 0) -- painted, unlike the pre-recovery inert pane
+    end)
+
+    it("takes base for the conflict, resolving to the common ancestor", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+        assert.is_false(has_marker(s.result_buf))
+        assert.are.same({ "a", "b", "c" }, vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false))
+    end)
+
+    it("takes the right base on a later conflict after the order map shifts", function()
+        local root = conflict_repo_multi() -- three conflicts, base slabs base5/base15/base25
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        -- resolve the first (auto-advances onto the second), then take base there: the live
+        -- index -> original mapping has shifted, so this proves the lookup follows `order`
+        fire(s.result_buf, "differ: take base")
+        fire(s.result_buf, "differ: take base")
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        assert.is_true(vim.tbl_contains(lines, "base5")) -- first conflict -> its own base
+        assert.is_true(vim.tbl_contains(lines, "base15")) -- second -> its base, not base5/base25
+        assert.is_true(has_marker(s.result_buf)) -- the third conflict is still open
+    end)
+end)
