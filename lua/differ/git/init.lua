@@ -238,6 +238,44 @@ function M.read_stage(root, relpath, stage)
     return git_raw({ "show", (":%d:"):format(stage) .. relpath }, root) or ""
 end
 
+-- re-merge the three stage texts and return the result in diff3 conflict style (a base
+-- slab between ||||||| and =======), whatever the user's merge.conflictStyle is. used to
+-- recover base slabs when the worktree markers omit them (the default `merge` style).
+-- git merge-file works on paths, so the stages go through temp files; a >0 exit is the
+-- conflict count (expected), only a 255 exit is real trouble and returns nil
+---@param ours_text string
+---@param base_text string
+---@param theirs_text string
+---@return string|nil
+function M.merge_file_diff3(ours_text, base_text, theirs_text)
+    local paths = {}
+    local function tmp(text)
+        local p = vim.fn.tempname()
+        local fd = io.open(p, "wb")
+        if not fd then
+            return nil
+        end
+        paths[#paths + 1] = p
+        fd:write(text)
+        fd:close()
+        return p
+    end
+    local ours, base, theirs = tmp(ours_text), tmp(base_text), tmp(theirs_text)
+    local out
+    if ours and base and theirs then
+        -- no text=true: it would strip the CRs git keeps, so a CRLF base slab would no
+        -- longer match the :1: stage the input column locates it against
+        local res = vim.system({ "git", "merge-file", "-p", "--diff3", ours, base, theirs }):wait()
+        if res.code ~= 255 then
+            out = res.stdout
+        end
+    end
+    for _, p in ipairs(paths) do
+        os.remove(p)
+    end
+    return out
+end
+
 -- repo-relative paths of the unmerged (conflicted) files, in git's order
 ---@param root string
 ---@return string[]

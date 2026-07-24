@@ -4,7 +4,7 @@
 
 local model = require("differ.merge.model")
 
--- a default-style conflicted worktree file
+-- a default-style conflicted worktree file (no base slab in the markers)
 local RESULT = table.concat({
     "keep me",
     "<<<<<<< HEAD",
@@ -12,6 +12,30 @@ local RESULT = table.concat({
     "=======",
     "theirs",
     ">>>>>>> branch",
+}, "\n") .. "\n"
+
+-- a diff3-style conflicted worktree file (base slab already present)
+local RESULT_DIFF3 = table.concat({
+    "keep me",
+    "<<<<<<< HEAD",
+    "ours",
+    "||||||| base",
+    "ancestor",
+    "=======",
+    "theirs",
+    ">>>>>>> branch",
+}, "\n") .. "\n"
+
+-- a synthetic diff3 re-merge carrying one region with a base slab, matching RESULT's count
+local SYNTH_ONE = table.concat({
+    "keep me",
+    "<<<<<<< ours",
+    "ours",
+    "||||||| base",
+    "recovered",
+    "=======",
+    "theirs",
+    ">>>>>>> theirs",
 }, "\n") .. "\n"
 
 local function fake_git(opts)
@@ -26,6 +50,10 @@ local function fake_git(opts)
         read_stage = function(_, _, stage)
             return (opts.stages or { [1] = "base\n", [2] = "ours\n", [3] = "theirs\n" })[stage]
                 or ""
+        end,
+        -- the diff3 re-merge used to recover base slabs; nil by default so recovery bails
+        merge_file_diff3 = function()
+            return opts.diff3
         end,
     }
 end
@@ -70,5 +98,34 @@ describe("merge.model.build", function()
         assert.are.equal("ours\n", m.ours_text)
         assert.are.equal("", m.base_text)
         assert.are.equal("", m.theirs_text)
+    end)
+
+    it("recovers base slabs from a diff3 re-merge when the markers omit them", function()
+        package.loaded["differ.git"] = fake_git({ diff3 = SYNTH_ONE })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "recovered" }, m.regions[1].base)
+    end)
+
+    it("leaves base absent when the re-merge count disagrees with the worktree", function()
+        -- two synthetic regions against RESULT's one: the regions may not correspond,
+        -- so nothing is copied across
+        local synth = SYNTH_ONE:gsub("\n$", "\n") .. SYNTH_ONE
+        package.loaded["differ.git"] = fake_git({ diff3 = synth })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m.regions[1].base)
+    end)
+
+    it("leaves base absent when the re-merge is unavailable", function()
+        package.loaded["differ.git"] = fake_git({ diff3 = nil })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m.regions[1].base)
+    end)
+
+    it("keeps the marker-derived base under diff3 style (no re-merge)", function()
+        -- the worktree already carries a base slab, so recovery is skipped and the
+        -- re-merge stub (which would return a different slab) is never consulted
+        package.loaded["differ.git"] = fake_git({ worktree = RESULT_DIFF3, diff3 = SYNTH_ONE })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "ancestor" }, m.regions[1].base)
     end)
 end)
