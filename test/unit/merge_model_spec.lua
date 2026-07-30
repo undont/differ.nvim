@@ -1,6 +1,8 @@
 -- the MergeModel builder over a stubbed git layer: the parse path is real (pure
 -- conflict.parse + to_lines), only the I/O reads are faked, so the assembly + the
--- no-conflict / missing-file guards are checked without a git repo or nvim runtime
+-- no-conflict / missing-file guards are checked without a git repo or nvim runtime.
+-- base recovery is stubbed at the re-merge, so the synthetic regions it maps are fed
+-- in directly rather than produced by git merge-file
 
 local model = require("differ.merge.model")
 
@@ -26,7 +28,7 @@ local RESULT_DIFF3 = table.concat({
     ">>>>>>> branch",
 }, "\n") .. "\n"
 
--- a synthetic diff3 re-merge carrying one region with a base slab, matching RESULT's count
+-- a synthetic diff3 re-merge carrying one region, matching RESULT's single conflict
 local SYNTH_ONE = table.concat({
     "keep me",
     "<<<<<<< ours",
@@ -35,6 +37,108 @@ local SYNTH_ONE = table.concat({
     "recovered",
     "=======",
     "theirs",
+    ">>>>>>> theirs",
+}, "\n") .. "\n"
+
+-- ort coalesced two diverged spots into one block; merge-file kept them apart, so the
+-- single worktree region owns both synthetic ones and its base spans the "mid" between them
+local RESULT_COALESCED = table.concat({
+    "head",
+    "<<<<<<< HEAD",
+    "A1",
+    "mid",
+    "B1",
+    "=======",
+    "A2",
+    "mid",
+    "B2",
+    ">>>>>>> branch",
+    "tail",
+}, "\n") .. "\n"
+
+local SYNTH_SPLIT = table.concat({
+    "head",
+    "<<<<<<< ours",
+    "A1",
+    "||||||| base",
+    "A",
+    "=======",
+    "A2",
+    ">>>>>>> theirs",
+    "mid",
+    "<<<<<<< ours",
+    "B1",
+    "||||||| base",
+    "B",
+    "=======",
+    "B2",
+    ">>>>>>> theirs",
+    "tail",
+}, "\n") .. "\n"
+
+local COALESCED_STAGES = {
+    [1] = "head\nA\nmid\nB\ntail\n",
+    [2] = "head\nA1\nmid\nB1\ntail\n",
+    [3] = "head\nA2\nmid\nB2\ntail\n",
+}
+
+-- ours deleted the line theirs modified, so the worktree region's ours slab is empty and
+-- only theirs can claim the synthetic region
+local RESULT_OURS_DELETED = table.concat({
+    "a",
+    "<<<<<<< HEAD",
+    "=======",
+    "Y",
+    ">>>>>>> branch",
+    "b",
+}, "\n") .. "\n"
+
+local SYNTH_OURS_DELETED = table.concat({
+    "a",
+    "<<<<<<< ours",
+    "||||||| base",
+    "X",
+    "=======",
+    "Y",
+    ">>>>>>> theirs",
+    "b",
+}, "\n") .. "\n"
+
+-- the sides disagree: ours holds both synthetic ours slabs, theirs holds only the first
+local RESULT_DISPUTED = table.concat({
+    "<<<<<<< HEAD",
+    "A1",
+    "B1",
+    "=======",
+    "A2",
+    ">>>>>>> branch",
+}, "\n") .. "\n"
+
+local SYNTH_TWO = table.concat({
+    "<<<<<<< ours",
+    "A1",
+    "||||||| base",
+    "A",
+    "=======",
+    "A2",
+    ">>>>>>> theirs",
+    "<<<<<<< ours",
+    "B1",
+    "||||||| base",
+    "B",
+    "=======",
+    "B2",
+    ">>>>>>> theirs",
+}, "\n") .. "\n"
+
+-- a re-merge describing a conflict nothing in the worktree corresponds to
+local SYNTH_FOREIGN = table.concat({
+    "<<<<<<< ours",
+    "zzz",
+    "||||||| base",
+    "base",
+    "=======",
+    "qqq",
     ">>>>>>> theirs",
 }, "\n") .. "\n"
 
@@ -99,18 +203,62 @@ describe("merge.model.build", function()
         assert.are.equal("", m.base_text)
         assert.are.equal("", m.theirs_text)
     end)
+end)
 
-    it("recovers base slabs from a diff3 re-merge when the markers omit them", function()
-        package.loaded["differ.git"] = fake_git({ diff3 = SYNTH_ONE })
+describe("merge.model base recovery", function()
+    after_each(function()
+        package.loaded["differ.git"] = nil
+    end)
+
+    it("recovers the slab for an isolated conflict", function()
+        package.loaded["differ.git"] = fake_git({
+            diff3 = SYNTH_ONE,
+            stages = { [1] = "recovered\n", [2] = "ours\n", [3] = "theirs\n" },
+        })
         local m = model.build("/repo", "a.txt", nil)
         assert.are.same({ "recovered" }, m.regions[1].base)
     end)
 
-    it("leaves base absent when the re-merge count disagrees with the worktree", function()
-        -- two synthetic regions against RESULT's one: the regions may not correspond,
-        -- so nothing is copied across
-        local synth = SYNTH_ONE:gsub("\n$", "\n") .. SYNTH_ONE
-        package.loaded["differ.git"] = fake_git({ diff3 = synth })
+    it("spans the interstitial base lines of a coalesced block", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = RESULT_COALESCED,
+            diff3 = SYNTH_SPLIT,
+            stages = COALESCED_STAGES,
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        -- the run covers base lines A..B, so "mid" comes back with them
+        assert.are.same({ "A", "mid", "B" }, m.regions[1].base)
+    end)
+
+    it("recovers via theirs when ours deleted what theirs modified", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = RESULT_OURS_DELETED,
+            diff3 = SYNTH_OURS_DELETED,
+            stages = { [1] = "a\nX\nb\n", [2] = "a\nb\n", [3] = "a\nY\nb\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "X" }, m.regions[1].base)
+    end)
+
+    it("leaves base absent when the two sides disagree on the run", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = RESULT_DISPUTED,
+            diff3 = SYNTH_TWO,
+            stages = { [1] = "A\nB\n", [2] = "A1\nB1\n", [3] = "A2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m.regions[1].base)
+    end)
+
+    it("leaves base absent when the region owns no synthetic conflict", function()
+        package.loaded["differ.git"] = fake_git({ diff3 = SYNTH_FOREIGN })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m.regions[1].base)
+    end)
+
+    it("bails when a synthetic base slab isn't in the base stage", function()
+        -- SYNTH_ONE's base slab is "recovered"; the default base stage is "base"
+        package.loaded["differ.git"] = fake_git({ diff3 = SYNTH_ONE })
         local m = model.build("/repo", "a.txt", nil)
         assert.is_nil(m.regions[1].base)
     end)

@@ -4,6 +4,8 @@
 -- under any merge.conflictStyle; the marker parse only locates the regions
 
 local conflict = require("differ.git.conflict")
+local find_run = require("differ.util.lines").find_run
+local find_runs = require("differ.util.lines").find_runs
 local to_lines = require("differ.util.text").to_lines
 
 ---@class differ.MergeModel
@@ -18,13 +20,63 @@ local to_lines = require("differ.util.text").to_lines
 
 local M = {}
 
+-- the maximal run of synthetic regions this side owns, extending while each candidate's
+-- slab places in order and disjoint inside `lines`. empty slabs are skipped, so they ride
+-- along mid-run and are left behind at its end. `from - 1` when the side located nothing
+---@param lines string[]  -- the worktree region's slab for this side
+---@param synth differ.merge.Region[]
+---@param key "ours"|"theirs"
+---@param from integer
+---@return integer
+local function claim_run(lines, synth, key, from)
+    local last, cursor = from - 1, 1
+    for i = from, #synth do
+        local slab = synth[i][key]
+        if #slab > 0 then
+            local s = find_run(lines, slab, cursor)
+            if not s then
+                break
+            end
+            cursor, last = s + #slab, i
+        end
+    end
+    return last
+end
+
+-- the base-stage span a run covers, anchored on its first and last located slab. the span,
+-- not the sub-slabs concatenated, so a coalesced block keeps its interstitials. all-empty
+-- base slabs cover nothing, which take-base resolves to a deletion
+---@param base_slabs string[][]  -- per synthetic region, in order
+---@param at table<integer, integer>  -- synthetic index -> base-stage start
+---@param first integer
+---@param last integer
+---@param base_lines string[]
+---@return string[]
+local function base_span(base_slabs, at, first, last, base_lines)
+    local from, to
+    for i = first, last do
+        if at[i] then
+            from = from or at[i]
+            to = at[i] + #base_slabs[i] - 1
+        end
+    end
+    if not from then
+        return {}
+    end
+    local slab = {}
+    for i = from, to do
+        slab[#slab + 1] = base_lines[i]
+    end
+    return slab
+end
+
 -- the default `merge` conflictStyle writes no base slab, so the parsed regions carry
--- `base = nil` and the BASE column has nothing to locate or take. recover the slabs by
--- re-merging the stages in diff3 style and copying each synthetic region's base across by
--- position. only the slab is copied, never mark_base: the worktree result genuinely has no
--- base marker, so its per-side painting stays correct. trusted only when the synthetic
--- merge yields the same region count (else the regions may not correspond, and no base
--- beats a mislabelled one); a no-op under diff3/zdiff3, where the markers already carried it
+-- `base = nil` and the BASE column has nothing to take. recover them by re-merging the
+-- stages in diff3 style and mapping the synthetic regions onto the worktree ones: ort
+-- coalesces conflicts that merge-file keeps apart, so a worktree region owns a run of them.
+-- both sides claim independently and must agree where the run ends, a side with nothing
+-- locatable abstains, anything ambiguous leaves base nil (a wrong slab gets spliced in by
+-- take-base). only the slab is copied, never mark_base. a no-op under diff3/zdiff3
 ---@param regions differ.merge.Region[]
 ---@param ours_text string
 ---@param base_text string
@@ -33,16 +85,34 @@ local function recover_base(regions, ours_text, base_text, theirs_text)
     if #regions == 0 or regions[1].base then
         return
     end
-    local synth = require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text)
-    if not synth then
+    local synth_text = require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text)
+    if not synth_text then
         return
     end
-    local synth_regions = conflict.parse(to_lines(synth))
-    if #synth_regions ~= #regions then
+    local synth = conflict.parse(to_lines(synth_text))
+    local base_slabs = {}
+    for i, s in ipairs(synth) do
+        base_slabs[i] = s.base or {}
+    end
+    -- the synthetic regions came out of merging this base, so their slabs must appear in it
+    -- in order; if they don't, the re-merge doesn't describe our stages
+    local base_lines = to_lines(base_text)
+    local at = find_runs(base_lines, base_slabs, 1)
+    if not at then
         return
     end
-    for i, r in ipairs(regions) do
-        r.base = synth_regions[i].base
+    local from = 1
+    for _, r in ipairs(regions) do
+        local ours_last = claim_run(r.ours, synth, "ours", from)
+        local theirs_last = claim_run(r.theirs, synth, "theirs", from)
+        local last = math.max(ours_last, theirs_last)
+        if last >= from then
+            local abstained = ours_last < from or theirs_last < from
+            if abstained or ours_last == theirs_last then
+                r.base = base_span(base_slabs, at, from, last, base_lines)
+            end
+            from = last + 1 -- consumed either way, a disputed run isn't the next region's
+        end
     end
 end
 

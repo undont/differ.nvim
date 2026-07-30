@@ -1,12 +1,9 @@
--- shared line-array searching, pure lua, no nvim API. locating a run of lines inside a
--- larger array, in file order, is how both the merge renderer places a region's slab in
--- its stage file and how base recovery maps re-merged regions onto the worktree's
+-- shared line-array searching, pure lua, no nvim API
 
 local M = {}
 
 -- first 1-based start at or after `from` where `slab` matches `lines` run-for-run, or nil.
--- callers must not pass an empty slab: a zero-length run trivially matches at `from`, which
--- is a cursor position rather than a located anchor
+-- an empty slab matches trivially at `from`, so callers must not pass one
 ---@param lines string[]
 ---@param slab string[]
 ---@param from integer
@@ -27,11 +24,9 @@ function M.find_run(lines, slab, from)
     return nil
 end
 
--- place every slab in `slabs` inside `lines`, in order and without overlap, searching
--- forward from `from`. all-or-nothing: nil as soon as one can't be placed after the ones
--- before it, so a caller gets a whole consistent placement or no answer at all. empty slabs
--- are skipped rather than searched for (see find_run) and so take no position: the result
--- is keyed by index into `slabs` and may be sparse, don't take its length
+-- place every slab inside `lines`, in order and disjoint, searching from `from`. all or
+-- nothing: nil as soon as one won't place. empty slabs are skipped and take no position, so
+-- the result is keyed by slab index and may be sparse, don't take its length
 ---@param lines string[]
 ---@param slabs string[][]
 ---@param from integer
