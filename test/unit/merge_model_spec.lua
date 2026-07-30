@@ -82,6 +82,24 @@ local COALESCED_STAGES = {
     [3] = "head\nA2\nmid\nB2\ntail\n",
 }
 
+-- the same stages and the same re-merge, but ort kept the two spots apart, so each region
+-- owns one synthetic conflict and the spans stay disjoint
+local RESULT_SEPARATE = table.concat({
+    "head",
+    "<<<<<<< HEAD",
+    "A1",
+    "=======",
+    "A2",
+    ">>>>>>> branch",
+    "mid",
+    "<<<<<<< HEAD",
+    "B1",
+    "=======",
+    "B2",
+    ">>>>>>> branch",
+    "tail",
+}, "\n") .. "\n"
+
 -- ours deleted the line theirs modified, so the worktree region's ours slab is empty and
 -- only theirs can claim the synthetic region
 local RESULT_OURS_DELETED = table.concat({
@@ -228,6 +246,18 @@ describe("merge.model base recovery", function()
         local m = model.build("/repo", "a.txt", nil)
         -- the run covers base lines A..B, so "mid" comes back with them
         assert.are.same({ "A", "mid", "B" }, m.regions[1].base)
+    end)
+
+    it("gives each region its own span when the same conflicts stay apart", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = RESULT_SEPARATE,
+            diff3 = SYNTH_SPLIT,
+            stages = COALESCED_STAGES,
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        -- one synthetic region each, so neither span reaches across "mid" into the other's
+        assert.are.same({ "A" }, m.regions[1].base)
+        assert.are.same({ "B" }, m.regions[2].base)
     end)
 
     it("recovers via theirs when ours deleted what theirs modified", function()
