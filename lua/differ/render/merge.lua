@@ -8,6 +8,7 @@
 -- forward search (slabs appear in file order), so a unique run highlights and a
 -- not-found run simply doesn't — no highlight beats a wrong highlight
 
+local find_run = require("differ.util.lines").find_run
 local to_lines = require("differ.util.text").to_lines
 
 ---@class differ.merge.ColumnRegion
@@ -51,27 +52,6 @@ local function fold_ranges(total, regions)
         folds[#folds + 1] = { first = first, last = total }
     end
     return folds
-end
-
--- first 1-based start at or after `from` where `slab` matches `lines` run-for-run, or nil
----@param lines string[]
----@param slab string[]
----@param from integer
----@return integer|nil
-local function find_run(lines, slab, from)
-    for start = from, #lines - #slab + 1 do
-        local hit = true
-        for k = 1, #slab do
-            if lines[start + k - 1] ~= slab[k] then
-                hit = false
-                break
-            end
-        end
-        if hit then
-            return start
-        end
-    end
-    return nil
 end
 
 -- locate each region's `key` slab (ours/base/theirs) inside a stage file's lines, in
