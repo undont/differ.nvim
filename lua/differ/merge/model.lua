@@ -43,6 +43,41 @@ local function claim_run(lines, synth, key, from)
     return last
 end
 
+-- claims that differ are blindness rather than contradiction when every synth region the
+-- shorter side stopped short of is empty on that side: it had nothing to look for there
+---@param synth differ.merge.Region[]
+---@param ours_last integer
+---@param theirs_last integer
+---@return boolean
+local function agree(synth, ours_last, theirs_last)
+    local key = ours_last < theirs_last and "ours" or "theirs"
+    for i = math.min(ours_last, theirs_last) + 1, math.max(ours_last, theirs_last) do
+        if #synth[i][key] > 0 then
+            return false
+        end
+    end
+    return true
+end
+
+-- the run a worktree region owns, scanning past synthetic regions nothing corresponds to
+-- (ort resolves cases merge-file conflicts on, so the re-merge can carry orphans). a claim
+-- that needed skipping must be corroborated by both sides, else a region owning nothing
+-- would hunt the rest of the file for a coincidental match. nil when it owns nothing at all
+---@param region differ.merge.Region
+---@param synth differ.merge.Region[]
+---@param from integer
+---@return { first: integer, ours: integer, theirs: integer }|nil
+local function claim(region, synth, from)
+    for start = from, #synth do
+        local ours = claim_run(region.ours, synth, "ours", start)
+        local theirs = claim_run(region.theirs, synth, "theirs", start)
+        local corroborated = ours >= start and theirs >= start
+        if math.max(ours, theirs) >= start and (start == from or corroborated) then
+            return { first = start, ours = ours, theirs = theirs }
+        end
+    end
+end
+
 -- the base-stage span a run covers, anchored on its first and last located slab. the span,
 -- not the sub-slabs concatenated, so a coalesced block keeps its interstitials. all-empty
 -- base slabs cover nothing, which take-base resolves to a deletion
@@ -103,13 +138,11 @@ local function recover_base(regions, ours_text, base_text, theirs_text)
     end
     local from = 1
     for _, r in ipairs(regions) do
-        local ours_last = claim_run(r.ours, synth, "ours", from)
-        local theirs_last = claim_run(r.theirs, synth, "theirs", from)
-        local last = math.max(ours_last, theirs_last)
-        if last >= from then
-            local abstained = ours_last < from or theirs_last < from
-            if abstained or ours_last == theirs_last then
-                r.base = base_span(base_slabs, at, from, last, base_lines)
+        local run = claim(r, synth, from)
+        if run then
+            local last = math.max(run.ours, run.theirs)
+            if agree(synth, run.ours, run.theirs) then
+                r.base = base_span(base_slabs, at, run.first, last, base_lines)
             end
             from = last + 1 -- consumed either way, a disputed run isn't the next region's
         end

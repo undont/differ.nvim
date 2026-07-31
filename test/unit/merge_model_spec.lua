@@ -6,75 +6,68 @@
 
 local model = require("differ.merge.model")
 
--- a default-style conflicted worktree file (no base slab in the markers)
-local RESULT = table.concat({
-    "keep me",
-    "<<<<<<< HEAD",
-    "ours",
-    "=======",
-    "theirs",
-    ">>>>>>> branch",
-}, "\n") .. "\n"
+local function extend(t, items)
+    for _, v in ipairs(items) do
+        t[#t + 1] = v
+    end
+end
 
--- a diff3-style conflicted worktree file (base slab already present)
-local RESULT_DIFF3 = table.concat({
-    "keep me",
-    "<<<<<<< HEAD",
-    "ours",
-    "||||||| base",
-    "ancestor",
-    "=======",
-    "theirs",
-    ">>>>>>> branch",
-}, "\n") .. "\n"
+-- a conflict block in git's default `merge` conflictStyle, as the worktree file carries it
+local function merge_block(ours, theirs)
+    local out = { "<<<<<<< HEAD" }
+    extend(out, ours)
+    out[#out + 1] = "======="
+    extend(out, theirs)
+    out[#out + 1] = ">>>>>>> branch"
+    return out
+end
 
--- a synthetic diff3 re-merge carrying one region, matching RESULT's single conflict
-local SYNTH_ONE = table.concat({
-    "keep me",
-    "<<<<<<< ours",
-    "ours",
-    "||||||| base",
-    "recovered",
-    "=======",
-    "theirs",
-    ">>>>>>> theirs",
-}, "\n") .. "\n"
+-- the same block in `diff3` conflictStyle, base slab and all, as the re-merge emits
+local function diff3_block(ours, base, theirs)
+    local out = { "<<<<<<< ours" }
+    extend(out, ours)
+    out[#out + 1] = "||||||| base"
+    extend(out, base)
+    out[#out + 1] = "======="
+    extend(out, theirs)
+    out[#out + 1] = ">>>>>>> theirs"
+    return out
+end
+
+-- join blocks and plain context lines into file text
+local function file(...)
+    local out = {}
+    for _, part in ipairs({ ... }) do
+        if type(part) == "string" then
+            out[#out + 1] = part
+        else
+            extend(out, part)
+        end
+    end
+    return table.concat(out, "\n") .. "\n"
+end
+
+-- a conflicted worktree file with no base slab in the markers
+local RESULT = file("keep me", merge_block({ "ours" }, { "theirs" }))
+
+-- the same file with the base slab already there, as diff3/zdiff3 writes it
+local RESULT_DIFF3 = file("keep me", diff3_block({ "ours" }, { "ancestor" }, { "theirs" }))
+
+-- a re-merge carrying one region, matching RESULT's single conflict
+local SYNTH_ONE = file("keep me", diff3_block({ "ours" }, { "recovered" }, { "theirs" }))
 
 -- ort coalesced two diverged spots into one block; merge-file kept them apart, so the
 -- single worktree region owns both synthetic ones and its base spans the "mid" between them
-local RESULT_COALESCED = table.concat({
-    "head",
-    "<<<<<<< HEAD",
-    "A1",
-    "mid",
-    "B1",
-    "=======",
-    "A2",
-    "mid",
-    "B2",
-    ">>>>>>> branch",
-    "tail",
-}, "\n") .. "\n"
+local RESULT_COALESCED =
+    file("head", merge_block({ "A1", "mid", "B1" }, { "A2", "mid", "B2" }), "tail")
 
-local SYNTH_SPLIT = table.concat({
+local SYNTH_SPLIT = file(
     "head",
-    "<<<<<<< ours",
-    "A1",
-    "||||||| base",
-    "A",
-    "=======",
-    "A2",
-    ">>>>>>> theirs",
+    diff3_block({ "A1" }, { "A" }, { "A2" }),
     "mid",
-    "<<<<<<< ours",
-    "B1",
-    "||||||| base",
-    "B",
-    "=======",
-    "B2",
-    ">>>>>>> theirs",
-    "tail",
-}, "\n") .. "\n"
+    diff3_block({ "B1" }, { "B" }, { "B2" }),
+    "tail"
+)
 
 local COALESCED_STAGES = {
     [1] = "head\nA\nmid\nB\ntail\n",
@@ -84,81 +77,21 @@ local COALESCED_STAGES = {
 
 -- the same stages and the same re-merge, but ort kept the two spots apart, so each region
 -- owns one synthetic conflict and the spans stay disjoint
-local RESULT_SEPARATE = table.concat({
-    "head",
-    "<<<<<<< HEAD",
-    "A1",
-    "=======",
-    "A2",
-    ">>>>>>> branch",
-    "mid",
-    "<<<<<<< HEAD",
-    "B1",
-    "=======",
-    "B2",
-    ">>>>>>> branch",
-    "tail",
-}, "\n") .. "\n"
+local RESULT_SEPARATE =
+    file("head", merge_block({ "A1" }, { "A2" }), "mid", merge_block({ "B1" }, { "B2" }), "tail")
 
 -- ours deleted the line theirs modified, so the worktree region's ours slab is empty and
 -- only theirs can claim the synthetic region
-local RESULT_OURS_DELETED = table.concat({
-    "a",
-    "<<<<<<< HEAD",
-    "=======",
-    "Y",
-    ">>>>>>> branch",
-    "b",
-}, "\n") .. "\n"
-
-local SYNTH_OURS_DELETED = table.concat({
-    "a",
-    "<<<<<<< ours",
-    "||||||| base",
-    "X",
-    "=======",
-    "Y",
-    ">>>>>>> theirs",
-    "b",
-}, "\n") .. "\n"
+local RESULT_OURS_DELETED = file("a", merge_block({}, { "Y" }), "b")
+local SYNTH_OURS_DELETED = file("a", diff3_block({}, { "X" }, { "Y" }), "b")
 
 -- the sides disagree: ours holds both synthetic ours slabs, theirs holds only the first
-local RESULT_DISPUTED = table.concat({
-    "<<<<<<< HEAD",
-    "A1",
-    "B1",
-    "=======",
-    "A2",
-    ">>>>>>> branch",
-}, "\n") .. "\n"
-
-local SYNTH_TWO = table.concat({
-    "<<<<<<< ours",
-    "A1",
-    "||||||| base",
-    "A",
-    "=======",
-    "A2",
-    ">>>>>>> theirs",
-    "<<<<<<< ours",
-    "B1",
-    "||||||| base",
-    "B",
-    "=======",
-    "B2",
-    ">>>>>>> theirs",
-}, "\n") .. "\n"
+local RESULT_DISPUTED = file(merge_block({ "A1", "B1" }, { "A2" }))
+local SYNTH_TWO =
+    file(diff3_block({ "A1" }, { "A" }, { "A2" }), diff3_block({ "B1" }, { "B" }, { "B2" }))
 
 -- a re-merge describing a conflict nothing in the worktree corresponds to
-local SYNTH_FOREIGN = table.concat({
-    "<<<<<<< ours",
-    "zzz",
-    "||||||| base",
-    "base",
-    "=======",
-    "qqq",
-    ">>>>>>> theirs",
-}, "\n") .. "\n"
+local SYNTH_FOREIGN = file(diff3_block({ "zzz" }, { "base" }, { "qqq" }))
 
 local function fake_git(opts)
     opts = opts or {}
@@ -268,6 +201,125 @@ describe("merge.model base recovery", function()
         })
         local m = model.build("/repo", "a.txt", nil)
         assert.are.same({ "X" }, m.regions[1].base)
+    end)
+
+    it("anchors spans at BOF and EOF without leaning on context", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(
+                merge_block({ "A1" }, { "A2" }),
+                "mid",
+                merge_block({ "B1" }, { "B2" })
+            ),
+            diff3 = file(
+                diff3_block({ "A1" }, { "A" }, { "A2" }),
+                "mid",
+                diff3_block({ "B1" }, { "B" }, { "B2" })
+            ),
+            stages = { [1] = "A\nmid\nB\n", [2] = "A1\nmid\nB1\n", [3] = "A2\nmid\nB2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "A" }, m.regions[1].base) -- first line of the base stage
+        assert.are.same({ "B" }, m.regions[2].base) -- last line
+    end)
+
+    it("disambiguates duplicate conflict content by order", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(
+                merge_block({ "X1" }, { "X2" }),
+                "mid",
+                merge_block({ "X1" }, { "X2" })
+            ),
+            diff3 = file(
+                diff3_block({ "X1" }, { "P" }, { "X2" }),
+                "mid",
+                diff3_block({ "X1" }, { "Q" }, { "X2" })
+            ),
+            stages = { [1] = "P\nmid\nQ\n", [2] = "X1\nmid\nX1\n", [3] = "X2\nmid\nX2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "P" }, m.regions[1].base)
+        assert.are.same({ "Q" }, m.regions[2].base)
+    end)
+
+    it("carries a sub-conflict with an empty ours slab along inside a run", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "A1", "x", "D1" }, { "A2", "x", "C2", "D2" })),
+            diff3 = file(
+                diff3_block({ "A1" }, { "A" }, { "A2" }),
+                "x",
+                diff3_block({}, { "C" }, { "C2" }),
+                diff3_block({ "D1" }, { "D" }, { "D2" })
+            ),
+            stages = { [1] = "A\nx\nC\nD\n", [2] = "A1\nx\nD1\n", [3] = "A2\nx\nC2\nD2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        -- the run reached D, so it passed over the ours-deleted C on the way
+        assert.are.same({ "A", "x", "C", "D" }, m.regions[1].base)
+    end)
+
+    it("recovers a coalesced block whose last sub-conflict is an ours deletion", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "A1" }, { "A2", "x", "C2" })),
+            diff3 = file(
+                diff3_block({ "A1" }, { "A" }, { "A2" }),
+                "x",
+                diff3_block({}, { "C" }, { "C2" })
+            ),
+            stages = { [1] = "A\nx\nC\n", [2] = "A1\n", [3] = "A2\nx\nC2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "A", "x", "C" }, m.regions[1].base)
+    end)
+
+    it("anchors the span on the first non-empty base slab in the run", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "A1", "B1" }, { "A2", "B2" })),
+            diff3 = file(
+                diff3_block({ "A1" }, {}, { "A2" }),
+                diff3_block({ "B1" }, { "B" }, { "B2" })
+            ),
+            stages = { [1] = "B\n", [2] = "A1\nB1\n", [3] = "A2\nB2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "B" }, m.regions[1].base)
+    end)
+
+    it("skips a synthetic conflict no worktree region owns", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(
+                merge_block({ "A1" }, { "A2" }),
+                "mid",
+                merge_block({ "C1" }, { "C2" })
+            ),
+            diff3 = file(
+                diff3_block({ "A1" }, { "A" }, { "A2" }),
+                diff3_block({ "B1" }, { "B" }, { "B2" }),
+                "mid",
+                diff3_block({ "C1" }, { "C" }, { "C2" })
+            ),
+            stages = { [1] = "A\nB\nmid\nC\n", [2] = "A1\nmid\nC1\n", [3] = "A2\nmid\nC2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "A" }, m.regions[1].base)
+        assert.are.same({ "C" }, m.regions[2].base)
+    end)
+
+    it("won't skip to a claim only one side corroborates", function()
+        -- the second region could reach the third synthetic conflict on theirs alone, but
+        -- getting there means skipping an orphan, so one side's word isn't enough
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "A1" }, { "A2" }), "mid", merge_block({}, { "C2" })),
+            diff3 = file(
+                diff3_block({ "A1" }, { "A" }, { "A2" }),
+                diff3_block({ "B1" }, { "B" }, { "B2" }),
+                "mid",
+                diff3_block({}, { "C" }, { "C2" })
+            ),
+            stages = { [1] = "A\nB\nmid\nC\n", [2] = "A1\nmid\n", [3] = "A2\nmid\nC2\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.are.same({ "A" }, m.regions[1].base)
+        assert.is_nil(m.regions[2].base)
     end)
 
     it("leaves base absent when the two sides disagree on the run", function()
