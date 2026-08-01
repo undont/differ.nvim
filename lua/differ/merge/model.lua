@@ -17,6 +17,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field result_text string -- the worktree file as-is (markers intact)
 ---@field regions differ.merge.Region[]
 ---@field head string|nil
+---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
 
 local M = {}
 
@@ -168,7 +169,13 @@ function M.build(root, relpath, head)
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)
     local theirs_text = git.read_stage(root, relpath, 3)
-    recover_base(regions, ours_text, base_text, theirs_text)
+    -- only ambiguous when the stage read back empty, so the extra call sits inside that
+    local no_ancestor = base_text == "" and not git.has_stage(root, relpath, 1)
+    -- with no ancestor the re-merge still yields empty base slabs, which recover would copy
+    -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
+    if not no_ancestor then
+        recover_base(regions, ours_text, base_text, theirs_text)
+    end
     return {
         path = relpath,
         root = root,
@@ -178,6 +185,7 @@ function M.build(root, relpath, head)
         result_text = result_text,
         regions = regions,
         head = head,
+        no_ancestor = no_ancestor,
     }
 end
 

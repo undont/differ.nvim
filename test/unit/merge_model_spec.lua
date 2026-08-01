@@ -110,6 +110,10 @@ local function fake_git(opts)
         merge_file_diff3 = function()
             return opts.diff3
         end,
+        -- stage presence, only consulted when the stage read back empty; present by default
+        has_stage = function()
+            return opts.has_stage ~= false
+        end,
     }
 end
 
@@ -343,6 +347,32 @@ describe("merge.model base recovery", function()
         package.loaded["differ.git"] = fake_git({ diff3 = SYNTH_ONE })
         local m = model.build("/repo", "a.txt", nil)
         assert.is_nil(m.regions[1].base)
+    end)
+
+    it("takes no base at all for add/add, where there is no :1: stage", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "ours1" }, { "theirs1" })),
+            diff3 = file(diff3_block({ "ours1" }, {}, { "theirs1" })),
+            stages = { [2] = "ours1\n", [3] = "theirs1\n" },
+            has_stage = false,
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_true(m.no_ancestor)
+        -- nil, not {}: an empty slab is truthy, so take-base would splice it and drop the block
+        assert.is_nil(m.regions[1].base)
+    end)
+
+    it("recovers an empty slab when the ancestor exists but is empty", function()
+        -- same empty base_text as add/add, opposite handling: there is a base and it says
+        -- the block had nothing, so take-base deleting it is the right answer
+        package.loaded["differ.git"] = fake_git({
+            worktree = file(merge_block({ "ours1" }, { "theirs1" })),
+            diff3 = file(diff3_block({ "ours1" }, {}, { "theirs1" })),
+            stages = { [2] = "ours1\n", [3] = "theirs1\n" },
+        })
+        local m = model.build("/repo", "a.txt", nil)
+        assert.is_false(m.no_ancestor)
+        assert.are.same({}, m.regions[1].base)
     end)
 
     it("leaves base absent when the re-merge is unavailable", function()
