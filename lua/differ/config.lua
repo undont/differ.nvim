@@ -81,8 +81,8 @@ M.defaults = {
         width = 40, -- left/right
     },
     -- the merge tool's pane layout: `default` is ours | theirs over the result,
-    -- `diff4` adds the base column (base/ours/theirs over the result). `:Differ
-    -- mergetool diff4` still overrides this per invocation
+    -- `diff4` adds the base column (base/ours/theirs over the result). base-pane
+    -- visibility is a stable preference, so there's no per-invocation argument
     merge = {
         layout = "default",
     },
