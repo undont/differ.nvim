@@ -688,6 +688,23 @@ local function open_session(pr, detail, opts)
     -- on the panel, unviewed nav on both. the generic panel/diff don't own them, so
     -- they reach the buffer via the extra_keymaps seam, not the fixed action set
     local panel_km, diff_km = cfg.keymaps.panel, cfg.keymaps.diff
+    -- the review lifecycle verbs, bound the same on both pr surfaces. each entry point
+    -- guards itself (submit picks a verdict, discard confirms), so the keys act directly
+    local function lifecycle(km)
+        return {
+            { spec = km.review_submit, fn = M.submit, desc = "submit the review" },
+            { spec = km.review_discard, fn = M.discard_review, desc = "discard the review" },
+            -- wrapped: resume takes an optional PR number, and from inside a session
+            -- the key can only mean "this one"
+            {
+                spec = km.review_resume,
+                fn = function()
+                    M.resume()
+                end,
+                desc = "resume the review",
+            },
+        }
+    end
     local panel_extra = {
         { spec = panel_km.overview, fn = M.overview, desc = "PR overview" },
         { spec = panel_km.toggle_viewed, fn = toggle_viewed, desc = "toggle viewed" },
@@ -706,6 +723,7 @@ local function open_session(pr, detail, opts)
             desc = "previous unviewed file",
         },
     }
+    vim.list_extend(panel_extra, lifecycle(panel_km))
     -- the diff surface keeps focus in the diff window when stepping (keep_focus = true);
     -- the thread actions also bind here, via the same extra_keymaps seam
     session.diff_extra_keymaps = {
@@ -749,6 +767,7 @@ local function open_session(pr, detail, opts)
             desc = "edit the real file (zoom tab)",
         },
     }
+    vim.list_extend(session.diff_extra_keymaps, lifecycle(diff_km))
 
     -- build the file panel + driven diff into the session tab. deferred so the overview
     -- stays panel-less; a no-op once the panel exists (entering the files reuses it)

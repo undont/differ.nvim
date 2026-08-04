@@ -115,6 +115,12 @@ M.defaults = {
         comment = "ga", -- comment on the line (normal) or the selection (visual)
         reply = "gp", -- reply to the thread under the cursor
         delete_comment = "gx", -- delete the latest comment of the thread under the cursor
+        -- pr review lifecycle, on the pr diff + panel. capitalised to keep the
+        -- lowercase g-family for thread/comment actions; each one's own prompt
+        -- (verdict picker, confirm) is the guard, not the key
+        review_submit = "gS", -- pr: submit the pending review
+        review_discard = "gD", -- pr: discard the pending review and its drafts
+        review_resume = "gR", -- pr: resume a pending review
         scroll_down = "f", -- all three (shadows native f/b; set false to restore)
         scroll_up = "b",
         select = { "<CR>", "o" }, -- panel, history

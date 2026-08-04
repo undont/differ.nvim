@@ -1021,6 +1021,11 @@ function Panel:show_help()
             { fmt(km.refresh), "refresh" },
         })
     end
+    -- the session's own maps (the pr viewed nav and review verbs), which bind here
+    -- through the extra_keymaps seam and would otherwise never show up
+    for _, m in ipairs(self.extra_keymaps or {}) do
+        rows[#rows + 1] = { fmt(m.spec), m.desc }
+    end
     rows[#rows + 1] = { fmt(km.close), "close the session" }
     rows[#rows + 1] = { fmt(km.help), "this help" }
     help.show(help.lines(rows), { title = " Differ: panel " })

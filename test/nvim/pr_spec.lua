@@ -171,3 +171,40 @@ describe("pr session notifies", function()
         restore()
     end)
 end)
+
+describe("pr review lifecycle keymaps", function()
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("binds submit / discard / resume on both the diff and the panel", function()
+        local restore = stub_sidecar({
+            get_pr = { result = get_pr_result() },
+            get_file_versions = {
+                result = { base = { content = "a\n" }, head = { content = "b\n" } },
+            },
+            get_threads = { result = {} },
+        })
+
+        pr.show(PR)
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s and s.view and s.view:is_open() and s.panel
+        end))
+
+        local s = pr.current_session()
+        for _, buf in ipairs({ s.view.columns[1].bufnr, s.panel.bufnr }) do
+            local km = {}
+            for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+                km[m.lhs] = m.desc
+            end
+            assert.is_truthy(km["gS"]:find("submit the review", 1, true))
+            assert.is_truthy(km["gD"]:find("discard the review", 1, true))
+            assert.is_truthy(km["gR"]:find("resume the review", 1, true))
+        end
+
+        restore()
+    end)
+end)
