@@ -1,0 +1,56 @@
+name: Changelog Check
+
+# a PR whose title prefix cuts a release (see release.yml) has to leave a mark on the
+# `## [Unreleased]` section of the hand-maintained CHANGELOG.md. label the PR
+# `no changelog` to opt a release-bound change out.
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+    branches: [main]
+
+concurrency:
+  group: changelog-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require an Unreleased entry
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: |
+          # the prefixes release.yml bumps a version from are the user-facing ones; docs,
+          # chore, refactor and test don't cut a release on their own, so they're exempt
+          if ! printf '%s' "$TITLE" | grep -qiE '^(breaking|add|update|feat|fix)(\(.+\))?:'; then
+            echo "No release-triggering prefix on: $TITLE — no changelog entry required"
+            exit 0
+          fi
+
+          if printf '%s' "$LABELS" | grep -qiE '(^|,)no changelog(,|$)'; then
+            echo "Skipped by the 'no changelog' label"
+            exit 0
+          fi
+
+          # the [Unreleased] section as it stands either side of the PR: comparing the
+          # section rather than the file catches an entry filed under a released version
+          section() {
+            git show "$1:CHANGELOG.md" 2>/dev/null |
+              awk '/^## \[Unreleased\]/ { inside = 1; next } /^## / { inside = 0 } inside'
+          }
+
+          if [ "$(section "$BASE_SHA")" = "$(section HEAD)" ]; then
+            echo "::error::CHANGELOG.md: add an entry under '## [Unreleased]' (or label the PR 'no changelog')"
+            exit 1
+          fi
+          echo "CHANGELOG.md [Unreleased] updated"

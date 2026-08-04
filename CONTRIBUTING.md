@@ -43,6 +43,12 @@ make demo                 # rebuilds fixtures, re-records .demo/demo.gif + .demo
 
 PR titles must start with one of `breaking`, `feat`, `add`, `update`, `fix`, `docs`, `chore`, `refactor`, `test` (enforced by CI). Match the existing `git log` style: lowercase after the prefix, imperative mood, no trailing full stop.
 
+## Changelog
+
+`CHANGELOG.md` is hand-maintained in [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) style; the generated GitHub release notes come from commit messages and don't replace it. Land user-facing changes as terse bullets under `## [Unreleased]`, grouped into `### Added` / `### Changed` / `### Fixed`, and let the release rename that section to `## [x.y.z] — YYYY-MM-DD`.
+
+CI enforces it for any PR whose title prefix cuts a release (`breaking`, `add`, `update`, `feat`, `fix`); `docs`, `chore`, `refactor` and `test` don't cut one on their own, so they're exempt. They still ride along in whatever release lands next, so add an entry anyway if such a PR changes something a user would notice. A release-bound change that genuinely warrants no entry can be labelled `no changelog` to skip the check.
+
 ## Opening a PR
 
 `main` is protected, changes land via PR with CI green. Keep a PR scoped to one change; unrelated cleanup belongs in its own PR.
