@@ -1,5 +1,5 @@
 -- the merge-tool session: lay the 3-way render into windows — ours / theirs on
--- top (plus base under the diff3_mixed layout), the result spine full-width below — drive
+-- top (plus base under the diff4 layout), the result spine full-width below — drive
 -- conflict navigation (]x/[x), and resolve per conflict (take ours/theirs/both/base/none),
 -- splicing the chosen slab into the result and stripping the markers. the result column is
 -- the real worktree file: :w writes it and auto-stages once no markers remain, then advances
@@ -50,10 +50,12 @@ local INPUT_HL = {
 ---@field path string
 ---@field regions differ.merge.Region[]   -- re-derived from the live result buffer
 ---@field order integer[]                 -- live region position -> original conflict index
+---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
 ---@field total integer                   -- original conflict count (for the winbar N/M)
 ---@field active_index integer|nil        -- live index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
----@field layout "default"|"diff3_mixed"  -- the chosen layout, reused when advancing to the next file
+---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
+---@field layout "default"|"diff4"  -- the chosen layout, reused when advancing to the next file
 ---@field result_win integer
 ---@field result_buf integer              -- the real worktree file (editable)
 ---@field bufs integer[]                  -- the scratch input buffers (deleted on close)
@@ -487,6 +489,11 @@ local function resolve_choice(choice)
     if not region then
         return notify("no conflict under the cursor")
     end
+    -- the live buffer parse carries no base under the default conflictStyle, so take-base
+    -- reads the slab recovered at build time, mapped live index -> original via `order`
+    if choice == "base" and not region.base then
+        region.base = session.base_slabs[session.order[region.index]]
+    end
     local new_lines, delta = require("differ.merge.resolve").splice(lines, region, choice)
     if not new_lines then
         return notify("no base version in this conflict", vim.log.levels.WARN)
@@ -514,8 +521,36 @@ local function resolve_choice(choice)
     end
 end
 
+-- the active conflict's position among the remaining ones
+---@return integer
+local function active_pos()
+    local s = assert(session)
+    for i, r in ipairs(s.regions) do
+        if r.index == s.active_index then
+            return i
+        end
+    end
+    return 1
+end
+
+-- the base pane says why it's empty rather than looking broken: add/add has no ancestor at
+-- all, and an individual conflict carries no slab when the mapping was too ambiguous to
+-- trust. the file-level cause wins, else every conflict would blame itself for it
+---@return string
+local function base_label()
+    local s = assert(session)
+    local label = s.labels.base or "BASE"
+    if s.no_ancestor then
+        return label .. " · no common ancestor"
+    end
+    if #s.regions > 0 and not s.base_slabs[s.order[active_pos()]] then
+        return label .. " · none for this conflict"
+    end
+    return label
+end
+
 -- winbar text for the merge windows: the result shows the conflict counter, an input
--- shows its static side label. a `%!` expression reading the window it renders for
+-- shows its side label. a `%!` expression reading the window it renders for
 ---@return string
 function M.winbar()
     if not session then
@@ -528,17 +563,13 @@ function M.winbar()
             return "RESULT · all resolved"
         end
         local total = session.total
-        local pos = 1 -- the active conflict's position among the remaining
-        for i, r in ipairs(session.regions) do
-            if r.index == session.active_index then
-                pos = i
-                break
-            end
-        end
-        local n = (total - remaining) + pos -- the absolute conflict ordinal
+        local n = (total - remaining) + active_pos() -- the absolute conflict ordinal
         return ("RESULT · conflict %d/%d · %d unresolved"):format(n, total, remaining)
     end
     local side = session.win_side[win]
+    if side == "base" then
+        return base_label()
+    end
     return side and (session.labels[side] or side:upper()) or ""
 end
 
@@ -656,7 +687,7 @@ local function show_help()
     require("differ.ui.help").show(lines, { title = " Differ: merge ", dismiss = dismiss })
 end
 
----@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff3_mixed")
+---@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff4")
 local lay_out
 
 -- once a file resolves + stages, open the next conflicted file (git's order, the staged file
@@ -665,7 +696,7 @@ local lay_out
 -- rather than looping. no commit hint: the merge may be a rebase/cherry-pick/etc., so naming
 -- one command would be wrong as often as right
 ---@param root string
----@param layout "default"|"diff3_mixed"
+---@param layout "default"|"diff4"
 local function advance(root, layout)
     local remaining = require("differ.git").conflicted(root)
     if #remaining == 0 then
@@ -684,7 +715,7 @@ end
 ---@param root string
 ---@param relpath string
 ---@param model differ.MergeModel
----@param layout "default"|"diff3_mixed"
+---@param layout "default"|"diff4"
 function lay_out(root, relpath, model, layout)
     if session then -- re-open over a live session
         M.close()
@@ -757,6 +788,7 @@ function lay_out(root, relpath, model, layout)
         path = relpath,
         regions = model.regions,
         order = {},
+        base_slabs = {},
         total = #model.regions,
         active_index = nil,
         labels = {
@@ -765,6 +797,7 @@ function lay_out(root, relpath, model, layout)
             theirs = ("THEIRS (%s)"):format((first and first.label_theirs) or "MERGE_HEAD"),
             result = "RESULT",
         },
+        no_ancestor = model.no_ancestor or false,
         layout = layout,
         result_win = result_win,
         result_buf = result_buf,
@@ -779,6 +812,12 @@ function lay_out(root, relpath, model, layout)
     }
     for i = 1, #model.regions do
         session.order[i] = i
+    end
+    -- recovered base slabs by original conflict index: the default conflictStyle leaves no
+    -- base in the live result parse, so take-base looks the slab up here (nil where the
+    -- re-merge couldn't recover one, which take-base reports as no base version)
+    for _, r in ipairs(model.regions) do
+        session.base_slabs[r.index] = r.base
     end
 
     -- paint the panes + lay down the (latent) folds
@@ -912,12 +951,12 @@ function lay_out(root, relpath, model, layout)
 end
 
 -- resolve root + the target relpath, then build + open. with no path the current file is
--- used when it's conflicted, else the sole conflicted file, else a picker over them
----@param opts { path?: string, layout?: "default"|"diff3_mixed" }|nil
+-- used when it's conflicted, else the sole conflicted file, else a picker over them. an
+-- explicit opts.layout wins over the configured merge.layout
+---@param opts { path?: string, layout?: "default"|"diff4" }|nil
 function M.open(opts)
     opts = opts or {}
     local git = require("differ.git")
-    local layout = opts.layout or "default"
 
     local file = vim.api.nvim_buf_get_name(0)
     local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
@@ -930,6 +969,9 @@ function M.open(opts)
     if #conflicted == 0 then
         return notify("no conflicted files to resolve")
     end
+
+    local merge_cfg = require("differ").get_config().merge or {}
+    local layout = opts.layout or merge_cfg.layout or "default"
 
     local function go(relpath)
         local model, err = require("differ.merge.model").build(root, relpath, nil)

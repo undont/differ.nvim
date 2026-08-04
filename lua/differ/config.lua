@@ -12,6 +12,9 @@
 ---@field height integer  -- used for top/bottom
 ---@field width integer   -- used for left/right
 
+---@class differ.Config.Merge
+---@field layout "default"|"diff4"
+
 -- a resolved per-surface keymap table: action -> lhs (a string, a multi-lhs list,
 -- or false to disable). the shape `resolve_keymaps` produces per surface
 ---@alias differ.KeymapSet table<string, string|string[]|false>
@@ -26,6 +29,7 @@
 ---@field comments { inline: boolean, collapsed: boolean }
 ---@field panel differ.Config.Panel
 ---@field history differ.Config.History
+---@field merge differ.Config.Merge
 ---@field keymaps table<string, string|string[]|false|table>
 ---@field relative_dates boolean
 ---@field base string|nil
@@ -75,6 +79,12 @@ M.defaults = {
         position = "bottom",
         height = 10, -- top/bottom
         width = 40, -- left/right
+    },
+    -- the merge tool's pane layout: `default` is ours | theirs over the result,
+    -- `diff4` adds the base column (base/ours/theirs over the result). base-pane
+    -- visibility is a stable preference, so there's no per-invocation argument
+    merge = {
+        layout = "default",
     },
     -- buffer-local maps, one flat table of action -> lhs shared across the diff,
     -- panel and history surfaces (each binds the actions it implements). a value is

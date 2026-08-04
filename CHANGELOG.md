@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A `diff4` merge layout (`merge.layout = "diff4"`), adding a base column with the common ancestor above the result. `<leader>cb` takes base in either layout, so the layout is about seeing what you're taking, not being able to take it
+- Base recovery under git's default `merge.conflictStyle`, which writes no base into the markers: differ re-merges the stages in diff3 style and maps those regions onto the worktree conflicts, so take-base works without `zdiff3`. Where the mapping can't be trusted the base pane says why (`no common ancestor` on add/add, `none for this conflict` otherwise) and take-base is refused rather than emptying the block
+
+### Changed
+
+- The merge tool's base column is a config preference (`merge.layout`) rather than a per-invocation argument: `:Differ mergetool diff3_mixed` is gone, and the sole argument to `mergetool` is always a path
+
+## [0.1.18] — 2026-07-13
+
+### Added
+
 - A PR overview page: the conversation timeline plus code threads rendered as boxed units (a left-spine box with a top-rule header, spine body rows, and a reply-count footer) that carry their diff hunk inline. The hunk tail is capped (keeping the `@@` header and an elision marker when trimmed), tinted with the diff's own +/- line colours, and treesitter-highlighted from the marker-stripped source rather than the page buffer. `]t`/`[t` hop between thread boxes
 - Enter the review straight from an overview thread: `<CR>`, `e`, or `r` on a thread row open the review at that comment's file and line, landing on the comment with no file-stepping
 - A review to overview round-trip: `go` pops from the review back to the overview, and `q` drops back into the review where you left off, restoring the stashed diff position and the overview's own cursor on the hop back

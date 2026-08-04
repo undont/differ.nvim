@@ -109,6 +109,50 @@ local function conflict_repo_multi()
     return root
 end
 
+-- a repo where both sides change two spots two unchanged lines apart. ort coalesces them
+-- into one conflict block while git merge-file keeps them separate, which is the grouping
+-- disagreement base recovery has to map across (a gap of four or more stops coalescing)
+local function conflict_repo_coalesced()
+    local function body(a, b)
+        return table.concat({ a, "pad1", "pad2", b }, "\n") .. "\n"
+    end
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/f.txt", body("A", "B"))
+    git_ok(root, "add", "f.txt")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/f.txt", body("A_THEIRS", "B_THEIRS"))
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/f.txt", body("A_OURS", "B_OURS"))
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end
+
+-- a repo where both branches independently add the same path, so the merge carries no `:1:`
+-- stage: there is no ancestor for the base pane to show or for take-base to restore
+local function conflict_repo_add_add()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/seed.txt", "seed\n")
+    git_ok(root, "add", "seed.txt")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/f.txt", "theirs1\ntheirs2\n")
+    git_ok(root, "add", "f.txt")
+    git_ok(root, "commit", "-q", "-m", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/f.txt", "ours1\nours2\n")
+    git_ok(root, "add", "f.txt")
+    git_ok(root, "commit", "-q", "-m", "ours")
+    git(root, "merge", "feature")
+    return root
+end
+
 -- a repo where merging `feature` conflicts on TWO files (f.txt then g.txt), to exercise
 -- write-driven advancing through the conflict set
 local function conflict_repo_two()
@@ -196,10 +240,10 @@ describe(":Differ mergetool", function()
         assert.are.equal(first, vim.api.nvim_win_get_cursor(s.result_win)[1])
     end)
 
-    it("shows the base column under diff3_mixed", function()
+    it("shows the base column under diff4", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
-        merge.open({ layout = "diff3_mixed" })
+        merge.open({ layout = "diff4" })
         assert.are.equal(4, #vim.api.nvim_tabpage_list_wins(0))
     end)
 
@@ -665,5 +709,145 @@ describe(":Differ mergetool UX", function()
         end)
         local after = vim.api.nvim_buf_get_extmarks(s.result_buf, flash_ns, 0, -1, {})
         assert.are.equal(0, #after)
+    end)
+end)
+
+describe(":Differ mergetool layout config", function()
+    local differ = require("differ")
+    local saved
+
+    before_each(function()
+        saved = differ.config
+        differ.config = require("differ.config").resolve({ merge = { layout = "diff4" } })
+    end)
+
+    after_each(function()
+        differ.config = saved
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    it("opens the configured layout when no argument names one", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        assert.are.equal(4, #vim.api.nvim_tabpage_list_wins(0))
+    end)
+
+    it("lets an explicit layout beat the configured one", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "default" })
+        assert.are.equal(3, #vim.api.nvim_tabpage_list_wins(0))
+    end)
+end)
+
+describe(":Differ mergetool diff4 base pane", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    it("locates and paints the base pane under the default conflict style", function()
+        local root = conflict_repo() -- default merge style: the markers carry no base slab
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        local base = input(s, "base")
+        assert.is_not_nil(base)
+        assert.is_true(#base.regions > 0) -- recovered, so the slab is located
+        local marks =
+            vim.api.nvim_buf_get_extmarks(vim.api.nvim_win_get_buf(base.win), merge_ns, 0, -1, {})
+        assert.is_true(#marks > 0) -- painted, unlike the pre-recovery inert pane
+    end)
+
+    it("takes base for the conflict, resolving to the common ancestor", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+        assert.is_false(has_marker(s.result_buf))
+        assert.are.same({ "a", "b", "c" }, vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false))
+    end)
+
+    it("recovers base across a block ort coalesced but merge-file kept apart", function()
+        local root = conflict_repo_coalesced()
+        vim.cmd.edit(root .. "/f.txt")
+        -- precondition: if a future git stops coalescing here, the mapping this exercises
+        -- isn't being exercised at all, so fail loudly rather than passing on the easy path
+        local conflict = require("differ.git.conflict")
+        local to_lines = require("differ.util.text").to_lines
+        local wt = conflict.parse(
+            to_lines(table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "\n") .. "\n")
+        )
+        assert.are.equal(1, #wt, "fixture no longer coalesces under ort")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        local base = input(s, "base")
+        assert.is_not_nil(base)
+        assert.is_true(#base.regions > 0) -- located, so the run mapped across the grouping
+    end)
+
+    it("takes base across a coalesced block, interstitials and all", function()
+        local root = conflict_repo_coalesced()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+        assert.is_false(has_marker(s.result_buf))
+        -- the span, not the two changed lines: the unchanged pads between them come back too
+        assert.are.same(
+            { "A", "pad1", "pad2", "B" },
+            vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        )
+    end)
+
+    it("says the base pane has no common ancestor on an add/add conflict", function()
+        local root = conflict_repo_add_add()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        vim.g.statusline_winid = input(s, "base").win
+        assert.are.equal("BASE · no common ancestor", merge.winbar())
+    end)
+
+    it("refuses take base on an add/add conflict rather than dropping the block", function()
+        local root = conflict_repo_add_add()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        _G.notifs = {}
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+        assert.is_true(has_marker(s.result_buf)) -- the block survives, nothing spliced
+        assert.are.equal("differ: no base version in this conflict", _G.notifs[1].msg)
+    end)
+
+    it("says so in the base winbar when a conflict has no recovered slab", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        vim.g.statusline_winid = input(s, "base").win
+        assert.are.equal("BASE", merge.winbar())
+        s.base_slabs = {} -- as if the mapping had been too ambiguous to trust here
+        assert.are.equal("BASE · none for this conflict", merge.winbar())
+    end)
+
+    it("takes the right base on a later conflict after the order map shifts", function()
+        local root = conflict_repo_multi() -- three conflicts, base slabs base5/base15/base25
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = merge.current()
+        -- resolve the first (auto-advances onto the second), then take base there: the live
+        -- index -> original mapping has shifted, so this proves the lookup follows `order`
+        fire(s.result_buf, "differ: take base")
+        fire(s.result_buf, "differ: take base")
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        assert.is_true(vim.tbl_contains(lines, "base5")) -- first conflict -> its own base
+        assert.is_true(vim.tbl_contains(lines, "base15")) -- second -> its base, not base5/base25
+        assert.is_true(has_marker(s.result_buf)) -- the third conflict is still open
     end)
 end)

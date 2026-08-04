@@ -111,6 +111,37 @@ describe("git.read_stage", function()
     end)
 end)
 
+describe("git.merge_file_diff3", function()
+    local conflict = require("differ.git.conflict")
+    local to_lines = require("differ.util.text").to_lines
+
+    it("re-merges the three stages into diff3 style with a base slab", function()
+        local out = git_src.merge_file_diff3("a\nOURS\nc\n", "a\nb\nc\n", "a\nTHEIRS\nc\n")
+        local regions = conflict.parse(to_lines(out))
+        assert.are.equal(1, #regions)
+        assert.are.same({ "OURS" }, regions[1].ours)
+        assert.are.same({ "b" }, regions[1].base)
+        assert.are.same({ "THEIRS" }, regions[1].theirs)
+    end)
+
+    it("keeps CRLF bytes in the recovered base slab", function()
+        local out = git_src.merge_file_diff3(
+            "a\r\nOURS\r\nc\r\n",
+            "a\r\nb\r\nc\r\n",
+            "a\r\nTHEIRS\r\nc\r\n"
+        )
+        local regions = conflict.parse(to_lines(out))
+        assert.are.equal(1, #regions)
+        assert.are.same({ "b\r" }, regions[1].base) -- the CR survives, matching the :1: stage
+    end)
+
+    it("returns marker-free text when the stages merge cleanly", function()
+        local out = git_src.merge_file_diff3("a\nb\nc\n", "a\nb\nc\n", "a\nZZZ\nc\n")
+        assert.is_not_nil(out)
+        assert.is_nil(out:find("<<<<<<<", 1, true))
+    end)
+end)
+
 describe("git.read (worktree clean filter)", function()
     local wt = { kind = "worktree", label = "WORKTREE" }
 

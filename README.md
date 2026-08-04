@@ -36,7 +36,7 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - **PR review in the diff** with inline comment threads, pending-review drafts, thread resolve, per-file viewed-state, CI checks, and lifecycle actions (merge, checkout, ready/draft, close), backed by a Go sidecar that owns the GitHub API
 - **File panel and staging** in a persistent sidebar with the changed-file tree, status icons, +/- counts, and hunk- and file-level staging
 - **File history** for single files and branch ranges, walked commit-by-commit, each step a diff through the same engine
-- **3-way merge tool** running base/ours/theirs through the n-column renderer, resolved into the working-tree file
+- **3-way/4-way merge tool** running ours/theirs (and optionally base) through the n-column renderer, resolved into the working-tree file
 - **Word-level highlighting** and **Treesitter syntax** on by default, so the diff reads like source instead of a grey block
 - **Real buffer lines** for code, so search, yank, and motions all work; the hunk model is canonical and the buffer is a projection of it
 - **One diff engine** (`vim.diff()`, histogram) shared by every source
@@ -229,6 +229,10 @@ Code-comment threads render as a contained box (GitHub's outline, differ's left-
 | `q` | Close the merge tool |
 | `g?` | Help |
 
+`merge.layout` picks the panes: `default` shows ours and theirs over the result, `diff4` adds a base column with the common ancestor. `<leader>cb` takes base in either layout, so `diff4` is about seeing what you're taking, not being able to take it.
+
+You don't need `merge.conflictStyle = zdiff3` for that. Git's default style leaves no base in the conflict markers, so differ works it out from the merge stages instead. Where it can't, the base pane's winbar says so: `no common ancestor` when the file was added on both branches, `none for this conflict` when a conflict couldn't be matched up. Taking base is refused in those cases rather than emptying the block.
+
 The result buffer is the real worktree file, so `:w` writes it and stages it once the markers are gone, then opens the next conflicted file; when none remain the session reports done and closes. Use `:Differ close` to stop after the current file. Because it's a real file, a format-on-save would otherwise run over the conflict markers; the merge tool sets `vim.b.disable_autoformat` (conform's opt-out) for the session, so honour that flag in your `format_on_save` gate if you format on save. If a formatter reformats the markers anyway, differ notices on save, refuses to stage the file, and warns once that the flag isn't being honoured. The merge result also disables in-buffer markdown rendering (render-markdown.nvim) for the session so the conflict markers aren't concealed as block-quotes, restoring it on close.
 
 ### Launchers (a starting point)
@@ -391,6 +395,9 @@ require("differ").setup({
     position = "bottom",
     height = 10,                 -- top/bottom
     width = 40,                  -- left/right
+  },
+  merge = {                      -- merge tool pane layout; no per-invocation override
+    layout = "default",          -- "default" (ours | theirs) | "diff4" (adds base)
   },
   keymaps = {                    -- one flat action -> lhs table, shared across the diff,
     -- a value is a string, a list of strings, or false to disable. override globally

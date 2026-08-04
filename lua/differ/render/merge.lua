@@ -8,6 +8,7 @@
 -- forward search (slabs appear in file order), so a unique run highlights and a
 -- not-found run simply doesn't — no highlight beats a wrong highlight
 
+local find_run = require("differ.util.lines").find_run
 local to_lines = require("differ.util.text").to_lines
 
 ---@class differ.merge.ColumnRegion
@@ -53,27 +54,6 @@ local function fold_ranges(total, regions)
     return folds
 end
 
--- first 1-based start at or after `from` where `slab` matches `lines` run-for-run, or nil
----@param lines string[]
----@param slab string[]
----@param from integer
----@return integer|nil
-local function find_run(lines, slab, from)
-    for start = from, #lines - #slab + 1 do
-        local hit = true
-        for k = 1, #slab do
-            if lines[start + k - 1] ~= slab[k] then
-                hit = false
-                break
-            end
-        end
-        if hit then
-            return start
-        end
-    end
-    return nil
-end
-
 -- locate each region's `key` slab (ours/base/theirs) inside a stage file's lines, in
 -- order; an empty or unlocated slab contributes no region (so it stays unhighlighted)
 ---@param lines string[]
@@ -95,14 +75,14 @@ local function locate_regions(lines, regions, key)
     return out
 end
 
--- build the merge columns. base is shown only under the diff3_mixed layout (it's read
+-- build the merge columns. base is shown only under the diff4 layout (it's read
 -- + carried regardless, so the toggle costs nothing); the result column is always last
 ---@param model differ.MergeModel
----@param opts { layout?: "default"|"diff3_mixed" }|nil
+---@param opts { layout?: "default"|"diff4" }|nil
 ---@return differ.merge.RenderResult
 function M.render(model, opts)
     opts = opts or {}
-    local show_base = opts.layout == "diff3_mixed"
+    local show_base = opts.layout == "diff4"
 
     local ours = to_lines(model.ours_text)
     local theirs = to_lines(model.theirs_text)
