@@ -1100,6 +1100,12 @@ function Panel:_setup_window()
         end
         run()
     end
+    map(km.close, function()
+        require("differ.command").close()
+    end, "close the session")
+    map(km.toggle_panel, function()
+        require("differ.command").panel()
+    end, "toggle the file panel")
     map(km.select, function()
         self:select()
     end, "open / toggle fold")

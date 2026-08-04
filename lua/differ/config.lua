@@ -135,6 +135,12 @@ M.defaults = {
         discard = "X", -- panel
         refresh = "R",
         toggle_fold = "za", -- history (range mode)
+        -- session-level verbs. the diff/panel/history buffers are read-only scratch,
+        -- so shadowing native q (record macro) and dd/dl (delete) is inert there; the
+        -- merge result buffer is a real file and binds none of these
+        close = "q", -- diff/panel/history: end the session (merge, pr or local)
+        toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
+        toggle_layout = "dl", -- diff: flip stacked / split
         -- merge tool, bound on the result buffer. nav + take-this resolution,
         -- the result buffer is the real worktree
         -- file and stays editable, so the whole choose family sits behind <leader>

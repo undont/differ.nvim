@@ -640,6 +640,18 @@ function View:_setup_window(winid, bufnr)
     bind(bufnr, km.help, function()
         self:show_help()
     end, "differ: keymap help")
+    -- session verbs that were otherwise only reachable as :Differ subcommands. close
+    -- routes through the command layer because it picks the live session (merge, pr or
+    -- local); layout is this view's own, so call it directly
+    bind(bufnr, km.close, function()
+        require("differ.command").close()
+    end, "differ: close the session")
+    bind(bufnr, km.toggle_panel, function()
+        require("differ.command").panel()
+    end, "differ: toggle the file panel")
+    bind(bufnr, km.toggle_layout, function()
+        self:toggle_layout()
+    end, "differ: toggle the layout")
     -- stage / unstage the hunk under the cursor, hunk-level here vs file-level
     -- in the panel. bound for the whole worktree-status session; the per-file
     -- direction is checked at call time (the buffer is read-only, so shadowing native

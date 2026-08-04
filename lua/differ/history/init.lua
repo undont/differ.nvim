@@ -756,6 +756,10 @@ function History:_setup_window()
         bind(self.bufnr, spec, fn, "differ history: " .. desc)
     end
     local item = self.mode == "range" and "file" or "commit"
+    -- no toggle_panel here: a history session has no file panel to hide/show
+    map(km.close, function()
+        require("differ.command").close()
+    end, "close the session")
     map(km.select, function()
         self:select()
     end, "open " .. item)
