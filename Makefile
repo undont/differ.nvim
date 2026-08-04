@@ -28,10 +28,18 @@ LUALS_VERSION := 3.18.2
 LUALS_DIR     := .tools/lua-language-server-$(LUALS_VERSION)
 LUALS_BIN     := $(LUALS_DIR)/bin/lua-language-server
 
+# pinned panvimdoc: doc/differ.txt is generated from README.md, so the vimdoc and
+# the readme can't drift. fetched into .tools rather than taken from PATH so local
+# and CI produce the same output. needs pandoc on PATH
+PANVIMDOC_VERSION := v4.0.1
+PANVIMDOC_DIR     := .tools/panvimdoc-$(PANVIMDOC_VERSION:v%=%)
+PANVIMDOC_BIN     := $(PANVIMDOC_DIR)/panvimdoc.sh
+
 .PHONY: help \
 	lua-test lua-test-unit lua-test-nvim lua-lint lua-typecheck lua-fmt lua-fmt-check \
 	go-build go-test go-vet go-lint go-fmt go-fmt-check \
 	test lint fmt fmt-check check clean \
+	vimdoc \
 	demo demo-fixtures
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,6 +117,33 @@ go-fmt-check: ## Verify Go formatting without writing
 		printf "$(RED)gofmt needed:$(NC)\n%s\n" "$$out"; \
 		exit 1; \
 	fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+##@ Docs
+# ──────────────────────────────────────────────────────────────────────────────
+
+vimdoc: $(PANVIMDOC_BIN) ## Regenerate doc/differ.txt from README.md (needs pandoc)
+	@command -v pandoc >/dev/null 2>&1 || { \
+		printf "$(RED)pandoc not found on PATH$(NC) (brew install pandoc)\n"; \
+		exit 1; \
+	}
+	@$(INFO) "Generating doc/differ.txt (panvimdoc $(PANVIMDOC_VERSION))"
+	@bash $(PANVIMDOC_BIN) \
+		--project-name differ \
+		--input-file README.md \
+		--vim-version "Neovim >= 0.10" \
+		--toc true \
+		--demojify true \
+		--dedup-subheadings true \
+		--shift-heading-level-by -1 >/dev/null
+	@$(OK) "doc/differ.txt regenerated"
+
+# fetch the pinned panvimdoc into .tools on first use; the whole tree is gitignored
+$(PANVIMDOC_BIN):
+	@$(INFO) "Fetching panvimdoc $(PANVIMDOC_VERSION)"
+	@mkdir -p .tools
+	@curl -fsSL "https://github.com/kdheepak/panvimdoc/archive/refs/tags/$(PANVIMDOC_VERSION).tar.gz" \
+		| tar -xz -C .tools && $(OK) "Installed panvimdoc $(PANVIMDOC_VERSION)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 ##@ Aggregate

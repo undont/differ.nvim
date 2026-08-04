@@ -26,7 +26,7 @@ make help           # full target list
 
 The Lua type-check runs a version-pinned lua-language-server, downloaded into gitignored `.tools/` on first use (needs `curl` and network access, once). It covers `lua/` only and must be clean; CI enforces it. luacheck and lua_ls are independent and can disagree: a fix that satisfies one can trip the other, so run both before pushing.
 
-Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead. See `docs/manual-testing.md` for the manual checklist covering what the automated suites don't reach.
+Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead.
 
 ## UI changes
 

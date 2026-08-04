@@ -1,3 +1,5 @@
+<!-- panvimdoc-ignore-start -->
+
 <div align="center">
 
 # differ.nvim
@@ -29,17 +31,21 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 
 ---
 
+<!-- panvimdoc-ignore-end -->
+
 ## Features
 
-- **Stacked dual-rail layout** with one scroll surface, old and new lines interleaved per hunk, and a dual line-number gutter via `statuscolumn`
-- **Side-by-side layout** from the same hunk model, switchable at runtime as a pure re-render
-- **PR review in the diff** with inline comment threads, pending-review drafts, thread resolve, per-file viewed-state, CI checks, and lifecycle actions (merge, checkout, ready/draft, close), backed by a Go sidecar that owns the GitHub API
-- **File panel and staging** in a persistent sidebar with the changed-file tree, status icons, +/- counts, and hunk- and file-level staging
-- **File history** for single files and branch ranges, walked commit-by-commit, each step a diff through the same engine
-- **3-way/4-way merge tool** running ours/theirs (and optionally base) through the n-column renderer, resolved into the working-tree file
-- **Word-level highlighting** and **Treesitter syntax** on by default, so the diff reads like source instead of a grey block
-- **Real buffer lines** for code, so search, yank, and motions all work; the hunk model is canonical and the buffer is a projection of it
-- **One diff engine** (`vim.diff()`, histogram) shared by every source
+- Stacked dual-rail layout: one scroll surface, old and new interleaved
+- Side-by-side layout from the same hunk model, toggled at runtime
+- PR review in the diff: inline threads, drafts, resolve, viewed-state
+- PR lifecycle: merge, checkout, ready/draft, close, and CI checks
+- File panel with the changed-file tree, status icons, and +/- counts
+- Hunk- and file-level staging from the diff or the panel
+- File history for single files and branch ranges, commit by commit
+- 3-way/4-way merge tool, resolved into the working-tree file
+- Word-level highlighting and Treesitter syntax, both on by default
+- Real buffer lines, so search, yank, and motions work as normal
+- One diff engine (`vim.diff()`, histogram) shared by every source
 
 ---
 
@@ -47,10 +53,13 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 
 - Neovim 0.10+ (uses `vim.system`, `vim.fs.relpath`, `vim.diff`)
 - git on `PATH`
-- A Treesitter parser for the languages you diff (optional, for the syntax pass)
-- For PR review: Go + make on `PATH` (to build the sidecar) and `gh` authenticated. Not needed for local diffs.
+- A Treesitter parser for the languages you diff (optional)
+- For PR review: Go + make on `PATH`, and `gh` authenticated
+- Local diffs need none of the above beyond git
 
 ---
+
+<!-- panvimdoc-ignore-start -->
 
 ## Installation
 
@@ -70,9 +79,9 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 
 The `build` hook compiles the Go sidecar (used by PR review) on install and update. It needs Go and make on `PATH`; local diffs work without it, so you can drop the hook if you only want local diffing.
 
-### vim.pack (Neovim 0.12+)
+### vim.pack
 
-`vim.pack` has no inline build key, so register a `PackChanged` hook (before `vim.pack.add`, so it also runs on first install):
+Neovim 0.12+. `vim.pack` has no inline build key, so register a `PackChanged` hook (before `vim.pack.add`, so it also runs on first install):
 
 ```lua
 vim.api.nvim_create_autocmd("PackChanged", {
@@ -94,6 +103,8 @@ Pin a release with `{ src = "https://github.com/undont/differ.nvim", version = "
 differ's only install step is building the Go sidecar, so point your manager's build / post-update hook at `make go-build`: pckr `run`, vim-plug `do`, or the equivalent.
 
 ---
+
+<!-- panvimdoc-ignore-end -->
 
 ## Configuration
 
@@ -189,11 +200,11 @@ require("differ").setup({
 
 | Command | Diffs |
 |---|---|
-| `:Differ` | `HEAD` vs worktree (all uncommitted changes) |
-| `:Differ <rev>` | `<rev>` vs worktree (changes since `<rev>`) |
-| `:Differ <a>..<b>` | `<a>` vs `<b>` (two-dot range) |
+| `:Differ` | `HEAD` vs worktree (all uncommitted) |
+| `:Differ <rev>` | `<rev>` vs worktree |
+| `:Differ <a>..<b>` | `<a>` vs `<b>` (two-dot) |
 | `:Differ <a>...<b>` | merge-base(`<a>`, `<b>`) vs `<b>` |
-| `:Differ <a>...` | merge-base(`<a>`, `HEAD`) vs worktree (branch total) |
+| `:Differ <a>...` | merge-base vs worktree (branch total) |
 | `:Differ <a> <b>` | `<a>` vs `<b>` |
 
 Any source with worktree on the new side (the first three rows above) also lists untracked files: `git diff` can't see them no matter what refs you pass it, so differ unions in `git ls-files --others --exclude-standard` to fill the gap. They show with a `?` status and their line count as the addition count (0 for binary content), same as the default panel's Untracked section.
@@ -212,13 +223,15 @@ These re-render the active view only. No refetch, no re-diff, and the state is l
 
 Every line of the file is always in the buffer (search, yank, and motions all work); `context` only decides where a native fold forms once an unchanged run of lines exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `context full` skips fold creation entirely.
 
-Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me). If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](docs/troubleshooting.md#command_alias-and-lazy-loading) for why.
+Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me). If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](TROUBLESHOOTING.md#command_alias-and-lazy-loading) for why.
 
 ### Keymaps
 
 Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()`.
 
-**Diff** (the stacked / split view)
+#### Diff
+
+The stacked / split view.
 
 | Key | Action |
 |---|---|
@@ -232,7 +245,9 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `de` | Open the real file and end the session |
 | `go` | PR review only: back to the [PR overview](#pr-overview) |
 
-**Panel** (the file list)
+#### Panel
+
+The file list.
 
 | Key | Action |
 |---|---|
@@ -248,12 +263,14 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `R` | Refresh |
 | `g?` | Help |
 
-**History** (log / range mode)
+#### History
+
+Log / range mode.
 
 | Key | Action |
 |---|---|
-| `<CR>` / `o` | Show the commit (file mode) / toggle fold (range mode) |
-| `]f` / `[f` | Next / previous file (range) or commit (file mode) |
+| `<CR>` / `o` | Show the commit, or toggle fold in range mode |
+| `]f` / `[f` | Next / previous file, or commit in file mode |
 | `]]` / `[[` | Next / previous commit |
 | `gg` / `G` | First / last commit |
 | `za` | Toggle fold (range mode) |
@@ -262,7 +279,9 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 | `K` | Commit details |
 | `g?` | Help |
 
-**PR review** (on top of the diff + panel keys)
+#### PR review
+
+On top of the diff + panel keys.
 
 | Key | Action |
 |---|---|
@@ -280,8 +299,9 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 
 `df`/`de` edit the worktree file on disk, not the reviewed blob, so keep your checkout on the PR's head branch (`:Differ pr checkout`) or the two can drift; differ warns once a session if they don't match.
 
-<a name="pr-overview"></a>
-**PR overview** (`:Differ pr <n>`'s landing page, a read-only summary + timeline)
+#### PR overview
+
+`:Differ pr <n>`'s landing page, a read-only summary + timeline.
 
 | Key | Action |
 |---|---|
@@ -294,7 +314,9 @@ Buffer-local, scoped to each surface. All configurable via `keymaps` in `setup()
 
 Code-comment threads render as a contained box (GitHub's outline, differ's left-spine style) with the diff hunk they anchor to inline: the tail of the hunk, capped, `⋯` when trimmed, `+`/`-` lines carrying the diff's own tints and the code treesitter-highlighted when a parser is installed. Plain PR comments and review verdicts stay flat page text, which is how you tell them apart at a glance.
 
-**Merge tool** (the result buffer)
+#### Merge tool
+
+Bound on the result buffer.
 
 | Key | Action |
 |---|---|
@@ -311,11 +333,11 @@ You don't need `merge.conflictStyle = zdiff3` for that. Git's default style leav
 
 The result buffer is the real worktree file, so `:w` writes it and stages it once the markers are gone, then opens the next conflicted file; when none remain the session reports done and closes. Use `:Differ close` to stop after the current file.
 
-Because it's a real file, the merge tool sets `vim.b.disable_autoformat` (conform's opt-out) for the session so a format-on-save doesn't run over the conflict markers; honour that flag in your `format_on_save` gate. See [troubleshooting](docs/troubleshooting.md#format-on-save-over-conflict-markers) for what happens if a formatter ignores it, and for the render-markdown.nvim interaction.
+Because it's a real file, the merge tool sets `vim.b.disable_autoformat` (conform's opt-out) for the session so a format-on-save doesn't run over the conflict markers; honour that flag in your `format_on_save` gate. See [troubleshooting](TROUBLESHOOTING.md#format-on-save-over-conflict-markers) for what happens if a formatter ignores it, and for the render-markdown.nvim interaction.
 
-### Launchers (a starting point)
+### Launchers
 
-differ ships no global launchers - only the in-view buffer maps above and the optional `command_alias`. These are the `<leader>` launchers I drive it with, as a lazy.nvim spec you can lift wholesale or trim to taste.
+A starting point, not a default: differ ships no global launchers - only the in-view buffer maps above and the optional `command_alias`. These are the `<leader>` launchers I drive it with, as a lazy.nvim spec you can lift wholesale or trim to taste.
 
 <details>
 <summary><b>lazy.nvim spec with <code>&lt;leader&gt;d*</code> / <code>&lt;leader&gt;p*</code> launchers</b></summary>
@@ -368,7 +390,7 @@ differ ships no global launchers - only the in-view buffer maps above and the op
 
 </details>
 
-If which-key's `<leader>` popup doesn't open over differ's buffers, that's a trigger-registration quirk on scratch buffers, not a differ bug; [troubleshooting](docs/troubleshooting.md#which-key-popups-over-differ-buffers) has the workaround.
+If which-key's `<leader>` popup doesn't open over differ's buffers, that's a trigger-registration quirk on scratch buffers, not a differ bug; [troubleshooting](TROUBLESHOOTING.md#which-key-popups-over-differ-buffers) has the workaround.
 
 ### Statusline
 
@@ -389,7 +411,7 @@ local function diff_filetype()
 end
 ```
 
-Under a `cmd` lazy-load, prefer that over `require("differ.lualine")`, which loads the whole plugin at startup; see [troubleshooting](docs/troubleshooting.md#statusline-requires-under-lazy-loading).
+Under a `cmd` lazy-load, prefer that over `require("differ.lualine")`, which loads the whole plugin at startup; see [troubleshooting](TROUBLESHOOTING.md#statusline-requires-under-lazy-loading).
 
 ### Lua API
 
@@ -429,6 +451,8 @@ require("differ").goto_hunk("next", {
 ```
 
 ---
+
+<!-- panvimdoc-ignore-start -->
 
 ## Architecture
 
@@ -480,3 +504,5 @@ test/
 ## Licence
 
 [MIT](LICENCE)
+
+<!-- panvimdoc-ignore-end -->
