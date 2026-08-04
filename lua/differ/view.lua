@@ -715,24 +715,25 @@ end
 -- session's extra maps (the pr unviewed nav and thread/comment verbs)
 function View:show_help()
     local km = self.keymaps
-    local function fmt(spec)
-        return type(spec) == "table" and table.concat(spec, " / ") or tostring(spec)
-    end
-    local function pair(a, b)
-        return fmt(a) .. " / " .. fmt(b)
-    end
+    local help = require("differ.ui.help")
+    local fmt, pair = help.fmt, help.pair
     -- an extra map that reuses a fixed lhs overrides its bind (extras bind later), so
     -- the fixed row is dropped in favour of the extra's own. goto_file is the one
     -- fixed action a session overrides today (the pr zoom edit)
     local shadowed = {}
     for _, m in ipairs(self.extra_keymaps or {}) do
-        shadowed[fmt(m.spec)] = true
+        local lhs = fmt(m.spec)
+        if lhs then
+            shadowed[lhs] = true
+        end
     end
     local rows = {
         { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
         { pair(km.next_file, km.prev_file), "next / previous file" },
         { pair(km.scroll_down, km.scroll_up), "scroll down / up" },
         { pair(km.more_context, km.less_context), "more / less context" },
+        { fmt(km.toggle_layout), "toggle layout (stacked / split)" },
+        { fmt(km.toggle_panel), "toggle the file panel" },
     }
     if not shadowed[fmt(km.goto_file)] then
         rows[#rows + 1] = { fmt(km.goto_file), "go to the real file" }
@@ -747,20 +748,13 @@ function View:show_help()
     for _, m in ipairs(self.extra_keymaps or {}) do
         rows[#rows + 1] = { fmt(m.spec), m.desc }
     end
+    rows[#rows + 1] = { fmt(km.close), "close the session" }
     rows[#rows + 1] = { fmt(km.help), "this help" }
 
-    local keyw = 0
-    for _, r in ipairs(rows) do
-        keyw = math.max(keyw, #r[1])
-    end
-    local lines = {}
-    for _, r in ipairs(rows) do
-        lines[#lines + 1] = (" %-" .. keyw .. "s   %s"):format(r[1], r[2])
-    end
     -- dismiss on the configured help key too, not just the hardcoded g?
     local dismiss = { "q", "<Esc>" }
     vim.list_extend(dismiss, type(km.help) == "table" and km.help or { km.help })
-    require("differ.ui.help").show(lines, { title = " Differ: diff ", dismiss = dismiss })
+    help.show(help.lines(rows), { title = " Differ: diff ", dismiss = dismiss })
 end
 
 -- the column whose window is currently focused, defaulting to the first. split

@@ -255,6 +255,17 @@ describe(":Differ mergetool", function()
         assert.is_nil(merge.current())
     end)
 
+    it("leaves q to native macro recording on the editable result buffer", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(s.result_buf, "n")) do
+            assert.are_not.equal("q", m.lhs) -- :Differ close ends the session instead
+        end
+        merge.close()
+    end)
+
     it("widens a short timeoutlen in the result buffer and restores it on close", function()
         local root = conflict_repo()
         local saved = vim.o.timeoutlen

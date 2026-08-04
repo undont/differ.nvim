@@ -656,12 +656,8 @@ local function show_help()
         return
     end
     local km = session.keymaps
-    local function fmt(spec)
-        return type(spec) == "table" and table.concat(spec, " / ") or tostring(spec)
-    end
-    local function pair(a, b)
-        return fmt(a) .. " / " .. fmt(b)
-    end
+    local help = require("differ.ui.help")
+    local fmt, pair = help.fmt, help.pair
     local rows = {
         { pair(km.next_conflict, km.prev_conflict), "next / previous conflict" },
         { fmt(km.choose_ours), "take ours" },
@@ -673,18 +669,10 @@ local function show_help()
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
     }
-    local keyw = 0
-    for _, r in ipairs(rows) do
-        keyw = math.max(keyw, #r[1])
-    end
-    local lines = {}
-    for _, r in ipairs(rows) do
-        lines[#lines + 1] = (" %-" .. keyw .. "s   %s"):format(r[1], r[2])
-    end
     -- dismiss on the configured help key too, not just the hardcoded q/<Esc>
     local dismiss = { "q", "<Esc>" }
     vim.list_extend(dismiss, type(km.help) == "table" and km.help or { km.help })
-    require("differ.ui.help").show(lines, { title = " Differ: merge ", dismiss = dismiss })
+    help.show(help.lines(rows), { title = " Differ: merge ", dismiss = dismiss })
 end
 
 ---@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff4")
