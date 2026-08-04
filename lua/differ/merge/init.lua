@@ -72,7 +72,7 @@ local INPUT_HL = {
 ---@type differ.MergeSession|nil
 local session = nil
 
--- the result-buffer conflict chords (<leader>co/ct/cb/ca, dx) are multi-key, so nvim waits
+-- the result-buffer conflict chords (<leader>co/ct/cb/ca/cx) are multi-key, so nvim waits
 -- timeoutlen for the completing key. a short global timeoutlen (which-key setups often run
 -- 200ms) drops them unless typed fast, so widen the window to a generous floor while the
 -- cursor sits in the result buffer and restore the user's value on leave/close. timeoutlen
@@ -670,7 +670,7 @@ local function show_help()
         { fmt(km.choose_all), "take both (ours then theirs)" },
         { fmt(km.choose_none), "drop the conflict" },
         { ":w", "write the file (auto-stages once resolved)" },
-        { "q", "close the merge tool" },
+        { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
     }
     local keyw = 0
@@ -859,13 +859,8 @@ function lay_out(root, relpath, model, layout)
         resolve_choice("none")
     end, "differ: drop the conflict")
     rb("help", show_help, "differ: keymap help")
-    -- q closes the tool (conventional, no config action)
-    vim.keymap.set(
-        "n",
-        "q",
-        M.close,
-        { buffer = result_buf, silent = true, desc = "differ: close" }
-    )
+    -- no close key here: the result buffer is the real file and stays editable, so q is
+    -- left to native macro recording. `:Differ close` ends the session
 
     local aug = vim.api.nvim_create_augroup("differ.merge." .. result_buf, { clear = true })
     -- :w writes the real file; once no markers remain it auto-stages (git add = resolve),

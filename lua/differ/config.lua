@@ -136,14 +136,16 @@ M.defaults = {
         refresh = "R",
         toggle_fold = "za", -- history (range mode)
         -- merge tool, bound on the result buffer. nav + take-this resolution,
-        -- mirroring diffview's conflict keys
+        -- the result buffer is the real worktree
+        -- file and stays editable, so the whole choose family sits behind <leader>
+        -- rather than shadowing live operators
         next_conflict = "]x", -- merge: jump to the next/prev conflict
         prev_conflict = "[x",
         choose_ours = "<leader>co", -- merge: take ours / theirs / base for the conflict
         choose_theirs = "<leader>ct",
         choose_base = "<leader>cb",
         choose_all = "<leader>ca", -- take both (ours then theirs)
-        choose_none = "dx", -- drop the conflict region
+        choose_none = "<leader>cx", -- drop the conflict region
     },
     -- show dates as relative ("3 days ago") instead of YYYY-MM-DD wherever the
     -- plugin renders one (the history panel today, more surfaces later)
