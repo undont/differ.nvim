@@ -13,7 +13,7 @@
 [![macOS](https://img.shields.io/badge/macOS-supported-6e7681?style=flat&logo=apple&logoColor=white)]()
 [![Linux](https://img.shields.io/badge/Linux-supported-6e7681?style=flat&logo=linux&logoColor=white)]()
 
-[Features](#features) · [Installation](#installation) · [Usage](#usage) · [Configuration](#configuration) · [Architecture](#architecture)
+[Features](#features) · [Installation](#installation) · [Configuration](#configuration) · [Usage](#usage) · [Architecture](#architecture)
 
 </div>
 
@@ -48,7 +48,7 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - Neovim 0.10+ (uses `vim.system`, `vim.fs.relpath`, `vim.diff`)
 - git on `PATH`
 - A Treesitter parser for the languages you diff (optional, for the syntax pass)
-- For PR review: Go + make on `PATH` (the sidecar is built on install via the `build` hook) and `gh` authenticated. Not needed for local diffs.
+- For PR review: Go + make on `PATH` (to build the sidecar) and `gh` authenticated. Not needed for local diffs.
 
 ---
 
@@ -91,7 +91,95 @@ Pin a release with `{ src = "https://github.com/undont/differ.nvim", version = "
 
 ### Other managers
 
-differ's only install step is building the Go sidecar, so point your manager's build / post-update hook at `make go-build`: pckr `run`, vim-plug `do`, or the equivalent. It needs Go and make; drop it for local diffs only.
+differ's only install step is building the Go sidecar, so point your manager's build / post-update hook at `make go-build`: pckr `run`, vim-plug `do`, or the equivalent.
+
+---
+
+## Configuration
+
+`setup()` merges over these defaults:
+
+```lua
+require("differ").setup({
+  layout = "stacked",            -- "stacked" | "split", toggleable per-view
+  context = 10,                  -- context lines (math.huge = full file)
+  wrap = true,                   -- soft-wrap long lines in the diff view
+  diff_counter = true,           -- "hunk K/N" counter in the diff window's winbar
+  cursorline_tint = true,        -- tint the cursor line by add/remove so the change
+                                 -- kind reads under the cursor; false = plain neutral
+  deep_diff = {
+    enabled = true,
+    granularity = "word",        -- "word" | "char"
+    similarity_threshold = 0.5,  -- line-pairing cutoff for word-level diffing
+  },
+  comments = {                   -- pr review threads
+    inline = true,
+    collapsed = false,
+  },
+  panel = {                      -- file panel default placement/size; `:Differ panel`
+                                 -- and the runtime Panel.current() setters override per-session
+    position = "right",          -- "bottom" | "top" | "left" | "right"
+    height = 9,                  -- top/bottom
+    width = 35,                  -- left/right
+    listing = "tree",            -- "tree" | "name"
+    progress = true,             -- "file K/N" position meter in the panel winbar
+  },
+  history = {                    -- log/history sidebar default placement/size
+    position = "bottom",
+    height = 10,                 -- top/bottom
+    width = 40,                  -- left/right
+  },
+  merge = {                      -- merge tool pane layout; no per-invocation override
+    layout = "default",          -- "default" (ours | theirs) | "diff4" (adds base)
+  },
+  keymaps = {                    -- one flat action -> lhs table, shared across the diff,
+    -- a value is a string, a list of strings, or false to disable. override globally
+    -- here, or scope to one surface via a diff/panel/history/merge = {...} subtable
+    next_hunk = "]c",            -- diff, panel, history
+    prev_hunk = "[c",
+    next_file = "]f",            -- diff; panel/history step the selection
+    prev_file = "[f",
+    first_file = "gg",           -- panel/history: jump to the first/last file or commit
+    last_file = "G",
+    next_section = "]]",         -- panel: sections (Staged/Unstaged); history: commits
+    prev_section = "[[",
+    scroll_down = "f",           -- all three (shadows native f/b; set false to restore)
+    scroll_up = "b",
+    select = { "<CR>", "o" },    -- panel, history
+    help = "g?",                 -- panel, history
+    toggle_listing = "i",        -- panel: toggle tree / name
+    close_node = "c",            -- panel: collapse the dir under the cursor; history: the commit
+    close_all = "C",             -- panel/history: collapse every dir / commit
+    open_all = "O",              -- panel/history: expand every dir / commit
+    stage = "s", unstage = "u",  -- diff (hunk-level), panel (file-level)
+    stage_all = "S", unstage_all = "U",
+    more_context = "d=", less_context = "d-",  -- diff
+    edit_file = "df",            -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
+    goto_file = "de",            -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
+    discard = "X", refresh = "R",  -- panel
+    toggle_fold = "za",          -- history (range mode)
+    -- pr review (pr diff + panel)
+    toggle_viewed = "<Tab>",     -- pr panel: flip the github viewed checkbox
+    next_unviewed = "]u", prev_unviewed = "[u",  -- pr panel + diff
+    next_thread = "]t", prev_thread = "[t",      -- pr diff
+    comment = "ga",              -- pr diff: comment on the line (normal) or selection (visual)
+    reply = "gp",                -- pr diff: reply to the thread under the cursor
+    delete_comment = "gx",       -- pr diff: delete the latest comment of the thread
+    toggle_thread = "gc",        -- pr diff: collapse/expand the thread under the cursor
+    resolve_thread = "gr",       -- pr diff: resolve/unresolve the thread under the cursor
+    overview = "go",             -- pr diff + panel: back to the PR overview home
+    -- merge tool, bound on the result buffer
+    next_conflict = "]x", prev_conflict = "[x",
+    choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
+    choose_all = "<leader>ca",   -- take both (ours then theirs)
+    choose_none = "dx",          -- drop the conflict region
+  },
+  relative_dates = false,        -- "3 days ago" instead of YYYY-MM-DD wherever a date shows
+  base = nil,                    -- base branch for `base`/`log base`; nil auto-detects origin/HEAD
+  sidecar_bin = nil,             -- override the go sidecar path
+  command_alias = nil,           -- extra :command(s) routing to :Differ, e.g. "D" or { "D", "Df" }
+})
+```
 
 ---
 
@@ -124,19 +212,7 @@ These re-render the active view only. No refetch, no re-diff, and the state is l
 
 Every line of the file is always in the buffer (search, yank, and motions all work); `context` only decides where a native fold forms once an unchanged run of lines exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `context full` skips fold creation entirely.
 
-Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me).
-
-If you lazy-load differ on `cmd = "Differ"`, the alias is only registered once `setup()` runs, so it can't trigger that load itself: the first `:D` of a session, before differ has loaded, errors with `E464` (it prefix-matches the `Differ` load stub). Either add the alias to `cmd` as well, as the spec below does:
-
-```lua
-cmd = { "Differ", "D" },
-```
-
-or skip `command_alias` and use a cmdline abbrev, which expands before the plugin loads so the name lives in one place:
-
-```lua
-vim.cmd [[cnoreabbrev <expr> D (getcmdtype() == ':' && getcmdline() ==# 'D') ? 'Differ' : 'D']]
-```
+Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me). If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](docs/troubleshooting.md#command_alias-and-lazy-loading) for why.
 
 ### Keymaps
 
@@ -233,11 +309,16 @@ Code-comment threads render as a contained box (GitHub's outline, differ's left-
 
 You don't need `merge.conflictStyle = zdiff3` for that. Git's default style leaves no base in the conflict markers, so differ works it out from the merge stages instead. Where it can't, the base pane's winbar says so: `no common ancestor` when the file was added on both branches, `none for this conflict` when a conflict couldn't be matched up. Taking base is refused in those cases rather than emptying the block.
 
-The result buffer is the real worktree file, so `:w` writes it and stages it once the markers are gone, then opens the next conflicted file; when none remain the session reports done and closes. Use `:Differ close` to stop after the current file. Because it's a real file, a format-on-save would otherwise run over the conflict markers; the merge tool sets `vim.b.disable_autoformat` (conform's opt-out) for the session, so honour that flag in your `format_on_save` gate if you format on save. If a formatter reformats the markers anyway, differ notices on save, refuses to stage the file, and warns once that the flag isn't being honoured. The merge result also disables in-buffer markdown rendering (render-markdown.nvim) for the session so the conflict markers aren't concealed as block-quotes, restoring it on close.
+The result buffer is the real worktree file, so `:w` writes it and stages it once the markers are gone, then opens the next conflicted file; when none remain the session reports done and closes. Use `:Differ close` to stop after the current file.
+
+Because it's a real file, the merge tool sets `vim.b.disable_autoformat` (conform's opt-out) for the session so a format-on-save doesn't run over the conflict markers; honour that flag in your `format_on_save` gate. See [troubleshooting](docs/troubleshooting.md#format-on-save-over-conflict-markers) for what happens if a formatter ignores it, and for the render-markdown.nvim interaction.
 
 ### Launchers (a starting point)
 
 differ ships no global launchers - only the in-view buffer maps above and the optional `command_alias`. These are the `<leader>` launchers I drive it with, as a lazy.nvim spec you can lift wholesale or trim to taste.
+
+<details>
+<summary><b>lazy.nvim spec with <code>&lt;leader&gt;d*</code> / <code>&lt;leader&gt;p*</code> launchers</b></summary>
 
 ```lua
 {
@@ -285,24 +366,9 @@ differ ships no global launchers - only the in-view buffer maps above and the op
 }
 ```
 
-### which-key
+</details>
 
-differ's surfaces are scratch buffers (`buftype=nofile`) with their own filetypes (`differdiff` for the diff buffers, `differpanel`, `differhistory`), so no foreign `FileType <lang>` autocmds attach to them. Some which-key setups gate their trigger (re)registration on `buftype == ""`, or rebuild triggers in a way that briefly clears them globally (each `wk.add` calls `Buf.clear()`). In those setups the `<leader>` / `]` / `[` popups can fail to open over a scratch buffer during which-key's trigger suspension windows, even though the same keys work in a normal file.
-
-This is a property of the which-key integration, not of differ. If you hit it, pin permanent buffer-local maps on differ buffers (a plain keymap isn't managed by the trigger system, so it can't be cleared). differ's buffers carry stable filetypes, so key off those:
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  group = vim.api.nvim_create_augroup("differ-whichkey", { clear = true }),
-  pattern = { "differdiff", "differpanel", "differhistory" },
-  callback = function(ev)
-    local wk = require("which-key")
-    for _, key in ipairs({ " ", "]", "[" }) do
-      vim.keymap.set("n", key, function() wk.show(key) end, { buffer = ev.buf })
-    end
-  end,
-})
-```
+If which-key's `<leader>` popup doesn't open over differ's buffers, that's a trigger-registration quirk on scratch buffers, not a differ bug; [troubleshooting](docs/troubleshooting.md#which-key-popups-over-differ-buffers) has the workaround.
 
 ### Statusline
 
@@ -314,7 +380,7 @@ For lualine, differ ships a drop-in for the stock `filetype` component, which sh
 sections = { lualine_x = { require("differ.lualine").filetype } }
 ```
 
-If you lazy-load differ on `cmd`, don't `require("differ.lualine")` from your statusline config: requiring any `differ.*` module makes lazy load the whole plugin at startup, defeating the lazy-load. Read the buffer var directly instead, which never triggers a load and works whether or not differ is loaded (the var is simply absent on every other buffer). This is the shape for any custom statusline, lualine or not:
+Any custom statusline can read the buffer var directly, lualine or not (it's simply absent on every other buffer):
 
 ```lua
 local function diff_filetype()
@@ -322,6 +388,8 @@ local function diff_filetype()
   return (type(ft) == "string" and ft ~= "") and ft or vim.bo.filetype
 end
 ```
+
+Under a `cmd` lazy-load, prefer that over `require("differ.lualine")`, which loads the whole plugin at startup; see [troubleshooting](docs/troubleshooting.md#statusline-requires-under-lazy-loading).
 
 ### Lua API
 
@@ -357,94 +425,6 @@ require("differ").goto_hunk("next", {
   fallback = function(direction)
     return require("differ").active_view():step_file(direction)
   end,
-})
-```
-
----
-
-## Configuration
-
-`setup()` merges over these defaults:
-
-```lua
-require("differ").setup({
-  layout = "stacked",            -- "stacked" | "split", toggleable per-view
-  context = 10,                  -- context lines (math.huge = full file)
-  wrap = true,                   -- soft-wrap long lines in the diff view
-  diff_counter = true,           -- "hunk K/N" counter in the diff window's winbar
-  cursorline_tint = true,        -- tint the cursor line by add/remove so the change
-                                 -- kind reads under the cursor; false = plain neutral
-  deep_diff = {
-    enabled = true,
-    granularity = "word",        -- "word" | "char"
-    similarity_threshold = 0.5,  -- line-pairing cutoff for word-level diffing
-  },
-  comments = {                   -- pr review threads
-    inline = true,
-    collapsed = false,
-  },
-  panel = {                      -- file panel default placement/size; `:Differ panel`
-                                 -- and the runtime Panel.current() setters override per-session
-    position = "right",          -- "bottom" | "top" | "left" | "right"
-    height = 9,                  -- top/bottom
-    width = 35,                  -- left/right
-    listing = "tree",            -- "tree" | "name"
-    progress = true,             -- "file K/N" position meter in the panel winbar
-  },
-  history = {                    -- log/history sidebar default placement/size
-    position = "bottom",
-    height = 10,                 -- top/bottom
-    width = 40,                  -- left/right
-  },
-  merge = {                      -- merge tool pane layout; no per-invocation override
-    layout = "default",          -- "default" (ours | theirs) | "diff4" (adds base)
-  },
-  keymaps = {                    -- one flat action -> lhs table, shared across the diff,
-    -- a value is a string, a list of strings, or false to disable. override globally
-    -- here, or scope to one surface via a diff/panel/history/merge = {...} subtable
-    next_hunk = "]c",            -- diff, panel, history
-    prev_hunk = "[c",
-    next_file = "]f",            -- diff; panel/history step the selection
-    prev_file = "[f",
-    first_file = "gg",           -- panel/history: jump to the first/last file or commit
-    last_file = "G",
-    next_section = "]]",         -- panel: sections (Staged/Unstaged); history: commits
-    prev_section = "[[",
-    scroll_down = "f",           -- all three (shadows native f/b; set false to restore)
-    scroll_up = "b",
-    select = { "<CR>", "o" },    -- panel, history
-    help = "g?",                 -- panel, history
-    toggle_listing = "i",        -- panel: toggle tree / name
-    close_node = "c",            -- panel: collapse the dir under the cursor; history: the commit
-    close_all = "C",             -- panel/history: collapse every dir / commit
-    open_all = "O",              -- panel/history: expand every dir / commit
-    stage = "s", unstage = "u",  -- diff (hunk-level), panel (file-level)
-    stage_all = "S", unstage_all = "U",
-    more_context = "d=", less_context = "d-",  -- diff
-    edit_file = "df",            -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
-    goto_file = "de",            -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
-    discard = "X", refresh = "R",  -- panel
-    toggle_fold = "za",          -- history (range mode)
-    -- pr review (pr diff + panel)
-    toggle_viewed = "<Tab>",     -- pr panel: flip the github viewed checkbox
-    next_unviewed = "]u", prev_unviewed = "[u",  -- pr panel + diff
-    next_thread = "]t", prev_thread = "[t",      -- pr diff
-    comment = "ga",              -- pr diff: comment on the line (normal) or selection (visual)
-    reply = "gp",                -- pr diff: reply to the thread under the cursor
-    delete_comment = "gx",       -- pr diff: delete the latest comment of the thread
-    toggle_thread = "gc",        -- pr diff: collapse/expand the thread under the cursor
-    resolve_thread = "gr",       -- pr diff: resolve/unresolve the thread under the cursor
-    overview = "go",             -- pr diff + panel: back to the PR overview home
-    -- merge tool, bound on the result buffer
-    next_conflict = "]x", prev_conflict = "[x",
-    choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
-    choose_all = "<leader>ca",   -- take both (ours then theirs)
-    choose_none = "dx",          -- drop the conflict region
-  },
-  relative_dates = false,        -- "3 days ago" instead of YYYY-MM-DD wherever a date shows
-  base = nil,                    -- base branch for `base`/`log base`; nil auto-detects origin/HEAD
-  sidecar_bin = nil,             -- override the go sidecar path
-  command_alias = nil,           -- extra :command(s) routing to :Differ, e.g. "D" or { "D", "Df" }
 })
 ```
 
