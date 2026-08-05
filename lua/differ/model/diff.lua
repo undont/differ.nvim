@@ -106,4 +106,58 @@ function M.build(opts)
     }
 end
 
+-- the new side's text with hunk `idx` undone: its old lines put back where its new
+-- lines sit. only the new side ever moves, in both diff directions (a revert rewrites
+-- the worktree on an index↔worktree diff, the index on a head↔index one), so there's
+-- one case here rather than two
+---@param model differ.DiffModel
+---@param h differ.Hunk
+---@return string
+local function reverted_text(model, h)
+    local lines = to_lines(model.new_text)
+    -- a zero-count hunk occupies nothing on the new side, and `new_start` names the
+    -- line it sits *after*, so the restored lines go in after it rather than over it
+    local at = h.new_count > 0 and h.new_start or h.new_start + 1
+    local out = {}
+    for i = 1, at - 1 do
+        out[#out + 1] = lines[i]
+    end
+    vim.list_extend(out, h.old_lines)
+    for i = at + h.new_count, #lines do
+        out[#out + 1] = lines[i]
+    end
+
+    -- whichever side supplies the result's last line supplies its terminator too:
+    -- a hunk reaching the end of the new side leaves no tail behind it, so the old
+    -- side's ending wins. getting this wrong would re-diff as a phantom eof hunk
+    local last = h.new_count > 0 and (h.new_start + h.new_count - 1) or h.new_start
+    local source = last == #lines and model.old_text or model.new_text
+    local text = table.concat(out, "\n")
+    if #out > 0 and source:sub(-1) == "\n" then
+        text = text .. "\n"
+    end
+    return text
+end
+
+-- a model with hunk `idx` reverted on the new side. rebuilt from the spliced text
+-- rather than patched in place, so the hunk list can never drift from the text it
+-- describes; callers hold the result as their new frozen model. the rebuild
+-- renumbers and re-derives boundaries, so surviving hunks keep their content but not
+-- their index, and callers holding per-hunk state must re-key it
+---@param model differ.DiffModel
+---@param idx integer
+---@return differ.DiffModel
+function M.revert_hunk(model, idx)
+    local h = assert(model.hunks[idx], "revert_hunk: no hunk at index " .. tostring(idx))
+    return M.build({
+        path = model.path,
+        old_rev = model.old_rev,
+        new_rev = model.new_rev,
+        old_text = model.old_text,
+        new_text = reverted_text(model, h),
+        head = model.head,
+        root = model.root,
+    })
+end
+
 return M
