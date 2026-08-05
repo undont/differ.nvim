@@ -64,6 +64,9 @@ local armed_view = nil
 -- `initial` is every hunk's opening state (an unstaged diff opens unstaged, a staged
 -- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
 -- panel counts and is called once after a single toggle or a whole S/U batch
+-- `apply` and `revert` are independently optional, and each one's absence gates its own
+-- keys: a deleted file can be restored (`revert`) but has nothing to stage by hunk, so
+-- it offers no `apply` and s/u keep refusing on it.
 -- `revert` throws a hunk away instead of moving it between index and worktree, and its
 -- absence is what gates the key off a source that can't do it. `offset` shifts its
 -- index-side apply past hunks unstaged before it; its worktree apply needs none, since
@@ -72,7 +75,7 @@ local armed_view = nil
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
----@field apply fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer, reverse: boolean): boolean
+---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer, reverse: boolean): boolean
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
@@ -754,9 +757,13 @@ function View:show_help()
     if self:_editable_source() then
         rows[#rows + 1] = { fmt(km.edit_file), "edit the real file (in review)" }
     end
-    if self.can_stage then
+    -- per-file, not session-wide: a deleted file reverts but doesn't stage by hunk, so
+    -- listing s/u there would advertise keys that refuse
+    if self:_can_stage_hunk() then
         rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage hunk" }
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
+    end
+    if self.staging and self.staging.revert then
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
@@ -973,6 +980,14 @@ function View:_hunk_index_under_cursor()
     return line and line.hunk or nil
 end
 
+-- whether the hunk-staging keys act here: the session allows staging and this file's
+-- capability implements it. a deleted file supplies only `revert`, so s/u refuse on it
+-- while X still works
+---@return boolean
+function View:_can_stage_hunk()
+    return self.can_stage and self.staging ~= nil and self.staging.apply ~= nil
+end
+
 -- patch hunk `idx` to `want_staged` in the index from the frozen hunk model (never
 -- buffer text), shifted past the hunks staged before it, and mark it. no panel
 -- refresh / repaint, so callers can batch. returns whether it changed
@@ -980,12 +995,13 @@ end
 ---@param want_staged boolean
 ---@return boolean
 function View:_apply_hunk(idx, want_staged)
-    if (self.staged_hunks[idx] or false) == want_staged then
+    local apply = self.staging and self.staging.apply
+    if not apply or (self.staged_hunks[idx] or false) == want_staged then
         return false
     end
     local offset = self:_stage_offset(idx)
     -- reverse unstages: we patch away a change currently in the index
-    if self.staging.apply(self.model, self.model.hunks[idx], offset, not want_staged) then
+    if apply(self.model, self.model.hunks[idx], offset, not want_staged) then
         self.staged_hunks[idx] = want_staged
         return true
     end
@@ -998,7 +1014,7 @@ end
 -- it steps to the next file, which opens on its first unstaged hunk. so repeated s
 -- walks the whole change set, accepting hunk by hunk
 function View:stage_hunk()
-    if not (self.can_stage and self.staging) then
+    if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_hunk_index_under_cursor()
@@ -1027,7 +1043,7 @@ end
 -- previous file landing on its last hunk, so repeated u walks the change set
 -- backward, undoing hunk by hunk
 function View:unstage_hunk()
-    if not (self.can_stage and self.staging) then
+    if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_hunk_index_under_cursor()
@@ -1058,7 +1074,7 @@ end
 -- working on it
 ---@param want_staged boolean
 function View:_toggle_hunk(want_staged)
-    if not (self.can_stage and self.staging) then
+    if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_hunk_index_under_cursor()
@@ -1081,7 +1097,7 @@ end
 -- S: stage every hunk in the file, or, when they're all staged already (nothing left
 -- to do), step to the next file, the file-level echo of s advancing past the last hunk
 function View:stage_all()
-    if not self:_toggle_all(true) and self.can_stage and self.staging then
+    if not self:_toggle_all(true) and self:_can_stage_hunk() then
         if not self:step_file("next", false) then -- stop at the last file, don't wrap
             vim.notify("differ: no more files to stage", vim.log.levels.INFO)
         end
@@ -1091,7 +1107,7 @@ end
 -- U: unstage every hunk, or, when none are staged (nothing to do), step back a file
 -- landing on its last hunk, the file-level echo of u retreating past the first hunk
 function View:unstage_all()
-    if not self:_toggle_all(false) and self.can_stage and self.staging then
+    if not self:_toggle_all(false) and self:_can_stage_hunk() then
         if self:step_file("prev", false) then -- stop at the first file, don't wrap
             self:_focus_last_hunk() -- only when a previous file actually opened
         else
@@ -1107,7 +1123,7 @@ end
 ---@param want_staged boolean
 ---@return boolean changed
 function View:_toggle_all(want_staged)
-    if not (self.can_stage and self.staging) then
+    if not self:_can_stage_hunk() then
         vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
         return false
     end
@@ -1379,7 +1395,7 @@ function View:edit_file()
     if self.model.new_rev == "INDEX" then
         if self.on_edit_unstage then
             self.on_edit_unstage(self.model.path)
-        elseif self.can_stage and self.staging then
+        elseif self:_can_stage_hunk() then
             self:_toggle_all(false)
         end
     end

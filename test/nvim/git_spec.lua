@@ -1304,6 +1304,19 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- the panel row for `path`, optionally pinned to its staged or unstaged side
+    local function file_line(p, path, staged)
+        for i, m in ipairs(p.meta) do
+            if
+                m.kind == "file"
+                and m.entry.path == path
+                and (staged == nil or m.entry.staged == staged)
+            then
+                return i
+            end
+        end
+    end
+
     -- answer the revert confirm with `choice` for the duration of `fn`
     local function confirming(choice, fn)
         local orig = vim.fn.confirm
@@ -1552,6 +1565,92 @@ describe(":Differ diff hunk staging", function()
         local after = view_in_origin(p)
         assert.are.equal("keep.lua", after.model.path) -- not left on an empty a.lua
         assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
+    -- an unstaged deletion is still in the index, and that's what its diff compares
+    -- against, so it must come back from there and not from HEAD
+    it("restores an unstaged deletion from the index, keeping earlier staged edits", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        write(root .. "/b.lua", "one\nSTAGED\n") -- an edit staged before the delete
+        git(root, "add", "b.lua")
+        os.remove(root .. "/b.lua")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("restores the file", v.staging.revert_label)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- the staged version comes back, not HEAD's
+        assert.are.equal("one\nSTAGED\n", worktree(root, "b.lua"))
+        p:close()
+    end)
+
+    it("restores a staged deletion from HEAD, into the index and worktree", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        git(root, "rm", "-q", "b.lua") -- deletion staged
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", true), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal("one\ntwo\n", worktree(root, "b.lua"))
+        assert.are.equal("one\ntwo\n", indexed(root, "b.lua")) -- no staged deletion left
+        p:close()
+    end)
+
+    -- a deleted file has nothing to stage by hunk, so the staging keys stay refused
+    -- even though the revert key now works on it
+    it("offers revert but not hunk staging on a deleted file", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        os.remove(root .. "/b.lua")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+
+        assert.is_nil(v.staging.apply) -- no hunk staging
+        assert.is_not_nil(v.staging.revert) -- but it can be brought back
+        assert.is_false(v:_can_stage_hunk())
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk() -- refuses rather than acting
+        assert.are.equal(0, vim.fn.filereadable(root .. "/b.lua"))
+        assert.is_nil(next(v.staged_hunks))
         p:close()
     end)
 

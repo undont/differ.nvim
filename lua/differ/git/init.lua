@@ -955,6 +955,25 @@ function M.panel(opts)
         return true -- the index half landed either way
     end
 
+    -- bring a deleted file back. which side it comes from is fixed by which diff is on
+    -- screen: a staged deletion is recorded in the index, so only HEAD still has the
+    -- content; an unstaged one is still in the index, and that's what its diff compares
+    -- against, so restoring from HEAD instead would silently drop edits staged before
+    -- the delete
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function restore_deleted(entry)
+        local cmd = entry.staged and { "checkout", "HEAD", "--", entry.path }
+            or { "checkout", "--", entry.path }
+        local _, err = git(cmd, root)
+        if err then
+            notify(("restore failed: %s"):format(err), vim.log.levels.ERROR)
+            return false
+        end
+        reload_buffer(root, entry.path)
+        return true
+    end
+
     ---@param entry differ.FileEntry
     ---@return differ.view.Staging|nil
     local function stage_for(entry)
@@ -1005,6 +1024,19 @@ function M.panel(opts)
                     return true
                 end,
                 revert_label = "deletes the file",
+                refresh = refresh_panel,
+            }
+        end
+        -- a deleted file diffs its content against nothing, so there's no hunk to stage
+        -- (the panel stages the deletion wholesale) but there is one to undo: no
+        -- `apply`, so s/u keep refusing while X brings the file back
+        if entry.status == "D" then
+            return {
+                initial = entry.staged and "staged" or "unstaged",
+                revert = function()
+                    return restore_deleted(entry)
+                end,
+                revert_label = "restores the file",
                 refresh = refresh_panel,
             }
         end
