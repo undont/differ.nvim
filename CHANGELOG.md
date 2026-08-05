@@ -17,6 +17,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A staging key pressed in the file panel no longer tears down an in-progress hunk review in the diff. `s`/`u`/`S`/`U`/`X` write the index like their diff-window counterparts, but didn't re-baseline the change signature that tells differ which git movements are its own, so the watcher read the write back as an outside change and re-sourced the frozen diff: the in-place staged marks were lost and the diff collapsed to whichever side survived. Every list reload now records that state, whatever drove it
+- The diff window no longer strands on a file that went clean outside differ while other changes remained. There was nothing to re-source it to, so it kept showing a diff of a file now identical to HEAD, and since it never moved on, no later refresh could recover it; it now hands over to the nearest surviving change, without stealing focus
+- `R` in the panel re-sources the diff as well as the file list, matching what the watcher does. It's the manual counterpart, pressed because something changed outside differ, so reloading only the list left the diff stale
 - A file discarded from the panel no longer leaves its own buffer showing the discarded content. Nvim doesn't reload a buffer on a window switch, so the stale text sat there until something forced a check; differ now runs a `checktime` on the file it rewrote, which leaves a buffer with unsaved edits alone
 - The diff's `g?` lists the staging and revert keys per file rather than per session, so a file that can't stage by hunk no longer advertises `s`/`u`
 

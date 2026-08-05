@@ -907,13 +907,20 @@ function M.panel(opts)
         return sig
     end
     local last_sig = git_signature()
+    -- record the state the list now reflects, so the next external event doesn't read an
+    -- in-differ op as an outside change and re-source over the in-place staged marks.
+    -- wired as the panel's on_refresh, which is the one point every reload passes through:
+    -- the panel's own staging keys never come through refresh_panel, and used to leave the
+    -- signature stale enough that the watcher tore down an in-progress hunk review
+    local function record_state()
+        last_sig = git_signature()
+    end
     local function refresh_panel()
         if panel then
-            panel:refresh()
+            panel:refresh() -- fires on_refresh -> record_state
+        else
+            record_state()
         end
-        -- record state so the next external event doesn't read this in-differ op as an
-        -- outside change and re-source over the in-place staged marks
-        last_sig = git_signature()
     end
     -- throw one hunk away rather than move it between index and worktree. an unstaged
     -- hunk exists only in the worktree, so a single reverse apply is the whole job. a
@@ -1149,9 +1156,21 @@ function M.panel(opts)
             if pick and show_entry(pick, focus_line) then
                 return
             end
+            -- the shown file went clean while others survived (committed on its own,
+            -- checked out). there's nothing to re-source it to, so hand the window to
+            -- the nearest surviving change rather than strand it on a diff of a file
+            -- that now matches HEAD, which no later refresh would ever move off.
+            -- nothing here is user-driven, so focus goes back where it was
+            local focused = vim.api.nvim_get_current_win()
+            if panel:open_nearest(true) then
+                if vim.api.nvim_win_is_valid(focused) then
+                    vim.api.nvim_set_current_win(focused)
+                end
+                return
+            end
         end
-        -- no view, or the file went fully clean: leave the diff and just record state
-        last_sig = git_signature()
+        -- no view, and nothing to hand over to: just record the state
+        record_state()
     end
 
     -- watch the git dir and the shown file's dir so an external change (lazygit, an
@@ -1176,6 +1195,7 @@ function M.panel(opts)
         footer = footer_label(args, root),
         actions = actions,
         on_external_change = refresh_external,
+        on_refresh = record_state,
         keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,

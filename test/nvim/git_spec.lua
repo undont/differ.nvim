@@ -380,6 +380,12 @@ describe(":Differ panel", function()
         end
     end
 
+    -- the View driven by the panel, read without moving focus (which the focus-steal
+    -- assertions below depend on): it lives in the origin window
+    local function view_at(p)
+        return require("differ.view").for_buf(vim.api.nvim_win_get_buf(p.origin_win))
+    end
+
     -- the section content only: strip the 3-line header (root/help/blank) and the
     -- 3-line footer (blank/"Showing changes for:"/rev) so assertions don't depend on
     -- the temp-dir path or the HEAD sha
@@ -655,6 +661,54 @@ describe(":Differ panel", function()
         p:select()
         -- same window + buffer: the View was re-sourced, not recreated
         assert.are.equal(diff_buf, vim.api.nvim_win_get_buf(p.origin_win))
+        p:close()
+    end)
+
+    -- the change set surviving isn't enough: if the file the diff was on is the one
+    -- that went clean, the window is left on a diff of a file that matches HEAD, and
+    -- every later refresh walks into the same dead end (active_entry never moves on)
+    it(
+        "hands the diff to a surviving change when its own file goes clean outside differ",
+        function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            write(root .. "/keep.lua", "kept\n") -- a survivor the diff should land on
+            vim.cmd.edit(root .. "/a.lua")
+
+            git_src.panel({ rev = {}, open_first = true })
+            local p = Panel.current()
+            assert.are.equal("a.lua", view_at(p).model.path)
+
+            git(root, "checkout", "HEAD", "--", "a.lua") -- only the shown file goes clean
+            vim.api.nvim_set_current_win(p.winid) -- reviewing from the sidebar
+            p.on_external_change()
+
+            assert.are.equal(p, Panel.current()) -- keep.lua survives, so the session does
+            assert.are.equal("keep.lua", view_at(p).model.path)
+            -- the refresh isn't user-driven, so it must not yank focus into the diff
+            assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+            p:close()
+        end
+    )
+
+    -- R is the manual counterpart of the watcher, pressed precisely because something
+    -- changed outside differ, so it has to re-source the diff and not just the list: a
+    -- list-only reload re-baselines the change signature, which would then stop the
+    -- watcher from ever catching the diff up
+    it("R re-sources the diff, not just the file list", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.are.equal(1, #view_at(p).model.hunks)
+
+        write(root .. "/a.lua", "local x = 2\nreturn x\nlocal y = 3\n") -- edited outside
+        vim.api.nvim_set_current_win(p.winid)
+        vim.api.nvim_feedkeys("R", "x", false)
+
+        assert.are.equal(2, #view_at(p).model.hunks) -- the diff picked the edit up
         p:close()
     end)
 
@@ -1099,6 +1153,44 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(2, #v.model.hunks)
         assert.are.same(before, vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false))
         assert.is_true(v.staged_hunks[1])
+        assert.is_nil(v.staged_hunks[2])
+        p:close()
+    end)
+
+    -- the in-place staged marks are the whole point of the frozen diff, and the watcher
+    -- protects them by re-sourcing only when git moved for a reason differ didn't cause.
+    -- a staging key pressed in the sidebar writes the index too, so it has to re-baseline
+    -- that signature or the next watcher fire reads it as an outside change
+    it("keeps in-place staged marks across a staging op driven from the panel", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two hunks to mark
+        write(root .. "/z.lua", "z1x\nz2\n") -- a second file to stage from the panel
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk() -- mark hunk 1 in place, leaving hunk 2 unstaged
+        assert.is_true(v.staged_hunks[1])
+
+        -- stage a *different* file whole, from the sidebar
+        vim.api.nvim_set_current_win(p.winid)
+        assert.is_true(p:focus_file("z.lua"))
+        p:stage_op("stage")
+        assert.are.equal("z1x\nz2\n", indexed(root, "z.lua")) -- z.lua really is staged
+
+        -- the index write that caused: the watcher fires, and must read it as differ's
+        -- own doing rather than re-sourcing a.lua's diff out from under the marks
+        p.on_external_change()
+
+        assert.are.equal(2, #v.model.hunks) -- still frozen on the same two hunks
+        assert.is_true(v.staged_hunks[1]) -- and hunk 1 is still marked staged
         assert.is_nil(v.staged_hunks[2])
         p:close()
     end)
