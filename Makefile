@@ -149,6 +149,13 @@ vimdoc: $(PANVIMDOC_BIN) ## Regenerate doc/differ.txt from README.md (needs pand
 		--dedup-subheadings true \
 		--shift-heading-level-by -1 2>&1) || { printf '%s\n' "$$out"; exit 1; }
 	@$(OK) "doc/differ.txt regenerated"
+	@# doc/tags is gitignored and lazy only generates helptags for plugins it installed,
+	@# never for a `dir` dev checkout, so :help differ breaks in-tree without this. skipped
+	@# where there's no nvim (ci runs pandoc only), and invisible to ci's differ.txt diff
+	@if command -v nvim >/dev/null 2>&1; then \
+		nvim --headless -c "helptags doc" -c "qa!" >/dev/null 2>&1; \
+		$(OK) "doc/tags regenerated"; \
+	fi
 
 # fetch the pinned panvimdoc into .tools on first use; the whole tree is gitignored
 $(PANVIMDOC_BIN):
