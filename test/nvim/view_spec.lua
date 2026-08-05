@@ -465,7 +465,7 @@ describe("view context controls", function()
         v:close()
     end)
 
-    it("widens/narrows by one and no-ops at whole-file", function()
+    it("widens/narrows by one", function()
         local v = gap_view()
         v:open()
         v:set_context(2)
@@ -473,9 +473,18 @@ describe("view context controls", function()
         assert.are.equal(1, v.context)
         v:adjust_context(1)
         assert.are.equal(2, v.context)
-        v:set_context(math.huge)
-        v:adjust_context(-1) -- can't decrement infinity
+        v:close()
+    end)
+
+    it("narrows down from whole file, and won't widen past it", function()
+        local v = gap_view()
+        v:open()
+        v:adjust_context(1) -- already whole file, nothing wider to go to
         assert.are.equal(math.huge, v.context)
+        v:adjust_context(-1) -- seeds a finite context, so d- works from a fresh open
+        assert.are.equal(10, v.context)
+        v:adjust_context(-1) -- and steps normally from there
+        assert.are.equal(9, v.context)
         v:close()
     end)
 end)

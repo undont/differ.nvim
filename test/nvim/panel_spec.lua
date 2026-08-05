@@ -388,3 +388,61 @@ describe("panel runtime position", function()
         assert.is_nil(Panel.current())
     end)
 end)
+
+describe("panel refresh", function()
+    -- a panel whose reload returns `sections`, recording on_empty fires
+    local function reloadable(entries, sections)
+        local fired = {}
+        local p = panel(entries, {
+            actions = {
+                stage = function() end,
+                unstage = function() end,
+                stage_all = function() end,
+                unstage_all = function() end,
+                discard = function() end,
+                reload = function()
+                    return sections
+                end,
+            },
+            on_empty = function()
+                fired[#fired + 1] = true
+            end,
+        })
+        return p, fired
+    end
+
+    it("fires on_empty when a reload leaves no files", function()
+        local p, fired = reloadable({ fe("a.lua") }, {})
+        p:open()
+        p:refresh()
+        assert.are.equal(1, #fired)
+        assert.are.equal(0, p.file_total)
+        p:close()
+    end)
+
+    it("doesn't fire on_empty while files remain", function()
+        local p, fired = reloadable({ fe("a.lua") }, { { entries = { fe("b.lua") } } })
+        p:open()
+        p:refresh()
+        assert.are.equal(0, #fired)
+        assert.are.same({ "M b.lua" }, lines(p))
+        p:close()
+    end)
+
+    -- a hidden sidebar is still a live session driving a visible diff, so an emptying
+    -- reload has to reach it too; only a closed panel stops refreshing
+    it("refreshes (and can empty) with the sidebar hidden, but not once closed", function()
+        local p, fired = reloadable({ fe("a.lua") }, {})
+        p:open()
+        p:hide()
+        assert.is_false(p:is_open())
+        assert.is_true(p:is_alive())
+        p:refresh()
+        assert.are.equal(1, #fired)
+
+        p:close()
+        assert.is_false(p:is_alive())
+        p:refresh() -- a queued refresh landing after the close is a no-op
+        assert.are.equal(1, #fired)
+    end)
+end)

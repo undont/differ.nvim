@@ -21,7 +21,7 @@ local BINARY_NOTICE = "Binary file not shown"
 -- render a model into two index-aligned columns ("old" left, "new" right). both
 -- columns share the same fold ranges since their rows are aligned
 ---@param model differ.DiffModel
----@param opts { context: integer, deep_diff?: table }
+---@param opts { context: number, deep_diff?: table }
 ---@return differ.RenderResult
 function M.render(model, opts)
     local old_map, new_map = LineMap.new(), LineMap.new()

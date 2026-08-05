@@ -199,6 +199,83 @@ describe("git.read (worktree clean filter)", function()
     end)
 end)
 
+describe("git.apply_patch (target)", function()
+    local patch = require("differ.git.patch")
+    local INDEX = { kind = "index", label = "INDEX" }
+    local WT = { kind = "worktree", label = "WORKTREE" }
+
+    -- committed and indexed as `a b c d e`, with the worktree carrying two
+    -- independent single-line edits, so a patch can name one hunk and leave the other
+    local BASE = "a\nb\nc\nd\ne\n"
+    local EDITED = "a\nB\nc\nD\ne\n"
+    local function two_hunk_repo()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        write(root .. "/f.txt", BASE)
+        git(root, "add", "f.txt")
+        git(root, "commit", "-q", "-m", "init")
+        write(root .. "/f.txt", EDITED)
+        return root
+    end
+
+    -- the index-vs-worktree model, whose hunks are the ones the diff view holds frozen
+    local function unstaged_model(root)
+        return git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
+    end
+
+    ---@param model differ.DiffModel
+    ---@param idx integer
+    ---@param reverse boolean
+    local function hunk_patch(model, idx, reverse)
+        return patch.hunk("f.txt", model.hunks[idx], model.old_text, model.new_text, 0, reverse)
+    end
+
+    it("reverse-applies to the worktree and leaves the index alone", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        assert.are.equal(2, #model.hunks)
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        -- only the second edit is undone; the first survives, as does the index
+        assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
+        assert.are.equal(BASE, git_src.read(INDEX, root, "f.txt"))
+    end)
+
+    it("defaults to the index and leaves the worktree alone", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 1, false), false))
+        assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(INDEX, root, "f.txt"))
+        assert.are.equal(EDITED, git_src.read(WT, root, "f.txt"))
+    end)
+
+    -- the revert-on-a-staged-hunk path composes two calls, and the worktree one is
+    -- located against content the user may have edited since; it must fail whole
+    it("fails without writing when the worktree no longer holds the hunk's content", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        write(root .. "/f.txt", "a\nB\nc\nZZZ\ne\n") -- the D line was rewritten since
+
+        local ok, err = git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree")
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+        assert.are.equal("a\nB\nc\nZZZ\ne\n", git_src.read(WT, root, "f.txt"))
+    end)
+
+    -- the patch carries the model's frozen line numbers, so an edit above the hunk
+    -- desynchronises them; `--unidiff-zero` relocates by content instead
+    it("relocates a zero-context hunk when lines shifted above it", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        write(root .. "/f.txt", "x1\nx2\nx3\na\nB\nc\nD\ne\n") -- D moves from line 4 to 7
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        assert.are.equal("x1\nx2\nx3\na\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
+    end)
+end)
+
 describe("git.file_entries (rev-pair sources)", function()
     it("unions in untracked files for a worktree new-side, but not a rev new-side", function()
         local root = fresh_repo()
@@ -301,6 +378,12 @@ describe(":Differ panel", function()
                 return i
             end
         end
+    end
+
+    -- the View driven by the panel, read without moving focus (which the focus-steal
+    -- assertions below depend on): it lives in the origin window
+    local function view_at(p)
+        return require("differ.view").for_buf(vim.api.nvim_win_get_buf(p.origin_win))
     end
 
     -- the section content only: strip the 3-line header (root/help/blank) and the
@@ -581,12 +664,61 @@ describe(":Differ panel", function()
         p:close()
     end)
 
+    -- the change set surviving isn't enough: if the file the diff was on is the one
+    -- that went clean, the window is left on a diff of a file that matches HEAD, and
+    -- every later refresh walks into the same dead end (active_entry never moves on)
+    it(
+        "hands the diff to a surviving change when its own file goes clean outside differ",
+        function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            write(root .. "/keep.lua", "kept\n") -- a survivor the diff should land on
+            vim.cmd.edit(root .. "/a.lua")
+
+            git_src.panel({ rev = {}, open_first = true })
+            local p = Panel.current()
+            assert.are.equal("a.lua", view_at(p).model.path)
+
+            git(root, "checkout", "HEAD", "--", "a.lua") -- only the shown file goes clean
+            vim.api.nvim_set_current_win(p.winid) -- reviewing from the sidebar
+            p.on_external_change()
+
+            assert.are.equal(p, Panel.current()) -- keep.lua survives, so the session does
+            assert.are.equal("keep.lua", view_at(p).model.path)
+            -- the refresh isn't user-driven, so it must not yank focus into the diff
+            assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+            p:close()
+        end
+    )
+
+    -- R is the manual counterpart of the watcher, pressed precisely because something
+    -- changed outside differ, so it has to re-source the diff and not just the list: a
+    -- list-only reload re-baselines the change signature, which would then stop the
+    -- watcher from ever catching the diff up
+    it("R re-sources the diff, not just the file list", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.are.equal(1, #view_at(p).model.hunks)
+
+        write(root .. "/a.lua", "local x = 2\nreturn x\nlocal y = 3\n") -- edited outside
+        vim.api.nvim_set_current_win(p.winid)
+        vim.api.nvim_feedkeys("R", "x", false)
+
+        assert.are.equal(2, #view_at(p).model.hunks) -- the diff picked the edit up
+        p:close()
+    end)
+
     -- the panel refreshes on any of these: regaining focus, an in-nvim `:!`, or a
     -- terminal git UI (lazygit) closing in a float (TermClose/TermLeave)
     for _, ev in ipairs({ "FocusGained", "ShellCmdPost", "TermClose", "TermLeave" }) do
         it("refreshes on " .. ev .. " so external git changes appear", function()
             local root = fresh_repo()
             write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            write(root .. "/keep.lua", "kept\n") -- survives the commit, so the session does too
             vim.cmd.edit(root .. "/a.lua")
 
             git_src.panel({})
@@ -624,6 +756,7 @@ describe(":Differ panel", function()
     it("guards a stale entry: selecting a now-clean file refreshes, no blank view", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/keep.lua", "kept\n") -- a survivor, so the refresh doesn't end the session
         vim.cmd.edit(root .. "/a.lua")
 
         git_src.panel({})
@@ -829,6 +962,12 @@ describe(":Differ panel staging (slice C)", function()
 
         assert.is_nil(entry_of(p, "a.lua")) -- no longer a change
         assert.are.equal(V1, table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
+        -- the file's own buffer is reloaded too, not left showing the discarded edit
+        local filebuf = vim.fn.bufnr(root .. "/a.lua")
+        assert.are.equal(
+            V1,
+            table.concat(vim.api.nvim_buf_get_lines(filebuf, 0, -1, false), "\n") .. "\n"
+        )
         p:close()
     end)
 
@@ -1014,6 +1153,44 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(2, #v.model.hunks)
         assert.are.same(before, vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false))
         assert.is_true(v.staged_hunks[1])
+        assert.is_nil(v.staged_hunks[2])
+        p:close()
+    end)
+
+    -- the in-place staged marks are the whole point of the frozen diff, and the watcher
+    -- protects them by re-sourcing only when git moved for a reason differ didn't cause.
+    -- a staging key pressed in the sidebar writes the index too, so it has to re-baseline
+    -- that signature or the next watcher fire reads it as an outside change
+    it("keeps in-place staged marks across a staging op driven from the panel", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two hunks to mark
+        write(root .. "/z.lua", "z1x\nz2\n") -- a second file to stage from the panel
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk() -- mark hunk 1 in place, leaving hunk 2 unstaged
+        assert.is_true(v.staged_hunks[1])
+
+        -- stage a *different* file whole, from the sidebar
+        vim.api.nvim_set_current_win(p.winid)
+        assert.is_true(p:focus_file("z.lua"))
+        p:stage_op("stage")
+        assert.are.equal("z1x\nz2\n", indexed(root, "z.lua")) -- z.lua really is staged
+
+        -- the index write that caused: the watcher fires, and must read it as differ's
+        -- own doing rather than re-sourcing a.lua's diff out from under the marks
+        p.on_external_change()
+
+        assert.are.equal(2, #v.model.hunks) -- still frozen on the same two hunks
+        assert.is_true(v.staged_hunks[1]) -- and hunk 1 is still marked staged
         assert.is_nil(v.staged_hunks[2])
         p:close()
     end)
@@ -1218,6 +1395,508 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_win_set_cursor(p.origin_win, { 6, 0 }) -- the d -> D hunk
         v:stage_hunk()
         assert.are.equal("a\nINS1\nINS2\nb\nc\nD\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- the panel row for `path`, optionally pinned to its staged or unstaged side
+    local function file_line(p, path, staged)
+        for i, m in ipairs(p.meta) do
+            if
+                m.kind == "file"
+                and m.entry.path == path
+                and (staged == nil or m.entry.staged == staged)
+            then
+                return i
+            end
+        end
+    end
+
+    -- answer the revert confirm with `choice` for the duration of `fn`
+    local function confirming(choice, fn)
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return choice
+        end
+        local ok, err = pcall(fn)
+        vim.fn.confirm = orig
+        assert(ok, err)
+    end
+
+    it("reverts one hunk from the worktree, leaving the others and the index", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(2, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 }) -- the 1 -> 1x hunk
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- the first edit is gone from disk, the second survives, the index never moved
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8x\n", worktree(root, "a.lua"))
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8\n", indexed(root, "a.lua"))
+        -- the model was spliced, not re-read: one hunk left, and it's the survivor
+        assert.are.equal(1, #v.model.hunks)
+        assert.are.same({ "8x" }, v.model.hunks[1].new_lines)
+        p:close()
+    end)
+
+    it("leaves the worktree alone when the confirm is declined", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(2, function() -- "No"
+            v:revert_hunk()
+        end)
+
+        assert.are.equal("local x = 2\nreturn x\n", worktree(root, "a.lua"))
+        assert.are.equal(1, #v.model.hunks)
+        p:close()
+    end)
+
+    it("reverts a staged hunk out of the index and the worktree together", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        git(root, "add", "a.lua") -- both edits staged; the worktree matches the index
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("staged", v.staging.initial)
+        assert.are.equal(2, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- gone from both sides, so the file has no unstaged residue to clean up
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8x\n", indexed(root, "a.lua"))
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8x\n", worktree(root, "a.lua"))
+        assert.are.equal(1, #v.model.hunks)
+        p:close()
+    end)
+
+    -- reverting only the worktree copy of a hunk already pushed to the index would
+    -- leave the two differing the other way round, so the key refuses instead
+    it("refuses to revert a hunk staged during the session", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk()
+        assert.is_true(v.staged_hunks[1])
+
+        confirming(1, function() -- would say yes, but it never gets asked
+            v:revert_hunk()
+        end)
+        assert.are.equal("local x = 2\nreturn x\n", worktree(root, "a.lua"))
+        assert.are.equal(1, #v.model.hunks)
+        p:close()
+    end)
+
+    -- a new file's content is its only hunk, so reverting it deletes the file; the
+    -- confirm has to say that rather than counting hunks at the user
+    it("reverts a new file by deleting it, warning that it will", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "fresh\n") -- untracked
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("deletes the file", v.staging.revert_label)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        local asked
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function(msg)
+            asked = msg
+            return 1
+        end
+        local ok, err = pcall(function()
+            v:revert_hunk()
+        end)
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.are.equal("Revert all of new.lua? This deletes the file.", asked)
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new.lua"))
+        p:close()
+    end)
+
+    it("reverts a staged add by dropping the file and its staged entry", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "fresh\n")
+        git(root, "add", "new.lua") -- staged add: "A"
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new.lua"))
+        assert.is_nil(git(root, "ls-files", "--", "new.lua"):match("new%.lua")) -- unstaged too
+        p:close()
+    end)
+
+    -- deleting the file out from under the diff would otherwise strand the window on a
+    -- path that no longer exists, showing "hunk 0/0" against an empty buffer
+    it("moves to another file after a whole-file revert, not an empty diff", function()
+        local root = fresh_repo()
+        write(root .. "/keep.lua", "kept\n")
+        git(root, "add", "keep.lua")
+        git(root, "commit", "-q", "-m", "keep")
+        write(root .. "/keep.lua", "kept and edited\n") -- a real change to land on
+        write(root .. "/gone.lua", "temporary\n") -- untracked, about to go
+        vim.cmd.edit(root .. "/gone.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("gone.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(0, vim.fn.filereadable(root .. "/gone.lua"))
+        -- the view followed the panel onto the surviving change
+        local after = view_in_origin(p)
+        assert.are.equal("keep.lua", after.model.path)
+        assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
+    -- the cursor used to be pulled to the nearest surviving hunk, because the line a
+    -- revert leaves you on is unchanged context and the re-source focus snaps to hunks
+    it("keeps the cursor where the reverted hunk was, not on the next one", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n")
+        git(root, "commit", "-q", "-am", "12 lines")
+        -- hunks far apart, so being pulled to the second one is unmistakable
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(2, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 }) -- the 1 -> 1x hunk
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- the surviving hunk is the last line of the file; landing on it would mean a
+        -- new-side line of 12, and the whole point is that we didn't move there
+        local col = v.columns[#v.columns]
+        local lnum = vim.api.nvim_win_get_cursor(col.winid)[1]
+        local mapped = col.map.lines[lnum]
+        assert.is_not_nil(mapped)
+        assert.are.equal(1, mapped.new) -- still on line 1, now restored context
+        assert.is_nil(mapped.hunk) -- and it is context, not a hunk line
+        p:close()
+    end)
+
+    it("moves on when the revert takes the file's last hunk", function()
+        local root = fresh_repo()
+        write(root .. "/keep.lua", "kept\n")
+        git(root, "add", "keep.lua")
+        git(root, "commit", "-q", "-m", "keep")
+        write(root .. "/keep.lua", "kept and edited\n") -- a survivor to land on
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua has one hunk
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(1, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(V1, worktree(root, "a.lua")) -- reverted
+        local after = view_in_origin(p)
+        assert.are.equal("keep.lua", after.model.path) -- not left on an empty a.lua
+        assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
+    -- with nothing left to review, an open sidebar next to a diff of a file that's now
+    -- clean is a dead end: every key is a no-op and the diff is frozen on a stale model
+    it("ends the session when the last change in the set is reverted", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- the only change in the repo
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(1, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        _G.notifs = {}
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(V1, worktree(root, "a.lua"))
+        assert.is_nil(Panel.current()) -- the session is gone, not left empty
+        assert.is_false(p:is_alive())
+        assert.is_false(v:is_open()) -- and it took the diff view with it
+        assert.are.equal("differ: no changes left", _G.notifs[1].msg)
+        assert.are.equal(1, #_G.notifs) -- said once, not once per teardown step
+    end)
+
+    it("lands back in the tab :Differ was invoked from", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local invoked_from = vim.api.nvim_get_current_tabpage()
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.is_false(invoked_from == vim.api.nvim_get_current_tabpage()) -- own tab
+        local v = view_in_origin(p)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(invoked_from, vim.api.nvim_get_current_tabpage())
+    end)
+
+    -- the file list can also empty from outside differ: a commit in a tmux pane, a
+    -- lazygit discard. the watcher's refresh has to end the session the same way
+    it("ends the session when an outside commit empties the change set", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.is_true(v:is_open())
+
+        git(root, "commit", "-q", "-am", "committed elsewhere")
+        _G.notifs = {}
+        p.on_external_change() -- what the fs watcher / FocusGained fire
+
+        assert.is_nil(Panel.current())
+        assert.is_false(p:is_alive())
+        assert.is_false(v:is_open())
+        assert.are.equal("differ: no changes left", _G.notifs[1].msg)
+    end)
+
+    it("keeps the session when other changes survive the revert", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/b.lua", "kept\n") -- a second change, untracked
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(p, Panel.current()) -- still live, on the surviving change
+        assert.are.equal("b.lua", view_in_origin(p).model.path)
+        p:close()
+    end)
+
+    -- an unstaged deletion is still in the index, and that's what its diff compares
+    -- against, so it must come back from there and not from HEAD
+    it("restores an unstaged deletion from the index, keeping earlier staged edits", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        write(root .. "/b.lua", "one\nSTAGED\n") -- an edit staged before the delete
+        git(root, "add", "b.lua")
+        os.remove(root .. "/b.lua")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("restores the file", v.staging.revert_label)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- the staged version comes back, not HEAD's
+        assert.are.equal("one\nSTAGED\n", worktree(root, "b.lua"))
+        p:close()
+    end)
+
+    it("restores a staged deletion from HEAD, into the index and worktree", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        git(root, "rm", "-q", "b.lua") -- deletion staged
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", true), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal("one\ntwo\n", worktree(root, "b.lua"))
+        assert.are.equal("one\ntwo\n", indexed(root, "b.lua")) -- no staged deletion left
+        p:close()
+    end)
+
+    -- a deleted file has nothing to stage by hunk, so the staging keys stay refused
+    -- even though the revert key now works on it
+    it("offers revert but not hunk staging on a deleted file", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\ntwo\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "add b")
+        os.remove(root .. "/b.lua")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
+        p:select()
+        local v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+
+        assert.is_nil(v.staging.apply) -- no hunk staging
+        assert.is_not_nil(v.staging.revert) -- but it can be brought back
+        assert.is_false(v:_can_stage_hunk())
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk() -- refuses rather than acting
+        assert.are.equal(0, vim.fn.filereadable(root .. "/b.lua"))
+        assert.is_nil(next(v.staged_hunks))
+        p:close()
+    end)
+
+    it("reloads an open buffer of the file it just reverted", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        vim.cmd.edit(root .. "/a.lua") -- the real file is open in a buffer
+        local filebuf = vim.api.nvim_get_current_buf()
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- without a checktime this buffer would still hold the reverted line
+        local lines = vim.api.nvim_buf_get_lines(filebuf, 0, -1, false)
+        assert.are.equal("1", lines[1])
+        assert.is_false(vim.bo[filebuf].modified)
+        p:close()
+    end)
+
+    it("keeps staged marks on the hunks that outlive a revert", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+        git(root, "commit", "-q", "-am", "9 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- three hunks
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(3, #v.model.hunks)
+
+        -- stage the first, then revert the second: the mark has to follow hunk 1
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        v:stage_hunk()
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        local second = nil
+        for lnum, line in ipairs(v.columns[1].map.lines) do
+            if line.hunk == 2 then
+                second = lnum
+                break
+            end
+        end
+        vim.api.nvim_win_set_cursor(p.origin_win, { assert(second), 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(2, #v.model.hunks)
+        assert.is_true(v.staged_hunks[1]) -- still the 1 -> 1x hunk
+        assert.is_nil(v.staged_hunks[2]) -- what was hunk 3, unstaged, renumbered down
+        assert.are.same({ "9x" }, v.model.hunks[2].new_lines)
         p:close()
     end)
 
@@ -1584,7 +2263,7 @@ describe(":Differ diff hunk staging", function()
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
         local lhs = keymaps(view_in_origin(p).columns[1].bufnr)
-        for _, k in ipairs({ "s", "u", "S", "U" }) do
+        for _, k in ipairs({ "s", "u", "S", "U", "X" }) do
             assert.is_true(lhs[k])
         end
         p:close()
@@ -1597,6 +2276,7 @@ describe(":Differ diff hunk staging", function()
         assert.is_nil(lhs2["u"])
         assert.is_nil(lhs2["S"])
         assert.is_nil(lhs2["U"])
+        assert.is_nil(lhs2["X"]) -- nor revertable: there's no worktree side to write
         p2:close()
     end)
 

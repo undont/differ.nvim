@@ -8,6 +8,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `X` reverts the hunk under the cursor in the diff, the hunk-level counterpart to the panel's file-level discard. It confirms first, since unlike `s`/`u` it destroys the change rather than moving it between the index and the worktree: an unstaged hunk is dropped from the worktree, a staged one from the index and worktree together. Where a file's whole content is one hunk the confirm names the consequence instead of counting hunks, so reverting a new file says it deletes it and reverting a deleted file says it restores it. The frozen diff is spliced in place rather than re-read, so the cursor stays where the hunk was; when a revert leaves the file with no changes at all the panel moves you to the next one. Deleted files revert without gaining hunk staging, so `s`/`u` still refuse there
+
+### Changed
+
+- `context` defaults to the whole file rather than 10 lines, so a diff opens with no folds in it and reads as the file it came from. Folds were always created open, so nothing was ever hidden, but the fold markers still broke the file up on sight for no gain. The threshold is still there for anyone who wants it, through `context` in `setup()`, `:Differ context <n>`, or `d-`
+- `d-` narrows away from whole-file context instead of doing nothing. There is no finite threshold to decrement from `math.huge`, so the first step down seeds 10 and narrows a line at a time after that; `d=` at whole-file stays a no-op, since there is nothing wider to reach
+- An uncommitted session ends itself once its file list empties, rather than leaving an empty panel beside a diff of a file that is now clean. The change set can empty under you from either side: the last change reverted or discarded in differ, or a commit, checkout or stash from another pane. Either way the session closes and returns you to the tab you opened it from. Rev-pair sessions never reload their list, so they are untouched
+- A hidden file panel (`dd`) keeps refreshing with the worktree. It is still a live session driving a visible diff, so refreshes now track whether the session exists rather than whether the sidebar is shown; a revert with the sidebar hidden hands the diff on to the next file instead of stranding it
+
+### Fixed
+
+- A staging key pressed in the file panel no longer tears down an in-progress hunk review in the diff. `s`/`u`/`S`/`U`/`X` write the index like their diff-window counterparts, but didn't re-baseline the change signature that tells differ which git movements are its own, so the watcher read the write back as an outside change and re-sourced the frozen diff: the in-place staged marks were lost and the diff collapsed to whichever side survived. Every list reload now records that state, whatever drove it
+- The diff window no longer strands on a file that went clean outside differ while other changes remained. There was nothing to re-source it to, so it kept showing a diff of a file now identical to HEAD, and since it never moved on, no later refresh could recover it; it now hands over to the nearest surviving change, without stealing focus
+- `R` in the panel re-sources the diff as well as the file list, matching what the watcher does. It's the manual counterpart, pressed because something changed outside differ, so reloading only the list left the diff stale
+- A file discarded from the panel no longer leaves its own buffer showing the discarded content. Nvim doesn't reload a buffer on a window switch, so the stale text sat there until something forced a check; differ now runs a `checktime` on the file it rewrote, which leaves a buffer with unsaved edits alone
+- The diff's `g?` lists the staging and revert keys per file rather than per session, so a file that can't stage by hunk no longer advertises `s`/`u`
+
+## [0.1.20] — 2026-08-05
+
+### Added
+
 - A vimdoc: `doc/differ.txt`, generated from the README, so `:help differ` works
 - In-buffer session keys, so the things you do inside a session no longer need a global launcher: `dc` ends it (routing to the merge, PR or local session), `dd` toggles the file panel, `dl` flips the layout. `dc` binds on the diff, panel and history; `dd` on the diff and panel; `dl` on the diff, the only surface that owns a layout
 - `gS` and `gD` submit and discard a PR review from the diff or panel, so a review can be finished without leaving the files. Capitalised to keep the lowercase `g` family for thread and comment actions; each action's own prompt (the verdict picker, the discard confirm) is the guard

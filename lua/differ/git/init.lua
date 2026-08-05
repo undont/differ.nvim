@@ -603,16 +603,24 @@ function M.unstage_all(root)
     git({ "reset", "-q", "HEAD" }, root)
 end
 
--- apply a single-hunk patch to the index (hunk staging). `--unidiff-zero`
--- because the patch carries no context (built straight from the hunk model);
--- `--reverse` unstages. git apply is atomic, so a non-applying patch fails cleanly
--- with stderr rather than half-writing. returns ok + git's stderr on failure
+-- apply a single-hunk patch, atomically. `--unidiff-zero` because the patch carries
+-- no context (built straight from the hunk model); `--reverse` undoes rather than
+-- applies. `target` picks the side written: the index for hunk staging, the worktree
+-- for hunk revert. never `--index` (both at once), which checks the whole path is in
+-- sync and so refuses on any file that has changes on the other side, hunk-unrelated
+-- ones included; a revert that must reach both composes two calls instead. git apply
+-- is atomic, so a non-applying patch fails cleanly with stderr rather than
+-- half-writing. returns ok + git's stderr on failure
 ---@param root string
 ---@param text string  -- the unified diff to apply
 ---@param reverse boolean
+---@param target? "index"|"worktree"  -- default "index"
 ---@return boolean ok, string|nil err
-function M.apply_patch(root, text, reverse)
-    local cmd = { "git", "apply", "--cached", "--unidiff-zero", "--whitespace=nowarn" }
+function M.apply_patch(root, text, reverse, target)
+    local cmd = { "git", "apply", "--unidiff-zero", "--whitespace=nowarn" }
+    if (target or "index") == "index" then
+        cmd[#cmd + 1] = "--cached"
+    end
     if reverse then
         cmd[#cmd + 1] = "--reverse"
     end
@@ -622,6 +630,22 @@ function M.apply_patch(root, text, reverse)
         return false, res.stderr
     end
     return true
+end
+
+-- an open buffer on a file differ just rewrote keeps showing the old content until
+-- something checks: a window switch doesn't, so a revert or discard would sit next to
+-- a stale window. checktime reloads it, and leaves a buffer with unsaved edits alone
+-- (nvim warns rather than clobbering), so this is safe to fire unconditionally
+---@param root string
+---@param relpath string
+local function reload_buffer(root, relpath)
+    local buf = vim.fn.bufnr(root .. "/" .. relpath)
+    if buf ~= -1 and vim.api.nvim_buf_is_loaded(buf) then
+        -- silent!: the file may be gone entirely (a discarded untracked file)
+        pcall(vim.api.nvim_buf_call, buf, function()
+            vim.cmd("silent! checktime")
+        end)
+    end
 end
 
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
@@ -639,6 +663,7 @@ function M.discard(root, entry)
     else
         git({ "checkout", "HEAD", "--", entry.path }, root) -- revert index + worktree
     end
+    reload_buffer(root, entry.path)
 end
 
 -- drop empty sections so the panel never shows a bare "Staged (0)" header; returns
@@ -882,15 +907,80 @@ function M.panel(opts)
         return sig
     end
     local last_sig = git_signature()
-
-    local function refresh_panel()
-        if panel then
-            panel:refresh()
-        end
-        -- record state so the next external event doesn't read this in-differ op as an
-        -- outside change and re-source over the in-place staged marks
+    -- record the state the list now reflects, so the next external event doesn't read an
+    -- in-differ op as an outside change and re-source over the in-place staged marks.
+    -- wired as the panel's on_refresh, which is the one point every reload passes through:
+    -- the panel's own staging keys never come through refresh_panel, and used to leave the
+    -- signature stale enough that the watcher tore down an in-progress hunk review
+    local function record_state()
         last_sig = git_signature()
     end
+    local function refresh_panel()
+        if panel then
+            panel:refresh() -- fires on_refresh -> record_state
+        else
+            record_state()
+        end
+    end
+    -- throw one hunk away rather than move it between index and worktree. an unstaged
+    -- hunk exists only in the worktree, so a single reverse apply is the whole job. a
+    -- staged one is in the index and, unless it was edited since, the worktree too, so
+    -- it takes both: index first, because a worktree copy that won't take the patch
+    -- then leaves the file merely unstaged (a state the panel already models) instead
+    -- of holding a change the index no longer has. returns whether the model's new
+    -- side moved, which is what tells the caller to re-source
+    ---@param model differ.DiffModel
+    ---@param hunk differ.Hunk
+    ---@param offset integer  -- index-side only; see differ.view.Staging
+    ---@return boolean
+    local function revert_hunk(model, hunk, offset)
+        ---@param off integer
+        local function reverse_patch(off)
+            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, true)
+        end
+        if model.new_rev ~= INDEX.label then
+            local ok, err = M.apply_patch(root, reverse_patch(0), true, "worktree")
+            if not ok then
+                notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            end
+            reload_buffer(root, model.path)
+            return ok
+        end
+        local ok, err = M.apply_patch(root, reverse_patch(offset), true, "index")
+        if not ok then
+            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            return false
+        end
+        -- unstaging shifts the index but never the worktree, so the worktree's copy
+        -- still sits where the model says and this half needs no offset
+        if not M.apply_patch(root, reverse_patch(0), true, "worktree") then
+            local msg =
+                "%s: reverted from the index; the worktree copy changed since, so it stays unstaged"
+            notify(msg:format(model.path), vim.log.levels.WARN)
+        end
+        reload_buffer(root, model.path)
+        return true -- the index half landed either way
+    end
+
+    -- bring a deleted file back. which side it comes from is fixed by which diff is on
+    -- screen: a staged deletion is recorded in the index, so only HEAD still has the
+    -- content; an unstaged one is still in the index, and that's what its diff compares
+    -- against, so restoring from HEAD instead would silently drop edits staged before
+    -- the delete
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function restore_deleted(entry)
+        local cmd = entry.staged and { "checkout", "HEAD", "--", entry.path }
+            or { "checkout", "--", entry.path }
+        local _, err = git(cmd, root)
+        if err then
+            notify(("restore failed: %s"):format(err), vim.log.levels.ERROR)
+            return false
+        end
+        reload_buffer(root, entry.path)
+        return true
+    end
+
     ---@param entry differ.FileEntry
     ---@return differ.view.Staging|nil
     local function stage_for(entry)
@@ -916,6 +1006,7 @@ function M.panel(opts)
                     end
                     return ok
                 end,
+                revert = revert_hunk,
                 refresh = refresh_panel,
             }
         end
@@ -933,6 +1024,26 @@ function M.panel(opts)
                     end
                     return true
                 end,
+                -- the file is the hunk, so reverting it is deleting it; `discard`
+                -- already knows to drop the staged add first
+                revert = function()
+                    M.discard(root, entry)
+                    return true
+                end,
+                revert_label = "deletes the file",
+                refresh = refresh_panel,
+            }
+        end
+        -- a deleted file diffs its content against nothing, so there's no hunk to stage
+        -- (the panel stages the deletion wholesale) but there is one to undo: no
+        -- `apply`, so s/u keep refusing while X brings the file back
+        if entry.status == "D" then
+            return {
+                initial = entry.staged and "staged" or "unstaged",
+                revert = function()
+                    return restore_deleted(entry)
+                end,
+                revert_label = "restores the file",
                 refresh = refresh_panel,
             }
         end
@@ -1015,15 +1126,17 @@ function M.panel(opts)
     -- staying frozen. gated on the signature so unrelated terminal events are no-ops
     local function refresh_external()
         -- a debounced watcher fire (or a queued schedule) can land after the panel is
-        -- gone; bail before touching its deleted buffer
-        if not (panel and panel:is_open()) then
+        -- gone; bail before touching its deleted buffer. a hidden sidebar is still live
+        -- (and still driving a visible diff), so it refreshes like an open one
+        if not (panel and panel:is_alive()) then
             return
         end
         if git_signature() == last_sig then
             return
         end
-        if panel then
-            panel:refresh()
+        panel:refresh()
+        if not panel:is_alive() then
+            return -- the change set emptied and on_empty ended the session
         end
         if view and view:is_open() and active_entry then
             -- the content shifted underneath the user; hold the cursor near where it was
@@ -1043,9 +1156,21 @@ function M.panel(opts)
             if pick and show_entry(pick, focus_line) then
                 return
             end
+            -- the shown file went clean while others survived (committed on its own,
+            -- checked out). there's nothing to re-source it to, so hand the window to
+            -- the nearest surviving change rather than strand it on a diff of a file
+            -- that now matches HEAD, which no later refresh would ever move off.
+            -- nothing here is user-driven, so focus goes back where it was
+            local focused = vim.api.nvim_get_current_win()
+            if panel:open_nearest(true) then
+                if vim.api.nvim_win_is_valid(focused) then
+                    vim.api.nvim_set_current_win(focused)
+                end
+                return
+            end
         end
-        -- no view, or the file went fully clean: leave the diff and just record state
-        last_sig = git_signature()
+        -- no view, and nothing to hand over to: just record the state
+        record_state()
     end
 
     -- watch the git dir and the shown file's dir so an external change (lazygit, an
@@ -1070,6 +1195,7 @@ function M.panel(opts)
         footer = footer_label(args, root),
         actions = actions,
         on_external_change = refresh_external,
+        on_refresh = record_state,
         keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,
@@ -1081,9 +1207,26 @@ function M.panel(opts)
                 return
             end
             -- a stale entry (committed or changed outside differ) has an empty diff;
-            -- refresh the list rather than opening a blank view
+            -- refresh the list rather than opening a blank view. that refresh can end
+            -- the session (it was the last entry), which says so on its own
             refresh_panel()
-            notify(("no changes for %s"):format(entry.path))
+            if panel and panel:is_alive() then
+                notify(("no changes for %s"):format(entry.path))
+            end
+        end,
+        -- the change set emptied under the session (a commit, or the last change
+        -- reverted): there's nothing left to review, so end it rather than leave an
+        -- empty sidebar next to a diff of a file that's now clean. only the worktree
+        -- source can reach this; a rev-pair list never reloads
+        on_empty = function()
+            notify("no changes left")
+            local back = panel and panel.return_tab
+            if panel then
+                panel:close() -- cascades to the diff view + the session tab
+            end
+            if back and vim.api.nvim_tabpage_is_valid(back) then
+                vim.api.nvim_set_current_tabpage(back)
+            end
         end,
         on_close = function()
             if watcher then

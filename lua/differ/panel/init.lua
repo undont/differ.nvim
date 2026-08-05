@@ -70,6 +70,8 @@ local STATUS_HL = {
 ---@field on_select fun(entry: differ.FileEntry)
 ---@field on_close fun()|nil
 ---@field on_external_change fun()|nil
+---@field on_empty fun()|nil
+---@field on_refresh fun()|nil
 ---@field root string|nil
 ---@field footer string|nil
 ---@field actions differ.panel.Actions|nil
@@ -100,6 +102,14 @@ Panel.__index = Panel
 ---@field on_select fun(entry: differ.FileEntry)
 ---@field on_close? fun()  -- runs on :close (e.g. tear down the driven view)
 ---@field on_external_change? fun() -- re-source list + diff after an outside git change
+-- fired when a refresh leaves the change set empty; the session decides what that means
+-- (the local frontend ends the session). only reachable with `actions`, so rev-pair and
+-- pr panels, whose lists never reload, never fire it
+---@field on_empty? fun()
+-- fired after every list reload, whatever drove it. the local frontend re-baselines its
+-- change signature here, so the panel's own staging keys are recorded as differ's doing
+-- and the watcher doesn't read them back as an outside change
+---@field on_refresh? fun()
 ---@field root? string  -- repo/worktree path shown in the panel header
 ---@field footer? string -- rev spec shown under "Showing changes for:"
 ---@field actions? differ.panel.Actions -- file-level staging hooks (slice C)
@@ -143,6 +153,8 @@ function Panel.new(opts)
         on_select = opts.on_select,
         on_close = opts.on_close,
         on_external_change = opts.on_external_change,
+        on_empty = opts.on_empty,
+        on_refresh = opts.on_refresh,
         root = opts.root,
         footer = opts.footer,
         actions = opts.actions,
@@ -666,14 +678,38 @@ function Panel:_op_targets()
 end
 
 -- re-read the model (after a stage op or on focus) and repaint, keeping the cursor
--- line (clamped). no-op without staging actions (rev-pair panels aren't reloadable)
+-- line (clamped). no-op without staging actions (rev-pair panels aren't reloadable).
+-- gated on liveness, not visibility: a hidden sidebar is still a live session driving a
+-- visible diff, so its model tracks git either way. every reload reports itself through
+-- `on_refresh` (whatever drove it, including the panel's own staging keys), and one that
+-- empties the change set hands over to `on_empty`, which may end the session, so nothing
+-- touches self after it
 function Panel:refresh()
-    if not self.actions or not self:is_open() then
+    if not self.actions or not self:is_alive() then
         return
     end
-    local lnum = self.winid and vim.api.nvim_win_get_cursor(self.winid)[1] or 1
+    local lnum = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1] or 1
     self:set_sections(self.actions.reload())
+    if self.on_refresh then
+        self.on_refresh()
+    end
+    if self.file_total == 0 and self.on_empty then
+        return self.on_empty()
+    end
     self:_restore_cursor(lnum)
+end
+
+-- the full "git may have moved outside differ" refresh: re-source the list *and* the
+-- diff the panel drives, falling back to the list alone for a session without the hook.
+-- what R and the external-change autocmds both want; refresh() is the list-only half,
+-- which on its own would re-baseline the session's change signature and so stop the
+-- watcher from ever catching the diff up
+function Panel:reload()
+    if self.on_external_change then
+        self.on_external_change()
+    else
+        self:refresh()
+    end
 end
 
 -- s/u/S/U: stage or unstage the cursor's target (a file, or every file under a
@@ -750,6 +786,34 @@ function Panel:_file_row(lnum, direction, wrap)
         end
     end
     return nil, false
+end
+
+-- open the file row at or after the cursor, else the nearest one before it. for when a
+-- file leaves the list from under the cursor (a whole-file revert): the diff window
+-- would otherwise be left showing something that no longer exists. false when the list
+-- holds no files at all. steps from the live cursor when the sidebar is visible, else
+-- from the last opened row, like ]f/[f, so a hidden sidebar still hands the diff over
+---@param keep_focus boolean|nil
+---@return boolean opened
+function Panel:open_nearest(keep_focus)
+    if not self:is_alive() then
+        return false
+    end
+    local lnum = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1]
+        or self.selected_row
+        or self:_first_file_line()
+    -- _file_row starts one past its argument, so step back one to include the cursor's
+    -- own row: after a refresh that's the entry which slid up into the departed one
+    local row = self:_file_row(lnum - 1, "next", false) or self:_file_row(lnum + 1, "prev", false)
+    if not row then
+        return false
+    end
+    self.selected_row = row
+    if self:is_open() then
+        vim.api.nvim_win_set_cursor(self.winid, { row, 0 })
+    end
+    self:_open(self.meta[row].entry, keep_focus)
+    return true
 end
 
 -- ]f / [f: move to the next/prev file row and open it (lockstep file stepping).
@@ -1188,7 +1252,7 @@ function Panel:_setup_window()
             self:discard()
         end, "discard file")
         map(km.refresh, function()
-            self:refresh()
+            self:reload()
         end, "refresh")
         map(km.edit_file, function()
             diff_file_verb(function()
@@ -1255,16 +1319,10 @@ function Panel:_watch_external_changes()
         desc = "differ: refresh the panel when git state changed externally",
         callback = function()
             vim.schedule(function()
-                if not self:is_open() then
+                if not self:is_alive() then
                     return
                 end
-                -- on_external_change re-sources the diff too; refresh() is the list-only
-                -- fallback for a panel without the hook
-                if self.on_external_change then
-                    self.on_external_change()
-                else
-                    self:refresh()
-                end
+                self:reload()
             end)
         end,
     })
@@ -1273,6 +1331,14 @@ end
 ---@return boolean
 function Panel:is_open()
     return self.winid ~= nil and vim.api.nvim_win_is_valid(self.winid)
+end
+
+-- the session still exists, whether or not the sidebar is shown: :close wipes the
+-- buffer, hide() only drops the window. what refreshes gate on, so a queued one can't
+-- land on a closed panel while a hidden one still reloads
+---@return boolean
+function Panel:is_alive()
+    return vim.api.nvim_buf_is_valid(self.bufnr)
 end
 
 -- restore the cursor line after a re-render/reposition (clamped to the content)
@@ -1360,8 +1426,13 @@ function Panel:toggle()
 end
 
 -- close the panel window and wipe its buffer. `on_close` (if set) tears down the
--- diff view the panel drives, so closing the panel ends the whole differ session
+-- diff view the panel drives, so closing the panel ends the whole differ session.
+-- idempotent: a caller holding a reference to a session that ended itself (on_empty)
+-- must not re-run the teardown
 function Panel:close()
+    if not self:is_alive() then
+        return
+    end
     self:_close_window()
     if self.augroup then
         pcall(vim.api.nvim_del_augroup_by_id, self.augroup)
