@@ -685,32 +685,36 @@ end
 
 -- g?: a floating keymap cheatsheet, dismissed with <Esc> / q / g?
 function History:show_help()
-    local lines = {}
+    local km = self.keymaps
+    local help = require("differ.ui.help")
+    local fmt, pair = help.fmt, help.pair
+    local rows = {}
     if self.mode == "range" then
-        vim.list_extend(lines, {
-            " <CR> / o   toggle fold / open file",
-            " za         toggle fold",
-            " O / C      expand / collapse all",
-            " c          collapse commit",
-            " ]f / [f    next / previous file",
-            " ]] / [[    next / previous commit",
-            " gg / G     first / last commit",
+        vim.list_extend(rows, {
+            { fmt(km.select), "toggle fold / open file" },
+            { fmt(km.toggle_fold), "toggle fold" },
+            { pair(km.open_all, km.close_all), "expand / collapse all" },
+            { fmt(km.close_node), "collapse commit" },
+            { pair(km.next_file, km.prev_file), "next / previous file" },
+            { pair(km.next_section, km.prev_section), "next / previous commit" },
+            { pair(km.first_file, km.last_file), "first / last commit" },
         })
     else
-        vim.list_extend(lines, {
-            " <CR> / o   show commit",
-            " ]f / [f    next / previous commit",
-            " ]] / [[    move between commits",
-            " gg / G     first / last commit",
+        vim.list_extend(rows, {
+            { fmt(km.select), "show commit" },
+            { pair(km.next_file, km.prev_file), "next / previous commit" },
+            { pair(km.next_section, km.prev_section), "move between commits" },
+            { pair(km.first_file, km.last_file), "first / last commit" },
         })
     end
-    vim.list_extend(lines, {
-        " ]c / [c    next / previous hunk",
-        " f / b      scroll diff down / up",
-        " K          commit details",
-        " g?         this help",
+    vim.list_extend(rows, {
+        { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
+        { pair(km.scroll_down, km.scroll_up), "scroll diff down / up" },
+        { fmt(km.details), "commit details" },
+        { fmt(km.close), "close the session" },
+        { fmt(km.help), "this help" },
     })
-    require("differ.ui.help").show(lines, { title = " Differ: history " })
+    help.show(help.lines(rows), { title = " Differ: history " })
 end
 
 -- K: float the full commit message (subject + body) plus author/date for the commit
@@ -756,6 +760,10 @@ function History:_setup_window()
         bind(self.bufnr, spec, fn, "differ history: " .. desc)
     end
     local item = self.mode == "range" and "file" or "commit"
+    -- no toggle_panel here: a history session has no file panel to hide/show
+    map(km.close, function()
+        require("differ.command").close()
+    end, "close the session")
     map(km.select, function()
         self:select()
     end, "open " .. item)

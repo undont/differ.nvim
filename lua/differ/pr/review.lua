@@ -41,12 +41,14 @@ local function diff_win(session)
     end
 end
 
--- :Differ pr review — start (or reattach to) the viewer's pending draft. idempotent in
--- the sidecar, so this never orphans a second draft
+-- :Differ pr review - start (or reattach to) the viewer's pending draft. idempotent in
+-- the sidecar, so this never orphans a second draft. a session that's already drafting
+-- reattaches instead of refusing, so the one gesture always lands you in the review
 ---@param session table
-function M.start(session)
+---@param opts { jump?: boolean }|nil  -- jump=false when the caller already positioned
+function M.start(session, opts)
     if session.review_id then
-        return notify("a review is already in progress; comments are drafts")
+        return M.reattach(session, opts)
     end
     client.start_review(session.pr, function(err, res)
         if not alive(session) then
@@ -56,14 +58,18 @@ function M.start(session)
             return require("differ.pr").notify_err(err)
         end
         session.review_id = res and res.review_id
-        notify("review started — comments are drafts until you submit")
+        notify("review started - comments are drafts until you submit")
     end)
 end
 
--- :Differ pr review resume — reattach the current session to its pending draft and jump to a
--- pending comment (position restore). a no-op notice when there's no draft
+-- :Differ pr review resume - reattach the current session to its pending draft and land
+-- on the first file still unviewed, since resuming asks what's left to review rather
+-- than what was last said. also the path `start` takes when a draft already exists.
+-- opts.jump = false leaves the cursor alone for a caller that already positioned (the
+-- overview's thread rows). a no-op notice when there's no draft
 ---@param session table
-function M.reattach(session)
+---@param opts { jump?: boolean }|nil
+function M.reattach(session, opts)
     client.get_pending_review(session.pr, function(err, res)
         if not alive(session) then
             return
@@ -78,19 +84,20 @@ function M.reattach(session)
             return notify("no pending review to resume on this PR")
         end
         session.review_id = review_id
-        local first = res.comments and res.comments[1]
-        if first then
-            require("differ.pr").goto_anchor({
-                path = first.path,
-                side = first.side,
-                line = first.line,
-            })
+        if not (opts and opts.jump == false) then
+            -- nothing unviewed means nothing left to resume onto, so the panel's
+            -- current selection stands and the cursor stays put
+            local next_up =
+                require("differ.pr.viewed").next_unviewed(session.entries or {}, 0, "next")
+            if next_up and session.panel then
+                session.panel:goto_path(session.entries[next_up].path)
+            end
         end
-        notify("resumed your pending review — comments are drafts")
+        notify("resumed your pending review - comments are drafts")
     end)
 end
 
--- :Differ pr review submit — finalise the draft as one batch. pick an event, author a summary
+-- :Differ pr review submit - finalise the draft as one batch. pick an event, author a summary
 -- in the compose float, then submit with the session head guard. on success the drafts
 -- become published (re-fetched) and immediate mode resumes
 ---@param session table
@@ -142,7 +149,7 @@ function M._do_submit(session, event, body)
     end)
 end
 
--- :Differ pr review discard — drop the pending draft and its unsubmitted comments. destructive,
+-- :Differ pr review discard - drop the pending draft and its unsubmitted comments. destructive,
 -- so it confirms first; the draft threads then vanish from the overlay
 ---@param session table
 function M.discard(session)

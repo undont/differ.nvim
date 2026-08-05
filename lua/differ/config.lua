@@ -115,6 +115,13 @@ M.defaults = {
         comment = "ga", -- comment on the line (normal) or the selection (visual)
         reply = "gp", -- reply to the thread under the cursor
         delete_comment = "gx", -- delete the latest comment of the thread under the cursor
+        -- pr review lifecycle, on the pr diff + panel, so a review can be finished
+        -- without leaving the files. capitalised to keep the lowercase g-family for
+        -- thread/comment actions; each one's own prompt (verdict picker, confirm) is
+        -- the guard, not the key. resume isn't here: entering the review already
+        -- adopts any pending draft, so `:Differ pr review resume` covers the cold start
+        review_submit = "gS", -- pr: submit the pending review
+        review_discard = "gD", -- pr: discard the pending review and its drafts
         scroll_down = "f", -- all three (shadows native f/b; set false to restore)
         scroll_up = "b",
         select = { "<CR>", "o" }, -- panel, history
@@ -135,15 +142,23 @@ M.defaults = {
         discard = "X", -- panel
         refresh = "R",
         toggle_fold = "za", -- history (range mode)
+        -- session-level verbs, joining the d-family the diff verbs already use. the
+        -- diff/panel/history buffers are read-only scratch, so the shadowed deletes are
+        -- inert; q stays free for native macro recording on every surface
+        close = "dc", -- diff/panel/history: end the session (merge, pr or local)
+        toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
+        toggle_layout = "dl", -- diff: flip stacked / split
         -- merge tool, bound on the result buffer. nav + take-this resolution,
-        -- mirroring diffview's conflict keys
+        -- the result buffer is the real worktree
+        -- file and stays editable, so the whole choose family sits behind <leader>
+        -- rather than shadowing live operators
         next_conflict = "]x", -- merge: jump to the next/prev conflict
         prev_conflict = "[x",
         choose_ours = "<leader>co", -- merge: take ours / theirs / base for the conflict
         choose_theirs = "<leader>ct",
         choose_base = "<leader>cb",
         choose_all = "<leader>ca", -- take both (ours then theirs)
-        choose_none = "dx", -- drop the conflict region
+        choose_none = "<leader>cx", -- drop the conflict region
     },
     -- show dates as relative ("3 days ago") instead of YYYY-MM-DD wherever the
     -- plugin renders one (the history panel today, more surfaces later)

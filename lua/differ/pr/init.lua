@@ -368,7 +368,7 @@ function M.prev_thread()
 end
 
 -- gr: toggle the resolved state of the thread under the cursor (a cursor-context keymap,
--- not an ex-command). optimistic — flip + re-apply (highlight swap) immediately, then
+-- not an ex-command). optimistic - flip + re-apply (highlight swap) immediately, then
 -- reconcile to the
 -- server's returned state, rolling back + flagging on error. one line can stack
 -- several threads, so it acts on the first open one (else the first, to unresolve);
@@ -436,7 +436,7 @@ function M.handle_conflict(on_ready)
             show_file(cur) -- re-source the diff + overlay at the new head
         end
         notify(
-            "the PR head moved; refreshed to the latest — review and re-submit",
+            "the PR head moved; refreshed to the latest - review and re-submit",
             vim.log.levels.WARN
         )
         if on_ready then
@@ -611,7 +611,7 @@ local function adopt_pending_review(pr)
         if type(review_id) == "string" and review_id ~= "" then
             session.review_id = review_id
             notify(
-                "you have a pending review here — comments are drafts (:Differ pr review resume to manage)"
+                "you have a pending review here - comments are drafts (:Differ pr review resume to manage)"
             )
         end
     end)
@@ -688,6 +688,14 @@ local function open_session(pr, detail, opts)
     -- on the panel, unviewed nav on both. the generic panel/diff don't own them, so
     -- they reach the buffer via the extra_keymaps seam, not the fixed action set
     local panel_km, diff_km = cfg.keymaps.panel, cfg.keymaps.diff
+    -- the review lifecycle verbs, bound the same on both pr surfaces. each entry point
+    -- guards itself (submit picks a verdict, discard confirms), so the keys act directly
+    local function lifecycle(km)
+        return {
+            { spec = km.review_submit, fn = M.submit, desc = "submit the review" },
+            { spec = km.review_discard, fn = M.discard_review, desc = "discard the review" },
+        }
+    end
     local panel_extra = {
         { spec = panel_km.overview, fn = M.overview, desc = "PR overview" },
         { spec = panel_km.toggle_viewed, fn = toggle_viewed, desc = "toggle viewed" },
@@ -706,6 +714,7 @@ local function open_session(pr, detail, opts)
             desc = "previous unviewed file",
         },
     }
+    vim.list_extend(panel_extra, lifecycle(panel_km))
     -- the diff surface keeps focus in the diff window when stepping (keep_focus = true);
     -- the thread actions also bind here, via the same extra_keymaps seam
     session.diff_extra_keymaps = {
@@ -749,6 +758,7 @@ local function open_session(pr, detail, opts)
             desc = "edit the real file (zoom tab)",
         },
     }
+    vim.list_extend(session.diff_extra_keymaps, lifecycle(diff_km))
 
     -- build the file panel + driven diff into the session tab. deferred so the overview
     -- stays panel-less; a no-op once the panel exists (entering the files reuses it)
@@ -826,11 +836,14 @@ local function enter_files(review, focus)
     -- stash is consumed, so a later plain entry doesn't replay a stale position
     local target = focus or session.overview_return
     session.overview_return = nil
-    if not (target and M.goto_anchor(target)) then
+    local positioned = target ~= nil and M.goto_anchor(target)
+    if not positioned then
         session.panel:select(true)
     end
     if review then
-        require("differ.pr.review").start(session) -- idempotent
+        -- idempotent; a pending draft reattaches. it only picks the landing file when
+        -- we haven't already honoured an explicit target (the overview's thread rows)
+        require("differ.pr.review").start(session, { jump = not positioned })
     elseif first then
         adopt_pending_review(session.pr)
     end
@@ -966,7 +979,7 @@ function M.review(opts)
     return M.open({ number = session.pr.number, land = "files", review = true })
 end
 
--- :Differ pr overview (and the diff/panel `go`) — go back to the PR home from the
+-- :Differ pr overview (and the diff/panel `go`) - go back to the PR home from the
 -- review (closes the diff + hides the panel, keeping the session), or re-show it while
 -- already on the page. the diff position is stashed so re-entering the files restores
 -- it; re-showing from the page keeps an earlier stash rather than clobbering it
@@ -1072,7 +1085,7 @@ local function pr_title()
     return (session and session.pr_meta.title) or ("#" .. (session and session.pr.number or "?"))
 end
 
--- :Differ pr merge [squash|merge|rebase] — confirm, then merge with the chosen method.
+-- :Differ pr merge [squash|merge|rebase] - confirm, then merge with the chosen method.
 -- a `conflict` error means the Go side pre-check found the PR unmergeable; surface that
 -- rather than treating it as an internal failure. on success the PR is merged, so the
 -- session closes (its blobs are now history)
@@ -1109,7 +1122,7 @@ function M.merge(method_arg)
     end)
 end
 
--- :Differ pr ready|draft|close|reopen — map the verb to a state and transition. close
+-- :Differ pr ready|draft|close|reopen - map the verb to a state and transition. close
 -- confirms (destructive); the reversible verbs act immediately. on success the session's
 -- cached state/draft flags follow the server's echoed state
 ---@param verb string
@@ -1142,7 +1155,7 @@ function M.set_state(verb)
     end
 end
 
--- :Differ pr checkout — local git on the session's head_ref (client-side, no
+-- :Differ pr checkout - local git on the session's head_ref (client-side, no
 -- sidecar round-trip): fetch the ref + check it out via the local git plumbing
 function M.checkout()
     M.with_session(function(s)
@@ -1166,7 +1179,7 @@ function M.checkout()
     end)
 end
 
--- :Differ pr browser — open the PR's html url in the system browser (client-side,
+-- :Differ pr browser - open the PR's html url in the system browser (client-side,
 -- the `url` field from get_pr; no sidecar round-trip)
 function M.browser()
     M.with_session(function(s)
@@ -1178,7 +1191,7 @@ function M.browser()
     end)
 end
 
--- :Differ pr url — yank the PR's html url to the system clipboard (client-side)
+-- :Differ pr url - yank the PR's html url to the system clipboard (client-side)
 function M.url()
     M.with_session(function(s)
         local url = s.pr_meta.url
@@ -1190,7 +1203,7 @@ function M.url()
     end)
 end
 
--- :Differ pr checks — the read-only CI checks view
+-- :Differ pr checks - the read-only CI checks view
 function M.checks()
     M.with_session(function(s)
         require("differ.pr.checks").show(s)
@@ -1228,7 +1241,7 @@ function M.resume(arg)
         end)
     end
     if not session then
-        return notify("no active pull request — open one with :Differ pr review <number>")
+        return notify("no active pull request - open one with :Differ pr review <number>")
     end
     require("differ.pr.review").reattach(session)
 end

@@ -996,29 +996,39 @@ end
 
 -- g?: a floating keymap cheatsheet, dismissed with <Esc> / g?
 function Panel:show_help()
-    local lines = {
-        " <CR> / o   open file / toggle fold",
-        " c          close node / parent",
-        " C / O      close / open all nodes",
-        " ]f / [f    next / previous file",
-        " gg / G     first / last file",
-        " ]] / [[    next / previous section",
-        " ]c / [c    next / previous hunk",
-        " f / b      scroll diff down / up",
-        " i          toggle listing (tree / name)",
-        " de         go to the real file",
+    local km = self.keymaps
+    local help = require("differ.ui.help")
+    local fmt, pair = help.fmt, help.pair
+    local rows = {
+        { fmt(km.select), "open file / toggle fold" },
+        { fmt(km.close_node), "close node / parent" },
+        { pair(km.close_all, km.open_all), "close / open all nodes" },
+        { pair(km.next_file, km.prev_file), "next / previous file" },
+        { pair(km.first_file, km.last_file), "first / last file" },
+        { pair(km.next_section, km.prev_section), "next / previous section" },
+        { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
+        { pair(km.scroll_down, km.scroll_up), "scroll diff down / up" },
+        { fmt(km.toggle_listing), "toggle listing (tree / name)" },
+        { fmt(km.toggle_panel), "toggle the file panel" },
+        { fmt(km.goto_file), "go to the real file" },
     }
     if self.actions then
-        vim.list_extend(lines, {
-            " s / u      stage / unstage file",
-            " S / U      stage / unstage all",
-            " X          discard file (confirm)",
-            " df         edit the real file (in review)",
-            " R          refresh",
+        vim.list_extend(rows, {
+            { pair(km.stage, km.unstage), "stage / unstage file" },
+            { pair(km.stage_all, km.unstage_all), "stage / unstage all" },
+            { fmt(km.discard), "discard file (confirm)" },
+            { fmt(km.edit_file), "edit the real file (in review)" },
+            { fmt(km.refresh), "refresh" },
         })
     end
-    vim.list_extend(lines, { " g?         this help" })
-    require("differ.ui.help").show(lines, { title = " Differ: panel " })
+    -- the session's own maps (the pr viewed nav and review verbs), which bind here
+    -- through the extra_keymaps seam and would otherwise never show up
+    for _, m in ipairs(self.extra_keymaps or {}) do
+        rows[#rows + 1] = { fmt(m.spec), m.desc }
+    end
+    rows[#rows + 1] = { fmt(km.close), "close the session" }
+    rows[#rows + 1] = { fmt(km.help), "this help" }
+    help.show(help.lines(rows), { title = " Differ: panel " })
 end
 
 -- window appearance + buffer-local keymaps
@@ -1100,6 +1110,12 @@ function Panel:_setup_window()
         end
         run()
     end
+    map(km.close, function()
+        require("differ.command").close()
+    end, "close the session")
+    map(km.toggle_panel, function()
+        require("differ.command").panel()
+    end, "toggle the file panel")
     map(km.select, function()
         self:select()
     end, "open / toggle fold")
