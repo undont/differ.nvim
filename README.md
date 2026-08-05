@@ -113,7 +113,7 @@ differ's only install step is building the Go sidecar, so point your manager's b
 ```lua
 require("differ").setup({
   layout = "stacked",            -- "stacked" | "split", toggleable per-view
-  context = 10,                  -- context lines (math.huge = full file)
+  context = math.huge,           -- fold threshold; math.huge = whole file, no folds
   wrap = true,                   -- soft-wrap long lines in the diff view
   diff_counter = true,           -- "hunk K/N" counter in the diff window's winbar
   cursorline_tint = true,        -- tint the cursor line by add/remove so the change
@@ -223,11 +223,11 @@ These re-render the active view only. No refetch, no re-diff, and the state is l
 |---|---|
 | `:Differ layout [stacked\|split]` | Set layout; no argument flips it |
 | `:Differ context <n>` | Set the fold threshold around hunks |
-| `:Differ context full` | Show the whole file, no folds |
+| `:Differ context full` | Show the whole file, no folds (the default) |
 | `:Differ context +` / `-` | Widen / narrow the threshold by one |
 | `:Differ panel [left\|right\|top\|bottom]` | Reposition the live panel or history sidebar |
 
-Every line of the file is always in the buffer (search, yank, and motions all work); `context` only decides where a native fold forms once an unchanged run of lines exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `context full` skips fold creation entirely.
+`context` defaults to the whole file, so no folds are created at all and a diff reads as the file it came from. Set it to a number to fold the long unchanged runs away instead: every line is in the buffer either way (search, yank, and motions all work), and `context` only decides where a native fold forms once an unchanged run exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `d-` narrows out of whole-file the same way, landing on a threshold of 10 and stepping down a line at a time from there; `d=` has nothing wider to reach, so it does nothing.
 
 Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me). If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](TROUBLESHOOTING.md#command_alias-and-lazy-loading) for why.
 
@@ -255,7 +255,8 @@ The stacked / split view.
 | `dc` | Close the session |
 | `go` | PR review only: back to the [PR overview](#pr-overview) |
 
-`X` throws a hunk away rather than moving it between the index and the worktree, so it confirms first. On an unstaged diff it drops the worktree change; on a staged one it clears the hunk from the index and the worktree together. Where a file's whole content is one hunk the confirm says what that means - reverting a new file deletes it, reverting a deleted one brings it back - and when a revert leaves nothing to show, the panel moves you on to the next change.
+
+`X` reverts the hunk entirely, so it confirms first. Reverting a new file deletes it, reverting a deleted one brings it back.
 
 An uncommitted session tracks the worktree, so its file list can empty while you work - the last change reverted, or a commit made in another pane. When it does there is nothing left to review, so the session ends on its own and drops you back in the tab you opened it from. Rev-pair sessions (`:Differ main...HEAD`) diff fixed revisions and never empty.
 

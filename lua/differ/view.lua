@@ -552,7 +552,6 @@ function View:set_context(n)
 end
 
 -- widen/narrow context by `delta`. narrowing from whole-file seeds FULL_STEP_DOWN
--- (∞ has nothing to decrement); widening there is already a no-op
 ---@param delta integer
 function View:adjust_context(delta)
     if self.context == math.huge then

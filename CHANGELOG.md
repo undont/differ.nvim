@@ -12,6 +12,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `context` defaults to the whole file rather than 10 lines, so a diff opens with no folds in it and reads as the file it came from. Folds were always created open, so nothing was ever hidden, but the fold markers still broke the file up on sight for no gain. The threshold is still there for anyone who wants it, through `context` in `setup()`, `:Differ context <n>`, or `d-`
+- `d-` narrows away from whole-file context instead of doing nothing. There is no finite threshold to decrement from `math.huge`, so the first step down seeds 10 and narrows a line at a time after that; `d=` at whole-file stays a no-op, since there is nothing wider to reach
 - An uncommitted session ends itself once its file list empties, rather than leaving an empty panel beside a diff of a file that is now clean. The change set can empty under you from either side: the last change reverted or discarded in differ, or a commit, checkout or stash from another pane. Either way the session closes and returns you to the tab you opened it from. Rev-pair sessions never reload their list, so they are untouched
 - A hidden file panel (`dd`) keeps refreshing with the worktree. It is still a live session driving a visible diff, so refreshes now track whether the session exists rather than whether the sidebar is shown; a revert with the sidebar hidden hands the diff on to the next file instead of stranding it
 
