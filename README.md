@@ -167,7 +167,8 @@ require("differ").setup({
     more_context = "d=", less_context = "d-",  -- diff
     edit_file = "df",            -- diff: edit-in-review; pr diff: worktree split beside the pinned diff
     goto_file = "de",            -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
-    discard = "X", refresh = "R",  -- panel
+    discard = "X",               -- diff (revert a hunk), panel (discard a file)
+    refresh = "R",               -- panel
     toggle_fold = "za",          -- history (range mode)
     close = "dc",                -- diff/panel/history: end the session
     toggle_panel = "dd",         -- diff/panel: hide/show the file panel sidebar
@@ -245,6 +246,7 @@ The stacked / split view.
 | `f` / `b` | Scroll a quarter page down / up |
 | `s` / `u` | Stage / unstage the hunk |
 | `S` / `U` | Stage / unstage all |
+| `X` | Revert the hunk under the cursor (confirms first) |
 | `d=` / `d-` | More / less context |
 | `df` | Edit-in-review (uncommitted diffs) |
 | `de` | Open the real file and end the session |
@@ -252,6 +254,8 @@ The stacked / split view.
 | `dl` | Toggle the layout (stacked / split) |
 | `dc` | Close the session |
 | `go` | PR review only: back to the [PR overview](#pr-overview) |
+
+`X` throws a hunk away rather than moving it between the index and the worktree, so it confirms first. On an unstaged diff it drops the worktree change; on a staged one it clears the hunk from the index and the worktree together. Where a file's whole content is one hunk the confirm says what that means - reverting a new file deletes it, reverting a deleted one brings it back - and when a revert leaves nothing to show, the panel moves you on to the next change.
 
 #### Panel
 

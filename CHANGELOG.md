@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `X` reverts the hunk under the cursor in the diff, the hunk-level counterpart to the panel's file-level discard. It confirms first, since unlike `s`/`u` it destroys the change rather than moving it between the index and the worktree: an unstaged hunk is dropped from the worktree, a staged one from the index and worktree together. Where a file's whole content is one hunk the confirm names the consequence instead of counting hunks, so reverting a new file says it deletes it and reverting a deleted file says it restores it. The frozen diff is spliced in place rather than re-read, so the cursor stays where the hunk was; when a revert leaves the file with no changes at all the panel moves you to the next one. Deleted files revert without gaining hunk staging, so `s`/`u` still refuse there
+
+### Fixed
+
+- A file discarded from the panel no longer leaves its own buffer showing the discarded content. Nvim doesn't reload a buffer on a window switch, so the stale text sat there until something forced a check; differ now runs a `checktime` on the file it rewrote, which leaves a buffer with unsaved edits alone
+- The diff's `g?` lists the staging and revert keys per file rather than per session, so a file that can't stage by hunk no longer advertises `s`/`u`
+
+## [0.1.20] — 2026-08-05
+
+### Added
+
 - A vimdoc: `doc/differ.txt`, generated from the README, so `:help differ` works
 - In-buffer session keys, so the things you do inside a session no longer need a global launcher: `dc` ends it (routing to the merge, PR or local session), `dd` toggles the file panel, `dl` flips the layout. `dc` binds on the diff, panel and history; `dd` on the diff and panel; `dl` on the diff, the only surface that owns a layout
 - `gS` and `gD` submit and discard a PR review from the diff or panel, so a review can be finished without leaving the files. Capitalised to keep the lowercase `g` family for thread and comment actions; each action's own prompt (the verdict picker, the discard confirm) is the guard
