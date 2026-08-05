@@ -8,6 +8,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- A vimdoc: `doc/differ.txt`, generated from the README, so `:help differ` works
+- In-buffer session keys, so the things you do inside a session no longer need a global launcher: `dc` ends it (routing to the merge, PR or local session), `dd` toggles the file panel, `dl` flips the layout. `dc` binds on the diff, panel and history; `dd` on the diff and panel; `dl` on the diff, the only surface that owns a layout
+- `gS` and `gD` submit and discard a PR review from the diff or panel, so a review can be finished without leaving the files. Capitalised to keep the lowercase `g` family for thread and comment actions; each action's own prompt (the verdict picker, the discard confirm) is the guard
+
+### Changed
+
+- **Breaking:** the merge tool's drop-conflict key moves from `dx` to `<leader>cx`, so the whole choose family shares one prefix. Override `keymaps.choose_none` to keep `dx`
+- **Breaking:** `q` no longer closes the merge tool. The result buffer is the real worktree file and stays editable, so `q` is left to native macro recording; `:Differ close` ends the session. `q` is now unbound on every differ surface except the PR overview, where it still drops back into the review
+- `:Differ pr review` (and `r` on the overview) is start-or-resume: with a draft already pending it reattaches instead of refusing, and lands on the first file not yet marked viewed, since resuming asks what is left to review. On a thread row that anchor wins and the cursor stays there
+- The panel and history cheatsheets are generated from the resolved keymaps rather than hardcoded, so `g?` shows your keys after a `keymaps` override. An action set to `false` drops its row instead of rendering `false`
+- The documented launcher spec covers only the entry points that cannot be buffer-local (`:Differ`, `base`, `log`, `pr list`, `pr <n>`); everything else it used to bind now has an in-buffer key
+
+### Fixed
+
+- The file panel's `g?` lists the session's own maps (the PR viewed nav and review verbs), which bind through the extra-keymaps seam and were never shown
+
+## [0.1.19] — 2026-08-04
+
+### Added
+
 - A `diff4` merge layout (`merge.layout = "diff4"`), adding a base column with the common ancestor above the result. `<leader>cb` takes base in either layout, so the layout is about seeing what you're taking, not being able to take it
 - Base recovery under git's default `merge.conflictStyle`, which writes no base into the markers: differ re-merges the stages in diff3 style and maps those regions onto the worktree conflicts, so take-base works without `zdiff3`. Where the mapping can't be trusted the base pane says why (`no common ancestor` on add/add, `none for this conflict` otherwise) and take-base is refused rather than emptying the block
 
