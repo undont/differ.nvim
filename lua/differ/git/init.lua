@@ -890,7 +890,6 @@ function M.panel(opts)
         return sig
     end
     local last_sig = git_signature()
-
     local function refresh_panel()
         if panel then
             panel:refresh()
@@ -899,9 +898,48 @@ function M.panel(opts)
         -- outside change and re-source over the in-place staged marks
         last_sig = git_signature()
     end
+    -- throw one hunk away rather than move it between index and worktree. an unstaged
+    -- hunk exists only in the worktree, so a single reverse apply is the whole job. a
+    -- staged one is in the index and, unless it was edited since, the worktree too, so
+    -- it takes both: index first, because a worktree copy that won't take the patch
+    -- then leaves the file merely unstaged (a state the panel already models) instead
+    -- of holding a change the index no longer has. returns whether the model's new
+    -- side moved, which is what tells the caller to re-source
+    ---@param model differ.DiffModel
+    ---@param hunk differ.Hunk
+    ---@param offset integer  -- index-side only; see differ.view.Staging
+    ---@return boolean
+    local function revert_hunk(model, hunk, offset)
+        ---@param off integer
+        local function reverse_patch(off)
+            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, true)
+        end
+        if model.new_rev ~= INDEX.label then
+            local ok, err = M.apply_patch(root, reverse_patch(0), true, "worktree")
+            if not ok then
+                notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            end
+            return ok
+        end
+        local ok, err = M.apply_patch(root, reverse_patch(offset), true, "index")
+        if not ok then
+            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            return false
+        end
+        -- unstaging shifts the index but never the worktree, so the worktree's copy
+        -- still sits where the model says and this half needs no offset
+        if not M.apply_patch(root, reverse_patch(0), true, "worktree") then
+            local msg =
+                "%s: reverted from the index; the worktree copy changed since, so it stays unstaged"
+            notify(msg:format(model.path), vim.log.levels.WARN)
+        end
+        return true -- the index half landed either way
+    end
+
     ---@param entry differ.FileEntry
     ---@return differ.view.Staging|nil
     local function stage_for(entry)
+
         if not stageable then
             return nil
         end
@@ -924,6 +962,7 @@ function M.panel(opts)
                     end
                     return ok
                 end,
+                revert = revert_hunk,
                 refresh = refresh_panel,
             }
         end

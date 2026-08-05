@@ -64,9 +64,14 @@ local armed_view = nil
 -- `initial` is every hunk's opening state (an unstaged diff opens unstaged, a staged
 -- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
 -- panel counts and is called once after a single toggle or a whole S/U batch
+-- `revert` throws a hunk away instead of moving it between index and worktree, and is
+-- absent where that isn't meaningful (a new file's single whole-file hunk), which is
+-- what gates the key. `offset` shifts its index-side apply past hunks unstaged before
+-- it; its worktree apply needs none, since a revert re-sources the model
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
 ---@field apply fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer, reverse: boolean): boolean
+---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
 ---@field refresh fun()
 
 ---@class differ.View
@@ -669,6 +674,11 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.unstage_all, function()
             self:unstage_all()
         end, "differ: unstage all hunks")
+        -- hunk-level here vs the panel's file-level discard, and destructive either
+        -- way, so it confirms rather than acting straight off the key
+        bind(bufnr, km.discard, function()
+            self:revert_hunk()
+        end, "differ: revert hunk")
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         bind(bufnr, m.spec, m.fn, m.desc, m.mode)
@@ -744,6 +754,7 @@ function View:show_help()
     if self.can_stage then
         rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage hunk" }
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
+        rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         rows[#rows + 1] = { fmt(m.spec), m.desc }
@@ -1109,6 +1120,100 @@ function View:_toggle_all(want_staged)
         self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
     end
     return changed
+end
+
+-- the index-side shift for a revert on a staged diff: unstaging a hunk swaps its new
+-- lines back for its old ones, so every hunk after it sits that many lines off the
+-- frozen model. only the index moves under an unstage, so this never applies to the
+-- worktree half of a revert
+---@param idx integer
+---@return integer
+function View:_unstage_offset(idx)
+    local off = 0
+    for j = 1, idx - 1 do
+        if not self.staged_hunks[j] then
+            local h = self.model.hunks[j]
+            off = off + (h.old_count - h.new_count)
+        end
+    end
+    return off
+end
+
+-- shift per-hunk staged marks down past a hunk that has just left the model. the
+-- rebuilt list normally loses exactly the reverted hunk and keeps the rest in order;
+-- if it didn't, the marks can't be mapped, so reseed them from the source instead of
+-- carrying wrong ones
+---@param removed integer
+---@param before integer  -- hunk count before the revert
+function View:_rekey_staged(removed, before)
+    if #self.model.hunks ~= before - 1 then
+        return self:_init_staged()
+    end
+    local out = {}
+    for i, staged in pairs(self.staged_hunks) do
+        if i < removed then
+            out[i] = staged
+        elseif i > removed then
+            out[i - 1] = staged
+        end
+    end
+    self.staged_hunks = out
+end
+
+-- X: throw the hunk under the cursor away, after a confirm. unlike s/u this doesn't
+-- move a change between index and worktree, it destroys it, so the frozen model can't
+-- just be marked: the hunk is spliced out and the diff re-renders around it. bound for
+-- the whole worktree-status session; what's actually revertable is checked here
+function View:revert_hunk()
+    if not (self.can_stage and self.staging) then
+        return vim.notify("differ: hunk revert isn't available here", vim.log.levels.WARN)
+    end
+    local revert = self.staging.revert
+    if not revert then
+        -- a new file diffs as one whole-file hunk, so reverting it means deleting the
+        -- file: a file-level act, and the panel already owns it
+        return vim.notify(
+            "differ: reverting a new file means deleting it; use the file panel",
+            vim.log.levels.WARN
+        )
+    end
+    local idx = self:_hunk_index_under_cursor()
+    if not idx then
+        return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
+    end
+    -- on an unstaged diff a marked hunk is already in the index, so reverting only the
+    -- worktree copy would leave the two differing the opposite way round
+    if self.model.new_rev == "WORKTREE" and self.staged_hunks[idx] then
+        return vim.notify(
+            "differ: hunk is staged; unstage it (u) before reverting",
+            vim.log.levels.WARN
+        )
+    end
+
+    local prompt = ("Revert hunk %d/%d in %s?"):format(idx, #self.model.hunks, self.model.path)
+    if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
+        return
+    end
+
+    local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0
+    if not revert(self.model, self.model.hunks[idx], offset) then
+        return
+    end
+
+    -- hold the reading position across the re-render: the hunk is gone, but the file
+    -- around it hasn't moved for the user
+    local focus = self:cursor_new_line()
+    local before = #self.model.hunks
+    self.model = require("differ.model.diff").revert_hunk(self.model, idx)
+    self:_rekey_staged(idx, before)
+    self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
+    self:_apply_folds()
+    if focus then
+        self:focus_new_line(focus, true)
+    end
+    self.staging.refresh()
+    self:_paint_staged()
+    self:_paint_cursorline()
 end
 
 -- jump-to-file (the `de` verb): leave the diff and open the real file on disk
