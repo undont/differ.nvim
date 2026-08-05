@@ -28,10 +28,20 @@ LUALS_VERSION := 3.18.2
 LUALS_DIR     := .tools/lua-language-server-$(LUALS_VERSION)
 LUALS_BIN     := $(LUALS_DIR)/bin/lua-language-server
 
+# pinned panvimdoc: doc/differ.txt is generated from README.md, so the vimdoc and
+# the readme can't drift. fetched into .tools rather than taken from PATH. pandoc is
+# pinned and version-checked too, since ci only verifies the committed file: a
+# different pandoc would fail that check with a diff you didn't write
+PANVIMDOC_VERSION := v4.0.1
+PANVIMDOC_DIR     := .tools/panvimdoc-$(PANVIMDOC_VERSION:v%=%)
+PANVIMDOC_BIN     := $(PANVIMDOC_DIR)/panvimdoc.sh
+PANDOC_VERSION    := 3.10.1
+
 .PHONY: help \
 	lua-test lua-test-unit lua-test-nvim lua-lint lua-typecheck lua-fmt lua-fmt-check \
 	go-build go-test go-vet go-lint go-fmt go-fmt-check \
 	test lint fmt fmt-check check clean \
+	vimdoc \
 	demo demo-fixtures
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -109,6 +119,43 @@ go-fmt-check: ## Verify Go formatting without writing
 		printf "$(RED)gofmt needed:$(NC)\n%s\n" "$$out"; \
 		exit 1; \
 	fi
+
+# ──────────────────────────────────────────────────────────────────────────────
+##@ Docs
+# ──────────────────────────────────────────────────────────────────────────────
+
+vimdoc: $(PANVIMDOC_BIN) ## Regenerate doc/differ.txt from README.md (needs pandoc)
+	@have=$$(pandoc --version 2>/dev/null | head -1 | awk '{print $$2}'); \
+	if [ -z "$$have" ]; then \
+		printf "$(RED)pandoc not found on PATH$(NC) (brew install pandoc)\n"; \
+		exit 1; \
+	elif [ "$$have" != "$(PANDOC_VERSION)" ]; then \
+		printf "$(RED)pandoc $$have, need $(PANDOC_VERSION)$(NC) (output differs between versions)\n"; \
+		exit 1; \
+	fi
+	@$(INFO) "Generating doc/differ.txt (panvimdoc $(PANVIMDOC_VERSION), pandoc $(PANDOC_VERSION))"
+	@# LC_ALL=C keeps the nbsp pandoc puts after "e.g." intact: the writer wraps with
+	@# lua patterns, and %s is locale-dependent, so bsd libc in a utf-8 locale counts
+	@# 0xa0 as space and splits it into u+fffd. --description replaces the header's
+	@# daily "Last change" stamp, and GITHUB_ACTIONS is cleared because panvimdoc.sh
+	@# hardcodes /scripts when it's set, over --scripts-dir. output prints on failure
+	@out=$$(LC_ALL=C GITHUB_ACTIONS=false bash $(PANVIMDOC_BIN) \
+		--scripts-dir "$(PANVIMDOC_DIR)/scripts" \
+		--project-name differ \
+		--input-file README.md \
+		--description "For Neovim >= 0.10" \
+		--toc true \
+		--demojify true \
+		--dedup-subheadings true \
+		--shift-heading-level-by -1 2>&1) || { printf '%s\n' "$$out"; exit 1; }
+	@$(OK) "doc/differ.txt regenerated"
+
+# fetch the pinned panvimdoc into .tools on first use; the whole tree is gitignored
+$(PANVIMDOC_BIN):
+	@$(INFO) "Fetching panvimdoc $(PANVIMDOC_VERSION)"
+	@mkdir -p .tools
+	@curl -fsSL "https://github.com/kdheepak/panvimdoc/archive/refs/tags/$(PANVIMDOC_VERSION).tar.gz" \
+		| tar -xz -C .tools && $(OK) "Installed panvimdoc $(PANVIMDOC_VERSION)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 ##@ Aggregate

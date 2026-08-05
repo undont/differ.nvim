@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  pr-title:
     runs-on: ubuntu-latest
     steps:
       - name: Validate PR title prefix

@@ -26,7 +26,21 @@ make help           # full target list
 
 The Lua type-check runs a version-pinned lua-language-server, downloaded into gitignored `.tools/` on first use (needs `curl` and network access, once). It covers `lua/` only and must be clean; CI enforces it. luacheck and lua_ls are independent and can disagree: a fix that satisfies one can trip the other, so run both before pushing.
 
-Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead. See `docs/manual-testing.md` for the manual checklist covering what the automated suites don't reach.
+Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead.
+
+## Docs
+
+`doc/differ.txt` is generated from `README.md`, so a change to the readme has to carry the regenerated vimdoc with it:
+
+```sh
+make vimdoc   # rewrites doc/differ.txt (needs pandoc 3.10.1 on PATH)
+```
+
+Commit both files together. CI regenerates and fails if what's committed doesn't match, so a readme change on its own turns the Vimdoc job red.
+
+pandoc is pinned because its output shifts between releases, and `make vimdoc` refuses to run against any other version rather than producing a doc CI will reject. panvimdoc is pinned too, fetched into gitignored `.tools/` on first use like lua_ls. The recipe forces `LC_ALL=C`: the panvimdoc writer wraps with Lua patterns, whose `%s` class is locale-dependent, and a UTF-8 locale on BSD libc counts `0xa0` as whitespace and splits the no-break space pandoc emits after "e.g." into U+FFFD.
+
+Regions fenced with `<!-- panvimdoc-ignore-start -->` / `<!-- panvimdoc-ignore-end -->` in the readme (badges, installation, architecture, licence) are left out of the vimdoc, which keeps `:h differ` a usage reference.
 
 ## UI changes
 
