@@ -199,6 +199,83 @@ describe("git.read (worktree clean filter)", function()
     end)
 end)
 
+describe("git.apply_patch (target)", function()
+    local patch = require("differ.git.patch")
+    local INDEX = { kind = "index", label = "INDEX" }
+    local WT = { kind = "worktree", label = "WORKTREE" }
+
+    -- committed and indexed as `a b c d e`, with the worktree carrying two
+    -- independent single-line edits, so a patch can name one hunk and leave the other
+    local BASE = "a\nb\nc\nd\ne\n"
+    local EDITED = "a\nB\nc\nD\ne\n"
+    local function two_hunk_repo()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        write(root .. "/f.txt", BASE)
+        git(root, "add", "f.txt")
+        git(root, "commit", "-q", "-m", "init")
+        write(root .. "/f.txt", EDITED)
+        return root
+    end
+
+    -- the index-vs-worktree model, whose hunks are the ones the diff view holds frozen
+    local function unstaged_model(root)
+        return git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
+    end
+
+    ---@param model differ.DiffModel
+    ---@param idx integer
+    ---@param reverse boolean
+    local function hunk_patch(model, idx, reverse)
+        return patch.hunk("f.txt", model.hunks[idx], model.old_text, model.new_text, 0, reverse)
+    end
+
+    it("reverse-applies to the worktree and leaves the index alone", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        assert.are.equal(2, #model.hunks)
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        -- only the second edit is undone; the first survives, as does the index
+        assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
+        assert.are.equal(BASE, git_src.read(INDEX, root, "f.txt"))
+    end)
+
+    it("defaults to the index and leaves the worktree alone", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 1, false), false))
+        assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(INDEX, root, "f.txt"))
+        assert.are.equal(EDITED, git_src.read(WT, root, "f.txt"))
+    end)
+
+    -- the revert-on-a-staged-hunk path composes two calls, and the worktree one is
+    -- located against content the user may have edited since; it must fail whole
+    it("fails without writing when the worktree no longer holds the hunk's content", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        write(root .. "/f.txt", "a\nB\nc\nZZZ\ne\n") -- the D line was rewritten since
+
+        local ok, err = git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree")
+        assert.is_false(ok)
+        assert.is_not_nil(err)
+        assert.are.equal("a\nB\nc\nZZZ\ne\n", git_src.read(WT, root, "f.txt"))
+    end)
+
+    -- the patch carries the model's frozen line numbers, so an edit above the hunk
+    -- desynchronises them; `--unidiff-zero` relocates by content instead
+    it("relocates a zero-context hunk when lines shifted above it", function()
+        local root = two_hunk_repo()
+        local model = unstaged_model(root)
+        write(root .. "/f.txt", "x1\nx2\nx3\na\nB\nc\nD\ne\n") -- D moves from line 4 to 7
+
+        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        assert.are.equal("x1\nx2\nx3\na\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
+    end)
+end)
+
 describe("git.file_entries (rev-pair sources)", function()
     it("unions in untracked files for a worktree new-side, but not a rev new-side", function()
         local root = fresh_repo()

@@ -603,16 +603,24 @@ function M.unstage_all(root)
     git({ "reset", "-q", "HEAD" }, root)
 end
 
--- apply a single-hunk patch to the index (hunk staging). `--unidiff-zero`
--- because the patch carries no context (built straight from the hunk model);
--- `--reverse` unstages. git apply is atomic, so a non-applying patch fails cleanly
--- with stderr rather than half-writing. returns ok + git's stderr on failure
+-- apply a single-hunk patch, atomically. `--unidiff-zero` because the patch carries
+-- no context (built straight from the hunk model); `--reverse` undoes rather than
+-- applies. `target` picks the side written: the index for hunk staging, the worktree
+-- for hunk revert. never `--index` (both at once), which checks the whole path is in
+-- sync and so refuses on any file that has changes on the other side, hunk-unrelated
+-- ones included; a revert that must reach both composes two calls instead. git apply
+-- is atomic, so a non-applying patch fails cleanly with stderr rather than
+-- half-writing. returns ok + git's stderr on failure
 ---@param root string
 ---@param text string  -- the unified diff to apply
 ---@param reverse boolean
+---@param target? "index"|"worktree"  -- default "index"
 ---@return boolean ok, string|nil err
-function M.apply_patch(root, text, reverse)
-    local cmd = { "git", "apply", "--cached", "--unidiff-zero", "--whitespace=nowarn" }
+function M.apply_patch(root, text, reverse, target)
+    local cmd = { "git", "apply", "--unidiff-zero", "--whitespace=nowarn" }
+    if (target or "index") == "index" then
+        cmd[#cmd + 1] = "--cached"
+    end
     if reverse then
         cmd[#cmd + 1] = "--reverse"
     end
