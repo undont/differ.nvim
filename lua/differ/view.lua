@@ -21,6 +21,9 @@ local STATUSCOLUMN_EXPR = '%!v:lua.require("differ.ui.statuscolumn").render()'
 local FOLDTEXT_EXPR = 'v:lua.require("differ.ui.foldtext").render()'
 local CTRL_D = vim.api.nvim_replace_termcodes("<C-d>", true, false, true)
 local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
+-- where the first narrow step lands when coming down from whole-file, which has no
+-- finite neighbour to decrement
+local FULL_STEP_DOWN = 10
 
 local set_wo = require("differ.util.win").set_local
 
@@ -548,11 +551,15 @@ function View:set_context(n)
     self:_apply_folds(closed) -- ranges shifted with the context; windows unchanged
 end
 
--- widen/narrow context by `delta`. no-op while whole-file (can't decrement ∞)
+-- widen/narrow context by `delta`. narrowing from whole-file seeds FULL_STEP_DOWN
+-- (∞ has nothing to decrement); widening there is already a no-op
 ---@param delta integer
 function View:adjust_context(delta)
     if self.context == math.huge then
-        return
+        if delta >= 0 then
+            return
+        end
+        return self:set_context(FULL_STEP_DOWN)
     end
     self:set_context(math.max(0, self.context + delta))
 end
@@ -1668,7 +1675,7 @@ function View:_relayout()
         vim.api.nvim_set_current_win(self.columns[1].winid)
         vim.cmd("syncbind")
     end
-    self:_apply_folds() -- windows now exist; collapse the unchanged regions
+    self:_apply_folds() -- windows now exist; build the folds over unchanged regions
     self:_paint_cursorline() -- windows now exist; show the cursor line over the bg
     self:_arm_close_guard() -- re-arm now the winids are current
 end
