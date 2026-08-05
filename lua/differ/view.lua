@@ -1163,6 +1163,46 @@ function View:_rekey_staged(removed, before)
     self.staged_hunks = out
 end
 
+-- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
+-- whatever the revert added or removed above it. a cursor inside the reverted region
+-- has no line of its own to return to, so it lands at the region's start
+---@param h differ.Hunk
+---@param lnum integer  -- the new-side line the cursor was on
+---@return integer
+local function reverted_focus(h, lnum)
+    -- a zero-count hunk sits *after* new_start rather than covering it, which makes the
+    -- region empty and every line either side of it fall through to the shift
+    local first = h.new_count > 0 and h.new_start or h.new_start + 1
+    local last = first + h.new_count - 1
+    if lnum < first then
+        return lnum
+    end
+    if lnum > last then
+        return lnum + (h.old_count - h.new_count)
+    end
+    return first
+end
+
+-- put the new side's cursor on the buffer line rendering `new_lnum`, else the nearest
+-- rendered line either side. unlike focus_new_line this never snaps to a hunk: the
+-- line a revert leaves you on is unchanged context by definition, and staying on it is
+-- the whole point
+---@param new_lnum integer
+function View:_hold_new_line(new_lnum)
+    local col = self.columns[#self.columns]
+    if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
+        return
+    end
+    local at, d = col.map.from_new[new_lnum], 1
+    while not at and d <= #col.map.lines do
+        at = col.map.from_new[new_lnum - d] or col.map.from_new[new_lnum + d]
+        d = d + 1
+    end
+    if at then
+        pcall(vim.api.nvim_win_set_cursor, col.winid, { at, 0 })
+    end
+end
+
 -- X: throw the hunk under the cursor away, after a confirm. unlike s/u this doesn't
 -- move a change between index and worktree, it destroys it, so the frozen model can't
 -- just be marked: the hunk is spliced out and the diff re-renders around it. bound for
@@ -1197,14 +1237,20 @@ function View:revert_hunk()
     end
 
     local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0
-    if not revert(self.model, self.model.hunks[idx], offset) then
+    -- a whole-file revert, or one taking the file's last hunk, leaves no diff at all
+    local emptied = label ~= nil or #self.model.hunks == 1
+    local hunk = self.model.hunks[idx] -- captured before the model is replaced
+    local before = #self.model.hunks
+    local focus = self:cursor_new_line()
+
+    if not revert(self.model, hunk, offset) then
         return
     end
 
-    -- a whole-file revert leaves nothing to show, and the refresh has just dropped the
-    -- entry from the panel, so hand over to whatever took its place rather than
-    -- splicing down to an empty diff and stranding the window on it
-    if label then
+    -- nothing left to show here, and the refresh has just dropped the entry from the
+    -- panel: hand over to whatever took its place rather than stranding the window on
+    -- an empty diff
+    if emptied then
         self.staging.refresh()
         local panel = require("differ.panel").current()
         if not (panel and panel:open_nearest(true)) then
@@ -1213,16 +1259,13 @@ function View:revert_hunk()
         return
     end
 
-    -- hold the reading position across the re-render: the hunk is gone, but the file
-    -- around it hasn't moved for the user
-    local focus = self:cursor_new_line()
-    local before = #self.model.hunks
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
     self:_rekey_staged(idx, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds()
+    -- stay where the reverted hunk was rather than being pulled to the next one
     if focus then
-        self:focus_new_line(focus, true)
+        self:_hold_new_line(reverted_focus(hunk, focus))
     end
     self.staging.refresh()
     self:_paint_staged()

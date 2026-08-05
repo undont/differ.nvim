@@ -1495,6 +1495,66 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- the cursor used to be pulled to the nearest surviving hunk, because the line a
+    -- revert leaves you on is unchanged context and the re-source focus snaps to hunks
+    it("keeps the cursor where the reverted hunk was, not on the next one", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n")
+        git(root, "commit", "-q", "-am", "12 lines")
+        -- hunks far apart, so being pulled to the second one is unmistakable
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(2, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 }) -- the 1 -> 1x hunk
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- the surviving hunk is the last line of the file; landing on it would mean a
+        -- new-side line of 12, and the whole point is that we didn't move there
+        local col = v.columns[#v.columns]
+        local lnum = vim.api.nvim_win_get_cursor(col.winid)[1]
+        local mapped = col.map.lines[lnum]
+        assert.is_not_nil(mapped)
+        assert.are.equal(1, mapped.new) -- still on line 1, now restored context
+        assert.is_nil(mapped.hunk) -- and it is context, not a hunk line
+        p:close()
+    end)
+
+    it("moves on when the revert takes the file's last hunk", function()
+        local root = fresh_repo()
+        write(root .. "/keep.lua", "kept\n")
+        git(root, "add", "keep.lua")
+        git(root, "commit", "-q", "-m", "keep")
+        write(root .. "/keep.lua", "kept and edited\n") -- a survivor to land on
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua has one hunk
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(1, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(V1, worktree(root, "a.lua")) -- reverted
+        local after = view_in_origin(p)
+        assert.are.equal("keep.lua", after.model.path) -- not left on an empty a.lua
+        assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
     it("reloads an open buffer of the file it just reverted", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
