@@ -8,16 +8,11 @@ name: Vimdoc
 # `make vimdoc` pins panvimdoc, pandoc and the locale, and the header carries no
 # datestamp, so the output is reproducible and a plain diff is a fair check. the
 # pandoc version below is duplicated from the Makefile on purpose; `make vimdoc`
-# fails loudly when the two disagree
+# fails loudly when the two disagree.
 
 on:
   pull_request:
     branches: [main]
-    paths:
-      - README.md
-      - doc/differ.txt
-      - Makefile
-      - .github/workflows/vimdoc.yml
 
 concurrency:
   group: vimdoc-${{ github.ref }}
@@ -27,7 +22,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  vimdoc:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
