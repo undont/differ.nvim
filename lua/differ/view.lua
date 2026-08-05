@@ -64,14 +64,17 @@ local armed_view = nil
 -- `initial` is every hunk's opening state (an unstaged diff opens unstaged, a staged
 -- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
 -- panel counts and is called once after a single toggle or a whole S/U batch
--- `revert` throws a hunk away instead of moving it between index and worktree, and is
--- absent where that isn't meaningful (a new file's single whole-file hunk), which is
--- what gates the key. `offset` shifts its index-side apply past hunks unstaged before
--- it; its worktree apply needs none, since a revert re-sources the model
+-- `revert` throws a hunk away instead of moving it between index and worktree, and its
+-- absence is what gates the key off a source that can't do it. `offset` shifts its
+-- index-side apply past hunks unstaged before it; its worktree apply needs none, since
+-- a revert re-sources the model. `revert_label` names the consequence for a file whose
+-- whole content is one hunk, where reverting isn't a partial act: the frontend knows
+-- what it will do to the file, the view words the question
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
 ---@field apply fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer, reverse: boolean): boolean
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
+---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
 
 ---@class differ.View
@@ -1170,12 +1173,7 @@ function View:revert_hunk()
     end
     local revert = self.staging.revert
     if not revert then
-        -- a new file diffs as one whole-file hunk, so reverting it means deleting the
-        -- file: a file-level act, and the panel already owns it
-        return vim.notify(
-            "differ: reverting a new file means deleting it; use the file panel",
-            vim.log.levels.WARN
-        )
+        return vim.notify("differ: this hunk can't be reverted", vim.log.levels.WARN)
     end
     local idx = self:_hunk_index_under_cursor()
     if not idx then
@@ -1190,13 +1188,28 @@ function View:revert_hunk()
         )
     end
 
-    local prompt = ("Revert hunk %d/%d in %s?"):format(idx, #self.model.hunks, self.model.path)
+    -- a whole-file revert isn't partial, so it says so rather than counting hunks
+    local label = self.staging.revert_label
+    local prompt = label and ("Revert all of %s? This %s."):format(self.model.path, label)
+        or ("Revert hunk %d/%d in %s?"):format(idx, #self.model.hunks, self.model.path)
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
         return
     end
 
     local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0
     if not revert(self.model, self.model.hunks[idx], offset) then
+        return
+    end
+
+    -- a whole-file revert leaves nothing to show, and the refresh has just dropped the
+    -- entry from the panel, so hand over to whatever took its place rather than
+    -- splicing down to an empty diff and stranding the window on it
+    if label then
+        self.staging.refresh()
+        local panel = require("differ.panel").current()
+        if not (panel and panel:open_nearest(true)) then
+            vim.notify("differ: no changes left to show", vim.log.levels.INFO)
+        end
         return
     end
 

@@ -906,6 +906,12 @@ describe(":Differ panel staging (slice C)", function()
 
         assert.is_nil(entry_of(p, "a.lua")) -- no longer a change
         assert.are.equal(V1, table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
+        -- the file's own buffer is reloaded too, not left showing the discarded edit
+        local filebuf = vim.fn.bufnr(root .. "/a.lua")
+        assert.are.equal(
+            V1,
+            table.concat(vim.api.nvim_buf_get_lines(filebuf, 0, -1, false), "\n") .. "\n"
+        )
         p:close()
     end)
 
@@ -1407,22 +1413,109 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    it("refuses to revert a new file's whole-file hunk", function()
+    -- a new file's content is its only hunk, so reverting it deletes the file; the
+    -- confirm has to say that rather than counting hunks at the user
+    it("reverts a new file by deleting it, warning that it will", function()
         local root = fresh_repo()
-        write(root .. "/new.lua", "fresh\n") -- untracked: no partial revert to make
+        write(root .. "/new.lua", "fresh\n") -- untracked
         vim.cmd.edit(root .. "/new.lua")
 
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
         local v = view_in_origin(p)
-        assert.is_nil(v.staging.revert)
+        assert.are.equal("deletes the file", v.staging.revert_label)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        local asked
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function(msg)
+            asked = msg
+            return 1
+        end
+        local ok, err = pcall(function()
+            v:revert_hunk()
+        end)
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.are.equal("Revert all of new.lua? This deletes the file.", asked)
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new.lua"))
+        p:close()
+    end)
+
+    it("reverts a staged add by dropping the file and its staged entry", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "fresh\n")
+        git(root, "add", "new.lua") -- staged add: "A"
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
 
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         confirming(1, function()
             v:revert_hunk()
         end)
-        assert.are.equal(1, vim.fn.filereadable(root .. "/new.lua")) -- still there
+
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new.lua"))
+        assert.is_nil(git(root, "ls-files", "--", "new.lua"):match("new%.lua")) -- unstaged too
+        p:close()
+    end)
+
+    -- deleting the file out from under the diff would otherwise strand the window on a
+    -- path that no longer exists, showing "hunk 0/0" against an empty buffer
+    it("moves to another file after a whole-file revert, not an empty diff", function()
+        local root = fresh_repo()
+        write(root .. "/keep.lua", "kept\n")
+        git(root, "add", "keep.lua")
+        git(root, "commit", "-q", "-m", "keep")
+        write(root .. "/keep.lua", "kept and edited\n") -- a real change to land on
+        write(root .. "/gone.lua", "temporary\n") -- untracked, about to go
+        vim.cmd.edit(root .. "/gone.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("gone.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(0, vim.fn.filereadable(root .. "/gone.lua"))
+        -- the view followed the panel onto the surviving change
+        local after = view_in_origin(p)
+        assert.are.equal("keep.lua", after.model.path)
+        assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
+    it("reloads an open buffer of the file it just reverted", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        vim.cmd.edit(root .. "/a.lua") -- the real file is open in a buffer
+        local filebuf = vim.api.nvim_get_current_buf()
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        -- without a checktime this buffer would still hold the reverted line
+        local lines = vim.api.nvim_buf_get_lines(filebuf, 0, -1, false)
+        assert.are.equal("1", lines[1])
+        assert.is_false(vim.bo[filebuf].modified)
         p:close()
     end)
 

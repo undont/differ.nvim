@@ -752,6 +752,29 @@ function Panel:_file_row(lnum, direction, wrap)
     return nil, false
 end
 
+-- open the file row at or after the cursor, else the nearest one before it. for when a
+-- file leaves the list from under the cursor (a whole-file revert): the diff window
+-- would otherwise be left showing something that no longer exists. false when the list
+-- holds no files at all, or the sidebar is hidden
+---@param keep_focus boolean|nil
+---@return boolean opened
+function Panel:open_nearest(keep_focus)
+    if not self:is_open() then
+        return false
+    end
+    local lnum = vim.api.nvim_win_get_cursor(self.winid)[1]
+    -- _file_row starts one past its argument, so step back one to include the cursor's
+    -- own row: after a refresh that's the entry which slid up into the departed one
+    local row = self:_file_row(lnum - 1, "next", false) or self:_file_row(lnum + 1, "prev", false)
+    if not row then
+        return false
+    end
+    self.selected_row = row
+    vim.api.nvim_win_set_cursor(self.winid, { row, 0 })
+    self:_open(self.meta[row].entry, keep_focus)
+    return true
+end
+
 -- ]f / [f: move to the next/prev file row and open it (lockstep file stepping).
 -- wraps at the ends by default (notifying, since it's otherwise not obvious you
 -- cycled back rather than simply moved); `wrap == false` (the staging review flow)

@@ -632,6 +632,22 @@ function M.apply_patch(root, text, reverse, target)
     return true
 end
 
+-- an open buffer on a file differ just rewrote keeps showing the old content until
+-- something checks: a window switch doesn't, so a revert or discard would sit next to
+-- a stale window. checktime reloads it, and leaves a buffer with unsaved edits alone
+-- (nvim warns rather than clobbering), so this is safe to fire unconditionally
+---@param root string
+---@param relpath string
+local function reload_buffer(root, relpath)
+    local buf = vim.fn.bufnr(root .. "/" .. relpath)
+    if buf ~= -1 and vim.api.nvim_buf_is_loaded(buf) then
+        -- silent!: the file may be gone entirely (a discarded untracked file)
+        pcall(vim.api.nvim_buf_call, buf, function()
+            vim.cmd("silent! checktime")
+        end)
+    end
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
 -- destructive, so the panel confirms before calling this
@@ -647,6 +663,7 @@ function M.discard(root, entry)
     else
         git({ "checkout", "HEAD", "--", entry.path }, root) -- revert index + worktree
     end
+    reload_buffer(root, entry.path)
 end
 
 -- drop empty sections so the panel never shows a bare "Staged (0)" header; returns
@@ -919,6 +936,7 @@ function M.panel(opts)
             if not ok then
                 notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
             end
+            reload_buffer(root, model.path)
             return ok
         end
         local ok, err = M.apply_patch(root, reverse_patch(offset), true, "index")
@@ -933,13 +951,13 @@ function M.panel(opts)
                 "%s: reverted from the index; the worktree copy changed since, so it stays unstaged"
             notify(msg:format(model.path), vim.log.levels.WARN)
         end
+        reload_buffer(root, model.path)
         return true -- the index half landed either way
     end
 
     ---@param entry differ.FileEntry
     ---@return differ.view.Staging|nil
     local function stage_for(entry)
-
         if not stageable then
             return nil
         end
@@ -980,6 +998,13 @@ function M.panel(opts)
                     end
                     return true
                 end,
+                -- the file is the hunk, so reverting it is deleting it; `discard`
+                -- already knows to drop the staged add first
+                revert = function()
+                    M.discard(root, entry)
+                    return true
+                end,
+                revert_label = "deletes the file",
                 refresh = refresh_panel,
             }
         end
