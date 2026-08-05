@@ -84,7 +84,7 @@ local armed_view = nil
 ---@field columns differ.ViewColumn[]
 ---@field model differ.DiffModel
 ---@field layout differ.Layout
----@field context integer
+---@field context number
 ---@field wrap boolean  -- soft-wrap long lines in the diff windows
 ---@field counter boolean  -- hunk-counter winbar on the diff windows
 ---@field cursorline_tint boolean  -- tint the cursor line by add/delete kind
@@ -108,7 +108,7 @@ View.__index = View
 
 ---@class differ.view.Opts
 ---@field layout differ.Layout
----@field context integer
+---@field context number
 ---@field wrap? boolean
 ---@field counter? boolean
 ---@field cursorline_tint? boolean
@@ -268,7 +268,7 @@ end
 -- re-render the active model and atomically replace each column's content, map,
 -- gutter rail, and highlight layer. window layout is unchanged; if a re-render
 -- changes the column count (a layout toggle), call :open() to relayout
----@param opts { layout: differ.Layout, context: integer, deep_diff: table }
+---@param opts { layout: differ.Layout, context: number, deep_diff: table }
 function View:rerender(opts)
     self.layout = opts.layout
     self.context = opts.context
@@ -523,7 +523,7 @@ end
 
 -- set the per-view context line count (math.huge = whole file). same column
 -- count, so no relayout, content/map/gutter/highlights refresh in place
----@param n integer
+---@param n number
 function View:set_context(n)
     -- snapshot which folds are closed before rerender replaces col.folds with the
     -- ranges at the new context, so a manually-closed fold (zc/zm) survives the

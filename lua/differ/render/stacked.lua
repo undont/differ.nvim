@@ -15,7 +15,7 @@ local BINARY_NOTICE = "Binary file not shown"
 -- render a model into a single "unified" column: interleaved buffer lines plus
 -- a populated line map and the fold ranges (buffer coords) the view collapses
 ---@param model differ.DiffModel
----@param opts { context: integer, deep_diff?: table }
+---@param opts { context: number, deep_diff?: table }
 ---@return differ.RenderResult
 function M.render(model, opts)
     local map = LineMap.new()

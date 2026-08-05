@@ -17,7 +17,7 @@ local M = {}
 -- a gap that exceeds `context` lead/tail is flagged `foldable` so the renderer can
 -- mark it for a native fold rather than dropping it
 ---@param model differ.DiffModel
----@param context integer
+---@param context number
 ---@param old_line_count integer
 ---@param cb differ.WalkCallbacks
 function M.walk(model, context, old_line_count, cb)

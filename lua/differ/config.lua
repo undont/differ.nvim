@@ -21,7 +21,7 @@
 
 ---@class differ.Config
 ---@field layout differ.Layout
----@field context integer
+---@field context number  -- math.huge = whole file, no folds
 ---@field wrap boolean
 ---@field diff_counter boolean
 ---@field cursorline_tint boolean
@@ -46,7 +46,7 @@ local SURFACE_SET = { diff = true, panel = true, history = true, merge = true }
 ---@type differ.Config
 M.defaults = {
     layout = "stacked",
-    context = 10, -- generous default; tight context makes diffs hard to read
+    context = math.huge, -- whole file, no folds
     wrap = true, -- soft-wrap long lines in the diff view
     diff_counter = true, -- "hunk K/N" counter in the diff window's winbar
     -- tint the diff cursor line by the line's change kind (a stronger add/delete

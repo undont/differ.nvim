@@ -40,7 +40,7 @@ local RENDERERS = {
 
 -- render a model under the given layout
 ---@param model differ.DiffModel
----@param opts { layout: differ.Layout, context: integer, deep_diff: table }
+---@param opts { layout: differ.Layout, context: number, deep_diff: table }
 ---@return differ.RenderResult
 function M.render(model, opts)
     local mod = RENDERERS[opts.layout]
