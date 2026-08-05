@@ -1,0 +1,47 @@
+name: Vimdoc
+
+# doc/differ.txt is generated from README.md, so a PR touching the readme has to carry
+# the regenerated vimdoc with it. this only checks that, it never commits: a commit
+# pushed here with GITHUB_TOKEN triggers no workflows, which leaves every required
+# check parked at action_required on the new head and the pr unmergeable.
+#
+# `make vimdoc` pins panvimdoc, pandoc and the locale, and the header carries no
+# datestamp, so the output is reproducible and a plain diff is a fair check. the
+# pandoc version below is duplicated from the Makefile on purpose; `make vimdoc`
+# fails loudly when the two disagree
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - README.md
+      - doc/differ.txt
+      - Makefile
+      - .github/workflows/vimdoc.yml
+
+concurrency:
+  group: vimdoc-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: r-lib/actions/setup-pandoc@v2
+        with:
+          pandoc-version: "3.10.1"
+
+      - name: Regenerate doc/differ.txt
+        run: make vimdoc
+
+      - name: Check it matches what's committed
+        run: |
+          if ! git diff --exit-code -- doc/differ.txt; then
+            echo "::error::doc/differ.txt is stale; run 'make vimdoc' and commit the result"
+            exit 1
+          fi

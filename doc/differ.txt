@@ -1,4 +1,4 @@
-*differ.txt*           For Neovim >= 0.10          Last change: 2026 August 04
+*differ.txt*                                                For Neovim >= 0.10
 
 ==============================================================================
 Table of Contents                                   *differ-table-of-contents*
@@ -177,7 +177,7 @@ so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `context
 full` skips fold creation entirely.
 
 Set `command_alias` in `setup()` to register a shorter name for the same
-command, e.g.� `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must
+command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must
 start with an uppercase letter (enforced by vim, not by me). If you lazy-load
 on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see
 troubleshooting <TROUBLESHOOTING.md#command_alias-and-lazy-loading> for why.
