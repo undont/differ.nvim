@@ -46,14 +46,17 @@ describe("session verb keymaps", function()
 
     it("binds close, panel toggle and layout toggle on the diff", function()
         local km = lhs_set(view().columns[1].bufnr)
-        assert.are.equal("differ: close the session", km["q"])
+        assert.are.equal("differ: close the session", km["dc"])
         assert.are.equal("differ: toggle the file panel", km["dd"])
         assert.are.equal("differ: toggle the layout", km["dl"])
+        -- q is never differ's on a session surface; the pr overview's own q (back into
+        -- the review) is the only one in the plugin
+        assert.is_nil(km["q"])
     end)
 
     it("binds close and panel toggle on the panel, but not layout", function()
         local km = lhs_set(panel().bufnr)
-        assert.are.equal("differ panel: close the session", km["q"])
+        assert.are.equal("differ panel: close the session", km["dc"])
         assert.are.equal("differ panel: toggle the file panel", km["dd"])
         assert.is_nil(km["dl"]) -- layout belongs to the diff view
     end)
@@ -63,7 +66,7 @@ describe("session verb keymaps", function()
             History.new({ mode = "file", path = "a.lua", commits = {}, on_select = function() end })
         h:open()
         local km = lhs_set(h.bufnr)
-        assert.are.equal("differ history: close the session", km["q"])
+        assert.are.equal("differ history: close the session", km["dc"])
         assert.is_nil(km["dd"])
         assert.is_nil(km["dl"])
     end)
@@ -71,7 +74,7 @@ describe("session verb keymaps", function()
     it("drops a verb the user disables with false", function()
         local km =
             lhs_set(view({ keymaps = { close = false, toggle_layout = "gL" } }).columns[1].bufnr)
-        assert.is_nil(km["q"]) -- q falls back to native macro recording
+        assert.is_nil(km["dc"])
         assert.is_nil(km["dl"])
         assert.are.equal("differ: toggle the layout", km["gL"])
     end)

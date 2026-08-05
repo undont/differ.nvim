@@ -169,6 +169,9 @@ require("differ").setup({
     goto_file = "de",            -- diff: open the real file and end the session; pr diff: zoom-edit in a tab instead
     discard = "X", refresh = "R",  -- panel
     toggle_fold = "za",          -- history (range mode)
+    close = "dc",                -- diff/panel/history: end the session
+    toggle_panel = "dd",         -- diff/panel: hide/show the file panel sidebar
+    toggle_layout = "dl",        -- diff: flip stacked / split
     -- pr review (pr diff + panel)
     toggle_viewed = "<Tab>",     -- pr panel: flip the github viewed checkbox
     next_unviewed = "]u", prev_unviewed = "[u",  -- pr panel + diff
@@ -179,11 +182,13 @@ require("differ").setup({
     toggle_thread = "gc",        -- pr diff: collapse/expand the thread under the cursor
     resolve_thread = "gr",       -- pr diff: resolve/unresolve the thread under the cursor
     overview = "go",             -- pr diff + panel: back to the PR overview home
+    review_submit = "gS",        -- pr: submit the pending review
+    review_discard = "gD",       -- pr: discard the pending review and its drafts
     -- merge tool, bound on the result buffer
     next_conflict = "]x", prev_conflict = "[x",
     choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
     choose_all = "<leader>ca",   -- take both (ours then theirs)
-    choose_none = "dx",          -- drop the conflict region
+    choose_none = "<leader>cx",  -- drop the conflict region
   },
   relative_dates = false,        -- "3 days ago" instead of YYYY-MM-DD wherever a date shows
   base = nil,                    -- base branch for `base`/`log base`; nil auto-detects origin/HEAD
@@ -243,6 +248,9 @@ The stacked / split view.
 | `d=` / `d-` | More / less context |
 | `df` | Edit-in-review (uncommitted diffs) |
 | `de` | Open the real file and end the session |
+| `dd` | Toggle the file panel |
+| `dl` | Toggle the layout (stacked / split) |
+| `dc` | Close the session |
 | `go` | PR review only: back to the [PR overview](#pr-overview) |
 
 #### Panel
@@ -261,6 +269,8 @@ The file list.
 | `s` / `u` / `S` / `U` | Stage / unstage file, or all |
 | `X` | Discard changes |
 | `R` | Refresh |
+| `dd` | Toggle the file panel |
+| `dc` | Close the session |
 | `g?` | Help |
 
 #### History
@@ -277,6 +287,7 @@ Log / range mode.
 | `c` | Collapse the commit under the cursor (range mode) |
 | `O` / `C` | Expand / collapse every commit (range mode) |
 | `K` | Commit details |
+| `dc` | Close the session |
 | `g?` | Help |
 
 #### PR review
@@ -296,6 +307,8 @@ On top of the diff + panel keys.
 | `go` | Back to the [PR overview](#pr-overview) |
 | `df` | Edit the real file in a split beside the (pinned) diff, keeping the review |
 | `de` | Zoom-edit the real file full-screen in its own tab; `:q` returns to the review |
+| `gS` | Submit the review (pick a verdict, then write a summary) |
+| `gD` | Discard the review and its draft comments (confirms) |
 
 `df`/`de` edit the worktree file on disk, not the reviewed blob, so keep your checkout on the PR's head branch (`:Differ pr checkout`) or the two can drift; differ warns once a session if they don't match.
 
@@ -305,12 +318,14 @@ On top of the diff + panel keys.
 
 | Key | Action |
 |---|---|
-| `e` / `r` | Enter the review / enter and start a review; on a thread row, at that comment's file |
+| `e` / `r` | Enter the review / enter and start or resume one; on a thread row, at that comment's file |
 | `<CR>` | On a thread row: jump into the review at that comment; elsewhere: open the PR in the browser |
 | `]t` / `[t` | Next / previous thread |
 | `gx` | Open the PR in the browser |
 | `q` | Back into the review when one is in progress (closing the page window ends the session) |
 | `g?` | Help |
+
+`r` is start-or-resume: with a draft already pending it reattaches rather than refusing, and lands on the first file you haven't marked viewed - resuming asks what's left to review, not what you last said. On a thread row that anchor wins and the cursor stays there. Entering the review adopts any pending draft automatically, so commenting is in draft mode from the start either way; `:Differ pr review resume` does the same from cold.
 
 Code-comment threads render as a contained box (GitHub's outline, differ's left-spine style) with the diff hunk they anchor to inline: the tail of the hunk, capped, `⋯` when trimmed, `+`/`-` lines carrying the diff's own tints and the code treesitter-highlighted when a parser is installed. Plain PR comments and review verdicts stay flat page text, which is how you tell them apart at a glance.
 
@@ -323,9 +338,11 @@ Bound on the result buffer.
 | `]x` / `[x` | Next / previous conflict |
 | `<leader>co` / `ct` / `cb` | Take ours / theirs / base |
 | `<leader>ca` | Take both (ours then theirs) |
-| `dx` | Drop the conflict region |
-| `q` | Close the merge tool |
+| `<leader>cx` | Drop the conflict region |
+| `:Differ close` | Close the merge tool |
 | `g?` | Help |
+
+The result buffer is the real file and stays editable, so the conflict keys sit behind `<leader>` rather than shadowing live operators, and `q` is left to native macro recording.
 
 `merge.layout` picks the panes: `default` shows ours and theirs over the result, `diff4` adds a base column with the common ancestor. `<leader>cb` takes base in either layout, so `diff4` is about seeing what you're taking, not being able to take it.
 
@@ -337,7 +354,7 @@ Because it's a real file, the merge tool sets `vim.b.disable_autoformat` (confor
 
 ### Launchers
 
-A starting point, not a default: differ ships no global launchers - only the in-view buffer maps above and the optional `command_alias`. These are the `<leader>` launchers I drive it with, as a lazy.nvim spec you can lift wholesale or trim to taste.
+differ ships no global launchers - only the in-view buffer maps above and the optional `command_alias`. Everything you do *inside* a session already has a key, so a launcher only earns its place for the handful of entry points you reach from an ordinary file, where no differ buffer exists yet to bind to. These are the ones I drive it with; lift them wholesale or trim to taste.
 
 <details>
 <summary><b>lazy.nvim spec with <code>&lt;leader&gt;d*</code> / <code>&lt;leader&gt;p*</code> launchers</b></summary>
@@ -350,13 +367,9 @@ A starting point, not a default: differ ships no global launchers - only the in-
   keys = {
     -- local diff / history
     { '<leader>do', '<cmd>Differ<CR>',                        desc = "Diff: open (vs index)" },
-    { "<leader>dc", "<cmd>Differ close<CR>",                  desc = "Diff: close" },
     { "<leader>dt", "<cmd>Differ base<CR>",                   desc = "Diff: branch total (vs base)" },
-    { "<leader>de", "<cmd>Differ gofile<CR>",                 desc = "Diff: open the real file" },
-    { '<leader>dd', '<cmd>Differ panel<CR>',                  desc = "Diff: panel toggle" },
     { "<leader>dh", "<cmd>Differ log<CR>",                    desc = "Diff: file history" },
     { "<leader>dp", "<cmd>Differ log origin/HEAD...HEAD<CR>", desc = "Diff: PR range (local, no API)" },
-    { "<leader>dl", "<cmd>Differ layout<CR>",                 desc = "Diff: toggle layout" },
     -- pr review (sidecar + github)
     { "<leader>pl", "<cmd>Differ pr list<CR>",                desc = "PR: list" },
     {
@@ -368,25 +381,14 @@ A starting point, not a default: differ ships no global launchers - only the in-
       end,
       desc = "PR: open by number",
     },
-    { "<leader>pr",  "<cmd>Differ pr review<CR>",         desc = "PR: review start" },
-    { "<leader>pe",  "<cmd>Differ pr review resume<CR>",  desc = "PR: review resume" },
-    { "<leader>pm",  "<cmd>Differ pr review submit<CR>",  desc = "PR: review submit" },
-    { "<leader>pd",  "<cmd>Differ pr review discard<CR>", desc = "PR: review discard" },
-    { "<leader>psm", "<cmd>Differ pr merge squash<CR>",   desc = "PR: squash merge" },
-    { "<leader>pk",  "<cmd>Differ pr checks<CR>",         desc = "PR: checks" },
-    { "<leader>pO",  "<cmd>Differ pr checkout<CR>",       desc = "PR: checkout" },
-    { "<leader>pR",  "<cmd>Differ pr ready<CR>",          desc = "PR: mark ready" },
-    { "<leader>pD",  "<cmd>Differ pr draft<CR>",          desc = "PR: mark draft" },
-    { "<leader>pX",  "<cmd>Differ pr close<CR>",          desc = "PR: close" },
-    { "<leader>pb",  "<cmd>Differ pr browser<CR>",        desc = "PR: open in browser" },
-    { "<leader>py",  "<cmd>Differ pr url<CR>",            desc = "PR: yank URL" },
-    { "<leader>pq",  "<cmd>Differ close<CR>",             desc = "PR: quit" },
   },
   config = function()
     require("differ").setup({ command_alias = "D" })
   end,
 }
 ```
+
+Once a session is open, `dc` / `dd` / `dl` close it and toggle the panel and layout, and `gS` / `gD` submit or discard a review without leaving the files. The rest of the PR verbs (`checks`, `checkout`, `ready`, `draft`, `close`, `merge`, `browser`, `url`) stay as `:Differ pr <verb>` - once-per-PR actions that don't earn a keymap.
 
 </details>
 

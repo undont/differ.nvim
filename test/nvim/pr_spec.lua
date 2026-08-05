@@ -179,7 +179,7 @@ describe("pr review lifecycle keymaps", function()
         end
     end)
 
-    it("binds submit / discard / resume on both the diff and the panel", function()
+    it("binds submit / discard on both the diff and the panel", function()
         local restore = stub_sidecar({
             get_pr = { result = get_pr_result() },
             get_file_versions = {
@@ -202,7 +202,7 @@ describe("pr review lifecycle keymaps", function()
             end
             assert.is_truthy(km["gS"]:find("submit the review", 1, true))
             assert.is_truthy(km["gD"]:find("discard the review", 1, true))
-            assert.is_truthy(km["gR"]:find("resume the review", 1, true))
+            assert.is_nil(km["gR"]) -- entering the review already adopts a pending draft
         end
 
         restore()

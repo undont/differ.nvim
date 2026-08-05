@@ -115,12 +115,13 @@ M.defaults = {
         comment = "ga", -- comment on the line (normal) or the selection (visual)
         reply = "gp", -- reply to the thread under the cursor
         delete_comment = "gx", -- delete the latest comment of the thread under the cursor
-        -- pr review lifecycle, on the pr diff + panel. capitalised to keep the
-        -- lowercase g-family for thread/comment actions; each one's own prompt
-        -- (verdict picker, confirm) is the guard, not the key
+        -- pr review lifecycle, on the pr diff + panel, so a review can be finished
+        -- without leaving the files. capitalised to keep the lowercase g-family for
+        -- thread/comment actions; each one's own prompt (verdict picker, confirm) is
+        -- the guard, not the key. resume isn't here: entering the review already
+        -- adopts any pending draft, so `:Differ pr review resume` covers the cold start
         review_submit = "gS", -- pr: submit the pending review
         review_discard = "gD", -- pr: discard the pending review and its drafts
-        review_resume = "gR", -- pr: resume a pending review
         scroll_down = "f", -- all three (shadows native f/b; set false to restore)
         scroll_up = "b",
         select = { "<CR>", "o" }, -- panel, history
@@ -141,10 +142,10 @@ M.defaults = {
         discard = "X", -- panel
         refresh = "R",
         toggle_fold = "za", -- history (range mode)
-        -- session-level verbs. the diff/panel/history buffers are read-only scratch,
-        -- so shadowing native q (record macro) and dd/dl (delete) is inert there; the
-        -- merge result buffer is a real file and binds none of these
-        close = "q", -- diff/panel/history: end the session (merge, pr or local)
+        -- session-level verbs, joining the d-family the diff verbs already use. the
+        -- diff/panel/history buffers are read-only scratch, so the shadowed deletes are
+        -- inert; q stays free for native macro recording on every surface
+        close = "dc", -- diff/panel/history: end the session (merge, pr or local)
         toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
         toggle_layout = "dl", -- diff: flip stacked / split
         -- merge tool, bound on the result buffer. nav + take-this resolution,
