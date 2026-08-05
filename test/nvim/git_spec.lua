@@ -664,6 +664,7 @@ describe(":Differ panel", function()
         it("refreshes on " .. ev .. " so external git changes appear", function()
             local root = fresh_repo()
             write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            write(root .. "/keep.lua", "kept\n") -- survives the commit, so the session does too
             vim.cmd.edit(root .. "/a.lua")
 
             git_src.panel({})
@@ -701,6 +702,7 @@ describe(":Differ panel", function()
     it("guards a stale entry: selecting a now-clean file refreshes, no blank view", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/keep.lua", "kept\n") -- a survivor, so the refresh doesn't end the session
         vim.cmd.edit(root .. "/a.lua")
 
         git_src.panel({})
@@ -1565,6 +1567,97 @@ describe(":Differ diff hunk staging", function()
         local after = view_in_origin(p)
         assert.are.equal("keep.lua", after.model.path) -- not left on an empty a.lua
         assert.is_true(#after.model.hunks > 0)
+        p:close()
+    end)
+
+    -- with nothing left to review, an open sidebar next to a diff of a file that's now
+    -- clean is a dead end: every key is a no-op and the diff is frozen on a stale model
+    it("ends the session when the last change in the set is reverted", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- the only change in the repo
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(1, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        _G.notifs = {}
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(V1, worktree(root, "a.lua"))
+        assert.is_nil(Panel.current()) -- the session is gone, not left empty
+        assert.is_false(p:is_alive())
+        assert.is_false(v:is_open()) -- and it took the diff view with it
+        assert.are.equal("differ: no changes left", _G.notifs[1].msg)
+        assert.are.equal(1, #_G.notifs) -- said once, not once per teardown step
+    end)
+
+    it("lands back in the tab :Differ was invoked from", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local invoked_from = vim.api.nvim_get_current_tabpage()
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.is_false(invoked_from == vim.api.nvim_get_current_tabpage()) -- own tab
+        local v = view_in_origin(p)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(invoked_from, vim.api.nvim_get_current_tabpage())
+    end)
+
+    -- the file list can also empty from outside differ: a commit in a tmux pane, a
+    -- lazygit discard. the watcher's refresh has to end the session the same way
+    it("ends the session when an outside commit empties the change set", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.is_true(v:is_open())
+
+        git(root, "commit", "-q", "-am", "committed elsewhere")
+        _G.notifs = {}
+        p.on_external_change() -- what the fs watcher / FocusGained fire
+
+        assert.is_nil(Panel.current())
+        assert.is_false(p:is_alive())
+        assert.is_false(v:is_open())
+        assert.are.equal("differ: no changes left", _G.notifs[1].msg)
+    end)
+
+    it("keeps the session when other changes survive the revert", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/b.lua", "kept\n") -- a second change, untracked
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+
+        assert.are.equal(p, Panel.current()) -- still live, on the surviving change
+        assert.are.equal("b.lua", view_in_origin(p).model.path)
         p:close()
     end)
 

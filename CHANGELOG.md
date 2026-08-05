@@ -10,6 +10,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `X` reverts the hunk under the cursor in the diff, the hunk-level counterpart to the panel's file-level discard. It confirms first, since unlike `s`/`u` it destroys the change rather than moving it between the index and the worktree: an unstaged hunk is dropped from the worktree, a staged one from the index and worktree together. Where a file's whole content is one hunk the confirm names the consequence instead of counting hunks, so reverting a new file says it deletes it and reverting a deleted file says it restores it. The frozen diff is spliced in place rather than re-read, so the cursor stays where the hunk was; when a revert leaves the file with no changes at all the panel moves you to the next one. Deleted files revert without gaining hunk staging, so `s`/`u` still refuse there
 
+### Changed
+
+- An uncommitted session ends itself once its file list empties, rather than leaving an empty panel beside a diff of a file that is now clean. The change set can empty under you from either side: the last change reverted or discarded in differ, or a commit, checkout or stash from another pane. Either way the session closes and returns you to the tab you opened it from. Rev-pair sessions never reload their list, so they are untouched
+- A hidden file panel (`dd`) keeps refreshing with the worktree. It is still a live session driving a visible diff, so refreshes now track whether the session exists rather than whether the sidebar is shown; a revert with the sidebar hidden hands the diff on to the next file instead of stranding it
+
 ### Fixed
 
 - A file discarded from the panel no longer leaves its own buffer showing the discarded content. Nvim doesn't reload a buffer on a window switch, so the stale text sat there until something forced a check; differ now runs a `checktime` on the file it rewrote, which leaves a buffer with unsaved edits alone

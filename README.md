@@ -257,6 +257,8 @@ The stacked / split view.
 
 `X` throws a hunk away rather than moving it between the index and the worktree, so it confirms first. On an unstaged diff it drops the worktree change; on a staged one it clears the hunk from the index and the worktree together. Where a file's whole content is one hunk the confirm says what that means - reverting a new file deletes it, reverting a deleted one brings it back - and when a revert leaves nothing to show, the panel moves you on to the next change.
 
+An uncommitted session tracks the worktree, so its file list can empty while you work - the last change reverted, or a commit made in another pane. When it does there is nothing left to review, so the session ends on its own and drops you back in the tab you opened it from. Rev-pair sessions (`:Differ main...HEAD`) diff fixed revisions and never empty.
+
 #### Panel
 
 The file list.

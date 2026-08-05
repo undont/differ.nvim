@@ -1275,8 +1275,10 @@ function View:revert_hunk()
     -- an empty diff
     if emptied then
         self.staging.refresh()
+        -- that refresh ends the session when this was the change set's last change, and
+        -- reports it; only speak up when the panel is still there but has nowhere to go
         local panel = require("differ.panel").current()
-        if not (panel and panel:open_nearest(true)) then
+        if panel and not panel:open_nearest(true) then
             vim.notify("differ: no changes left to show", vim.log.levels.INFO)
         end
         return

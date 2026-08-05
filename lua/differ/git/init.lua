@@ -1119,15 +1119,17 @@ function M.panel(opts)
     -- staying frozen. gated on the signature so unrelated terminal events are no-ops
     local function refresh_external()
         -- a debounced watcher fire (or a queued schedule) can land after the panel is
-        -- gone; bail before touching its deleted buffer
-        if not (panel and panel:is_open()) then
+        -- gone; bail before touching its deleted buffer. a hidden sidebar is still live
+        -- (and still driving a visible diff), so it refreshes like an open one
+        if not (panel and panel:is_alive()) then
             return
         end
         if git_signature() == last_sig then
             return
         end
-        if panel then
-            panel:refresh()
+        panel:refresh()
+        if not panel:is_alive() then
+            return -- the change set emptied and on_empty ended the session
         end
         if view and view:is_open() and active_entry then
             -- the content shifted underneath the user; hold the cursor near where it was
@@ -1185,9 +1187,26 @@ function M.panel(opts)
                 return
             end
             -- a stale entry (committed or changed outside differ) has an empty diff;
-            -- refresh the list rather than opening a blank view
+            -- refresh the list rather than opening a blank view. that refresh can end
+            -- the session (it was the last entry), which says so on its own
             refresh_panel()
-            notify(("no changes for %s"):format(entry.path))
+            if panel and panel:is_alive() then
+                notify(("no changes for %s"):format(entry.path))
+            end
+        end,
+        -- the change set emptied under the session (a commit, or the last change
+        -- reverted): there's nothing left to review, so end it rather than leave an
+        -- empty sidebar next to a diff of a file that's now clean. only the worktree
+        -- source can reach this; a rev-pair list never reloads
+        on_empty = function()
+            notify("no changes left")
+            local back = panel and panel.return_tab
+            if panel then
+                panel:close() -- cascades to the diff view + the session tab
+            end
+            if back and vim.api.nvim_tabpage_is_valid(back) then
+                vim.api.nvim_set_current_tabpage(back)
+            end
         end,
         on_close = function()
             if watcher then
