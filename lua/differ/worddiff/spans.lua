@@ -9,6 +9,12 @@ local pair = require("differ.worddiff.pair")
 
 local M = {}
 
+-- the trimmed middle still grids at na*nb, and the dp table is that many slots, so a
+-- line long enough to survive the trim is a memory problem before it is a time one
+-- (9e6 cells costs ~95MB). past this the middle is left unmarked and reads as one
+-- changed span, which is what a line with thousands of differing tokens is anyway
+local MAX_MIDDLE_CELLS = 4e6
+
 ---@class differ.PairSpans
 ---@field old differ.SubSpan[]
 ---@field new differ.SubSpan[]
@@ -39,6 +45,9 @@ local function common_tokens(a, b)
 
     -- the untrimmed middles, indexed off `head`: a[head + i] and b[head + j]
     local na, nb = n - head - tail, m - head - tail
+    if na * nb > MAX_MIDDLE_CELLS then
+        return keep_a, keep_b -- head/tail stand; the middle merges into one span
+    end
     -- dp[i][j] = LCS length of the middles from i and j on
     local dp = {}
     for i = 0, na do

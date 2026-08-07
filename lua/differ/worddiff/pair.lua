@@ -81,6 +81,28 @@ function M.similarity(a, b)
     return score(word_tokens(a), word_tokens(b))
 end
 
+-- the alignment grid is m*n cells, each an LCS over two lines' tokens, so a hunk that
+-- rewrites a whole generated file costs seconds and tens of megabytes. past this the
+-- pass gives up rather than hang the editor; 1e6 cells is ~0.8s, and a hunk that large
+-- is already an extreme diff
+local MAX_CELLS = 1e6
+
+-- every line on its own, the same result the alignment yields when no pair clears the
+-- threshold: the renderers fall back to whole-line highlighting with no word spans
+---@param m integer
+---@param n integer
+---@return differ.LinePair[]
+local function all_unpaired(m, n)
+    local out = {}
+    for oi = 1, m do
+        out[#out + 1] = { old = oi, score = 0 }
+    end
+    for ni = 1, n do
+        out[#out + 1] = { new = ni, score = 0 }
+    end
+    return out
+end
+
 -- pair old/new lines for the word-level pass: a maximum-similarity monotonic
 -- (non-crossing) alignment over partners scoring at or above `threshold`, so an old
 -- line can't reach past its neighbours to a more token-similar but out-of-order line.
@@ -91,6 +113,9 @@ end
 ---@return differ.LinePair[]
 function M.pair(old_lines, new_lines, threshold)
     local m, n = #old_lines, #new_lines
+    if m * n > MAX_CELLS then
+        return all_unpaired(m, n)
+    end
     -- tokenise once per line, not once per comparison: the matrix below is m*n cells
     -- and tokenising inside it dominated the whole pass
     local old_toks, new_toks = {}, {}

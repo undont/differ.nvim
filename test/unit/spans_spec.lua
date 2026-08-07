@@ -76,3 +76,32 @@ describe("worddiff.spans.for_hunk", function()
         assert.is_nil(new_spans[2])
     end)
 end)
+
+describe("worddiff.spans.emit size ceiling", function()
+    it("keeps tight spans on a huge line whose edit is small", function()
+        -- the ceiling is on the trimmed middle, not the line: a minified line with one
+        -- changed token trims to almost nothing, so it must still get a precise span
+        -- rather than degrading the way a raw line-length cap would make it
+        -- the spaces around the marker keep it its own token; without them `[%w_]+`
+        -- would run it into the filler's leading `var`
+        local filler = string.rep("var a1=1;", 3000) -- 27000 bytes either side
+        local s =
+            spans.emit(filler .. " KEEP_OLD " .. filler, filler .. " KEEP_NEW " .. filler, "word")
+        assert.are.same({ { col_start = 27001, col_end = 27009 } }, s.old)
+        assert.are.same({ { col_start = 27001, col_end = 27009 } }, s.new)
+    end)
+
+    it("collapses to one span when the middle is too large to grid", function()
+        -- disjoint tokens either side, so nothing trims and the middle stays the whole
+        -- line: 1001 words is 2001 tokens a side, and 2001^2 clears the 4e6 ceiling
+        local old_words, new_words = {}, {}
+        for i = 1, 1001 do
+            old_words[i] = "a" .. i
+            new_words[i] = "b" .. i
+        end
+        local old_line, new_line = table.concat(old_words, " "), table.concat(new_words, " ")
+        local s = spans.emit(old_line, new_line, "word")
+        assert.are.same({ { col_start = 0, col_end = #old_line } }, s.old)
+        assert.are.same({ { col_start = 0, col_end = #new_line } }, s.new)
+    end)
+end)
