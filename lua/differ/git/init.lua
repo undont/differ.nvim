@@ -639,8 +639,8 @@ end
 ---@param root string
 ---@param relpath string
 local function reload_buffer(root, relpath)
-    local buf = vim.fn.bufnr(root .. "/" .. relpath)
-    if buf ~= -1 and vim.api.nvim_buf_is_loaded(buf) then
+    local buf = require("differ.util.buf").find(root .. "/" .. relpath)
+    if buf and vim.api.nvim_buf_is_loaded(buf) then
         -- silent!: the file may be gone entirely (a discarded untracked file)
         pcall(vim.api.nvim_buf_call, buf, function()
             vim.cmd("silent! checktime")

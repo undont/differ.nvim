@@ -10,6 +10,7 @@ local syntax = require("differ.syntax")
 local statuscolumn = require("differ.ui.statuscolumn")
 local nav = require("differ.nav")
 local bind = require("differ.util.keymap").bind
+local find_buf = require("differ.util.buf").find
 
 local ns = vim.api.nvim_create_namespace("differ")
 local staged_ns = vim.api.nvim_create_namespace("differ.staging")
@@ -1334,8 +1335,8 @@ function View:jump_to_file()
     -- if abs is already loaded (e.g. edited but left unsaved after a prior
     -- jump-to-file), switch to that buffer instead of :edit, which would force a
     -- disk reload and refuse with E37 over the unsaved changes
-    local bufnr = vim.fn.bufnr(abs)
-    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+    local bufnr = find_buf(abs)
+    if bufnr and vim.api.nvim_buf_is_loaded(bufnr) then
         vim.api.nvim_win_set_buf(0, bufnr)
     else
         vim.cmd.edit(vim.fn.fnameescape(abs))
@@ -1441,17 +1442,9 @@ function View:edit_tab()
         self:_arm_zoom_return(self.zoom_tab, return_tab)
     end
     -- if abs is already loaded (e.g. unsaved edits from an earlier zoom), switch to
-    -- that buffer instead of :edit, which would refuse with E37 over the changes.
-    -- bufnr() pattern-matches, so a substring or regex-metachar path could resolve the
-    -- wrong buffer; match the full name exactly instead
-    local bufnr = -1
-    for _, b in ipairs(vim.api.nvim_list_bufs()) do
-        if vim.api.nvim_buf_get_name(b) == t.abs then
-            bufnr = b
-            break
-        end
-    end
-    if bufnr ~= -1 and vim.api.nvim_buf_is_loaded(bufnr) then
+    -- that buffer instead of :edit, which would refuse with E37 over the changes
+    local bufnr = find_buf(t.abs)
+    if bufnr and vim.api.nvim_buf_is_loaded(bufnr) then
         local prev = vim.api.nvim_get_current_buf()
         vim.api.nvim_win_set_buf(0, bufnr)
         -- drop the fresh tabnew scratch so repeated zooms don't leak no-name buffers
