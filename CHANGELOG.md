@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The word-level diff is faster on large hunks and long lines. Lines are tokenised once per pass rather than once per comparison, and the tokens shared at the head and tail of a pair are matched without reaching the LCS grid. A 1000-line rewrite renders in under a second where it took eleven, and a 50KB minified line in hundredths of one where it took ten
+
+### Fixed
+
+- A diff of a generated file no longer exhausts memory. Both word-diff grids stop at a million cells and fall back to whole-line highlighting; hand-written code never approaches that, but a regenerated JSON or CSV fixture can ask for billions
+- `de` opens the file you asked for. The buffer lookup treated its path as a file-pattern rather than a literal, so `a[1].lua` would open `a1.lua`, silently, and only after the session had been torn down. The same lookup refreshes a buffer after a revert, where it checked the wrong one and left stale content on screen. Paths now match by name, symlinks included
+- `:Differ sidecar stop` stops the sidecar. The binary traps `SIGTERM` only to cancel a context that its blocking read of stdin never observes, so the signal left the process running until nvim exited; it is now shut down by closing stdin. Stopping and immediately reissuing a request no longer strands a process either
+- The cursor keeps its column when a diff opens, and when the worktree watcher re-sources it after a `:w`. It landed on the right line but at the start of it. The column is carried only where the landing is exact, since snapping to the nearest hunk moves you to a different line
+
+## [0.1.21] — 2026-08-05
+
 ### Added
 
 - `X` reverts the hunk under the cursor in the diff, the hunk-level counterpart to the panel's file-level discard. It confirms first, since unlike `s`/`u` it destroys the change rather than moving it between the index and the worktree: an unstaged hunk is dropped from the worktree, a staged one from the index and worktree together. Where a file's whole content is one hunk the confirm names the consequence instead of counting hunks, so reverting a new file says it deletes it and reverting a deleted file says it restores it. The frozen diff is spliced in place rather than re-read, so the cursor stays where the hunk was; when a revert leaves the file with no changes at all the panel moves you to the next one. Deleted files revert without gaining hunk staging, so `s`/`u` still refuse there

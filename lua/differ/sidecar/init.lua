@@ -123,9 +123,13 @@ function flush_queue()
 end
 
 function handshake()
+    local self = client
     local id = client.next_id
     client.next_id = id + 1
     client.pending[id] = function(err, result)
+        if client ~= self then
+            return -- this client was stopped/replaced; its handshake result is moot
+        end
         if err then
             vim.schedule(function()
                 vim.notify(
@@ -211,6 +215,7 @@ function on_exit(obj)
 end
 
 function schedule_restart()
+    local self = client
     client.attempts = client.attempts + 1
     if client.attempts > MAX_ATTEMPTS then
         vim.schedule(function()
@@ -221,7 +226,10 @@ function schedule_restart()
     end
     local delay = math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ^ (client.attempts - 1))
     vim.defer_fn(function()
-        if client.stopping or client.running then
+        -- a stop (or a replacement client) between scheduling and firing cancels the
+        -- retry; without this the timer would spawn a process the current client
+        -- doesn't own and can't reach
+        if client ~= self or client.stopping or client.running then
             return
         end
         local ok = start()
@@ -240,11 +248,23 @@ function start()
     end
     client.stdout_buf = ""
     client.ready = false
+    -- every callback below belongs to the client that spawned this process. a stop (or
+    -- a crash-restart) can leave an older process still dying while a newer one runs, and
+    -- its late stdout would splice foreign frames into the live stream while its exit
+    -- would clear the live proc handle out from under it. `owned` drops both
+    local self = client
+    local function owned(fn)
+        return function(...)
+            if client == self then
+                return fn(...)
+            end
+        end
+    end
     local ok, proc = pcall(vim.system, { bin }, {
         stdin = true,
-        stdout = on_stdout,
+        stdout = owned(on_stdout),
         stderr = function() end, -- structured logs on the binary's stderr; the client ignores them
-    }, on_exit)
+    }, owned(on_exit))
     if not ok then
         return false, tostring(proc)
     end
@@ -287,8 +307,19 @@ function M.ping(cb)
     M.request("hello", { client = "differ.nvim", protocol = PROTOCOL }, cb)
 end
 
--- intentional shutdown: suppress the restart, kill the process, fail outstanding
--- requests. the next request() spins a fresh client.
+-- intentional shutdown: close the sidecar's stdin, fail outstanding requests, and drop
+-- the client so the next request() spins a fresh one.
+--
+-- closing stdin is what actually stops it. the binary traps SIGTERM, but only to cancel
+-- a context, and its read loop is parked in a blocking scan of stdin that never observes
+-- one, so a signal alone leaves the process running forever. EOF is the loop's own exit
+-- condition: it drains inflight work, closes its writer and returns. the signal stays as
+-- a backstop for a process wedged somewhere other than the read.
+--
+-- dropping the client is what suppresses the restart: the dying process's exit callback
+-- finds itself superseded and no-ops, where before it would clear `proc`/`running` on
+-- whatever client had since taken its place, orphaning that process and leaving the
+-- client believing nothing was running
 function M.stop()
     if not client then
         return
@@ -299,10 +330,13 @@ function M.stop()
     if client.proc then
         pcall(function()
             ---@diagnostic disable-next-line: undefined-field
+            client.proc:write(nil) -- EOF: the read loop's clean exit
+            ---@diagnostic disable-next-line: undefined-field
             client.proc:kill(15)
         end)
     end
     fail_all(mkerr("internal", "sidecar stopped"))
+    client = nil
 end
 
 -- whether the handshake has completed and requests flow without queueing.

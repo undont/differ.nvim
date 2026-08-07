@@ -73,4 +73,32 @@ describe("worddiff.pair.pair", function()
         )
         assert.is_nil(p[1].new)
     end)
+
+    it("gives up on a hunk too large to grid, reporting every line unpaired", function()
+        -- the grid is m*n cells of token LCS, so a whole-file rewrite would cost
+        -- seconds; past the ceiling every line degrades to a whole-line highlight.
+        -- identical text either side, so a pairing pass would match all 1001 lines
+        local old_lines, new_lines = {}, {}
+        for i = 1, 1001 do
+            old_lines[i] = "local x = " .. i
+            new_lines[i] = "local x = " .. i
+        end
+        local p = pair.pair(old_lines, new_lines, 0.5) -- 1001 * 1001 > 1e6
+        assert.are.equal(2002, #p) -- every old line, then every new line, all on their own
+        for _, entry in ipairs(p) do
+            assert.are.equal(0, entry.score)
+            assert.is_true(entry.old == nil or entry.new == nil)
+        end
+    end)
+
+    it("still pairs a hunk just under the ceiling", function()
+        local old_lines, new_lines = {}, {}
+        for i = 1, 1000 do
+            old_lines[i] = "local x = " .. i
+            new_lines[i] = "local x = " .. i
+        end
+        local p = pair.pair(old_lines, new_lines, 0.5) -- 1000 * 1000 == 1e6
+        assert.are.equal(1000, #p)
+        assert.are.equal(1, p[1].new)
+    end)
 end)
