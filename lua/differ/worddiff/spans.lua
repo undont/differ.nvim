@@ -1,6 +1,8 @@
 -- fragment diff: paired lines -> changed byte-col spans, pure lua, no nvim API.
 -- a pure LCS over token streams (not vim.diff) so spans stay testable
--- under plain busted. lines are short, so O(n*m) is fine
+-- under plain busted. the LCS grid is O(n*m), which a minified line's token count
+-- makes untenable, so the common leading/trailing runs are matched directly and only
+-- the middle reaches the grid
 
 local tokenize = require("differ.worddiff.tokenize")
 local pair = require("differ.worddiff.pair")
@@ -11,24 +13,44 @@ local M = {}
 ---@field old differ.SubSpan[]
 ---@field new differ.SubSpan[]
 
--- mark which tokens are common to both streams via LCS backtrack
+-- mark which tokens are common to both streams via LCS backtrack. the tokens shared
+-- at the head and tail are matched up front and kept out of the grid: an edit sits
+-- somewhere inside a line, so trimming both ends leaves only the edited middle to
+-- solve. a common prefix (and suffix) is always matchable in some optimal LCS, so the
+-- result stays a longest one; where several are equally long this anchors the matches
+-- at the line's edges, which is where the unchanged text is
 ---@param a differ.Token[]
 ---@param b differ.Token[]
 ---@return boolean[] keep_a, boolean[] keep_b
 local function common_tokens(a, b)
     local n, m = #a, #b
-    -- dp[i][j] = LCS length of a[i..n], b[j..m]
+    local keep_a, keep_b = {}, {}
+
+    local head = 0
+    while head < n and head < m and a[head + 1].text == b[head + 1].text do
+        head = head + 1
+        keep_a[head], keep_b[head] = true, true
+    end
+    local tail = 0
+    while tail < n - head and tail < m - head and a[n - tail].text == b[m - tail].text do
+        keep_a[n - tail], keep_b[m - tail] = true, true
+        tail = tail + 1
+    end
+
+    -- the untrimmed middles, indexed off `head`: a[head + i] and b[head + j]
+    local na, nb = n - head - tail, m - head - tail
+    -- dp[i][j] = LCS length of the middles from i and j on
     local dp = {}
-    for i = 0, n do
+    for i = 0, na do
         dp[i] = {}
-        dp[i][m] = 0
+        dp[i][nb] = 0
     end
-    for j = 0, m do
-        dp[n][j] = 0
+    for j = 0, nb do
+        dp[na][j] = 0
     end
-    for i = n - 1, 0, -1 do
-        for j = m - 1, 0, -1 do
-            if a[i + 1].text == b[j + 1].text then
+    for i = na - 1, 0, -1 do
+        for j = nb - 1, 0, -1 do
+            if a[head + i + 1].text == b[head + j + 1].text then
                 dp[i][j] = dp[i + 1][j + 1] + 1
             else
                 dp[i][j] = math.max(dp[i + 1][j], dp[i][j + 1])
@@ -36,12 +58,11 @@ local function common_tokens(a, b)
         end
     end
 
-    local keep_a, keep_b = {}, {}
     local i, j = 0, 0
-    while i < n and j < m do
-        if a[i + 1].text == b[j + 1].text then
-            keep_a[i + 1] = true
-            keep_b[j + 1] = true
+    while i < na and j < nb do
+        if a[head + i + 1].text == b[head + j + 1].text then
+            keep_a[head + i + 1] = true
+            keep_b[head + j + 1] = true
             i, j = i + 1, j + 1
         elseif dp[i + 1][j] >= dp[i][j + 1] then
             i = i + 1
