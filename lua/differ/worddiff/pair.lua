@@ -54,6 +54,19 @@ local function lcs_len(a, b)
     return prev[lb]
 end
 
+-- the same score over already-tokenised lines, so a caller comparing every old line
+-- against every new one tokenises each line once instead of once per comparison
+---@param ta string[]
+---@param tb string[]
+---@return number
+local function score(ta, tb)
+    local total = #ta + #tb
+    if total == 0 then
+        return 0.0
+    end
+    return (2 * lcs_len(ta, tb)) / total
+end
+
 -- order-aware token similarity in [0,1]: 2·LCS/(|a|+|b|) over word tokens (a
 -- sequence Sørensen–Dice). order matters, so lines that merely share scattered
 -- words (a rewritten comment, a different field with a similar comment) score below
@@ -65,12 +78,7 @@ function M.similarity(a, b)
     if a == b then
         return 1.0
     end
-    local ta, tb = word_tokens(a), word_tokens(b)
-    local total = #ta + #tb
-    if total == 0 then
-        return 0.0
-    end
-    return (2 * lcs_len(ta, tb)) / total
+    return score(word_tokens(a), word_tokens(b))
 end
 
 -- pair old/new lines for the word-level pass: a maximum-similarity monotonic
@@ -83,11 +91,22 @@ end
 ---@return differ.LinePair[]
 function M.pair(old_lines, new_lines, threshold)
     local m, n = #old_lines, #new_lines
+    -- tokenise once per line, not once per comparison: the matrix below is m*n cells
+    -- and tokenising inside it dominated the whole pass
+    local old_toks, new_toks = {}, {}
+    for i = 1, m do
+        old_toks[i] = word_tokens(old_lines[i])
+    end
+    for j = 1, n do
+        new_toks[j] = word_tokens(new_lines[j])
+    end
     local sim = {}
     for i = 1, m do
         sim[i] = {}
+        local old_line, ta = old_lines[i], old_toks[i]
         for j = 1, n do
-            sim[i][j] = M.similarity(old_lines[i], new_lines[j])
+            -- identical text short-circuits to 1.0, as in M.similarity
+            sim[i][j] = old_line == new_lines[j] and 1.0 or score(ta, new_toks[j])
         end
     end
 
@@ -119,7 +138,7 @@ function M.pair(old_lines, new_lines, threshold)
 
     -- backtrack, preferring an unpaired line over a tied match so an old line takes
     -- its earliest equal-scoring partner (the "first partner on a tie" rule)
-    local mate, score = {}, {}
+    local mate, scores = {}, {}
     local i, j = m, n
     while i > 0 and j > 0 do
         if dp[i][j] == dp[i - 1][j] then
@@ -127,7 +146,7 @@ function M.pair(old_lines, new_lines, threshold)
         elseif dp[i][j] == dp[i][j - 1] then
             j = j - 1
         else
-            mate[i], score[i] = j, sim[i][j]
+            mate[i], scores[i] = j, sim[i][j]
             i, j = i - 1, j - 1
         end
     end
@@ -139,7 +158,7 @@ function M.pair(old_lines, new_lines, threshold)
         if ni then
             used_new[ni] = true
         end
-        pairs_out[#pairs_out + 1] = { old = oi, new = ni, score = ni and score[oi] or 0 }
+        pairs_out[#pairs_out + 1] = { old = oi, new = ni, score = ni and scores[oi] or 0 }
     end
     for ni = 1, n do
         if not used_new[ni] then
