@@ -12,11 +12,12 @@ local function has_binary()
 end
 
 -- live sidecar processes, so the lifecycle tests can assert on what is actually running
--- rather than on client state alone. matched on the path suffix, not an absolute path:
--- .busted sets a relative lpath, so the client resolves the binary to ./bin/differ-sidecar
--- and that relative form is what lands in the process's argv
+-- rather than on client state alone. matched by executable name (-x), not command line
+-- (-f): the client resolves the binary relative or absolute depending on the rtp, and a
+-- -f match also counts any unrelated process whose arguments merely mention the path,
+-- an editor, a grep, or the very shell that launched the suite
 local function running_sidecars()
-    local out = vim.fn.system({ "pgrep", "-f", "bin/differ-sidecar" })
+    local out = vim.fn.system({ "pgrep", "-x", "differ-sidecar" })
     local n = 0
     for _ in out:gmatch("%d+") do
         n = n + 1
