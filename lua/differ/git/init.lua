@@ -789,10 +789,10 @@ function M.panel(opts)
         end
     end
 
-    -- the file + line :Differ was invoked from, so open_first can open that file at
-    -- that line (mapped into the diff) instead of the first listed file
+    -- the file + position :Differ was invoked from, so open_first can open that file at
+    -- that position (mapped into the diff) instead of the first listed file
     local origin_file = vim.api.nvim_buf_get_name(0)
-    local origin_line = vim.api.nvim_win_get_cursor(0)[1]
+    local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
 
     local root = repo_root()
     if not root then
@@ -1052,12 +1052,14 @@ function M.panel(opts)
 
     -- (re)source the diff view from an entry's current git state. false when the
     -- entry has no diff anymore (committed / fully staged / reverted outside differ).
-    -- `focus_line` (a new-side file line) holds the cursor across an in-place refresh
-    -- of the same file; without it the view lands on the first unstaged hunk
+    -- `focus_line`/`focus_col` (a new-side file position) hold the cursor across an
+    -- in-place refresh of the same file; without them the view lands on the first
+    -- unstaged hunk
     ---@param entry differ.FileEntry
     ---@param focus_line integer|nil
+    ---@param focus_col integer|nil
     ---@return boolean shown
-    local function show_entry(entry, focus_line)
+    local function show_entry(entry, focus_line, focus_col)
         local model = model_for(entry)
         if #model.hunks == 0 and not model.binary then
             -- a pure rename or copy has identical content on both sides, so it diffs
@@ -1073,7 +1075,11 @@ function M.panel(opts)
         end
         local staging = stage_for(entry)
         if view and view:is_open() then
-            view:set_source(model, staging, focus_line and { focus_line = focus_line } or nil)
+            view:set_source(
+                model,
+                staging,
+                focus_line and { focus_line = focus_line, focus_col = focus_col } or nil
+            )
         else
             view = require("differ").diff_model(model, {
                 staging = staging,
@@ -1141,7 +1147,7 @@ function M.panel(opts)
         if view and view:is_open() and active_entry then
             -- the content shifted underneath the user; hold the cursor near where it was
             -- (the nearest hunk to its new-side line) rather than snapping to the top
-            local focus_line = view:cursor_new_line()
+            local focus_line, focus_col = view:cursor_new_line()
             -- re-target the view to the file's current changes, preferring the side it
             -- was on; staging the whole file empties that side, so fall back to the
             -- other. show_entry records the signature when it sources
@@ -1153,7 +1159,7 @@ function M.panel(opts)
                     break
                 end
             end
-            if pick and show_entry(pick, focus_line) then
+            if pick and show_entry(pick, focus_line, focus_col) then
                 return
             end
             -- the shown file went clean while others survived (committed on its own,
@@ -1249,10 +1255,10 @@ function M.panel(opts)
         end
         panel:select(true)
         if on_origin and view then
-            -- hold the exact origin line when it's a changed line, so opening deep in a
-            -- hunk stays put rather than snapping to the hunk's top; a cursor on
-            -- unchanged context still falls back to the nearest hunk to review
-            view:focus_new_line(origin_line, true)
+            -- hold the exact origin position when it's a changed line, so opening deep in
+            -- a hunk stays put (column included) rather than snapping to the hunk's top;
+            -- a cursor on unchanged context still falls back to the nearest hunk to review
+            view:focus_new_line(origin_line, true, origin_col)
         end
     end
     return panel
@@ -1289,9 +1295,9 @@ function M.history(opts)
     -- fall through to open the new one, so we never stack a second session in its own tab
     supersede_local_session()
 
-    -- the cursor line :Differ log was invoked from, to open the first commit's diff at
-    -- that line when history is for the file we're sitting in (resolved below)
-    local origin_line = vim.api.nvim_win_get_cursor(0)[1]
+    -- the cursor position :Differ log was invoked from, to open the first commit's diff
+    -- at that position when history is for the file we're sitting in (resolved below)
+    local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
     local origin_buf = vim.fn.resolve(vim.api.nvim_buf_get_name(0))
 
     local file = opts.path and vim.fn.fnamemodify(opts.path, ":p") or vim.api.nvim_buf_get_name(0)
@@ -1358,7 +1364,7 @@ function M.history(opts)
             -- commit steps land on the first hunk like before
             if origin and not opened_origin then
                 opened_origin = true
-                view:focus_new_line(origin, true)
+                view:focus_new_line(origin, true, origin_col)
             end
         end,
         on_close = function()

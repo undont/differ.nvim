@@ -619,6 +619,85 @@ describe("view re-source", function()
         v:close()
     end)
 
+    it("carries the cursor column across a re-source", function()
+        -- what the worktree watcher does after a `:w`: read the position, re-source,
+        -- put the cursor back. the column has to survive that, not reset to 0
+        local old, new = "a\nb\nc\n", "a\nBETA CHANGED\nc\n"
+        local v = View.new(model(old, new), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local col = v.columns[1]
+        local row = col.map.from_new[2]
+        vim.api.nvim_win_set_cursor(col.winid, { row, 6 })
+        local line, ccol = v:cursor_new_line()
+        assert.are.equal(2, line)
+        assert.are.equal(6, ccol)
+        v:set_source(model(old, new), nil, { focus_line = line, focus_col = ccol })
+        assert.are.same({ row, 6 }, vim.api.nvim_win_get_cursor(col.winid))
+        v:close()
+    end)
+
+    it("reports no column when the cursor sits on a row with no new-side line", function()
+        -- a deleted row maps forward to a different new-side line, so its column would
+        -- land at an arbitrary offset in unrelated text; the edit verbs drop it too
+        local old, new = "a\nDELETED\nc\n", "a\nc\n"
+        local v = View.new(model(old, new), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local col = v.columns[1]
+        local deleted_row = col.map.from_old[2]
+        vim.api.nvim_win_set_cursor(col.winid, { deleted_row, 4 })
+        local _, ccol = v:cursor_new_line()
+        assert.are.equal(0, ccol)
+        v:close()
+    end)
+
+    it("holds the origin column on an exact landing, clamped to the line", function()
+        -- opening on a changed line should keep the column you were reading at, not
+        -- reset to the start of the line
+        local old, new = "a\nb\nc\n", "a\nBETA CHANGED\nc\n"
+        local v = View.new(model(old, new), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local col = v.columns[1]
+        v:focus_new_line(2, true, 6)
+        assert.are.same({ col.map.from_new[2], 6 }, vim.api.nvim_win_get_cursor(col.winid))
+        -- a column past the rendered text clamps rather than failing the set
+        v:focus_new_line(2, true, 999)
+        assert.are.same(
+            { col.map.from_new[2], #"BETA CHANGED" - 1 },
+            vim.api.nvim_win_get_cursor(col.winid)
+        )
+        -- no column supplied behaves as before
+        v:focus_new_line(2, true)
+        assert.are.same({ col.map.from_new[2], 0 }, vim.api.nvim_win_get_cursor(col.winid))
+        v:close()
+    end)
+
+    it("drops the origin column when it snaps to a different line", function()
+        -- the fallback lands on the nearest hunk, so the old column means nothing there
+        local old, new = "a\nb\nc\nd\ne\n", "a\nB\nC\nD\ne\n"
+        local v = View.new(model(old, new), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local col = v.columns[1]
+        v:focus_new_line(5, true, 1) -- an unchanged context line, with a column
+        assert.are.equal(0, vim.api.nvim_win_get_cursor(col.winid)[2])
+        v:close()
+    end)
+
     it("snaps an unchanged origin line to the nearest hunk, not the context row", function()
         -- the change is at lines 2-4 (B,C,D); line 5 ("e") is an unchanged context line
         local old, new = "a\nb\nc\nd\ne\n", "a\nB\nC\nD\ne\n"

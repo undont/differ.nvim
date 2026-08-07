@@ -490,7 +490,7 @@ end
 -- file underneath the user); without it the cursor lands on the first unstaged hunk
 ---@param model differ.DiffModel
 ---@param staging differ.view.Staging|nil
----@param opts? { focus_line?: integer }
+---@param opts? { focus_line?: integer, focus_col?: integer }
 function View:set_source(model, staging, opts)
     -- a switch to a different file leaves any edit window stale; drop it. a same-file
     -- re-source (the watcher after a `:w`) keeps it so editing continues uninterrupted
@@ -503,7 +503,8 @@ function View:set_source(model, staging, opts)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds() -- new file's ranges; windows unchanged so refold in place
     if opts and opts.focus_line then
-        self:focus_new_line(opts.focus_line, true) -- hold the precise line across a refresh
+        -- hold the precise position across a refresh
+        self:focus_new_line(opts.focus_line, true, opts.focus_col)
     else
         self:_focus_first_hunk() -- land on the first unstaged hunk of the new file
     end
@@ -879,24 +880,26 @@ function View:_focus_first_hunk()
     end
 end
 
--- the new-side file line the cursor currently sits on, for holding position across
--- an in-place re-source (an external refresh of the same file). read from the new-
--- side column (the unified column in stacked, the right column in split) so it pairs
--- with focus_new_line; nil when there's no live new side
----@return integer|nil
+-- the new-side file position the cursor currently sits on, for holding it across an
+-- in-place re-source (an external refresh of the same file). read from the new-side
+-- column (the unified column in stacked, the right column in split) so it pairs with
+-- focus_new_line; nil when there's no live new side. the column rides along under the
+-- same rule the edit verbs use: only when the cursor's own line maps 1:1 to a new-side
+-- line, since a deleted/meta row redirects to a different line entirely
+---@return integer|nil line, integer col
 function View:cursor_new_line()
     -- while editing, the live position is in the edit window (the real worktree file,
-    -- which is the new side), so use its line directly; the diff window's own cursor is
+    -- which is the new side), so use it directly; the diff window's own cursor is
     -- stale there. this makes a post-`:w` re-source focus the line just edited
     if self.edit_win and vim.api.nvim_win_is_valid(self.edit_win) then
-        return vim.api.nvim_win_get_cursor(self.edit_win)[1]
+        local lnum, ccol = unpack(vim.api.nvim_win_get_cursor(self.edit_win))
+        return lnum, ccol
     end
     local col = self.columns[#self.columns]
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
-        return nil
+        return nil, 0
     end
-    local lnum = vim.api.nvim_win_get_cursor(col.winid)[1]
-    return nav.file_line(col.map, lnum)
+    return self:_file_pos(col, col.winid)
 end
 
 -- position the new side near `new_lnum` (where the cursor was, or the line just
@@ -908,7 +911,8 @@ end
 -- leading context (this is what open-on-origin wants)
 ---@param new_lnum integer
 ---@param exact? boolean
-function View:focus_new_line(new_lnum, exact)
+---@param new_col? integer  -- the origin's byte column, held only on an exact landing
+function View:focus_new_line(new_lnum, exact, new_col)
     local col = self.columns[#self.columns] -- the new side: the unified col, or right in split
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
         return
@@ -917,7 +921,11 @@ function View:focus_new_line(new_lnum, exact)
     -- origin line :Differ was run from); hold it exactly rather than snapping to the hunk
     local at = col.map.from_new[new_lnum]
     if exact and at and col.map.lines[at] and col.map.lines[at].hunk then
-        pcall(vim.api.nvim_win_set_cursor, col.winid, { at, 0 })
+        -- the same line, so the origin's column still means something; clamp it to the
+        -- rendered text so a column past EOL doesn't fail the set. the fallback below
+        -- lands on a *different* line, where the old column would be meaningless
+        local text = vim.api.nvim_buf_get_lines(col.bufnr, at - 1, at, false)[1] or ""
+        pcall(vim.api.nvim_win_set_cursor, col.winid, { at, math.min(new_col or 0, #text) })
         pcall(vim.api.nvim_win_call, col.winid, function()
             vim.cmd("normal! zz")
         end)
