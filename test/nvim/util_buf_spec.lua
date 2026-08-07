@@ -41,19 +41,22 @@ describe("util.buf.find", function()
         end)
     end)
 
-    it("matches a buffer nvim named through a resolved symlink", function()
-        -- nvim resolves symlinks when it names a buffer, so a caller path that goes
-        -- through one (every tempname() on macOS, /var -> /private/var) has to be
-        -- compared against its real path too, or jump-to-file :edits a dirty buffer
-        -- and raises E37
-        local dir = vim.fn.tempname()
-        vim.fn.mkdir(dir, "p")
-        local path = dir .. "/symlinked.txt"
-        vim.fn.writefile({ "x" }, path)
-        vim.cmd.edit(vim.fn.fnameescape(path))
-        local b = vim.api.nvim_get_current_buf()
-        assert.are_not.equal(path, vim.api.nvim_buf_get_name(b)) -- nvim resolved it
-        assert.are.equal(b, buf_util.find(path))
+    it("finds a buffer named by its real path when asked through a symlink", function()
+        -- nvim names a buffer through the file's real path, so jump-to-file asking with
+        -- an unresolved path would miss and fall back to :edit, raising E37 on a dirty
+        -- buffer. the buffer is named explicitly here rather than opened via :edit: how
+        -- much nvim itself resolves is platform-dependent (macos hands every tempname()
+        -- a /var -> /private/var link, linux does not), and it is this helper's own
+        -- resolution that needs pinning
+        local real_dir = vim.fn.tempname()
+        vim.fn.mkdir(real_dir, "p")
+        vim.fn.writefile({ "x" }, real_dir .. "/via-link.txt")
+        local link = vim.fn.tempname()
+        assert.is_true((vim.uv or vim.loop).fs_symlink(real_dir, link) == true)
+
+        local b = vim.api.nvim_create_buf(true, false)
+        vim.api.nvim_buf_set_name(b, real_dir .. "/via-link.txt")
+        assert.are.equal(b, buf_util.find(link .. "/via-link.txt"))
         pcall(vim.api.nvim_buf_delete, b, { force = true })
     end)
 
