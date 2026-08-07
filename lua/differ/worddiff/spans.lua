@@ -9,11 +9,12 @@ local pair = require("differ.worddiff.pair")
 
 local M = {}
 
--- the trimmed middle still grids at na*nb, and the dp table is that many slots, so a
--- line long enough to survive the trim is a memory problem before it is a time one
--- (9e6 cells costs ~95MB). past this the middle is left unmarked and reads as one
--- changed span, which is what a line with thousands of differing tokens is anyway
-local MAX_MIDDLE_CELLS = 4e6
+-- the trimmed middle still grids at na*nb, once per line pair on the render path, so
+-- latency binds before memory does: 1e6 cells costs ~10ms a pair and a hunk can hold
+-- many. past this the middle is left unmarked and reads as one changed span, which is
+-- what a line with thousands of differing tokens is anyway. char granularity reaches
+-- the ceiling on far shorter lines, so this is what keeps it viable
+local MAX_MIDDLE_CELLS = 1e6
 
 ---@class differ.PairSpans
 ---@field old differ.SubSpan[]

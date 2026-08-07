@@ -91,9 +91,23 @@ describe("worddiff.spans.emit size ceiling", function()
         assert.are.same({ { col_start = 27001, col_end = 27009 } }, s.new)
     end)
 
+    it("still grids a middle that sits on the ceiling", function()
+        -- 500 disjoint words is 999 tokens a side, and 999^2 stays under the ceiling, so
+        -- every changed word keeps its own span instead of merging
+        local old_words, new_words = {}, {}
+        for i = 1, 500 do
+            old_words[i] = "a" .. i
+            new_words[i] = "b" .. i
+        end
+        local s = spans.emit(table.concat(old_words, " "), table.concat(new_words, " "), "word")
+        assert.are.equal(500, #s.old)
+        assert.are.equal(500, #s.new)
+        assert.are.same({ col_start = 0, col_end = 2 }, s.old[1])
+    end)
+
     it("collapses to one span when the middle is too large to grid", function()
         -- disjoint tokens either side, so nothing trims and the middle stays the whole
-        -- line: 1001 words is 2001 tokens a side, and 2001^2 clears the 4e6 ceiling
+        -- line: 1001 words is 2001 tokens a side, and 2001^2 clears the ceiling
         local old_words, new_words = {}, {}
         for i = 1, 1001 do
             old_words[i] = "a" .. i
