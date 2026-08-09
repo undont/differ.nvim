@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `s` and `u` stage and unstage a deleted file from the diff view, by the same wholesale `git add` staging a new file already used; only the panel could do it before. `X` still restores the file rather than removing it
+
+### Changed
+
+- `s` and `u` walk the review by what is left to do rather than by position: on through the file, back round to whatever sits behind the cursor, then the next file holding anything on that side, cycling past the ends of the list and skipping files with nothing to do. Entering a file partway down used to strand every hunk above the cursor, with `s` reporting `no more hunks to stage` while plenty still was. `S` and `U` take the same walk
+
+### Fixed
+
+- Staging a hunk with an earlier one left unstaged puts it where it belongs. Only one side of a one-hunk patch's `@@` header was shifted onto the index, and git falls back to the other when the first has no lines to match on: a staged insertion landed at a worktree line number, and every later hunk in the file then failed against an index it no longer matched. Unstaging or reverting a pure deletion is the mirror, and applied cleanly in the wrong place rather than failing
+- `:Differ` opens the unstaged side of a file changed on both sides. An `MM` file lists under Staged and Unstaged at once and the Staged row renders first, so opening from the file landed on the `HEAD`↔index diff and read the cursor's worktree line as an index line: it was context there, and the view snapped to whichever hunk happened to be nearest. It now takes the unstaged row, the only pair those line numbers belong to, and holds the exact line and column you were on
+- The file panel keeps its cursor on its own file across a list rebuild. Rows were restored by line number, so an entry leaving the list above the cursor slid a neighbour into its place and silently moved the selection to a different file: `]f`/`[f` then stepped from the wrong one and the winbar counted it. Rows are anchored by identity now, following a file that moves between sections, and `i` no longer scatters the cursor when it reflows the list either
+- Staging a file's last unstaged hunk moves the diff onto its staged side. The view stayed frozen on an index↔worktree pair that git no longer had anything in, until you navigated away and back; it follows the file across now, carrying the line you staged from rather than dropping you on the first hunk. Unstaging the last staged hunk still stays put, since that is what lets `s` re-stage it in place. Where a file's whole change is a single hunk this leaves you on the staged pair, so `X` there reverts the index and worktree together instead of refusing
+- A staging op git refuses says so, rather than passing for one that worked. Staging, unstaging and `X`'s discard threw git's exit status away, so nothing distinguished a refused `git add` from a successful one: staging a new or deleted file from the diff marked the hunk and painted it staged over a change git never took. Discarding a staged add also stops short of deleting the file when the unstage before it fails, which used to leave the index holding an add for a file no longer on disk
+- `s` and `u` carry on past a file that went clean under the session rather than stopping on it. Opening a file that was committed or checked out elsewhere refreshes the list and says so instead of showing a diff, but the walk counted that as having moved: it announced there was nothing left to stage while other files still held hunks, and `u` reached for the last hunk of a view that had not changed. The selection is dropped when its own file leaves the change set too, which is what made the next `s` report wrapping round a list it had not reached the end of
+
+## [0.1.22] — 2026-08-07
+
 ### Changed
 
 - The word-level diff is faster on large hunks and long lines. Lines are tokenised once per pass rather than once per comparison, and the tokens shared at the head and tail of a pair are matched without reaching the LCS grid. A 1000-line rewrite renders in under a second where it took eleven, and a 50KB minified line in hundredths of one where it took ten

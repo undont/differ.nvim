@@ -22,40 +22,48 @@ end
 -- one hunk as a unified diff against `path`. `old_text`/`new_text` are the full
 -- file sides, read only to detect an unterminated end of file. assumes a plain
 -- modification (same path both sides); renames/adds/deletes stage file-level.
--- `offset` shifts the located side's start by the net line delta of the staged
--- hunks before this one: the frozen view's line numbers are from open time, but
--- git applies against the live index, so a preceding staged insert/delete moves
--- this hunk's position. under `--unidiff-zero` git relocates a single zero-context
--- hunk by content and only reads one side's start (`-` for a forward stage, `+`
--- for a reverse unstage), so only that side carries the offset; the other side
--- keeps its frozen, always-non-negative line number. shifting both would let a
--- net-negative offset (earlier deletions) drive the unused side below zero, and
--- git rejects a negative `@@` number as `corrupt patch at line 4` before it ever
--- tries to apply
+-- `base` names which of the hunk's own coordinates the file being patched is measured
+-- in: "old" for staging and unstaging, which patch the index (the hunk sits at its
+-- old-side start there, since the index is HEAD plus whatever is staged), "new" for a
+-- revert, which patches the file the diff's new side was read from. `offset` then
+-- shifts that start onto the live file, the frozen view's numbers being from open time
+-- while git applies against a file that has moved since.
+--
+-- both sides of the `@@` carry it, and both name the same place: a one-hunk patch has
+-- nothing ahead of it to shift one side relative to the other. under `--unidiff-zero`
+-- git relocates a hunk by content, but only where it has content to relocate by, and a
+-- side with no lines (staging a pure insertion, unstaging or reverting a pure deletion)
+-- leaves it trusting the header instead. a side left frozen there doesn't fail loudly,
+-- it lands the hunk somewhere else entirely
 ---@param path string
 ---@param hunk differ.Hunk
 ---@param old_text string
 ---@param new_text string
 ---@param offset integer|nil
----@param reverse boolean|nil  -- true for an unstage apply (shifts new_start, not old_start)
+---@param base "old"|"new"|nil  -- which side's coordinates the patched file is in; default "old"
 ---@return string
-function M.hunk(path, hunk, old_text, new_text, offset, reverse)
+function M.hunk(path, hunk, old_text, new_text, offset, base)
     offset = offset or 0
     local old_n, new_n = #to_lines(old_text), #to_lines(new_text)
     local old_eof, new_eof = unterminated(old_text), unterminated(new_text)
-    local old_shift = reverse and 0 or offset
-    local new_shift = reverse and offset or 0
+
+    -- where the hunk's block begins in the file being patched. git names a zero-length
+    -- side by the line it follows rather than the line it occupies, so a base side with
+    -- no lines is one short of the block's own position; clamped so the headers below
+    -- stay non-negative, which git rejects outright as a corrupt patch
+    local on_new = base == "new"
+    local start = on_new and hunk.new_start or hunk.old_start
+    local base_empty = (on_new and hunk.new_count or hunk.old_count) == 0
+    local at = math.max(1, start + offset + (base_empty and 1 or 0))
+    -- and back to git's convention for each side, now in the target's coordinates
+    local old_at = hunk.old_count == 0 and at - 1 or at
+    local new_at = hunk.new_count == 0 and at - 1 or at
 
     local out = {
         ("diff --git a/%s b/%s"):format(path, path),
         "--- a/" .. path,
         "+++ b/" .. path,
-        ("@@ -%d,%d +%d,%d @@"):format(
-            hunk.old_start + old_shift,
-            hunk.old_count,
-            hunk.new_start + new_shift,
-            hunk.new_count
-        ),
+        ("@@ -%d,%d +%d,%d @@"):format(old_at, hunk.old_count, new_at, hunk.new_count),
     }
     for i, line in ipairs(hunk.old_lines) do
         out[#out + 1] = "-" .. line

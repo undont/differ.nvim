@@ -545,7 +545,7 @@ function M.status_sections(root)
                 staged = false,
             }
         else
-            -- previous_path only belongs to whichever side carries the rename:
+            -- previous_path only belongs to whichever pair carries the rename:
             -- an "RM" file is renamed HEAD↔index but plain-modified index↔worktree
             if s.x ~= " " then
                 local c = staged_counts[s.path] or {}
@@ -581,26 +581,47 @@ end
 -- file-level staging ops driven from the panel (slice C); each is whole-file
 -- and operates on the repo root. hunk-level staging stays in the diff view
 
+-- run git and report a failure where the user can see it, returning whether it landed.
+-- these wrappers own their own message so callers only ever branch on the boolean: a
+-- swallowed failure would leave the panel and the staged marks describing a state git
+-- never reached
+---@param args string[]
+---@param cwd string
+---@param what string  -- names the operation in the message
+---@return boolean ok
+local function git_ok(args, cwd, what)
+    local out, err = git(args, cwd) -- nil out is exactly a non-zero exit; stderr can be empty
+    if not out then
+        notify(("%s failed: %s"):format(what, err or ""), vim.log.levels.ERROR)
+        return false
+    end
+    return true
+end
+
 ---@param root string
 ---@param path string
+---@return boolean ok
 function M.stage(root, path)
-    git({ "add", "--", path }, root)
+    return git_ok({ "add", "--", path }, root, "stage")
 end
 
 ---@param root string
 ---@param path string
+---@return boolean ok
 function M.unstage(root, path)
-    git({ "reset", "-q", "HEAD", "--", path }, root)
+    return git_ok({ "reset", "-q", "HEAD", "--", path }, root, "unstage")
 end
 
 ---@param root string
+---@return boolean ok
 function M.stage_all(root)
-    git({ "add", "-A" }, root)
+    return git_ok({ "add", "-A" }, root, "stage all")
 end
 
 ---@param root string
+---@return boolean ok
 function M.unstage_all(root)
-    git({ "reset", "-q", "HEAD" }, root)
+    return git_ok({ "reset", "-q", "HEAD" }, root, "unstage all")
 end
 
 -- apply a single-hunk patch, atomically. `--unidiff-zero` because the patch carries
@@ -648,22 +669,41 @@ local function reload_buffer(root, relpath)
     end
 end
 
+-- git_ok's counterpart for the one discard path that isn't a git call
+---@param abs string
+---@return boolean ok
+local function remove_ok(abs)
+    local ok, err = os.remove(abs)
+    if not ok then
+        notify(("discard failed: %s"):format(err or ""), vim.log.levels.ERROR)
+        return false
+    end
+    return true
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
 -- destructive, so the panel confirms before calling this
 ---@param root string
 ---@param entry differ.FileEntry
+---@return boolean ok
 function M.discard(root, entry)
     local abs = root .. "/" .. entry.path
+    local ok
     if entry.status == "?" then
-        os.remove(abs)
+        ok = remove_ok(abs)
     elseif entry.status == "A" then
-        git({ "reset", "-q", "HEAD", "--", entry.path }, root) -- unstage the add
-        os.remove(abs)
+        -- unstage the add before dropping the file, and don't drop it if that failed:
+        -- the index would keep an add for a file no longer on disk
+        ok = git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard") and remove_ok(abs)
     else
-        git({ "checkout", "HEAD", "--", entry.path }, root) -- revert index + worktree
+        ok = git_ok({ "checkout", "HEAD", "--", entry.path }, root, "discard") -- index + worktree
+    end
+    if not ok then
+        return false
     end
     reload_buffer(root, entry.path)
+    return true
 end
 
 -- drop empty sections so the panel never shows a bare "Staged (0)" header; returns
@@ -873,6 +913,7 @@ function M.panel(opts)
     local panel ---@type differ.Panel|nil -- forward ref so staging can refresh it
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local on_edit_unstage ---@type fun(path: string)|nil -- assigned below; passed to the view
+    local settle_pair ---@type fun(): boolean -- assigned below; the staging follow hook
 
     -- hunk-level staging: plain modifications (status "M", same path both
     -- sides) stage by hunk; a new file (untracked "?" or staged add "A") diffs
@@ -934,9 +975,11 @@ function M.panel(opts)
     ---@param offset integer  -- index-side only; see differ.view.Staging
     ---@return boolean
     local function revert_hunk(model, hunk, offset)
+        -- a revert patches whichever file the model's new side was read from (the
+        -- worktree, or the index on a staged diff), so it's in new-side coordinates
         ---@param off integer
         local function reverse_patch(off)
-            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, true)
+            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, "new")
         end
         if model.new_rev ~= INDEX.label then
             local ok, err = M.apply_patch(root, reverse_patch(0), true, "worktree")
@@ -987,18 +1030,19 @@ function M.panel(opts)
         if not stageable then
             return nil
         end
+        -- settle_pair is assigned below stage_for, so the lookup has to defer to call time
+        local function settle()
+            return settle_pair()
+        end
         if entry.status == "M" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
                 apply = function(model, hunk, offset, reverse)
-                    local p = patch.hunk(
-                        model.path,
-                        hunk,
-                        model.old_text,
-                        model.new_text,
-                        offset,
-                        reverse
-                    )
+                    -- both directions patch the index, where the hunk sits at its
+                    -- old-side start shifted past the hunks staged before it; `reverse`
+                    -- only picks which way git reads the same patch
+                    local p =
+                        patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "old")
                     local ok, err = M.apply_patch(root, p, reverse)
                     if not ok then
                         local op = reverse and "unstage" or "stage"
@@ -1008,43 +1052,43 @@ function M.panel(opts)
                 end,
                 revert = revert_hunk,
                 refresh = refresh_panel,
+                settle = settle,
             }
         end
-        -- a new file is a single whole-file hunk against an empty side, so there's
-        -- nothing to patch partially: staging that hunk is a whole-file `git add`,
-        -- unstaging a `git reset` back to untracked
+        -- a new file and a deletion are each one whole-file hunk against an empty side,
+        -- so there's nothing to patch partially: staging is a wholesale `git add`,
+        -- unstaging a `git reset`. only the revert tells the two apart
+        local function whole_file_apply(_, _, _, reverse)
+            if reverse then
+                return M.unstage(root, entry.path)
+            end
+            return M.stage(root, entry.path)
+        end
         if entry.status == "?" or entry.status == "A" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
-                apply = function(_, _, _, reverse)
-                    if reverse then
-                        M.unstage(root, entry.path)
-                    else
-                        M.stage(root, entry.path)
-                    end
-                    return true
-                end,
+                apply = whole_file_apply,
                 -- the file is the hunk, so reverting it is deleting it; `discard`
                 -- already knows to drop the staged add first
                 revert = function()
-                    M.discard(root, entry)
-                    return true
+                    return M.discard(root, entry)
                 end,
                 revert_label = "deletes the file",
                 refresh = refresh_panel,
+                settle = settle,
             }
         end
-        -- a deleted file diffs its content against nothing, so there's no hunk to stage
-        -- (the panel stages the deletion wholesale) but there is one to undo: no
-        -- `apply`, so s/u keep refusing while X brings the file back
         if entry.status == "D" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                apply = whole_file_apply,
+                -- the mirror: a deletion is restored rather than removed
                 revert = function()
                     return restore_deleted(entry)
                 end,
                 revert_label = "restores the file",
                 refresh = refresh_panel,
+                settle = settle,
             }
         end
         return nil
@@ -1095,8 +1139,8 @@ function M.panel(opts)
         return true
     end
 
-    -- the current changed-file entries for a path: a file can have a staged side and
-    -- an unstaged side, and an external op (lazygit) can empty the side you were on
+    -- the current changed-file entries for a path: a file can have a staged pair and
+    -- an unstaged pair, and an external op (lazygit) can empty the pair you were on
     ---@param path string
     ---@return differ.FileEntry[]
     local function entries_for_path(path)
@@ -1109,6 +1153,41 @@ function M.panel(opts)
             end
         end
         return out
+    end
+
+    -- after staging from an unstaged diff: when that took the file's last unstaged hunk
+    -- there's nothing left to review on this pair, so follow it to the staged one rather
+    -- than leave the diff on a pair git no longer has. only this direction follows:
+    -- unstaging the last staged hunk stays put, since that's what lets s re-stage it in
+    -- place, and swapping there would ping-pong the view on every u/s. returns whether
+    -- the view was re-targeted, so the caller knows its repaint is moot
+    ---@return boolean
+    settle_pair = function()
+        if not (panel and panel:is_alive() and view and view:is_open() and active_entry) then
+            return false
+        end
+        if active_entry.staged then
+            return false -- on the staged pair: u/s round-trips in place
+        end
+        local survivor ---@type differ.FileEntry|nil
+        for _, e in ipairs(entries_for_path(active_entry.path)) do
+            if not e.staged then
+                return false -- unstaged changes remain; stay frozen on them
+            end
+            survivor = survivor or e
+        end
+        if not survivor then
+            return false -- the file left the change set; revert's own path handles that
+        end
+        -- hold the position the stage happened at. this is a pair swap, not a file
+        -- switch, so landing on the first hunk would lose the reviewer's place; the
+        -- unstaged pair just emptied, so index and worktree agree and the line carries
+        local focus_line, focus_col = view:cursor_new_line()
+        if not show_entry(survivor, focus_line, focus_col) then
+            return false
+        end
+        panel:mark_selected(survivor)
+        return true
     end
 
     -- edit-in-review on a staged diff (flow C): unstage the whole file so the
@@ -1148,8 +1227,8 @@ function M.panel(opts)
             -- the content shifted underneath the user; hold the cursor near where it was
             -- (the nearest hunk to its new-side line) rather than snapping to the top
             local focus_line, focus_col = view:cursor_new_line()
-            -- re-target the view to the file's current changes, preferring the side it
-            -- was on; staging the whole file empties that side, so fall back to the
+            -- re-target the view to the file's current changes, preferring the pair it
+            -- was on; staging the whole file empties that pair, so fall back to the
             -- other. show_entry records the signature when it sources
             local candidates = entries_for_path(active_entry.path)
             local pick = candidates[1]
@@ -1210,15 +1289,18 @@ function M.panel(opts)
         progress = panel_cfg.progress,
         on_select = function(entry)
             if show_entry(entry) then
-                return
+                return true
             end
             -- a stale entry (committed or changed outside differ) has an empty diff;
             -- refresh the list rather than opening a blank view. that refresh can end
-            -- the session (it was the last entry), which says so on its own
+            -- the session (it was the last entry), which says so on its own. false tells
+            -- the panel nothing was opened, so a review walk carries on past it instead
+            -- of reporting the walk over
             refresh_panel()
             if panel and panel:is_alive() then
                 notify(("no changes for %s"):format(entry.path))
             end
+            return false
         end,
         -- the change set emptied under the session (a commit, or the last change
         -- reverted): there's nothing left to review, so end it rather than leave an
@@ -1248,8 +1330,10 @@ function M.panel(opts)
     if opts.open_first then
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first unstaged file (skipping the Staged section, and pure
-        -- renames which diff to a blank view); leave the cursor in the diff, not the panel
-        local on_origin = origin_rel and panel:focus_file(origin_rel)
+        -- renames which diff to a blank view); leave the cursor in the diff, not the panel.
+        -- a file changed on both pairs ("MM") takes its unstaged row: origin_line is a
+        -- worktree line, and index↔worktree is the only pair in that coordinate space
+        local on_origin = origin_rel and panel:focus_file(origin_rel, true)
         if not on_origin then
             panel:focus_first_unstaged()
         end

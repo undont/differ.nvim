@@ -446,3 +446,189 @@ describe("panel refresh", function()
         assert.are.equal(1, #fired)
     end)
 end)
+
+-- rows shuffle on every rebuild, so a row number names a different file afterwards.
+-- the panel anchors the cursor and the selection by the entry's own identity instead:
+-- side + path, since a file changed on both sides holds a row in each section
+describe("panel selection identity", function()
+    -- the file under the cursor, by path, or nil off a file row
+    local function at(p)
+        local m = p.meta[vim.api.nvim_win_get_cursor(p.winid)[1]]
+        return m and m.kind == "file" and m.entry.path or nil
+    end
+
+    -- the file the selection (]f / [f, the winbar count) is anchored to
+    local function selected(p)
+        local m = p.meta[p.selected_row]
+        return m and m.kind == "file" and m.entry or nil
+    end
+
+    local function se(path, staged)
+        return { path = path, status = "M", additions = 1, deletions = 0, staged = staged }
+    end
+
+    -- staging hooks the panel only needs to exist; `reload` is the half that matters
+    local function acts(reload)
+        return {
+            stage = function() end,
+            unstage = function() end,
+            stage_all = function() end,
+            unstage_all = function() end,
+            discard = function() end,
+            reload = reload,
+        }
+    end
+
+    -- name mode reorders the list (b.lua rises above a.lua as the tree dir collapses
+    -- away), so restoring the cursor by line number lands it on the other file
+    it("holds the cursor on its file across a listing toggle", function()
+        local p = panel({ fe("a.lua"), fe("src/b.lua") })
+        p:open()
+        vim.api.nvim_win_set_cursor(p.winid, { 2, 0 }) -- " M b.lua", under the src/ row
+        assert.are.equal("src/b.lua", at(p))
+        p:toggle_listing() -- name: b.lua to row 1, a.lua to row 2
+        assert.are.equal("src/b.lua", at(p)) -- line 2 would have said a.lua
+        p:toggle_listing()
+        assert.are.equal("src/b.lua", at(p))
+        p:close()
+    end)
+
+    -- a reload that drops an entry above the cursor slides every later row up one
+    it("holds the cursor on its file when a row above it leaves the list", function()
+        local kept = { { entries = { fe("b.lua"), fe("c.lua"), fe("d.lua") } } }
+        local p = panel({ fe("a.lua"), fe("b.lua"), fe("c.lua"), fe("d.lua") }, {
+            actions = acts(function()
+                return kept
+            end),
+        })
+        p:open()
+        vim.api.nvim_win_set_cursor(p.winid, { 3, 0 })
+        assert.are.equal("c.lua", at(p))
+        p:refresh() -- a.lua gone: c.lua is row 2 now, and row 3 is d.lua
+        assert.are.equal("c.lua", at(p))
+        p:close()
+    end)
+
+    -- staging a file's last unstaged hunk moves its row between sections. the path is
+    -- the same but the side isn't, so the selection follows it across rather than
+    -- reporting the row that slid into its place
+    it("follows the selected file when it moves to the other section", function()
+        local after = {
+            { title = "Staged", entries = { se("z.lua", true) } },
+            { title = "Unstaged", entries = { se("a.lua", false) } },
+        }
+        local p = panel({}, {
+            sections = {
+                { title = "Unstaged", entries = { se("a.lua", false), se("z.lua", false) } },
+            },
+            actions = acts(function()
+                return after
+            end),
+        })
+        p:open()
+        assert.are.same({ "Unstaged (2)", "M a.lua", "M z.lua" }, lines(p))
+        p:goto_path("z.lua")
+        assert.are.equal(3, p.selected_row)
+
+        -- Staged renders first, so z.lua rises to row 2 and the old row 3 becomes the
+        -- Unstaged title: a selection kept by number would name no file at all
+        p:refresh()
+        assert.are.same({ "Staged (1)", "M z.lua", "Unstaged (1)", "M a.lua" }, lines(p))
+        local sel = selected(p)
+        assert.are.equal("z.lua", sel.path)
+        assert.is_true(sel.staged) -- and on the staged side it moved to
+        p:close()
+    end)
+
+    -- the session re-sources the view itself when a file's last unstaged hunk is
+    -- staged, so the panel only has to agree on what's selected
+    it("mark_selected moves the selection without re-opening the file", function()
+        local p, picked = panel({ fe("a.lua"), fe("b.lua") })
+        p:open()
+        p:goto_path("a.lua")
+        assert.are.equal(1, #picked)
+
+        p:mark_selected(p.meta[2].entry) -- b.lua
+        assert.are.equal("b.lua", selected(p).path)
+        assert.are.equal("b.lua", at(p)) -- the sidebar cursor agrees
+        assert.are.equal(1, #picked) -- but on_select never fired again
+        p:close()
+    end)
+
+    -- a row number kept after its file left names whatever slid into it, or sits past
+    -- the end of a shorter list, which the review walk then reads as a wrap
+    it("clears the selection when its file leaves the change set", function()
+        local kept = { { entries = { fe("b.lua") } } }
+        local p = panel({ fe("a.lua"), fe("b.lua") }, {
+            actions = acts(function()
+                return kept
+            end),
+        })
+        p:open()
+        p:goto_path("a.lua")
+        assert.is_not_nil(p.selected_row)
+        p:refresh()
+        assert.is_nil(p.selected_row)
+        p:close()
+    end)
+
+    -- a stale entry reports itself through on_select and refreshes the list; the walk
+    -- has somewhere else to go, so it carries on rather than claiming to have moved
+    -- (which strands the review) or that there's nothing left (which is a lie)
+    it("step_review carries on past an entry whose open fails", function()
+        vim.cmd("silent! only")
+        local opened = {}
+        local p = Panel.new({
+            sections = {
+                {
+                    title = "Unstaged",
+                    entries = { se("a.lua", false), se("m.lua", false), se("z.lua", false) },
+                },
+            },
+            on_select = function(e)
+                if e.path == "m.lua" then
+                    return false -- nothing left to diff here
+                end
+                opened[#opened + 1] = e.path
+                return true
+            end,
+        })
+        p:open()
+        p:goto_path("a.lua")
+        assert.are.same({ "a.lua" }, opened)
+
+        assert.is_true(p:step_review("next", false, true))
+        assert.are.same({ "a.lua", "z.lua" }, opened) -- m.lua stepped over, not landed on
+        p:close()
+    end)
+
+    it("step_review reports the walk over when every candidate is stale", function()
+        vim.cmd("silent! only")
+        local p = Panel.new({
+            sections = {
+                {
+                    title = "Unstaged",
+                    entries = { se("a.lua", false), se("m.lua", false), se("z.lua", false) },
+                },
+            },
+            on_select = function(e)
+                return e.path == "a.lua"
+            end,
+        })
+        p:open()
+        p:goto_path("a.lua")
+        assert.is_false(p:step_review("next", false, true))
+        p:close()
+    end)
+
+    -- nothing to anchor to: the entry left the change set entirely
+    it("mark_selected is inert for an entry that isn't in the list", function()
+        local p = panel({ fe("a.lua"), fe("b.lua") })
+        p:open()
+        p:goto_path("a.lua")
+        local before = p.selected_row
+        p:mark_selected(fe("gone.lua"))
+        assert.are.equal(before, p.selected_row)
+        p:close()
+    end)
+end)
