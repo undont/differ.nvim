@@ -111,6 +111,96 @@ describe("git.read_stage", function()
     end)
 end)
 
+describe("git.checkout", function()
+    -- a clone of a bare "origin", standing in for the github remote
+    local function repo_with_origin()
+        local origin = vim.fn.tempname()
+        vim.fn.mkdir(origin, "p")
+        git(origin, "init", "-q", "--bare")
+        local seed = fresh_repo()
+        git(seed, "remote", "add", "origin", origin)
+        git(seed, "push", "-q", "origin", "main")
+        local root = vim.fn.tempname()
+        git(origin, "clone", "-q", origin, root)
+        return root, seed
+    end
+
+    -- commit `content` on a branch off main in `seed`, publish it to origin under `ref`,
+    -- and leave seed back on main. a same-repo PR publishes refs/heads/<branch>; a fork
+    -- PR only ever reaches origin as refs/pull/<n>/head
+    local function publish(seed, branch, content, ref)
+        git(seed, "checkout", "-q", "-b", branch)
+        write(seed .. "/a.lua", content)
+        git(seed, "commit", "-q", "-am", "head")
+        local sha = vim.trim(git(seed, "rev-parse", "HEAD"))
+        git(seed, "push", "-q", "origin", "HEAD:" .. ref)
+        git(seed, "checkout", "-q", "main")
+        return sha
+    end
+
+    local function head(root)
+        return vim.trim(git(root, "rev-parse", "--abbrev-ref", "HEAD")),
+            vim.trim(git(root, "rev-parse", "HEAD"))
+    end
+
+    it("fetches and checks out a same-repo PR's head branch", function()
+        local root, seed = repo_with_origin()
+        local sha = publish(seed, "feature", "same repo\n", "refs/heads/feature")
+
+        assert.is_true(git_src.checkout(root, "feature", 7))
+        local branch, at = head(root)
+        assert.are.equal("feature", branch)
+        assert.are.equal(sha, at)
+    end)
+
+    it("falls back to the pull ref for a fork PR whose branch isn't on origin", function()
+        local root, seed = repo_with_origin()
+        local sha = publish(seed, "feat/forked", "fork\n", "refs/pull/26/head")
+
+        -- precondition: the branch itself really is absent from origin
+        local direct = vim.system({ "git", "fetch", "origin", "feat/forked" }, { cwd = root })
+            :wait()
+        assert.are_not.equal(0, direct.code)
+
+        assert.is_true(git_src.checkout(root, "feat/forked", 26))
+        local branch, at = head(root)
+        assert.are.equal("feat/forked", branch) -- named for the head ref, not detached
+        assert.are.equal(sha, at)
+    end)
+
+    it("lands on an existing local branch of that name without moving it", function()
+        local root, seed = repo_with_origin()
+        publish(seed, "feat/forked", "fork\n", "refs/pull/26/head")
+        git(root, "checkout", "-q", "-b", "feat/forked") -- local work already under that name
+        write(root .. "/a.lua", "local edit\n")
+        git(root, "commit", "-q", "-am", "local")
+        local _, before = head(root)
+        git(root, "checkout", "-q", "main")
+
+        assert.is_true(git_src.checkout(root, "feat/forked", 26))
+        local branch, at = head(root)
+        assert.are.equal("feat/forked", branch)
+        assert.are.equal(before, at) -- left where it was; the session's head warning covers it
+    end)
+
+    it("reports the branch fetch's error when there's no pull ref to fall back to", function()
+        local root = repo_with_origin()
+
+        local ok, err = git_src.checkout(root, "feat/missing", 26)
+        assert.is_false(ok)
+        assert.is_truthy(err:find("feat/missing", 1, true)) -- names the ref that was asked for
+    end)
+
+    it("reports the branch fetch's error when no PR number is passed", function()
+        local root, seed = repo_with_origin()
+        publish(seed, "feat/forked", "fork\n", "refs/pull/26/head")
+
+        local ok, err = git_src.checkout(root, "feat/forked")
+        assert.is_false(ok)
+        assert.is_truthy(err:find("feat/forked", 1, true))
+    end)
+end)
+
 describe("git.merge_file_diff3", function()
     local conflict = require("differ.git.conflict")
     local to_lines = require("differ.util.text").to_lines

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `:Differ pr checkout` works on a pull request from a fork. A cross-repo PR's head branch lives on the contributor's own repository and never reaches `origin`, so fetching it by name failed outright with `couldn't find remote ref`. It falls back to `refs/pull/<number>/head`, the ref `origin` does publish for such a PR, and lands on a local branch named for the head ref. An existing local branch of that name is checked out as it stands rather than moved, so nothing on it is lost
+
+## [0.1.23] — 2026-08-10
+
 ### Added
 
 - `s` and `u` stage and unstage a deleted file from the diff view, by the same wholesale `git add` staging a new file already used; only the panel could do it before. `X` still restores the file rather than removing it

@@ -1168,7 +1168,7 @@ function M.checkout()
         if not root then
             return notify("not inside a git repository", vim.log.levels.WARN)
         end
-        local ok, err = git.checkout(root, ref)
+        local ok, err = git.checkout(root, ref, s.pr.number)
         if not ok then
             return notify(
                 "checkout failed: " .. (err and vim.trim(err) or ref),
