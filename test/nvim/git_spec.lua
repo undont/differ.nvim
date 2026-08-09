@@ -1120,6 +1120,14 @@ describe(":Differ diff hunk staging", function()
     local function worktree(root, path)
         return table.concat(vim.fn.readfile(root .. "/" .. path), "\n") .. "\n"
     end
+    -- the buffer line hunk `n` starts on, in the view's primary column
+    local function hunk_line(v, n)
+        for lnum, line in ipairs(v.columns[1].map.lines) do
+            if line.hunk == n then
+                return lnum
+            end
+        end
+    end
     local function keymaps(bufnr)
         local lhs = {}
         for _, m in ipairs(vim.api.nvim_buf_get_keymap(bufnr, "n")) do
@@ -1507,6 +1515,68 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_win_set_cursor(p.origin_win, { 6, 0 }) -- the d -> D hunk
         v:stage_hunk()
         assert.are.equal("a\nINS1\nINS2\nb\nc\nD\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- git relocates a zero-context hunk by content, but a pure insertion gives its `-`
+    -- side no content to match, so it falls back to the header's `+` number. leave that
+    -- side in worktree coordinates and the lines land wherever the worktree put them
+    it("stages a pure insertion behind an unstaged hunk at the right line", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        -- hunk 1 inserts two lines and is left alone; hunk 2 inserts one, eleven
+        -- worktree lines below where it sits in the index
+        write(root .. "/a.lua", "1\nA1\nA2\n2\n3\n4\n5\n6\nB1\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(2, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        assert.is_true(v.staged_hunks[2])
+        assert.is_falsy(v.staged_hunks[1])
+
+        -- B1 after line 6, where the hunk actually is; not after line 8, where the
+        -- worktree's own numbering would put it
+        assert.are.equal("1\n2\n3\n4\n5\n6\nB1\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- the mirror: unstaging a pure deletion leaves the `+` side empty, so git reads the
+    -- `-` side. it applied cleanly with a stale number there, silently restoring the
+    -- lines in the wrong place rather than failing
+    it("unstages a pure deletion behind a staged hunk at the right line", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        -- hunk 1 inserts two lines, hunk 2 deletes two, hunk 3 keeps the unstaged side
+        -- alive so the view stays frozen on it
+        write(root .. "/a.lua", "1\nINS1\nINS2\n2\n3\n4\n7\n8\n9\nZ\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(3, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        for _, n in ipairs({ 1, 2 }) do
+            vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, n), 0 })
+            v:stage_hunk()
+            assert.is_true(v.staged_hunks[n])
+        end
+        assert.are.equal("1\nINS1\nINS2\n2\n3\n4\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+
+        -- put the deletion back: lines 5 and 6 belong after 4, not earlier
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:unstage_hunk()
+        assert.is_false(v.staged_hunks[2])
+        assert.are.equal("1\nINS1\nINS2\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
         p:close()
     end)
 

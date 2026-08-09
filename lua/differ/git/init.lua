@@ -935,9 +935,11 @@ function M.panel(opts)
     ---@param offset integer  -- index-side only; see differ.view.Staging
     ---@return boolean
     local function revert_hunk(model, hunk, offset)
+        -- a revert patches whichever file the model's new side was read from (the
+        -- worktree, or the index on a staged diff), so it's in new-side coordinates
         ---@param off integer
         local function reverse_patch(off)
-            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, true)
+            return patch.hunk(model.path, hunk, model.old_text, model.new_text, off, "new")
         end
         if model.new_rev ~= INDEX.label then
             local ok, err = M.apply_patch(root, reverse_patch(0), true, "worktree")
@@ -992,14 +994,11 @@ function M.panel(opts)
             return {
                 initial = entry.staged and "staged" or "unstaged",
                 apply = function(model, hunk, offset, reverse)
-                    local p = patch.hunk(
-                        model.path,
-                        hunk,
-                        model.old_text,
-                        model.new_text,
-                        offset,
-                        reverse
-                    )
+                    -- both directions patch the index, where the hunk sits at its
+                    -- old-side start shifted past the hunks staged before it; `reverse`
+                    -- only picks which way git reads the same patch
+                    local p =
+                        patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "old")
                     local ok, err = M.apply_patch(root, p, reverse)
                     if not ok then
                         local op = reverse and "unstage" or "stage"

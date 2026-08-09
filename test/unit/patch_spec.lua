@@ -80,16 +80,18 @@ describe("patch.hunk", function()
             old_lines = { "e" },
             new_lines = { "E" },
         }
+        -- both sides name the same place: a one-hunk patch has nothing ahead of it to
+        -- shift one relative to the other
         local p = patch.hunk("f", h, "a\nb\nc\nd\ne\n", "a\nb\nc\nd\nE\n", 2)
-        assert.is_truthy(p:find("@@ -7,1 +5,1 @@", 1, true))
+        assert.is_truthy(p:find("@@ -7,1 +7,1 @@", 1, true), p)
     end)
 
     it("never emits a negative line number when a deletion offset underflows", function()
-        -- an earlier staged hunk deleted 6 lines (net offset -6); a later hunk sits at
-        -- worktree line 3. shifting both starts would drive new_start to -3 and produce
-        -- `@@ -3,1 +-3,1 @@`, which git rejects as a corrupt patch at line 4
+        -- an earlier staged hunk deleted 6 lines (net offset -6), more than precede this
+        -- one. a real hunk can't reach that, but `@@ -3,1 +-3,1 @@` is rejected outright
+        -- as a corrupt patch at line 4, so the clamp keeps it merely wrong, not fatal
         local h = {
-            old_start = 9,
+            old_start = 3,
             old_count = 1,
             new_start = 3,
             new_count = 1,
@@ -102,23 +104,39 @@ describe("patch.hunk", function()
         assert.is_nil(header:find("%+%-"), "negative new_start in header: " .. header)
     end)
 
-    it("forward stage shifts only old_start, leaving new_start frozen", function()
-        -- forward apply locates by the `-` side, so only old_start carries the offset;
-        -- new_start (worktree coords) stays put and so can never go negative
+    -- git can only relocate a hunk by content where a side has content. staging a pure
+    -- insertion leaves the `-` side empty, so git reads `+` instead, and that side has
+    -- to name the index too or the lines land somewhere else entirely
+    it("puts a staged insertion's `+` side in index coordinates", function()
         local h = {
-            old_start = 9,
-            old_count = 1,
-            new_start = 3,
-            new_count = 1,
-            old_lines = { "i" },
-            new_lines = { "I" },
+            old_start = 20,
+            old_count = 0,
+            new_start = 31,
+            new_count = 2,
+            old_lines = {},
+            new_lines = { "x", "y" },
         }
-        local p = patch.hunk("f", h, "", "", -6, false)
-        assert.is_truthy(p:find("@@ -3,1 +3,1 @@", 1, true), p)
+        -- 4 lines staged ahead of it: the insert follows index line 24, occupying 25-26
+        local p = patch.hunk("f", h, "", "", 4, "old")
+        assert.is_truthy(p:find("@@ -24,0 +25,2 @@", 1, true), p)
     end)
 
-    it("reverse unstage shifts only new_start, leaving old_start frozen", function()
-        -- reverse apply locates by the `+` side, so only new_start carries the offset
+    -- the mirror: unstaging a pure deletion leaves the `+` side empty, so git reads `-`
+    it("puts an unstaged deletion's `-` side in index coordinates", function()
+        local h = {
+            old_start = 5,
+            old_count = 2,
+            new_start = 6,
+            new_count = 0,
+            old_lines = { "e", "f" },
+            new_lines = {},
+        }
+        local p = patch.hunk("f", h, "", "", 2, "old")
+        assert.is_truthy(p:find("@@ -7,2 +6,0 @@", 1, true), p)
+    end)
+
+    -- a revert patches the file the new side was read from, so it anchors on new_start
+    it("anchors a revert on the new side", function()
         local h = {
             old_start = 3,
             old_count = 1,
@@ -127,8 +145,22 @@ describe("patch.hunk", function()
             old_lines = { "i" },
             new_lines = { "I" },
         }
-        local p = patch.hunk("f", h, "", "", -6, true)
+        local p = patch.hunk("f", h, "", "", -6, "new")
         assert.is_truthy(p:find("@@ -3,1 +3,1 @@", 1, true), p)
+    end)
+
+    it("anchors a reverted deletion on the line the new side left behind", function()
+        local h = {
+            old_start = 5,
+            old_count = 2,
+            new_start = 6,
+            new_count = 0,
+            old_lines = { "e", "f" },
+            new_lines = {},
+        }
+        -- the empty new side names line 6, so the block itself begins at 7
+        local p = patch.hunk("f", h, "", "", 0, "new")
+        assert.is_truthy(p:find("@@ -7,2 +6,0 @@", 1, true), p)
     end)
 
     it("omits the marker when the hunk does not reach an unterminated EOF", function()
