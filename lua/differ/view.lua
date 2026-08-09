@@ -69,8 +69,9 @@ local armed_view = nil
 -- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
 -- panel counts and is called once after a single toggle or a whole S/U batch
 -- `apply` and `revert` are independently optional, and each one's absence gates its own
--- keys: a deleted file can be restored (`revert`) but has nothing to stage by hunk, so
--- it offers no `apply` and s/u keep refusing on it.
+-- keys rather than the whole capability. the git frontend supplies both wherever it
+-- stages at all: a deleted file stages wholesale like a new one, and reverts by
+-- restoring the file rather than removing it.
 -- `revert` throws a hunk away instead of moving it between index and worktree, and its
 -- absence is what gates the key off a source that can't do it. `offset` shifts its
 -- index-side apply past hunks unstaged before it; its worktree apply needs none, since
@@ -766,7 +767,7 @@ function View:show_help()
     if self:_editable_source() then
         rows[#rows + 1] = { fmt(km.edit_file), "edit the real file (in review)" }
     end
-    -- per-file, not session-wide: a deleted file reverts but doesn't stage by hunk, so
+    -- per-file, not session-wide: a pure rename carries no staging capability at all, so
     -- listing s/u there would advertise keys that refuse
     if self:_can_stage_hunk() then
         rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage hunk" }
@@ -990,8 +991,7 @@ function View:_hunk_index_under_cursor()
 end
 
 -- whether the hunk-staging keys act here: the session allows staging and this file's
--- capability implements it. a deleted file supplies only `revert`, so s/u refuse on it
--- while X still works
+-- capability implements it. gated on `apply` alone, since `revert` gates X on its own
 ---@return boolean
 function View:_can_stage_hunk()
     return self.can_stage and self.staging ~= nil and self.staging.apply ~= nil

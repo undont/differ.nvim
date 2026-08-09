@@ -581,26 +581,47 @@ end
 -- file-level staging ops driven from the panel (slice C); each is whole-file
 -- and operates on the repo root. hunk-level staging stays in the diff view
 
+-- run git and report a failure where the user can see it, returning whether it landed.
+-- these wrappers own their own message so callers only ever branch on the boolean: a
+-- swallowed failure would leave the panel and the staged marks describing a state git
+-- never reached
+---@param args string[]
+---@param cwd string
+---@param what string  -- names the operation in the message
+---@return boolean ok
+local function git_ok(args, cwd, what)
+    local out, err = git(args, cwd) -- nil out is exactly a non-zero exit; stderr can be empty
+    if not out then
+        notify(("%s failed: %s"):format(what, err or ""), vim.log.levels.ERROR)
+        return false
+    end
+    return true
+end
+
 ---@param root string
 ---@param path string
+---@return boolean ok
 function M.stage(root, path)
-    git({ "add", "--", path }, root)
+    return git_ok({ "add", "--", path }, root, "stage")
 end
 
 ---@param root string
 ---@param path string
+---@return boolean ok
 function M.unstage(root, path)
-    git({ "reset", "-q", "HEAD", "--", path }, root)
+    return git_ok({ "reset", "-q", "HEAD", "--", path }, root, "unstage")
 end
 
 ---@param root string
+---@return boolean ok
 function M.stage_all(root)
-    git({ "add", "-A" }, root)
+    return git_ok({ "add", "-A" }, root, "stage all")
 end
 
 ---@param root string
+---@return boolean ok
 function M.unstage_all(root)
-    git({ "reset", "-q", "HEAD" }, root)
+    return git_ok({ "reset", "-q", "HEAD" }, root, "unstage all")
 end
 
 -- apply a single-hunk patch, atomically. `--unidiff-zero` because the patch carries
@@ -648,22 +669,41 @@ local function reload_buffer(root, relpath)
     end
 end
 
+-- git_ok's counterpart for the one discard path that isn't a git call
+---@param abs string
+---@return boolean ok
+local function remove_ok(abs)
+    local ok, err = os.remove(abs)
+    if not ok then
+        notify(("discard failed: %s"):format(err or ""), vim.log.levels.ERROR)
+        return false
+    end
+    return true
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
 -- destructive, so the panel confirms before calling this
 ---@param root string
 ---@param entry differ.FileEntry
+---@return boolean ok
 function M.discard(root, entry)
     local abs = root .. "/" .. entry.path
+    local ok
     if entry.status == "?" then
-        os.remove(abs)
+        ok = remove_ok(abs)
     elseif entry.status == "A" then
-        git({ "reset", "-q", "HEAD", "--", entry.path }, root) -- unstage the add
-        os.remove(abs)
+        -- unstage the add before dropping the file, and don't drop it if that failed:
+        -- the index would keep an add for a file no longer on disk
+        ok = git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard") and remove_ok(abs)
     else
-        git({ "checkout", "HEAD", "--", entry.path }, root) -- revert index + worktree
+        ok = git_ok({ "checkout", "HEAD", "--", entry.path }, root, "discard") -- index + worktree
+    end
+    if not ok then
+        return false
     end
     reload_buffer(root, entry.path)
+    return true
 end
 
 -- drop empty sections so the panel never shows a bare "Staged (0)" header; returns
@@ -990,6 +1030,10 @@ function M.panel(opts)
         if not stageable then
             return nil
         end
+        -- settle_side is assigned below stage_for, so the lookup has to defer to call time
+        local function settle()
+            return settle_side()
+        end
         if entry.status == "M" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
@@ -1008,60 +1052,43 @@ function M.panel(opts)
                 end,
                 revert = revert_hunk,
                 refresh = refresh_panel,
-                settle = function()
-                    return settle_side()
-                end,
+                settle = settle,
             }
         end
-        -- a new file is a single whole-file hunk against an empty side, so there's
-        -- nothing to patch partially: staging that hunk is a whole-file `git add`,
-        -- unstaging a `git reset` back to untracked
+        -- a new file and a deletion are each one whole-file hunk against an empty side,
+        -- so there's nothing to patch partially: staging is a wholesale `git add`,
+        -- unstaging a `git reset`. only the revert tells the two apart
+        local function whole_file_apply(_, _, _, reverse)
+            if reverse then
+                return M.unstage(root, entry.path)
+            end
+            return M.stage(root, entry.path)
+        end
         if entry.status == "?" or entry.status == "A" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
-                apply = function(_, _, _, reverse)
-                    if reverse then
-                        M.unstage(root, entry.path)
-                    else
-                        M.stage(root, entry.path)
-                    end
-                    return true
-                end,
+                apply = whole_file_apply,
                 -- the file is the hunk, so reverting it is deleting it; `discard`
                 -- already knows to drop the staged add first
                 revert = function()
-                    M.discard(root, entry)
-                    return true
+                    return M.discard(root, entry)
                 end,
                 revert_label = "deletes the file",
                 refresh = refresh_panel,
-                settle = function()
-                    return settle_side()
-                end,
+                settle = settle,
             }
         end
-        -- a deletion is the mirror of that: one whole-file hunk against an empty *new*
-        -- side, so the same whole-file `git add` stages it and `git reset` puts it back.
-        -- only the revert differs, restoring the file rather than removing it
         if entry.status == "D" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
-                apply = function(_, _, _, reverse)
-                    if reverse then
-                        M.unstage(root, entry.path)
-                    else
-                        M.stage(root, entry.path)
-                    end
-                    return true
-                end,
+                apply = whole_file_apply,
+                -- the mirror: a deletion is restored rather than removed
                 revert = function()
                     return restore_deleted(entry)
                 end,
                 revert_label = "restores the file",
                 refresh = refresh_panel,
-                settle = function()
-                    return settle_side()
-                end,
+                settle = settle,
             }
         end
         return nil
