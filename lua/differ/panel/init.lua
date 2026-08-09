@@ -19,7 +19,7 @@ local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
 local current = nil
 
 -- a file entry's identity across a list rebuild. the path alone isn't enough: a file
--- changed on both sides holds a Staged and an Unstaged row at once, so the side is
+-- changed on both pairs holds a Staged and an Unstaged row at once, so the pair is
 -- part of what makes the row that row
 ---@param entry differ.FileEntry|nil
 ---@return string|nil
@@ -217,7 +217,7 @@ end
 -- it was found; lets :Differ open on the current file rather than the first.
 -- a path can hold two rows (an "MM" file lists under Staged and Unstaged), and the
 -- Staged one comes first; `prefer_unstaged` takes the unstaged row instead, falling
--- back to the staged one when that's the only side
+-- back to the staged one when that's the only pair
 ---@param path string -- repo-relative
 ---@param prefer_unstaged? boolean
 ---@return boolean
@@ -952,13 +952,13 @@ function Panel:focus_first_unstaged()
 end
 
 -- the staging review flow's file step: the nearest file row in `direction` holding
--- something to do on `staged`'s side, cycling past the list ends so the files above a
+-- something to do on the `staged` pair, cycling past the list ends so the files above a
 -- bottom-of-list entry stay reachable. the open file is skipped whichever row it sits
 -- on, since re-opening it would re-source the frozen diff and drop the marks the
 -- in-session staging put there; what's left inside it is the caller's last resort,
 -- tried only once this returns false. blank renames are skipped as everywhere else
 ---@param direction "next"|"prev"
----@param staged boolean  -- the side hunted: false for a file with hunks left to stage
+---@param staged boolean  -- the pair hunted: false for a file with hunks left to stage
 ---@param keep_focus boolean|nil
 ---@return boolean moved
 function Panel:step_review(direction, staged, keep_focus)
@@ -1137,7 +1137,7 @@ function Panel:goto_path(path, keep_focus)
 end
 
 -- point the selection at `entry`'s row without re-opening it, for when the session has
--- already re-sourced the view itself (following a file to its surviving side) and the
+-- already re-sourced the view itself (following a file to its surviving pair) and the
 -- panel just has to agree on what's selected
 ---@param entry differ.FileEntry
 function Panel:mark_selected(entry)
@@ -1460,8 +1460,8 @@ function Panel:is_alive()
     return vim.api.nvim_buf_is_valid(self.bufnr)
 end
 
--- the meta row holding `key`, preferring its own side and falling back to the same
--- path's other side: staging a file's last unstaged hunk moves its row from Unstaged
+-- the meta row holding `key`, preferring its own pair and falling back to the same
+-- path's other pair: staging a file's last unstaged hunk moves its row from Unstaged
 -- to Staged, and the cursor should follow the file rather than sit on whatever row
 -- slid into its place. nil when the path left the list entirely
 ---@param key string|nil

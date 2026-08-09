@@ -84,7 +84,7 @@ local armed_view = nil
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
----@field settle? fun(): boolean  -- post-op: re-target the view when this side emptied
+---@field settle? fun(): boolean  -- post-op: re-target the view when this pair emptied
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1048,7 +1048,7 @@ function View:unstage_hunk()
 end
 
 -- hand the file-level half of the review walk to the panel: the next file with work
--- left on `staged`'s side, cycling past the list ends. not View:step_file, which also
+-- left on the `staged` pair, cycling past the list ends. not View:step_file, which also
 -- serves ]f / [f and file history; the review flow needs a worktree-status panel (it's
 -- the only source that stages) and the state-aware step only that panel can make
 ---@param direction "next"|"prev"
@@ -1059,13 +1059,13 @@ function View:_step_review_file(direction, staged)
     return panel ~= nil and panel:step_review(direction, staged, true)
 end
 
--- the second tap of s / u: move to the next hunk that still has work on this side,
+-- the second tap of s / u: move to the next hunk that still has work left on it,
 -- searching by staged state rather than by position, since the review rarely runs
 -- start to finish in list order. three places to look, in order:
 --
 --   1. onward within this file, past hunks already dealt with
 --   2. back round to this file's own remaining hunks, behind the cursor
---   3. the next file holding anything on this side, cycling past the list ends
+--   3. the next file holding anything on this pair, cycling past the list ends
 --
 -- this file's leftovers come before the next file: you're already reading it, and
 -- entering partway down is the usual way to end up with hunks behind the cursor. the
@@ -1130,8 +1130,8 @@ function View:_toggle_hunk(want_staged)
     end
     if self:_apply_hunk(idx, want_staged) then
         self.staging.refresh()
-        -- that may have taken this side's last hunk, in which case the session re-sources
-        -- the view onto the file's surviving side and there's nothing here left to paint
+        -- that may have taken this pair's last hunk, in which case the session re-sources
+        -- the view onto the file's surviving pair and there's nothing here left to paint
         if self.staging.settle and self.staging.settle() then
             return
         end
@@ -1183,7 +1183,7 @@ function View:_toggle_all(want_staged)
     end
     if changed then
         self.staging.refresh()
-        -- S/U empty a side outright, so this is where the follow usually fires
+        -- S/U empty a pair outright, so this is where the follow usually fires
         if not (self.staging.settle and self.staging.settle()) then
             self:_paint_staged()
             self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill

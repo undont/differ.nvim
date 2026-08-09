@@ -545,7 +545,7 @@ function M.status_sections(root)
                 staged = false,
             }
         else
-            -- previous_path only belongs to whichever side carries the rename:
+            -- previous_path only belongs to whichever pair carries the rename:
             -- an "RM" file is renamed HEAD↔index but plain-modified index↔worktree
             if s.x ~= " " then
                 local c = staged_counts[s.path] or {}
@@ -913,7 +913,7 @@ function M.panel(opts)
     local panel ---@type differ.Panel|nil -- forward ref so staging can refresh it
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local on_edit_unstage ---@type fun(path: string)|nil -- assigned below; passed to the view
-    local settle_side ---@type fun(): boolean -- assigned below; the staging follow hook
+    local settle_pair ---@type fun(): boolean -- assigned below; the staging follow hook
 
     -- hunk-level staging: plain modifications (status "M", same path both
     -- sides) stage by hunk; a new file (untracked "?" or staged add "A") diffs
@@ -1030,9 +1030,9 @@ function M.panel(opts)
         if not stageable then
             return nil
         end
-        -- settle_side is assigned below stage_for, so the lookup has to defer to call time
+        -- settle_pair is assigned below stage_for, so the lookup has to defer to call time
         local function settle()
-            return settle_side()
+            return settle_pair()
         end
         if entry.status == "M" then
             return {
@@ -1139,8 +1139,8 @@ function M.panel(opts)
         return true
     end
 
-    -- the current changed-file entries for a path: a file can have a staged side and
-    -- an unstaged side, and an external op (lazygit) can empty the side you were on
+    -- the current changed-file entries for a path: a file can have a staged pair and
+    -- an unstaged pair, and an external op (lazygit) can empty the pair you were on
     ---@param path string
     ---@return differ.FileEntry[]
     local function entries_for_path(path)
@@ -1157,12 +1157,12 @@ function M.panel(opts)
 
     -- after staging from an unstaged diff: when that took the file's last unstaged hunk
     -- there's nothing left to review on this pair, so follow it to the staged one rather
-    -- than leave the diff on a pair git no longer has. only this direction follows —
+    -- than leave the diff on a pair git no longer has. only this direction follows:
     -- unstaging the last staged hunk stays put, since that's what lets s re-stage it in
     -- place, and swapping there would ping-pong the view on every u/s. returns whether
     -- the view was re-targeted, so the caller knows its repaint is moot
     ---@return boolean
-    settle_side = function()
+    settle_pair = function()
         if not (panel and panel:is_alive() and view and view:is_open() and active_entry) then
             return false
         end
@@ -1179,9 +1179,9 @@ function M.panel(opts)
         if not survivor then
             return false -- the file left the change set; revert's own path handles that
         end
-        -- hold the position the stage happened at. this is a side swap, not a file
+        -- hold the position the stage happened at. this is a pair swap, not a file
         -- switch, so landing on the first hunk would lose the reviewer's place; the
-        -- unstaged side just emptied, so index and worktree agree and the line carries
+        -- unstaged pair just emptied, so index and worktree agree and the line carries
         local focus_line, focus_col = view:cursor_new_line()
         if not show_entry(survivor, focus_line, focus_col) then
             return false
@@ -1227,8 +1227,8 @@ function M.panel(opts)
             -- the content shifted underneath the user; hold the cursor near where it was
             -- (the nearest hunk to its new-side line) rather than snapping to the top
             local focus_line, focus_col = view:cursor_new_line()
-            -- re-target the view to the file's current changes, preferring the side it
-            -- was on; staging the whole file empties that side, so fall back to the
+            -- re-target the view to the file's current changes, preferring the pair it
+            -- was on; staging the whole file empties that pair, so fall back to the
             -- other. show_entry records the signature when it sources
             local candidates = entries_for_path(active_entry.path)
             local pick = candidates[1]
@@ -1331,7 +1331,7 @@ function M.panel(opts)
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first unstaged file (skipping the Staged section, and pure
         -- renames which diff to a blank view); leave the cursor in the diff, not the panel.
-        -- a file changed on both sides ("MM") takes its unstaged row: origin_line is a
+        -- a file changed on both pairs ("MM") takes its unstaged row: origin_line is a
         -- worktree line, and index↔worktree is the only pair in that coordinate space
         local on_origin = origin_rel and panel:focus_file(origin_rel, true)
         if not on_origin then
