@@ -1289,15 +1289,18 @@ function M.panel(opts)
         progress = panel_cfg.progress,
         on_select = function(entry)
             if show_entry(entry) then
-                return
+                return true
             end
             -- a stale entry (committed or changed outside differ) has an empty diff;
             -- refresh the list rather than opening a blank view. that refresh can end
-            -- the session (it was the last entry), which says so on its own
+            -- the session (it was the last entry), which says so on its own. false tells
+            -- the panel nothing was opened, so a review walk carries on past it instead
+            -- of reporting the walk over
             refresh_panel()
             if panel and panel:is_alive() then
                 notify(("no changes for %s"):format(entry.path))
             end
+            return false
         end,
         -- the change set emptied under the session (a commit, or the last change
         -- reverted): there's nothing left to review, so end it rather than leave an

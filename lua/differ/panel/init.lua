@@ -79,7 +79,7 @@ local STATUS_HL = {
 ---@field sections differ.panel.Section[]
 ---@field listing "tree"|"name"
 ---@field collapsed table<string, table<string, boolean>>  -- section key -> dir path -> folded
----@field on_select fun(entry: differ.FileEntry)
+---@field on_select fun(entry: differ.FileEntry): boolean|nil -- false = stale, already reported
 ---@field on_close fun()|nil
 ---@field on_external_change fun()|nil
 ---@field on_empty fun()|nil
@@ -113,7 +113,7 @@ Panel.__index = Panel
 
 ---@class differ.panel.Opts
 ---@field sections differ.panel.Section[]
----@field on_select fun(entry: differ.FileEntry)
+---@field on_select fun(entry: differ.FileEntry): boolean|nil -- false = stale, already reported
 ---@field on_close? fun()  -- runs on :close (e.g. tear down the driven view)
 ---@field on_external_change? fun() -- re-source list + diff after an outside git change
 -- fired when a refresh leaves the change set empty; the session decides what that means
@@ -348,8 +348,12 @@ function Panel:render()
     end
     -- rows shuffle on every rebuild (a fold toggle, a listing swap, an entry leaving
     -- the change set), so re-derive the selection from the opened file's identity
-    -- rather than let a stale row number name a different file to ]f / [f
-    self.selected_row = self:_row_of_key(self.selected_key) or self.selected_row
+    -- rather than let a stale row number name a different file to ]f / [f. a file that
+    -- left the change set outright clears it: keeping the number would leave it naming
+    -- whatever slid into that row, or pointing past the end of a shorter list
+    if self.selected_key then
+        self.selected_row = self:_row_of_key(self.selected_key)
+    end
 
     vim.bo[self.bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(self.bufnr, 0, -1, false, out.lines)
@@ -636,17 +640,25 @@ end
 -- open `entry`'s diff in the main window. by default focus returns to the panel so
 -- file browsing keeps flowing; `keep_focus` leaves it in the diff window (used when
 -- stepping files from inside the diff via `]f`/`[f`)
+-- `on_select` returning false means the entry was stale (nothing left to diff) and it
+-- has already refreshed the list and said so; sources that can't fail return nothing,
+-- which counts as landed. the identity is recorded only on success, so a failed open
+-- leaves the selection on the file the caller came from rather than on a dead row
 ---@param entry differ.FileEntry
 ---@param keep_focus boolean|nil
+---@return boolean opened
 function Panel:_open(entry, keep_focus)
-    -- every selection path sets selected_row then lands here, so this is the one place
-    -- the opened file's identity has to be recorded for render to re-derive the row
-    self.selected_key = entry_key(entry)
     vim.api.nvim_set_current_win(self:_ensure_origin())
-    self.on_select(entry)
+    local opened = self.on_select(entry) ~= false
+    if opened then
+        -- every selection path sets selected_row then lands here, so this is the one
+        -- place the opened file's identity has to be recorded for render to re-derive it
+        self.selected_key = entry_key(entry)
+    end
     if not keep_focus and self.winid and vim.api.nvim_win_is_valid(self.winid) then
         vim.api.nvim_set_current_win(self.winid)
     end
+    return opened
 end
 
 -- <CR>/o: open a file, or toggle a directory's fold. `keep_focus` leaves the cursor
@@ -971,19 +983,27 @@ function Panel:step_review(direction, staged, keep_focus)
             if self:is_open() then
                 vim.api.nvim_win_set_cursor(self.winid, { next_row, 0 })
             end
-            self:_open(e, keep_focus)
-            -- the review flow's own wrap notice: `goto_file`'s would claim the first
-            -- file, and this landed on the first one with anything left to do
-            if wrapped then
-                vim.notify(
-                    direction == "next" and "differ: wrapped to the first file left to stage"
-                        or "differ: wrapped to the last file left to unstage",
-                    vim.log.levels.INFO
-                )
+            if self:_open(e, keep_focus) then
+                -- the review flow's own wrap notice: `goto_file`'s would claim the first
+                -- file, and this landed on the first one with anything left to do
+                if wrapped then
+                    vim.notify(
+                        direction == "next" and "differ: wrapped to the first file left to stage"
+                            or "differ: wrapped to the last file left to unstage",
+                        vim.log.levels.INFO
+                    )
+                end
+                return true
             end
-            return true
+            -- the entry was stale, and opening it refreshed the list out from under the
+            -- walk: the rows behind us name different files now, so start again from the
+            -- selection, which a failed open left on the file we came from. the stale
+            -- entry is gone from the rebuilt list, so each retry has one less to meet
+            from = self.selected_row or self:_first_file_line()
+            row = from
+        else
+            row = next_row
         end
-        row = next_row
     end
     return false
 end
