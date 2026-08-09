@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `s` and `u` stage and unstage a deleted file from the diff view, by the same wholesale `git add` staging a new file already used; only the panel could do it before. `X` still restores the file rather than removing it
+
 ### Fixed
 
 - Staging a hunk with an earlier one left unstaged puts it where it belongs. Only one side of a one-hunk patch's `@@` header was shifted onto the index, and git falls back to the other when the first has no lines to match on: a staged insertion landed at a worktree line number, and every later hunk in the file then failed against an index it no longer matched. Unstaging or reverting a pure deletion is the mirror, and applied cleanly in the wrong place rather than failing

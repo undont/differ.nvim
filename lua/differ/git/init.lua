@@ -1040,17 +1040,28 @@ function M.panel(opts)
                 end,
             }
         end
-        -- a deleted file diffs its content against nothing, so there's no hunk to stage
-        -- (the panel stages the deletion wholesale) but there is one to undo: no
-        -- `apply`, so s/u keep refusing while X brings the file back
+        -- a deletion is the mirror of that: one whole-file hunk against an empty *new*
+        -- side, so the same whole-file `git add` stages it and `git reset` puts it back.
+        -- only the revert differs, restoring the file rather than removing it
         if entry.status == "D" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                apply = function(_, _, _, reverse)
+                    if reverse then
+                        M.unstage(root, entry.path)
+                    else
+                        M.stage(root, entry.path)
+                    end
+                    return true
+                end,
                 revert = function()
                     return restore_deleted(entry)
                 end,
                 revert_label = "restores the file",
                 refresh = refresh_panel,
+                settle = function()
+                    return settle_side()
+                end,
             }
         end
         return nil

@@ -1997,9 +1997,9 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- a deleted file has nothing to stage by hunk, so the staging keys stay refused
-    -- even though the revert key now works on it
-    it("offers revert but not hunk staging on a deleted file", function()
+    -- a deletion is the mirror of an added file: one whole-file hunk against an empty
+    -- new side, staged and unstaged wholesale by s / u. X still restores the file
+    it("stages and unstages a deletion from the diff view", function()
         local root = fresh_repo()
         write(root .. "/b.lua", "one\ntwo\n")
         git(root, "add", "b.lua")
@@ -2013,16 +2013,24 @@ describe(":Differ diff hunk staging", function()
         p:select()
         local v = view_in_origin(p)
         assert.are.equal("b.lua", v.model.path)
+        assert.is_not_nil(v.staging.apply) -- stageable now, wholesale
+        assert.is_not_nil(v.staging.revert) -- and still restorable
+        assert.is_true(v:_can_stage_hunk())
 
-        assert.is_nil(v.staging.apply) -- no hunk staging
-        assert.is_not_nil(v.staging.revert) -- but it can be brought back
-        assert.is_false(v:_can_stage_hunk())
+        -- the open landed on the file's only hunk
+        vim.api.nvim_set_current_win(p.origin_win)
+        local lnum = vim.api.nvim_win_get_cursor(p.origin_win)[1]
+        assert.is_not_nil(v.columns[1].map.lines[lnum].hunk)
+
+        v:stage_hunk()
+        -- the removal is in the index, and the view followed the file to its staged side
+        assert.are.equal("", git(root, "ls-files", "--", "b.lua"))
+        assert.are.equal("staged", v.staging.initial)
+        assert.are.equal(0, vim.fn.filereadable(root .. "/b.lua")) -- still gone from disk
 
         vim.api.nvim_set_current_win(p.origin_win)
-        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
-        v:stage_hunk() -- refuses rather than acting
-        assert.are.equal(0, vim.fn.filereadable(root .. "/b.lua"))
-        assert.is_nil(next(v.staged_hunks))
+        v:unstage_hunk() -- u puts the deletion back to worktree-only
+        assert.are.equal("b.lua\n", git(root, "ls-files", "--", "b.lua"))
         p:close()
     end)
 
