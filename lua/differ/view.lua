@@ -83,6 +83,7 @@ local armed_view = nil
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
+---@field settle? fun(): boolean  -- post-op: re-target the view when this side emptied
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1104,6 +1105,11 @@ function View:_toggle_hunk(want_staged)
     end
     if self:_apply_hunk(idx, want_staged) then
         self.staging.refresh()
+        -- that may have taken this side's last hunk, in which case the session re-sources
+        -- the view onto the file's surviving side and there's nothing here left to paint
+        if self.staging.settle and self.staging.settle() then
+            return
+        end
         self:_paint_staged()
         self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
     end
@@ -1150,8 +1156,11 @@ function View:_toggle_all(want_staged)
     end
     if changed then
         self.staging.refresh()
-        self:_paint_staged()
-        self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+        -- S/U empty a side outright, so this is where the follow usually fires
+        if not (self.staging.settle and self.staging.settle()) then
+            self:_paint_staged()
+            self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+        end
     end
     return changed
 end

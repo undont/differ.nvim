@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `:Differ` opens the unstaged side of a file changed on both sides. An `MM` file lists under Staged and Unstaged at once and the Staged row renders first, so opening from the file landed on the `HEAD`↔index diff and read the cursor's worktree line as an index line: it was context there, and the view snapped to whichever hunk happened to be nearest. It now takes the unstaged row, the only pair those line numbers belong to, and holds the exact line and column you were on
+- The file panel keeps its cursor on its own file across a list rebuild. Rows were restored by line number, so an entry leaving the list above the cursor slid a neighbour into its place and silently moved the selection to a different file: `]f`/`[f` then stepped from the wrong one and the winbar counted it. Rows are anchored by identity now, following a file that moves between sections, and `i` no longer scatters the cursor when it reflows the list either
+- Staging a file's last unstaged hunk moves the diff onto its staged side. The view stayed frozen on an index↔worktree pair that git no longer had anything in, until you navigated away and back; it follows the file across now, carrying the line you staged from rather than dropping you on the first hunk. Unstaging the last staged hunk still stays put, since that is what lets `s` re-stage it in place. Where a file's whole change is a single hunk this leaves you on the staged pair, so `X` there reverts the index and worktree together instead of refusing
+
+## [0.1.22] — 2026-08-07
+
 ### Changed
 
 - The word-level diff is faster on large hunks and long lines. Lines are tokenised once per pass rather than once per comparison, and the tokens shared at the head and tail of a pair are matched without reaching the LCS grid. A 1000-line rewrite renders in under a second where it took eleven, and a 50KB minified line in hundredths of one where it took ten

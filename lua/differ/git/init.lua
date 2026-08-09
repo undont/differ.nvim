@@ -873,6 +873,7 @@ function M.panel(opts)
     local panel ---@type differ.Panel|nil -- forward ref so staging can refresh it
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local on_edit_unstage ---@type fun(path: string)|nil -- assigned below; passed to the view
+    local settle_side ---@type fun(): boolean -- assigned below; the staging follow hook
 
     -- hunk-level staging: plain modifications (status "M", same path both
     -- sides) stage by hunk; a new file (untracked "?" or staged add "A") diffs
@@ -1008,6 +1009,9 @@ function M.panel(opts)
                 end,
                 revert = revert_hunk,
                 refresh = refresh_panel,
+                settle = function()
+                    return settle_side()
+                end,
             }
         end
         -- a new file is a single whole-file hunk against an empty side, so there's
@@ -1032,6 +1036,9 @@ function M.panel(opts)
                 end,
                 revert_label = "deletes the file",
                 refresh = refresh_panel,
+                settle = function()
+                    return settle_side()
+                end,
             }
         end
         -- a deleted file diffs its content against nothing, so there's no hunk to stage
@@ -1109,6 +1116,41 @@ function M.panel(opts)
             end
         end
         return out
+    end
+
+    -- after staging from an unstaged diff: when that took the file's last unstaged hunk
+    -- there's nothing left to review on this pair, so follow it to the staged one rather
+    -- than leave the diff on a pair git no longer has. only this direction follows —
+    -- unstaging the last staged hunk stays put, since that's what lets s re-stage it in
+    -- place, and swapping there would ping-pong the view on every u/s. returns whether
+    -- the view was re-targeted, so the caller knows its repaint is moot
+    ---@return boolean
+    settle_side = function()
+        if not (panel and panel:is_alive() and view and view:is_open() and active_entry) then
+            return false
+        end
+        if active_entry.staged then
+            return false -- on the staged pair: u/s round-trips in place
+        end
+        local survivor ---@type differ.FileEntry|nil
+        for _, e in ipairs(entries_for_path(active_entry.path)) do
+            if not e.staged then
+                return false -- unstaged changes remain; stay frozen on them
+            end
+            survivor = survivor or e
+        end
+        if not survivor then
+            return false -- the file left the change set; revert's own path handles that
+        end
+        -- hold the position the stage happened at. this is a side swap, not a file
+        -- switch, so landing on the first hunk would lose the reviewer's place; the
+        -- unstaged side just emptied, so index and worktree agree and the line carries
+        local focus_line, focus_col = view:cursor_new_line()
+        if not show_entry(survivor, focus_line, focus_col) then
+            return false
+        end
+        panel:mark_selected(survivor)
+        return true
     end
 
     -- edit-in-review on a staged diff (flow C): unstage the whole file so the
@@ -1248,8 +1290,10 @@ function M.panel(opts)
     if opts.open_first then
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first unstaged file (skipping the Staged section, and pure
-        -- renames which diff to a blank view); leave the cursor in the diff, not the panel
-        local on_origin = origin_rel and panel:focus_file(origin_rel)
+        -- renames which diff to a blank view); leave the cursor in the diff, not the panel.
+        -- a file changed on both sides ("MM") takes its unstaged row: origin_line is a
+        -- worktree line, and index↔worktree is the only pair in that coordinate space
+        local on_origin = origin_rel and panel:focus_file(origin_rel, true)
         if not on_origin then
             panel:focus_first_unstaged()
         end

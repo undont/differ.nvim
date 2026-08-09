@@ -18,6 +18,18 @@ local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
 ---@type differ.Panel|nil -- the live panel, for runtime API (Panel.current())
 local current = nil
 
+-- a file entry's identity across a list rebuild. the path alone isn't enough: a file
+-- changed on both sides holds a Staged and an Unstaged row at once, so the side is
+-- part of what makes the row that row
+---@param entry differ.FileEntry|nil
+---@return string|nil
+local function entry_key(entry)
+    if not entry then
+        return nil
+    end
+    return (entry.staged and "s\0" or "u\0") .. entry.path
+end
+
 -- a `(glyph, hl)` provider backed by nvim-web-devicons, or nil when it's absent
 -- (icons degrade away cleanly). resolved once per panel
 ---@return nil|fun(path: string): string|nil, string|nil
@@ -94,6 +106,8 @@ local STATUS_HL = {
 ---@field win_augroup integer|nil  -- autocmd group for the resize re-fit
 ---@field selected_row integer|nil  -- meta row of the last opened file; drives ]f/[f
 ---  and the show() cursor while the sidebar is hidden (no window to read from)
+---@field selected_key string|nil  -- that file's identity, so render can re-derive the
+---  row after a rebuild shuffles it
 local Panel = {}
 Panel.__index = Panel
 
@@ -200,19 +214,32 @@ function Panel:focus_first_changed()
 end
 
 -- move the cursor to `path`'s file row if it's currently rendered, returning whether
--- it was found; lets :Differ open on the current file rather than the first
+-- it was found; lets :Differ open on the current file rather than the first.
+-- a path can hold two rows (an "MM" file lists under Staged and Unstaged), and the
+-- Staged one comes first; `prefer_unstaged` takes the unstaged row instead, falling
+-- back to the staged one when that's the only side
 ---@param path string -- repo-relative
+---@param prefer_unstaged? boolean
 ---@return boolean
-function Panel:focus_file(path)
+function Panel:focus_file(path, prefer_unstaged)
+    local first, pick
     for i, m in ipairs(self.meta) do
         if m.kind == "file" and m.entry.path == path then
-            if self:is_open() then
-                pcall(vim.api.nvim_win_set_cursor, self.winid, { i, 0 })
+            first = first or i
+            if not (prefer_unstaged and m.entry.staged) then
+                pick = i
+                break
             end
-            return true
         end
     end
-    return false
+    pick = pick or first
+    if not pick then
+        return false
+    end
+    if self:is_open() then
+        pcall(vim.api.nvim_win_set_cursor, self.winid, { pick, 0 })
+    end
+    return true
 end
 
 -- a stable per-section fold namespace: the title (unique, and survives the index
@@ -319,6 +346,10 @@ function Panel:render()
             m.file_index = abs_of[m.entry]
         end
     end
+    -- rows shuffle on every rebuild (a fold toggle, a listing swap, an entry leaving
+    -- the change set), so re-derive the selection from the opened file's identity
+    -- rather than let a stale row number name a different file to ]f / [f
+    self.selected_row = self:_row_of_key(self.selected_key) or self.selected_row
 
     vim.bo[self.bufnr].modifiable = true
     vim.api.nvim_buf_set_lines(self.bufnr, 0, -1, false, out.lines)
@@ -608,6 +639,9 @@ end
 ---@param entry differ.FileEntry
 ---@param keep_focus boolean|nil
 function Panel:_open(entry, keep_focus)
+    -- every selection path sets selected_row then lands here, so this is the one place
+    -- the opened file's identity has to be recorded for render to re-derive the row
+    self.selected_key = entry_key(entry)
     vim.api.nvim_set_current_win(self:_ensure_origin())
     self.on_select(entry)
     if not keep_focus and self.winid and vim.api.nvim_win_is_valid(self.winid) then
@@ -688,7 +722,7 @@ function Panel:refresh()
     if not self.actions or not self:is_alive() then
         return
     end
-    local lnum = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1] or 1
+    local anchor = self:_cursor_anchor()
     self:set_sections(self.actions.reload())
     if self.on_refresh then
         self.on_refresh()
@@ -696,7 +730,7 @@ function Panel:refresh()
     if self.file_total == 0 and self.on_empty then
         return self.on_empty()
     end
-    self:_restore_cursor(lnum)
+    self:_restore_anchor(anchor)
 end
 
 -- the full "git may have moved outside differ" refresh: re-source the list *and* the
@@ -1033,15 +1067,31 @@ function Panel:goto_path(path, keep_focus)
     return false
 end
 
+-- point the selection at `entry`'s row without re-opening it, for when the session has
+-- already re-sourced the view itself (following a file to its surviving side) and the
+-- panel just has to agree on what's selected
+---@param entry differ.FileEntry
+function Panel:mark_selected(entry)
+    local key = entry_key(entry)
+    local row = self:_row_of_key(key)
+    if not row then
+        return
+    end
+    self.selected_row, self.selected_key = row, key
+    if self:is_open() then
+        pcall(vim.api.nvim_win_set_cursor, self.winid, { row, 0 })
+    end
+end
+
 -- repaint after a session mutates an entry in place (e.g. a viewed flip), holding the
 -- cursor line. lighter than refresh (no model reload) and works without staging actions
 function Panel:repaint()
     if not self:is_open() then
         return
     end
-    local lnum = vim.api.nvim_win_get_cursor(self.winid)[1]
+    local anchor = self:_cursor_anchor()
     self:render()
-    self:_restore_cursor(lnum)
+    self:_restore_anchor(anchor)
 end
 
 -- scroll the *diff view* a quarter page (the origin window, where the file renders),
@@ -1341,6 +1391,49 @@ function Panel:is_alive()
     return vim.api.nvim_buf_is_valid(self.bufnr)
 end
 
+-- the meta row holding `key`, preferring its own side and falling back to the same
+-- path's other side: staging a file's last unstaged hunk moves its row from Unstaged
+-- to Staged, and the cursor should follow the file rather than sit on whatever row
+-- slid into its place. nil when the path left the list entirely
+---@param key string|nil
+---@return integer|nil
+function Panel:_row_of_key(key)
+    if not key then
+        return nil
+    end
+    local path = key:sub(3)
+    local same_path
+    for i, m in ipairs(self.meta) do
+        if m.kind == "file" then
+            local k = entry_key(m.entry)
+            if k == key then
+                return i
+            elseif not same_path and m.entry.path == path then
+                same_path = i
+            end
+        end
+    end
+    return same_path
+end
+
+-- the cursor's restorable position: the file entry under it (by identity, so it
+-- survives the rows shifting) plus the raw line, used when the cursor isn't on a
+-- file row or its entry is gone
+---@return { lnum: integer, key: string|nil }
+function Panel:_cursor_anchor()
+    local lnum = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1] or 1
+    local m = self.meta[lnum]
+    return { lnum = lnum, key = m and m.kind == "file" and entry_key(m.entry) or nil }
+end
+
+-- put the cursor back where the anchor was taken: on its file wherever the rebuild
+-- moved it, else its old line. restoring by line alone silently renames the selection
+-- when rows leave the list above it
+---@param anchor { lnum: integer, key: string|nil }
+function Panel:_restore_anchor(anchor)
+    self:_restore_cursor(self:_row_of_key(anchor.key) or anchor.lnum)
+end
+
 -- restore the cursor line after a re-render/reposition (clamped to the content)
 ---@param lnum integer
 function Panel:_restore_cursor(lnum)
@@ -1360,9 +1453,9 @@ end
 function Panel:set_listing(listing)
     self.listing = listing
     if self:is_open() then
-        local lnum = vim.api.nvim_win_get_cursor(self.winid)[1]
+        local anchor = self:_cursor_anchor()
         self:render()
-        self:_restore_cursor(lnum)
+        self:_restore_anchor(anchor)
     end
 end
 
