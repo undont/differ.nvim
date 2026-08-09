@@ -939,6 +939,55 @@ function Panel:focus_first_unstaged()
     self:focus_first_changed()
 end
 
+-- the staging review flow's file step: the nearest file row in `direction` holding
+-- something to do on `staged`'s side, cycling past the list ends so the files above a
+-- bottom-of-list entry stay reachable. the open file is skipped whichever row it sits
+-- on, since re-opening it would re-source the frozen diff and drop the marks the
+-- in-session staging put there; what's left inside it is the caller's last resort,
+-- tried only once this returns false. blank renames are skipped as everywhere else
+---@param direction "next"|"prev"
+---@param staged boolean  -- the side hunted: false for a file with hunks left to stage
+---@param keep_focus boolean|nil
+---@return boolean moved
+function Panel:step_review(direction, staged, keep_focus)
+    -- from the selection rather than the panel cursor: this flow is driven from the
+    -- diff window, so where the review sits beats where the sidebar is parked
+    local from = self.selected_row or self:_first_file_line()
+    local row, wrapped = from, false
+    for _ = 1, #self.meta do
+        local next_row, crossed = self:_file_row(row, direction, true)
+        if not next_row or next_row == from then
+            break -- the list holds no file rows, or we're back where we started
+        end
+        wrapped = wrapped or crossed
+        local e = self.meta[next_row].entry
+        if
+            e
+            and (e.staged or false) == staged
+            and not is_blank_rename(e)
+            and entry_key(e) ~= self.selected_key
+        then
+            self.selected_row = next_row
+            if self:is_open() then
+                vim.api.nvim_win_set_cursor(self.winid, { next_row, 0 })
+            end
+            self:_open(e, keep_focus)
+            -- the review flow's own wrap notice: `goto_file`'s would claim the first
+            -- file, and this landed on the first one with anything left to do
+            if wrapped then
+                vim.notify(
+                    direction == "next" and "differ: wrapped to the first file left to stage"
+                        or "differ: wrapped to the last file left to unstage",
+                    vim.log.levels.INFO
+                )
+            end
+            return true
+        end
+        row = next_row
+    end
+    return false
+end
+
 -- gg / G: move the cursor to the first/last visitable file row without opening it,
 -- skipping pure renames (blank diffs). plain list navigation; <CR>/o opens the row
 -- under the cursor

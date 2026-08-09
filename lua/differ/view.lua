@@ -849,22 +849,23 @@ function View:goto_hunk(direction, opts)
     end
 end
 
+-- a hunk filter for the review scans: `staged` picks the side, so false matches every
+-- hunk still to stage and true every one still to unstage
+---@param staged boolean
+---@return fun(hunk: integer): boolean
+function View:_review_filter(staged)
+    return function(hunk)
+        return (self.staged_hunks[hunk] or false) == staged
+    end
+end
+
 -- the buffer line to land on when a file opens: the start of the first
 -- unstaged hunk, the natural place to begin reviewing, falling back to the first
 -- hunk when everything is already staged, or nil for a file with no hunks
 ---@param col differ.ViewColumn
 ---@return integer|nil
 function View:_first_review_line(col)
-    local first_hunk
-    for i, line in ipairs(col.map.lines) do
-        if line.hunk then
-            first_hunk = first_hunk or i
-            if not self.staged_hunks[line.hunk] then
-                return i
-            end
-        end
-    end
-    return first_hunk
+    return nav.first_hunk(col.map, self:_review_filter(false)) or nav.first_hunk(col.map)
 end
 
 -- move the primary window's cursor to the first unstaged hunk (or first hunk). run
@@ -957,30 +958,22 @@ function View:focus_new_line(new_lnum, exact, new_col)
     end
 end
 
--- the buffer line of the last hunk's start, where the backward review flow lands
--- when stepping into a previous file (so u keeps moving backward through it)
+-- the mirror of _first_review_line: the start of the last hunk still staged, where the
+-- backward review flow lands when it steps into another file (so u keeps unstaging
+-- through it), falling back to the last hunk when none of them are staged
 ---@param col differ.ViewColumn
 ---@return integer|nil
-function View:_last_hunk_line(col)
-    local last = #self.model.hunks
-    if last == 0 then
-        return nil
-    end
-    for i, line in ipairs(col.map.lines) do
-        if line.hunk == last then
-            return i
-        end
-    end
-    return nil
+function View:_last_review_line(col)
+    return nav.last_hunk(col.map, self:_review_filter(true)) or nav.last_hunk(col.map)
 end
 
--- move the primary window's cursor to the last hunk (backward file-step landing)
+-- move the primary window's cursor to the last staged hunk (backward file-step landing)
 function View:_focus_last_hunk()
     local col = self.columns[1]
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
         return
     end
-    local lnum = self:_last_hunk_line(col)
+    local lnum = self:_last_review_line(col)
     if lnum then
         pcall(vim.api.nvim_win_set_cursor, col.winid, { lnum, 0 })
     end
@@ -1025,10 +1018,9 @@ function View:_apply_hunk(idx, want_staged)
 end
 
 -- s: stage the hunk under the cursor, or advance if there's nothing to stage here.
--- the review flow: the first s on a hunk stages it (staying put so the mark
--- is visible), a second s (now staged) moves to the next hunk, and at the last hunk
--- it steps to the next file, which opens on its first unstaged hunk. so repeated s
--- walks the whole change set, accepting hunk by hunk
+-- the review flow: the first s on a hunk stages it (staying put so the mark is
+-- visible), a second s (now staged) moves on to the next hunk left to stage. so
+-- repeated s walks the whole change set, accepting hunk by hunk
 function View:stage_hunk()
     if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
@@ -1037,27 +1029,12 @@ function View:stage_hunk()
     if idx and not (self.staged_hunks[idx] or false) then
         self:_toggle_hunk(true)
     else
-        self:_advance_review()
+        self:_step_review("next")
     end
 end
 
--- move to the next hunk; at the last hunk, step to the next file (the second-tap of
--- s, and the seam that makes the review flow continuous across files)
-function View:_advance_review()
-    local col = self:_focused_column()
-    local win = col.winid or vim.api.nvim_get_current_win()
-    local target = nav.next_hunk(col.map, vim.api.nvim_win_get_cursor(win)[1])
-    if target then
-        vim.api.nvim_win_set_cursor(win, { target, 0 })
-    elseif not self:step_file("next", false) then -- review flow: stop at the last file, don't wrap
-        vim.notify("differ: no more hunks to stage", vim.log.levels.INFO)
-    end
-end
-
--- u: the mirror of s. unstage the staged hunk under the cursor, or retreat: a
--- second u moves to the previous hunk, and at the first hunk it steps to the
--- previous file landing on its last hunk, so repeated u walks the change set
--- backward, undoing hunk by hunk
+-- u: the mirror of s. unstage the staged hunk under the cursor, or retreat to the
+-- previous hunk left to unstage, so repeated u walks the change set backward
 function View:unstage_hunk()
     if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
@@ -1066,23 +1043,71 @@ function View:unstage_hunk()
     if idx and (self.staged_hunks[idx] or false) then
         self:_toggle_hunk(false)
     else
-        self:_retreat_review()
+        self:_step_review("prev")
     end
 end
 
--- move to the previous hunk; at the first hunk, step to the previous file and land
--- on its last hunk (the backward seam, mirroring _advance_review's forward one)
-function View:_retreat_review()
+-- hand the file-level half of the review walk to the panel: the next file with work
+-- left on `staged`'s side, cycling past the list ends. not View:step_file, which also
+-- serves ]f / [f and file history; the review flow needs a worktree-status panel (it's
+-- the only source that stages) and the state-aware step only that panel can make
+---@param direction "next"|"prev"
+---@param staged boolean
+---@return boolean moved
+function View:_step_review_file(direction, staged)
+    local panel = require("differ.panel").current()
+    return panel ~= nil and panel:step_review(direction, staged, true)
+end
+
+-- the second tap of s / u: move to the next hunk that still has work on this side,
+-- searching by staged state rather than by position, since the review rarely runs
+-- start to finish in list order. three places to look, in order:
+--
+--   1. onward within this file, past hunks already dealt with
+--   2. back round to this file's own remaining hunks, behind the cursor
+--   3. the next file holding anything on this side, cycling past the list ends
+--
+-- this file's leftovers come before the next file: you're already reading it, and
+-- entering partway down is the usual way to end up with hunks behind the cursor. the
+-- wrap lands on a hunk skipped on purpose too, which is what ]f is for. the
+-- announcement only claims there's nothing left once all three have come up empty
+---@param direction "next"|"prev"
+function View:_step_review(direction)
+    local forward = direction == "next"
+    local staged = not forward -- s hunts what's unstaged, u what's staged
     local col = self:_focused_column()
     local win = col.winid or vim.api.nvim_get_current_win()
-    local target = nav.prev_hunk(col.map, vim.api.nvim_win_get_cursor(win)[1])
-    if target then
-        vim.api.nvim_win_set_cursor(win, { target, 0 })
-    elseif self:step_file("prev", false) then -- review flow: stop at the first file, don't wrap
-        self:_focus_last_hunk() -- only when a previous file actually opened
-    else
-        vim.notify("differ: no more hunks to unstage", vim.log.levels.INFO)
+    local lnum = vim.api.nvim_win_get_cursor(win)[1]
+    local want = self:_review_filter(staged)
+
+    local onward = (forward and nav.next_hunk or nav.prev_hunk)(col.map, lnum, want)
+    if onward then
+        return vim.api.nvim_win_set_cursor(win, { onward, 0 })
     end
+
+    local back = (forward and nav.first_hunk or nav.last_hunk)(col.map, want)
+    if back then
+        vim.api.nvim_win_set_cursor(win, { back, 0 })
+        return vim.notify(
+            forward and "differ: wrapped to the first hunk left to stage"
+                or "differ: wrapped to the last hunk left to unstage",
+            vim.log.levels.INFO
+        )
+    end
+
+    if self:_step_review_file(direction, staged) then
+        -- forward opens on the file's first unstaged hunk already; backward has to
+        -- reach for the far end so u keeps unstaging through it
+        if not forward then
+            self:_focus_last_hunk()
+        end
+        return
+    end
+
+    vim.notify(
+        forward and "differ: no more hunks to stage" or "differ: no more hunks to unstage",
+        vim.log.levels.INFO
+    )
 end
 
 -- toggle the staged state of the hunk under the cursor, marking it in place
@@ -1115,21 +1140,23 @@ function View:_toggle_hunk(want_staged)
     end
 end
 
--- S: stage every hunk in the file, or, when they're all staged already (nothing left
--- to do), step to the next file, the file-level echo of s advancing past the last hunk
+-- S: stage every hunk in the file, or, when they're all staged already (nothing left to
+-- do here), move on to the next file with something to stage. the file-level echo of s
+-- advancing past the last hunk, minus its in-file wrap: S leaves no hunk behind to come
+-- back for
 function View:stage_all()
     if not self:_toggle_all(true) and self:_can_stage_hunk() then
-        if not self:step_file("next", false) then -- stop at the last file, don't wrap
+        if not self:_step_review_file("next", false) then
             vim.notify("differ: no more files to stage", vim.log.levels.INFO)
         end
     end
 end
 
--- U: unstage every hunk, or, when none are staged (nothing to do), step back a file
--- landing on its last hunk, the file-level echo of u retreating past the first hunk
+-- U: unstage every hunk, or, when none are staged (nothing to do), step back to the
+-- previous file with something staged, landing on its last staged hunk
 function View:unstage_all()
     if not self:_toggle_all(false) and self:_can_stage_hunk() then
-        if self:step_file("prev", false) then -- stop at the first file, don't wrap
+        if self:_step_review_file("prev", true) then
             self:_focus_last_hunk() -- only when a previous file actually opened
         else
             vim.notify("differ: no more files to unstage", vim.log.levels.INFO)

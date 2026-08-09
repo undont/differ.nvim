@@ -2150,6 +2150,189 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- the file half of "search by state": from the bottom of the list the walk carries
+    -- on past the end rather than reporting there's nothing left
+    it("wraps the review walk past the end of the file list", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        write(root .. "/z.lua", "z1x\nz2\n")
+        vim.cmd.edit(root .. "/z.lua") -- open on the last file in the list
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+
+        assert.is_true(p:step_review("next", false, true))
+        assert.are.equal("a.lua", v.model.path) -- wrapped round to the file above
+        p:close()
+    end)
+
+    -- a file's own staged row sits above its unstaged one, so the forward walk meets
+    -- staged rows constantly; they hold nothing to stage and must not be landed on
+    it("skips staged rows when walking for something to stage", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b1\nb2\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "b.lua", "z.lua")
+        git(root, "commit", "-q", "-am", "three files")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua") -- a.lua: staged only, nothing left to stage
+        write(root .. "/b.lua", "b1x\nb2\n") -- b.lua: unstaged
+        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: unstaged
+        vim.cmd.edit(root .. "/z.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+        -- the staged a.lua row renders first, so the wrap meets it before b.lua
+        assert.is_true(file_line(p, "a.lua", true) < file_line(p, "b.lua", false))
+
+        assert.is_true(p:step_review("next", false, true))
+        assert.are.equal("b.lua", v.model.path) -- stepped over the staged a.lua
+        p:close()
+    end)
+
+    -- the walk stops short of the file it started on: what's left inside it is the
+    -- caller's business, and re-opening would re-source the frozen diff
+    it("returns false when the open file is the only one left to stage", function()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua") -- staged only
+        write(root .. "/z.lua", "z1x\nz2\n") -- the only unstaged file
+        vim.cmd.edit(root .. "/z.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+        local hunks_before = #v.model.hunks
+
+        assert.is_false(p:step_review("next", false, true))
+        assert.are.equal("z.lua", v.model.path) -- stayed put
+        assert.are.equal(hunks_before, #v.model.hunks) -- and wasn't re-sourced
+        p:close()
+    end)
+
+    -- the mirror: u hunts backward for a file with something staged
+    it("walks backward for a file with staged hunks", function()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua") -- the staged file, rendered first
+        write(root .. "/z.lua", "z1x\nz2\n") -- unstaged
+        vim.cmd.edit(root .. "/z.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+
+        assert.is_true(p:step_review("prev", true, true))
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal("staged", v.staging.initial)
+        p:close()
+    end)
+
+    -- the reported bug: starting partway down a file leaves hunk 1 behind the cursor,
+    -- where a walk that only ever moves forward can't reach it. the file it started in
+    -- comes first, so the leftovers are picked up before the review moves on
+    it("picks up the hunks left behind when review starts mid-file", function()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua: one hunk, above z.lua
+        write(root .. "/z.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- z.lua: three hunks
+        vim.cmd.edit(root .. "/z.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(3, #v.model.hunks)
+
+        -- stage from hunk 2 down, deliberately leaving hunk 1 alone
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:stage_hunk() -- stage hunk 2
+        v:stage_hunk() -- advance to hunk 3
+        assert.are.equal(hunk_line(v, 3), vim.api.nvim_win_get_cursor(p.origin_win)[1])
+        v:stage_hunk() -- stage hunk 3
+        assert.is_true(v.staged_hunks[2])
+        assert.is_true(v.staged_hunks[3])
+        assert.is_falsy(v.staged_hunks[1])
+
+        -- at the bottom of the file: back round to the hunk left behind, not off to
+        -- another file, and without re-sourcing the frozen diff
+        _G.notifs = {}
+        v:stage_hunk()
+        assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(3, #v.model.hunks)
+        assert.are.equal(hunk_line(v, 1), vim.api.nvim_win_get_cursor(p.origin_win)[1])
+        assert.are.equal(
+            "differ: wrapped to the first hunk left to stage",
+            _G.notifs[1] and _G.notifs[1].msg
+        )
+
+        v:stage_hunk() -- stage it: z.lua is done, and follows to its staged side
+        assert.are.equal(worktree(root, "z.lua"), indexed(root, "z.lua"))
+        assert.are.equal("staged", v.staging.initial)
+
+        -- only now does the review leave, for the file it never opened
+        vim.api.nvim_set_current_win(p.origin_win)
+        v:stage_hunk()
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal("unstaged", v.staging.initial)
+        p:close()
+    end)
+
+    -- the minimal case: one file, so the wrap is the only place left to look
+    it("wraps back to an earlier hunk in the same file", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n")
+        git(root, "commit", "-q", "-am", "nine lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- the only file, three hunks
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(3, #v.model.hunks)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:stage_hunk() -- stage hunk 2
+        v:stage_hunk() -- advance to hunk 3
+        v:stage_hunk() -- stage hunk 3
+
+        _G.notifs = {}
+        v:stage_hunk() -- past the last hunk: back round to hunk 1
+        assert.are.equal("a.lua", v.model.path) -- same file, not re-sourced
+        assert.are.equal(3, #v.model.hunks)
+        assert.are.equal(hunk_line(v, 1), vim.api.nvim_win_get_cursor(p.origin_win)[1])
+        assert.are.equal(
+            "differ: wrapped to the first hunk left to stage",
+            _G.notifs[1] and _G.notifs[1].msg
+        )
+
+        -- and it stages there, finishing the file
+        v:stage_hunk()
+        assert.is_true(v.staged_hunks[1])
+        assert.are.equal(worktree(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
     it("reviews hunk-by-hunk: s stages then advances, stepping to the next file", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
@@ -2257,29 +2440,60 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    it("U steps back a file when nothing is staged", function()
+    -- S carried the same positional walk s did: from the bottom of the list it claimed
+    -- there were no files left, and it would land on staged rows where it does nothing
+    it("S wraps past the end of the list, skipping rows with nothing to stage", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b1\nb2\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "b.lua", "z.lua")
+        git(root, "commit", "-q", "-am", "three files")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua") -- a.lua: staged only, nothing left to stage
+        write(root .. "/b.lua", "b1x\nb2\n") -- b.lua: unstaged, above z.lua
+        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: unstaged, last in the list
+        vim.cmd.edit(root .. "/z.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("z.lua", v.model.path)
+
+        v:stage_all() -- z.lua fully staged; the view follows to its staged side
+        assert.are.equal("z1x\nz2\n", indexed(root, "z.lua"))
+
+        v:stage_all() -- nothing left here: round the end and past the staged a.lua
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("unstaged", v.staging.initial)
+        p:close()
+    end)
+
+    -- U steps back to a file it can actually unstage something in, not merely to the
+    -- previous one: a file with nothing staged is somewhere U would do nothing
+    it("U steps back to a file with something staged", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n")
         write(root .. "/z.lua", "z1\nz2\n")
         git(root, "add", "z.lua")
         git(root, "commit", "-q", "-am", "two files")
-        write(root .. "/a.lua", "1x\n2\n") -- a.lua: one hunk
-        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
-        vim.cmd.edit(root .. "/a.lua")
+        write(root .. "/a.lua", "1x\n2\n")
+        git(root, "add", "a.lua") -- a.lua: one hunk, staged
+        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk, unstaged
+        vim.cmd.edit(root .. "/z.lua")
 
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
         local v = view_in_origin(p)
-        v:step_file("next") -- to z.lua (the last file), nothing staged
         assert.are.equal("z.lua", v.model.path)
 
-        v:unstage_all() -- nothing staged here: step back to a.lua, on its last hunk
+        v:unstage_all() -- nothing staged here: back to a.lua, on its last staged hunk
         assert.are.equal("a.lua", v.model.path)
+        assert.are.equal("staged", v.staging.initial)
         assert.is_not_nil(v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk)
         p:close()
     end)
 
-    it("review stepping stops at the list ends, but ]f / [f still wrap", function()
+    it("bounded step_file stops at the list ends, but ]f / [f still wrap", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n")
         write(root .. "/z.lua", "z1\nz2\n")
@@ -2306,7 +2520,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(0, #_G.notifs) -- a plain step, not a wrap
 
         _G.notifs = {}
-        v:step_file("next", false) -- review-style step: no wrap off the last file
+        v:step_file("next", false) -- the bounded step ]c / [c use: no wrap off the last file
         assert.are.equal("z.lua", v.model.path)
         assert.are.equal(0, #_G.notifs) -- wrap disabled, so no wrap notify either
 
