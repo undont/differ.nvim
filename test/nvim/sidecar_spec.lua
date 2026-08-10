@@ -11,13 +11,22 @@ local function has_binary()
     return vim.fn.executable(root .. "/bin/differ-sidecar") == 1
 end
 
--- live sidecar processes, so the lifecycle tests can assert on what is actually running
--- rather than on client state alone. matched by executable name (-x), not command line
--- (-f): the client resolves the binary relative or absolute depending on the rtp, and a
--- -f match also counts any unrelated process whose arguments merely mention the path,
--- an editor, a grep, or the very shell that launched the suite
+-- live sidecar processes *this nvim spawned*, so the lifecycle tests can assert on what
+-- is actually running rather than on client state alone. matched by executable name
+-- (-x), not command line (-f): the client resolves the binary relative or absolute
+-- depending on the rtp, and a -f match also counts any unrelated process whose arguments
+-- merely mention the path, an editor, a grep, or the very shell that launched the suite.
+-- scoped to our own children (-P), since the counts here are absolute: a differ session
+-- open in another editor, or a second suite running alongside, is a sidecar by the same
+-- name and would otherwise be counted as ours
 local function running_sidecars()
-    local out = vim.fn.system({ "pgrep", "-x", "differ-sidecar" })
+    local out = vim.fn.system({
+        "pgrep",
+        "-P",
+        tostring(vim.uv.os_getpid()),
+        "-x",
+        "differ-sidecar",
+    })
     local n = 0
     for _ in out:gmatch("%d+") do
         n = n + 1
