@@ -191,6 +191,21 @@ describe("git.checkout", function()
         assert.is_truthy(err:find("feat/missing", 1, true)) -- names the ref that was asked for
     end)
 
+    -- head_ref is attacker-controlled: anyone can open a PR. git reads a positional
+    -- beginning with `-` as an option and runs an --upload-pack value through a shell,
+    -- and `${IFS}` stands in for the space check-ref-format would reject, so the payload
+    -- is a branch name github could host. origin here is a local path, the transport the
+    -- attack actually fires on. the assertion that matters is the last one: nothing ran
+    it("refuses a branch name git would read as an option, and runs nothing", function()
+        local root = repo_with_origin()
+        local marker = root .. "/pwned"
+
+        local ok, err = git_src.checkout(root, "--upload-pack=touch${IFS}" .. marker, 26)
+        assert.are.equal(0, vim.fn.filereadable(marker), "the injected command executed")
+        assert.is_false(ok)
+        assert.is_truthy(err:find("unsafe branch name", 1, true))
+    end)
+
     it("reports the branch fetch's error when no PR number is passed", function()
         local root, seed = repo_with_origin()
         publish(seed, "feat/forked", "fork\n", "refs/pull/26/head")

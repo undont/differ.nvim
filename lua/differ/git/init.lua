@@ -156,6 +156,9 @@ end
 ---@param number integer|nil  -- the PR number; enables the fork fallback
 ---@return boolean ok, string|nil err
 function M.checkout(root, ref, number)
+    if not rev.valid_ref(ref) then
+        return false, ("unsafe branch name, refusing to run git: %s"):format(ref)
+    end
     local _, ferr = git({ "fetch", "origin", ref }, root)
     if ferr then
         return checkout_pull_ref(root, ref, number, ferr)
