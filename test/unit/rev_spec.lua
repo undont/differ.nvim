@@ -128,3 +128,54 @@ describe("git.rev.parse_numstat", function()
         assert.are.same({}, rev.parse_numstat(""))
     end)
 end)
+
+describe("git.rev.valid_ref", function()
+    -- git parses a leading-dash positional as an option, and the upload-pack value is
+    -- run through a shell, so this is arbitrary command execution off a branch name.
+    -- `${IFS}` stands in for the space that check-ref-format would otherwise reject,
+    -- which is what makes the payload a branch github could actually host
+    it("rejects a ref git would read as an option", function()
+        assert.is_false(rev.valid_ref("--upload-pack=touch${IFS}/tmp/pwned"))
+        assert.is_false(rev.valid_ref("-x"))
+        assert.is_false(rev.valid_ref("--exec=sh"))
+    end)
+
+    it("rejects names git's own check-ref-format refuses", function()
+        for _, bad in ipairs({
+            "",
+            "@",
+            "has space",
+            "tilde~1",
+            "caret^",
+            "colon:name",
+            "star*",
+            "question?",
+            "brack[et",
+            "back\\slash",
+            "ctrl\tchar",
+            "dot..dot",
+            "at@{brace",
+            "/leading",
+            "trailing/",
+            "double//slash",
+            "trailing.",
+            "branch.lock",
+        }) do
+            assert.is_false(rev.valid_ref(bad), "should reject: " .. bad)
+        end
+    end)
+
+    it("accepts the branch names people actually use", function()
+        for _, ok in ipairs({
+            "main",
+            "feature/add-thing",
+            "release/1.2.3",
+            "user/fix.the-thing_now",
+            "dependabot/npm_and_yarn/acme/pkg-1.2.3",
+            "WIP",
+            "v2",
+        }) do
+            assert.is_true(rev.valid_ref(ok), "should accept: " .. ok)
+        end
+    end)
+end)

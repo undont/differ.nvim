@@ -33,6 +33,30 @@ local function merge_base_ref(base, head, label)
     return { kind = "merge_base", base = base, head = head, label = label }
 end
 
+-- is `ref` safe to hand git as a positional argument. git reads any positional
+-- beginning with `-` as an option, so a branch name is data git will happily execute:
+-- `--upload-pack=<cmd>` is a valid ref name, and git runs <cmd> through a shell. a PR's
+-- head_ref comes straight off the github api, so it is checked here, at the boundary,
+-- rather than trusted per call site. a `--` separator is not the fix: it works for
+-- fetch but turns `checkout` into a pathspec restore, which fails silently wrong.
+-- these are git's own check-ref-format rules, the subset a branch name can break
+---@param ref string
+---@return boolean
+function M.valid_ref(ref)
+    return type(ref) == "string"
+        and ref ~= ""
+        and ref ~= "@"
+        and ref:sub(1, 1) ~= "-"
+        and ref:sub(1, 1) ~= "/"
+        and ref:sub(-1) ~= "/"
+        and ref:sub(-1) ~= "."
+        and ref:sub(-5) ~= ".lock"
+        and not ref:find("[%c ~^:?*%[\\]")
+        and not ref:find("%.%.")
+        and not ref:find("@{", 1, true)
+        and not ref:find("//", 1, true)
+end
+
 -- resolve :Differ args into a source pairing. mirrors git/diffview rev
 -- syntax so existing muscle memory carries over. these forms cover the whole
 -- daily loop (uncommitted / branch-total / range / since-rev); staged-only has no

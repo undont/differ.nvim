@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A pull request's head branch name can no longer run commands on checkout. `:Differ pr checkout` handed it to `git fetch` as a positional argument, and git reads one beginning with `-` as an option rather than as a ref: a branch named `--upload-pack=<command>` had its value run through a shell. Branch names are now checked against git's own ref-name rules before any git call. A `--` separator is not the fix here, since it would turn the `checkout` that follows into a pathspec restore
+- Staging a hunk at the end of a file with no trailing newline no longer corrupts the index. The `\ No newline at end of file` marker attaches to a line, and a zero-context hunk has none on the side that owns the terminator, so it was dropped: appending to such a file staged its last two lines merged into one, and `git apply` reported success. The hunk is widened by the line that owns the terminator, the way git's own diff does it, and deleting a file's tail is the mirror. Any file without a final newline was affected, which editors and generated files produce routinely
+- `:Differ pr checkout` works on a pull request from a fork. A cross-repo PR's head branch lives on the contributor's own repository and never reaches `origin`, so fetching it by name failed outright with `couldn't find remote ref`. It falls back to `refs/pull/<number>/head`, the ref `origin` does publish for such a PR, and lands on a local branch named for the head ref. An existing local branch of that name is checked out as it stands rather than moved, so nothing on it is lost
+
+## [0.1.23] — 2026-08-10
+
 ### Added
 
 - `s` and `u` stage and unstage a deleted file from the diff view, by the same wholesale `git add` staging a new file already used; only the panel could do it before. `X` still restores the file rather than removing it

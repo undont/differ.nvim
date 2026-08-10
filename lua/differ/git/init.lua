@@ -111,17 +111,57 @@ function M.head_sha(root)
     return out and chomp(out) or nil
 end
 
+-- does a local branch of this name already exist?
+---@param root string
+---@param ref string
+---@return boolean
+local function has_branch(root, ref)
+    return git({ "rev-parse", "--verify", "--quiet", "refs/heads/" .. ref }, root) ~= nil
+end
+
+-- a fork PR's head branch lives on the contributor's repo, so origin carries it only
+-- as refs/pull/<number>/head. fetch that and land on a local branch named for the head
+-- ref, created only when it isn't there already: an existing one may hold local work,
+-- and a stale one is what the session's head-mismatch warning is for. the branch fetch's
+-- error is the one surfaced, since it names the ref the user actually asked for
+---@param root string
+---@param ref string
+---@param number integer|nil
+---@param fetch_err string  -- the failed branch fetch's stderr
+---@return boolean ok, string|nil err
+local function checkout_pull_ref(root, ref, number, fetch_err)
+    if not number then
+        return false, fetch_err
+    end
+    local _, perr = git({ "fetch", "origin", ("refs/pull/%d/head"):format(number) }, root)
+    if perr then
+        return false, fetch_err
+    end
+    local args = has_branch(root, ref) and { "checkout", ref }
+        or { "checkout", "-b", ref, "FETCH_HEAD" }
+    local _, cerr = git(args, root)
+    if cerr then
+        return false, cerr
+    end
+    return true
+end
+
 -- check out a PR's head branch locally (client-side action): fetch the ref from
 -- origin, then check it out. fetch first so the branch exists even before its first
 -- local pull; if a local branch of that name already tracks the ref, checkout lands on
--- it. returns true on success, or false + the git stderr to surface
+-- it. origin has no such branch for a cross-repo (fork) PR, so that fetch fails and the
+-- pull ref is the fallback. returns true on success, or false + the git stderr to surface
 ---@param root string
 ---@param ref string  -- the PR head branch name (head_ref)
+---@param number integer|nil  -- the PR number; enables the fork fallback
 ---@return boolean ok, string|nil err
-function M.checkout(root, ref)
+function M.checkout(root, ref, number)
+    if not rev.valid_ref(ref) then
+        return false, ("unsafe branch name, refusing to run git: %s"):format(ref)
+    end
     local _, ferr = git({ "fetch", "origin", ref }, root)
     if ferr then
-        return false, ferr
+        return checkout_pull_ref(root, ref, number, ferr)
     end
     local _, cerr = git({ "checkout", ref }, root)
     if cerr then
