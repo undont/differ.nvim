@@ -3,7 +3,8 @@
 -- with `git apply --unidiff-zero`; the `@@` line numbers come from the model and
 -- match the index/worktree content exactly. the missing-final-newline marker is
 -- emitted when a hunk reaches an unterminated end of file, so staging the last
--- hunk doesn't corrupt it. pure: no vim, no git, unit-testable
+-- hunk doesn't corrupt it, widening the hunk by one line where the marker would
+-- otherwise have no line to sit on. pure: no vim, no git, unit-testable
 
 local to_lines = require("differ.util.text").to_lines
 
@@ -17,6 +18,61 @@ local NO_NL = "\\ No newline at end of file"
 ---@return boolean
 local function unterminated(text)
     return text ~= "" and text:sub(-1) ~= "\n"
+end
+
+---@param head string
+---@param rest string[]
+---@return string[]
+local function prepend(head, rest)
+    local out = { head }
+    for i = 1, #rest do
+        out[#out + 1] = rest[i]
+    end
+    return out
+end
+
+-- the marker attaches to a line, so a side that contributes no lines has nowhere to
+-- put one. that is exactly the shape of a terminator change at a zero-context hunk:
+-- appending past an unterminated last line gives that line a newline, and deleting a
+-- tail takes one away, neither of which the hunk itself carries. widen by the last
+-- line of the side that owns the terminator so the marker has a line to sit on. the
+-- diff runs on newline-ensured copies, so that line is unchanged content and reads
+-- the same on both sides; git's own diff widens here for the same reason
+---@param hunk differ.Hunk
+---@param old_lines string[]
+---@param new_lines string[]
+---@param old_eof boolean
+---@param new_eof boolean
+---@return differ.Hunk
+local function widen_at_eof(hunk, old_lines, new_lines, old_eof, new_eof)
+    local old_n, new_n = #old_lines, #new_lines
+    -- a pure insertion naming the old side's last line appends past it: that line
+    -- gains a newline, so it has to appear on both sides
+    if old_eof and hunk.old_count == 0 and old_n > 0 and hunk.old_start == old_n then
+        local tail = old_lines[old_n]
+        return {
+            old_start = old_n,
+            old_count = 1,
+            old_lines = { tail },
+            new_start = hunk.new_start - 1,
+            new_count = hunk.new_count + 1,
+            new_lines = prepend(tail, hunk.new_lines),
+        }
+    end
+    -- the mirror: a pure deletion off the end leaves the new side's last line
+    -- unterminated, and that line is the only place its marker can go
+    if new_eof and hunk.new_count == 0 and new_n > 0 and hunk.new_start == new_n then
+        local tail = new_lines[new_n]
+        return {
+            old_start = hunk.old_start - 1,
+            old_count = hunk.old_count + 1,
+            old_lines = prepend(tail, hunk.old_lines),
+            new_start = new_n,
+            new_count = 1,
+            new_lines = { tail },
+        }
+    end
+    return hunk
 end
 
 -- one hunk as a unified diff against `path`. `old_text`/`new_text` are the full
@@ -44,8 +100,11 @@ end
 ---@return string
 function M.hunk(path, hunk, old_text, new_text, offset, base)
     offset = offset or 0
-    local old_n, new_n = #to_lines(old_text), #to_lines(new_text)
+    local old_lines, new_lines = to_lines(old_text), to_lines(new_text)
+    local old_n, new_n = #old_lines, #new_lines
     local old_eof, new_eof = unterminated(old_text), unterminated(new_text)
+
+    hunk = widen_at_eof(hunk, old_lines, new_lines, old_eof, new_eof)
 
     -- where the hunk's block begins in the file being patched. git names a zero-length
     -- side by the line it follows rather than the line it occupies, so a base side with

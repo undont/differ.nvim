@@ -163,6 +163,84 @@ describe("patch.hunk", function()
         assert.is_truthy(p:find("@@ -7,2 +6,0 @@", 1, true), p)
     end)
 
+    -- a zero-context hunk has no line on the side that owns the terminator, so the
+    -- marker cannot be emitted without widening. left unwidened, git applies the patch
+    -- cleanly and silently joins the last two lines
+    it("widens a pure insertion appending past an unterminated last line", function()
+        -- index "a\nb" (no trailing nl), worktree "a\nb\nc\n": staging must give "b"
+        -- its newline, so "b" has to appear on both sides carrying the marker
+        local h = {
+            old_start = 2,
+            old_count = 0,
+            new_start = 3,
+            new_count = 1,
+            old_lines = {},
+            new_lines = { "c" },
+        }
+        local p = patch.hunk("f", h, "a\nb", "a\nb\nc\n")
+        assert.are.equal(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,1 +2,2 @@\n"
+                .. "-b\n\\ No newline at end of file\n"
+                .. "+b\n+c\n",
+            p
+        )
+    end)
+
+    it("widens a tail deletion that leaves the new side unterminated", function()
+        -- "a\nb\nc\n" -> "a\nb" (no trailing nl): "b" loses its newline, and it is the
+        -- only line the new side's marker can sit on
+        local h = {
+            old_start = 3,
+            old_count = 1,
+            new_start = 2,
+            new_count = 0,
+            old_lines = { "c" },
+            new_lines = {},
+        }
+        local p = patch.hunk("f", h, "a\nb\nc\n", "a\nb")
+        assert.are.equal(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,2 +2,1 @@\n"
+                .. "-b\n-c\n"
+                .. "+b\n\\ No newline at end of file\n",
+            p
+        )
+    end)
+
+    it("carries both markers when appending unterminated onto unterminated", function()
+        -- "a\nb" -> "a\nb\nc", neither side terminated: the widened line marks the old
+        -- side, the appended line marks the new
+        local h = {
+            old_start = 2,
+            old_count = 0,
+            new_start = 3,
+            new_count = 1,
+            old_lines = {},
+            new_lines = { "c" },
+        }
+        local p = patch.hunk("f", h, "a\nb", "a\nb\nc")
+        assert.are.equal(
+            "diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -2,1 +2,2 @@\n"
+                .. "-b\n\\ No newline at end of file\n"
+                .. "+b\n+c\n\\ No newline at end of file\n",
+            p
+        )
+    end)
+
+    it("leaves an insertion short of EOF unwidened", function()
+        -- the file is unterminated, but the insertion lands mid-file, so no terminator
+        -- changes and the zero-context form stays correct
+        local h = {
+            old_start = 1,
+            old_count = 0,
+            new_start = 2,
+            new_count = 1,
+            old_lines = {},
+            new_lines = { "X" },
+        }
+        local p = patch.hunk("f", h, "a\nb", "a\nX\nb")
+        assert.are.equal("diff --git a/f b/f\n--- a/f\n+++ b/f\n@@ -1,0 +2,1 @@\n+X\n", p)
+    end)
+
     it("omits the marker when the hunk does not reach an unterminated EOF", function()
         -- the file lacks a trailing newline, but the hunk touches the first line only
         local h = {
