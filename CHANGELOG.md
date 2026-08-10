@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The merge tool could splice a different conflict's ancestor into the file. Take-base looked the ancestor up by position in a map that reset whenever the number of conflict regions changed, which happens when you hand-resolve one or undo a resolve: the text landed silently, `:w` staged it, and it was committable with no warning. Only under git's default `merge.conflictStyle`, where differ has to recover the ancestor itself
+- The merge tool wrote a doubled carriage return on CRLF files. Take-base's ancestor came from the raw stage blob, so its lines kept the CR the buffer had already stripped, and saving added a second one. The base pane rendered the stray `^M` too
+
+## [0.1.26] — 2026-08-10
+
 ### Changed
 
 - Neovim 0.12 is the minimum, documented and enforced at startup. Every diff uses `vim.text.diff`, which 0.10 and 0.11 don't have

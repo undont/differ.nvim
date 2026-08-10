@@ -23,6 +23,12 @@ local M = {}
 
 local merge_ns = vim.api.nvim_create_namespace("differ.merge")
 local flash_ns = vim.api.nvim_create_namespace("differ.merge.flash")
+-- take-base recovers the ancestor from a slab keyed by the conflict's *original* index, so
+-- the live -> original mapping has to survive edits, resolves and undo. one extmark per
+-- original conflict, spanning its block: it rides edits, `invalidate` retires it when its
+-- block is spliced away, and undo restores both text and mark together. its own namespace,
+-- since paint_result clears merge_ns on every repaint
+local anchor_ns = vim.api.nvim_create_namespace("differ.merge.anchor")
 
 local FOLDTEXT_EXPR = 'v:lua.require("differ.ui.foldtext").render()'
 
@@ -49,7 +55,7 @@ local INPUT_HL = {
 ---@field root string
 ---@field path string
 ---@field regions differ.merge.Region[]   -- re-derived from the live result buffer
----@field order integer[]                 -- live region position -> original conflict index
+---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
 ---@field total integer                   -- original conflict count (for the winbar N/M)
 ---@field active_index integer|nil        -- live index of the conflict under the cursor
@@ -92,6 +98,23 @@ local function restore_timeout()
         vim.o.timeoutlen = saved_timeoutlen
         saved_timeoutlen = nil
     end
+end
+
+-- the recovered base comes from raw stage blobs, so on a CRLF repo every line ends `\r`.
+-- the result buffer is the worktree file as nvim loaded it, and nvim strips the CR into
+-- fileformat=dos, so splicing a slab carrying its own would have :w write a second one.
+-- ours/theirs need no such thing: they are re-parsed from the buffer at resolve time
+---@param slab string[]|nil
+---@return string[]|nil
+local function strip_cr(slab)
+    if not slab then
+        return slab
+    end
+    local out = {}
+    for i, line in ipairs(slab) do
+        out[i] = (line:gsub("\r$", ""))
+    end
+    return out
 end
 
 ---@param msg string
@@ -318,6 +341,41 @@ local function live_regions()
     return require("differ.git.conflict").parse(lines), lines
 end
 
+-- the original conflict index a live region belongs to, by the surviving anchor sitting on
+-- its `<<<<<<<` line. nil when no anchor is there or more than one has collapsed onto it:
+-- callers refuse rather than guess, since guessing here writes another conflict's ancestor
+-- into the file
+---@param result_start integer  -- 1-based line of the region's `<<<<<<<`
+---@return integer|nil
+local function original_index(result_start)
+    local s = assert(session)
+    local row = result_start - 1
+    local found
+    for _, m in
+        ipairs(vim.api.nvim_buf_get_extmarks(s.result_buf, anchor_ns, { row, 0 }, {
+            row,
+            -1,
+        }, { details = true }))
+    do
+        if not m[4].invalid then
+            if found then
+                return nil -- ambiguous
+            end
+            found = s.anchors[m[1]]
+        end
+    end
+    return found
+end
+
+-- the original index of the conflict at live position `pos`, or nil
+---@param pos integer|nil
+---@return integer|nil
+local function original_at(pos)
+    local s = assert(session)
+    local region = pos and s.regions[pos]
+    return region and original_index(region.result_start) or nil
+end
+
 -- the live index of the conflict under the result cursor, else nil
 ---@return integer|nil
 local function active_index()
@@ -340,14 +398,7 @@ end
 -- the identity so the pane sync stays consistent (degrading to live-index = original-index)
 local function repaint_result()
     local s = assert(session)
-    local regions = live_regions()
-    s.regions = regions
-    if not s.order or #s.order ~= #regions then
-        s.order = {}
-        for i = 1, #regions do
-            s.order[i] = i
-        end
-    end
+    s.regions = live_regions()
     s.active_index = active_index()
     paint_result(s.active_index)
 end
@@ -422,7 +473,7 @@ local function on_cursor_moved()
     end
     session.active_index = active
     paint_result(active)
-    sync_inputs(active and session.order[active])
+    sync_inputs(original_at(active))
 end
 
 -- jump the result cursor to the next/prev conflict block (wrapping at the ends), repaint
@@ -480,7 +531,7 @@ local function resolve_choice(choice)
     if not session then
         return
     end
-    local regions, lines = live_regions()
+    local regions = live_regions()
     if #regions == 0 then
         return notify("no conflicts remain")
     end
@@ -492,18 +543,33 @@ local function resolve_choice(choice)
     -- the live buffer parse carries no base under the default conflictStyle, so take-base
     -- reads the slab recovered at build time, mapped live index -> original via `order`
     if choice == "base" and not region.base then
-        region.base = session.base_slabs[session.order[region.index]]
+        local original = original_index(region.result_start)
+        if not original then
+            return notify(
+                "this conflict's markers were edited, so its ancestor can't be identified; "
+                    .. "run :Differ mergetool again to re-read them",
+                vim.log.levels.WARN
+            )
+        end
+        region.base = session.base_slabs[original]
     end
-    local new_lines, delta = require("differ.merge.resolve").splice(lines, region, choice)
-    if not new_lines then
+    local slab = require("differ.merge.resolve").slab(region, choice)
+    if not slab then
         return notify("no base version in this conflict", vim.log.levels.WARN)
     end
     local anchor = region.result_start
-    local block_len = region.result_end - region.result_start + 1
-    local slab_count = delta + block_len -- the chosen slab's line count (0 for `none`)
+    local slab_count = #slab -- 0 for `none`
     vim.bo[session.result_buf].modifiable = true
-    vim.api.nvim_buf_set_lines(session.result_buf, 0, -1, false, new_lines)
-    table.remove(session.order, region.index) -- drop the resolved conflict's mapping
+    -- replace just the conflict's own lines, not the whole buffer: a whole-buffer set
+    -- deletes every line and takes the anchors with it, and the surviving conflicts' marks
+    -- are exactly what take-base needs afterwards
+    vim.api.nvim_buf_set_lines(
+        session.result_buf,
+        region.result_start - 1,
+        region.result_end,
+        false,
+        slab
+    )
     repaint_result()
     flash(session.result_buf, anchor, slab_count)
     -- land on the next remaining conflict at or after where this one was
@@ -543,7 +609,7 @@ local function base_label()
     if s.no_ancestor then
         return label .. " · no common ancestor"
     end
-    if #s.regions > 0 and not s.base_slabs[s.order[active_pos()]] then
+    if #s.regions > 0 and not s.base_slabs[original_at(active_pos())] then
         return label .. " · none for this conflict"
     end
     return label
@@ -775,7 +841,7 @@ function lay_out(root, relpath, model, layout)
         root = root,
         path = relpath,
         regions = model.regions,
-        order = {},
+        anchors = {},
         base_slabs = {},
         total = #model.regions,
         active_index = nil,
@@ -798,14 +864,19 @@ function lay_out(root, relpath, model, layout)
         diag_aug = suppress_diagnostics(result_buf), -- the markers aren't valid source
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
     }
-    for i = 1, #model.regions do
-        session.order[i] = i
+    -- one anchor per original conflict, spanning its block so a splice retires it
+    for _, r in ipairs(model.regions) do
+        local id = vim.api.nvim_buf_set_extmark(result_buf, anchor_ns, r.result_start - 1, 0, {
+            end_row = r.result_end - 1,
+            invalidate = true,
+        })
+        session.anchors[id] = r.index
     end
     -- recovered base slabs by original conflict index: the default conflictStyle leaves no
     -- base in the live result parse, so take-base looks the slab up here (nil where the
     -- re-merge couldn't recover one, which take-base reports as no base version)
     for _, r in ipairs(model.regions) do
-        session.base_slabs[r.index] = r.base
+        session.base_slabs[r.index] = strip_cr(r.base)
     end
 
     -- paint the panes + lay down the (latent) folds
