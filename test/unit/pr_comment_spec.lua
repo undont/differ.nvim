@@ -69,3 +69,62 @@ describe("pr.comment.range_anchor", function()
         assert.is_nil(comment.range_anchor(UNIFIED, 3, 4, "unified")) -- row 4 is meta
     end)
 end)
+
+-- the compose window is a real split, not a modal, so the diff can be navigated (or
+-- closed) between the gesture and the submit. the anchor's path is fixed with its
+-- side/line at gesture time, and post reads that rather than whatever the view shows now
+describe("pr.comment.post anchors to the gesture's file", function()
+    local client = require("differ.pr.client")
+
+    ---@return table args, fun() restore
+    local function capture()
+        local real = client.post_comment
+        local box = {}
+        ---@diagnostic disable-next-line: duplicate-set-field
+        client.post_comment = function(_pr, args, _cb)
+            box.args = args
+        end
+        return box, function()
+            client.post_comment = real
+        end
+    end
+
+    local function session(view_path)
+        return {
+            pr = { owner = "acme", repo = "widget", number = 7 },
+            pr_meta = { head_sha = "bbb2222" },
+            view = view_path and { model = { path = view_path } } or nil,
+        }
+    end
+
+    it("posts to the gestured file even after the diff moved on", function()
+        local box, restore = capture()
+        local opts = { anchor = { side = "RIGHT", line = 2 }, path = "a.txt" }
+        comment.post(session("b.txt"), opts, "looks wrong") -- view now shows b.txt
+        assert.are.equal("a.txt", box.args.path)
+        assert.are.equal("RIGHT", box.args.side)
+        assert.are.equal(2, box.args.line)
+        restore()
+    end)
+
+    it("posts to the gestured file even after the diff closed", function()
+        local box, restore = capture()
+        local opts = { anchor = { side = "RIGHT", line = 2 }, path = "a.txt" }
+        comment.post(session(nil), opts, "still fine") -- no view at all
+        assert.are.equal("a.txt", box.args.path)
+        restore()
+    end)
+
+    it("carries the path through the conflict re-prompt's opts", function()
+        local box, restore = capture()
+        local opts = { anchor = { side = "RIGHT", line = 2 }, path = "a.txt" }
+        -- the shape tbl_extend produces in the conflict path, built without vim here
+        local reprompt = { initial = "body", stale = true }
+        for k, v in pairs(opts) do
+            reprompt[k] = v
+        end
+        comment.post(session("b.txt"), reprompt, "body")
+        assert.are.equal("a.txt", box.args.path)
+        restore()
+    end)
+end)
