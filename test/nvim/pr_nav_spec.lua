@@ -248,6 +248,49 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    -- the page render is several async hops long, and `:Differ pr <n>` straight into
+    -- `:Differ pr view` leaves the session in the files while the last hop is still out.
+    -- rendering then would take the window back and close the diff just built
+    it("an overview render still in flight doesn't take the window back", function()
+        local responses = default_responses()
+        local release -- the held get_checks callback, the last hop before render
+        local real = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_checks" and not release then
+                release = function()
+                    vim.schedule(function()
+                        cb(nil, responses.get_checks.result)
+                    end)
+                end
+                return
+            end
+            vim.schedule(function()
+                local r = responses[method]
+                cb(r and r.err or nil, (r and r.result) or {})
+            end)
+        end
+
+        pr.show(PR, { land = "overview" })
+        assert.is_true(vim.wait(2000, function()
+            return release ~= nil -- the page is one hop from rendering
+        end))
+
+        pr.view({ number = PR.number }) -- enter the files while that hop is outstanding
+        local s = pr.current_session()
+        assert.is_true(vim.wait(2000, function()
+            return s.view ~= nil and s.view:is_open()
+        end))
+
+        release() -- the superseded page render lands
+        vim.wait(300)
+
+        assert.is_truthy(s.view and s.view:is_open()) -- the diff survived it
+        assert.is_true(s.panel:is_open())
+        assert.are.equal(s, pr.current_session())
+
+        sidecar.request = real
+    end)
+
     -- a mutation submitted from the overview can conflict, and its refetch lands with
     -- the view nil'd and the sidebar hidden: state has to reconcile, but re-sourcing the
     -- diff there would build a fresh view over the page the user is reading
