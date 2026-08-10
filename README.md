@@ -11,7 +11,7 @@
 [![Licence](https://img.shields.io/github/license/undont/differ.nvim?style=flat&label=licence&color=6366F1)](LICENCE)
 [![Lua](https://img.shields.io/badge/Lua-5.1-2C2D72?style=flat&logo=lua&logoColor=white)](https://www.lua.org)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8?style=flat&logo=go&logoColor=white)](https://go.dev)
-[![Neovim](https://img.shields.io/badge/Neovim-0.10+-57A143?style=flat&logo=neovim&logoColor=white)](https://neovim.io)
+[![Neovim](https://img.shields.io/badge/Neovim-0.12+-57A143?style=flat&logo=neovim&logoColor=white)](https://neovim.io)
 [![macOS](https://img.shields.io/badge/macOS-supported-6e7681?style=flat&logo=apple&logoColor=white)]()
 [![Linux](https://img.shields.io/badge/Linux-supported-6e7681?style=flat&logo=linux&logoColor=white)]()
 
@@ -45,13 +45,13 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - 3-way/4-way merge tool, resolved into the working-tree file
 - Word-level highlighting and Treesitter syntax, both on by default
 - Real buffer lines, so search, yank, and motions work as normal
-- One diff engine (`vim.diff()`, histogram) shared by every source
+- One diff engine (`vim.text.diff()`, histogram) shared by every source
 
 ---
 
 ## Requirements
 
-- Neovim 0.10+ (uses `vim.system`, `vim.fs.relpath`, `vim.diff`)
+- Neovim 0.12+ (`vim.text.diff` sets the floor; also uses `vim.system` and `vim.uv`)
 - git on `PATH`
 - A Treesitter parser for the languages you diff (optional)
 - For PR review: Go + make on `PATH`, and `gh` authenticated
