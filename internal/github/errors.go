@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/undont/differ.nvim/internal/protocol"
@@ -36,6 +37,9 @@ func mapHTTP(resp *http.Response, body []byte, transportErr error) *protocol.Err
 	case http.StatusForbidden:
 		if ra, ok := rateLimited(resp); ok {
 			return protocol.RateLimited(msg, ra)
+		}
+		if secondaryLimit(msg) {
+			return protocol.RateLimited(msg, 0)
 		}
 		return protocol.NewError(protocol.CodeAuth, msg)
 	case http.StatusTooManyRequests:
@@ -72,6 +76,15 @@ func rateLimited(resp *http.Response) (int, bool) {
 		return 0, true
 	}
 	return 0, false
+}
+
+// a secondary rate limit arrives as a 403 carrying only a message: no X-RateLimit
+// headers and usually no Retry-After, so rateLimited can't see it. left as an auth
+// error it sends the user hunting for a scope they already have, when the answer is
+// to wait. github has used both wordings; match either
+func secondaryLimit(msg string) bool {
+	l := strings.ToLower(msg)
+	return strings.Contains(l, "secondary rate limit") || strings.Contains(l, "abuse detection")
 }
 
 func githubMessage(body []byte, fallback string) string {

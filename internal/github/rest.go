@@ -13,6 +13,33 @@ import (
 
 const maxResponse = 32 * 1024 * 1024 // bound a single response body
 
+// send performs req and returns the response alongside its already-read, already-
+// closed body. the transport error is handled on its own, before anything else, so
+// `defer Close` is registered on every path that has a body to close: a non-2xx must
+// not leak the connection, which is exactly when the leak compounds (a wall of 403s
+// at a rate limit, a 401 on an expired token). the status then maps with the body in
+// hand, so GitHub's own message survives instead of a bare status line. resp is
+// returned even on a mapped error, for callers that special-case a status; its body
+// is spent, so only headers and the status line are readable from it
+func (c *Client) send(req *http.Request) (*http.Response, []byte, error) {
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, nil, protocol.NewError(protocol.CodeNetwork, "network error: "+err.Error())
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	// the status outranks a truncated read: a 403 that also failed to read is still a
+	// 403, and its message is the useful half
+	if perr := mapHTTP(resp, body, nil); perr != nil {
+		return resp, body, perr
+	}
+	if rerr != nil {
+		return resp, body, protocol.NewError(protocol.CodeNetwork, "reading response: "+rerr.Error())
+	}
+	return resp, body, nil
+}
+
 // getJSON does an authenticated REST GET, maps the status to a protocol code, and
 // decodes the body into out.
 func (c *Client) getJSON(ctx context.Context, rawURL string, out any) error {
@@ -25,18 +52,9 @@ func (c *Client) getJSON(ctx context.Context, rawURL string, out any) error {
 	}
 	c.setRESTHeaders(req)
 
-	resp, err := c.http.Do(req)
-	if perr := mapHTTP(resp, nil, err); perr != nil {
-		return perr
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	_, body, err := c.send(req)
 	if err != nil {
-		return protocol.NewError(protocol.CodeNetwork, "reading response: "+err.Error())
-	}
-	if perr := mapHTTP(resp, body, nil); perr != nil {
-		return perr
+		return err
 	}
 	if out == nil {
 		return nil
@@ -62,26 +80,16 @@ func getPaged[T any](ctx context.Context, c *Client, rawURL string) ([]T, error)
 		}
 		c.setRESTHeaders(req)
 
-		resp, err := c.http.Do(req)
-		if perr := mapHTTP(resp, nil, err); perr != nil {
-			return nil, perr
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
-		next := nextLink(resp.Header.Get("Link"))
-		_ = resp.Body.Close()
-
-		if perr := mapHTTP(resp, body, nil); perr != nil {
-			return nil, perr
-		}
-		if readErr != nil {
-			return nil, protocol.NewError(protocol.CodeNetwork, "reading response: "+readErr.Error())
+		resp, body, err := c.send(req)
+		if err != nil {
+			return nil, err
 		}
 		var pageItems []T
 		if err := json.Unmarshal(body, &pageItems); err != nil {
 			return nil, protocol.NewError(protocol.CodeInternal, "decoding response: "+err.Error())
 		}
 		all = append(all, pageItems...)
-		rawURL = next
+		rawURL = nextLink(resp.Header.Get("Link"))
 	}
 	return all, nil
 }
