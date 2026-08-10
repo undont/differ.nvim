@@ -18,6 +18,11 @@ local M = {}
 ---@type table|nil
 local session = nil
 
+-- monotonic open token. two `:Differ pr` opens in flight together resolve in whatever
+-- order github answers, and response time scales with the file list, so the larger PR
+-- can land last; only the most recent open is allowed to build a session
+local open_gen = 0
+
 ---@param msg string
 ---@param level integer|nil
 local function notify(msg, level)
@@ -876,7 +881,12 @@ end
 ---@param pr { owner: string, repo: string, number: integer }
 ---@param opts { after?: fun(), land?: string, review?: boolean }|nil
 function M.show(pr, opts)
+    open_gen = open_gen + 1
+    local gen = open_gen
     client.get_pr(pr, function(err, detail)
+        if gen ~= open_gen then
+            return -- a later open superseded this one; its error isn't the user's problem
+        end
         if err then
             return notify_err(err)
         end
