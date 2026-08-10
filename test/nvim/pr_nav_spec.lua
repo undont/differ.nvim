@@ -248,6 +248,80 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    -- the page render is several async hops long, and `:Differ pr <n>` straight into
+    -- `:Differ pr view` leaves the session in the files while the last hop is still out.
+    -- rendering then would take the window back and close the diff just built
+    it("an overview render still in flight doesn't take the window back", function()
+        local responses = default_responses()
+        local release -- the held get_checks callback, the last hop before render
+        local real = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_checks" and not release then
+                release = function()
+                    vim.schedule(function()
+                        cb(nil, responses.get_checks.result)
+                    end)
+                end
+                return
+            end
+            vim.schedule(function()
+                local r = responses[method]
+                cb(r and r.err or nil, (r and r.result) or {})
+            end)
+        end
+
+        pr.show(PR, { land = "overview" })
+        assert.is_true(vim.wait(2000, function()
+            return release ~= nil -- the page is one hop from rendering
+        end))
+
+        pr.view({ number = PR.number }) -- enter the files while that hop is outstanding
+        local s = pr.current_session()
+        assert.is_true(vim.wait(2000, function()
+            return s.view ~= nil and s.view:is_open()
+        end))
+
+        release() -- the superseded page render lands
+        vim.wait(300)
+
+        assert.is_truthy(s.view and s.view:is_open()) -- the diff survived it
+        assert.is_true(s.panel:is_open())
+        assert.are.equal(s, pr.current_session())
+
+        sidecar.request = real
+    end)
+
+    -- a mutation submitted from the overview can conflict, and its refetch lands with
+    -- the view nil'd and the sidebar hidden: state has to reconcile, but re-sourcing the
+    -- diff there would build a fresh view over the page the user is reading
+    it("a conflict refetch on the overview reconciles state without rebuilding the diff", function()
+        local responses = default_responses()
+        local restore = open_overview(responses)
+        enter_at_thread()
+
+        local s = pr.current_session()
+        local diff_buf = s.view:column_for("new").bufnr
+        local before = overview_tick()
+        assert.is_true(fire(diff_buf, "PR overview")) -- go-hop
+        wait_overview(before)
+        assert.is_nil(s.view)
+        assert.is_false(s.panel:is_open())
+
+        s.versions["a.txt"] = { base = {}, head = {} } -- a memo pinned to the old head
+        responses.get_pr = { result = get_pr_result({ head_sha = "ccc3333" }) }
+        pr.handle_conflict()
+
+        assert.is_true(vim.wait(1000, function()
+            return s.pr_meta.head_sha == "ccc3333"
+        end))
+        assert.are.same({}, s.versions) -- the stale memo dropped
+        assert.is_nil(s.threads)
+        assert.is_nil(s.view) -- and nothing drawn over the page
+        assert.are.equal(overview_buf(), vim.api.nvim_win_get_buf(s.overview_win))
+
+        restore()
+    end)
+
     it("re-entering via e restores the stashed diff position", function()
         local restore = open_overview(default_responses())
 

@@ -1,4 +1,4 @@
-*differ.txt*                                                For Neovim >= 0.10
+*differ.txt*                                                For Neovim >= 0.12
 
 ==============================================================================
 Table of Contents                                   *differ-table-of-contents*
@@ -26,14 +26,14 @@ Table of Contents                                   *differ-table-of-contents*
 - 3-way/4-way merge tool, resolved into the working-tree file
 - Word-level highlighting and Treesitter syntax, both on by default
 - Real buffer lines, so search, yank, and motions work as normal
-- One diff engine (`vim.diff()`, histogram) shared by every source
+- One diff engine (`vim.text.diff()`, histogram) shared by every source
 
 ------------------------------------------------------------------------------
 
 ==============================================================================
 2. Requirements                                          *differ-requirements*
 
-- Neovim 0.10+ (uses `vim.system`, `vim.fs.relpath`, `vim.diff`)
+- Neovim 0.12+ (`vim.text.diff` sets the floor; also uses `vim.system` and `vim.uv`)
 - git on `PATH`
 - A Treesitter parser for the languages you diff (optional)
 - For PR review: Go + make on `PATH`, and `gh` authenticated

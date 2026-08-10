@@ -143,7 +143,7 @@ vimdoc: $(PANVIMDOC_BIN) ## Regenerate doc/differ.txt from README.md (needs pand
 		--scripts-dir "$(PANVIMDOC_DIR)/scripts" \
 		--project-name differ \
 		--input-file README.md \
-		--description "For Neovim >= 0.10" \
+		--description "For Neovim >= 0.12" \
 		--toc true \
 		--demojify true \
 		--dedup-subheadings true \

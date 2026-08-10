@@ -4,7 +4,7 @@ Thanks for considering a contribution to differ.nvim.
 
 ## Setup
 
-- Neovim 0.10+, git on `PATH`
+- Neovim 0.12+, git on `PATH`
 - For the Go sidecar: Go + make on `PATH`
 - `make go-build` builds the sidecar into `bin/`. Rerun it after any change under `cmd/` or `internal/` and restart the sidecar process in your running nvim, otherwise you're testing against a stale binary
 

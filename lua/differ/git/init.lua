@@ -1360,8 +1360,8 @@ function M.panel(opts)
             if watcher then
                 watcher:stop()
             end
-            if view and view:is_open() then
-                view:close()
+            if view then
+                view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
         end,
@@ -1492,8 +1492,8 @@ function M.history(opts)
             end
         end,
         on_close = function()
-            if view and view:is_open() then
-                view:close()
+            if view then
+                view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
         end,
@@ -1563,8 +1563,8 @@ function M.range_history(opts)
             end
         end,
         on_close = function()
-            if view and view:is_open() then
-                view:close()
+            if view then
+                view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
         end,

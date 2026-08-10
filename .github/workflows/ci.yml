@@ -80,7 +80,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        neovim-version: ["stable", "nightly"]
+        # v0.12.0 is the declared floor, pinned rather than tracked: `stable` rolls to
+        # 0.13 on release and the floor would silently stop being exercised
+        neovim-version: ["v0.12.0", "stable", "nightly"]
     steps:
       - uses: actions/checkout@v4
 

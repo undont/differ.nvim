@@ -1,29 +1,43 @@
 -- runs under headless nvim: the pending-review draft lifecycle. stubs pr.client (the
 -- one seam review.lua reaches the sidecar through), so a fake session with a fake panel
 -- is enough to drive start / reattach without a real PR session
+---@diagnostic disable: duplicate-set-field  -- the stubs reassign module fields by design
 local client = require("differ.pr.client")
 local review = require("differ.pr.review")
 
--- swap the client calls out for the duration of a test. `calls` records which client
--- methods fired; the fake panel records the path reattach landed on
-local function stub(pending)
+-- swap the client calls out for the duration of a test, and make `live` the session the
+-- guards see. `calls` records which client methods fired; the fake panel records the
+-- path reattach landed on
+---@param pending table|nil  -- what get_pending_review answers
+---@param live table|nil  -- the session pr.current_session() reports, nil for none
+local function stub(pending, live)
     local calls = {}
+    local pr = require("differ.pr")
     local real = {
         start_review = client.start_review,
         get_pending_review = client.get_pending_review,
+        current_session = pr.current_session,
     }
+    -- TODO: type busted properly (and remove those disables)
+
+    ---@diagnostic disable-next-line: unused-local
     client.start_review = function(_pr, cb)
         calls[#calls + 1] = "start_review"
         cb(nil, { review_id = "fresh" })
     end
+    ---@diagnostic disable-next-line: unused-local
     client.get_pending_review = function(_pr, cb)
         calls[#calls + 1] = "get_pending_review"
         cb(nil, pending)
+    end
+    pr.current_session = function()
+        return live
     end
     return calls,
         function()
             client.start_review = real.start_review
             client.get_pending_review = real.get_pending_review
+            pr.current_session = real.current_session
         end
 end
 
@@ -40,13 +54,8 @@ local function fake_session(review_id, entries)
                 self.landed[#self.landed + 1] = path
             end,
         },
-        -- alive() only asks the view whether it's still open
-        view = {
-            is_open = function()
-                return true
-            end,
-            columns = {},
-        },
+        -- no view: the draft lifecycle keys off session identity, so it works before
+        -- the diff's async blob fetch has built one
     }
 end
 
@@ -59,8 +68,8 @@ local FILES = {
 
 describe("review.start", function()
     it("starts a fresh draft when the session has none", function()
-        local calls, restore = stub({})
         local s = fake_session(nil, FILES)
+        local calls, restore = stub({}, s)
         review.start(s)
         assert.are.same({ "start_review" }, calls)
         assert.are.equal("fresh", s.review_id)
@@ -68,46 +77,69 @@ describe("review.start", function()
     end)
 
     it("reattaches instead of refusing when a draft is already in progress", function()
-        local calls, restore = stub({ review_id = "existing" })
         local s = fake_session("existing", FILES)
+        local calls, restore = stub({ review_id = "existing" }, s)
         review.start(s)
         -- the point: no second start_review, and it doesn't dead-end on a notice
         assert.are.same({ "get_pending_review" }, calls)
+        restore()
+    end)
+
+    -- the diff's blob fetch and start_review race, and either can land first
+    it("adopts the draft when the response beats the diff window", function()
+        local s = fake_session(nil, FILES)
+        local _, restore = stub({}, s)
+        assert.is_nil(s.view) -- show_file hasn't built one yet
+        _G.notifs = {}
+        review.start(s)
+        assert.are.equal("fresh", s.review_id)
+        assert.are.equal(
+            "differ: review started - comments are drafts until you submit",
+            _G.notifs[#_G.notifs].msg
+        )
+        restore()
+    end)
+
+    it("drops the draft when the session was replaced mid-flight", function()
+        local s = fake_session(nil, FILES)
+        local _, restore = stub({}, fake_session(nil, FILES)) -- a different live session
+        review.start(s)
+        assert.is_nil(s.review_id) -- the superseded session keeps no draft id
         restore()
     end)
 end)
 
 describe("review.reattach", function()
     it("lands on the first file still unviewed", function()
-        local _, restore = stub({ review_id = "existing" })
         local s = fake_session("existing", FILES)
+        local _, restore = stub({ review_id = "existing" }, s)
         review.reattach(s)
         assert.are.same({ "c.lua" }, s.panel.landed)
         restore()
     end)
 
     it("leaves the cursor alone when the caller already positioned", function()
-        local _, restore = stub({ review_id = "existing" })
         local s = fake_session("existing", FILES)
+        local _, restore = stub({ review_id = "existing" }, s)
         review.reattach(s, { jump = false })
         assert.are.same({}, s.panel.landed) -- the overview's thread anchor stands
         restore()
     end)
 
     it("stays put when every file has been viewed", function()
-        local _, restore = stub({ review_id = "existing" })
         local s = fake_session("existing", {
             { path = "a.lua", viewed = true },
             { path = "b.lua", viewed = true },
         })
+        local _, restore = stub({ review_id = "existing" }, s)
         review.reattach(s)
         assert.are.same({}, s.panel.landed)
         restore()
     end)
 
     it("notifies and lands nowhere when the PR has no draft", function()
-        local _, restore = stub({ review_id = nil })
         local s = fake_session(nil, FILES)
+        local _, restore = stub({ review_id = nil }, s)
         _G.notifs = {}
         review.reattach(s)
         assert.are.equal(
@@ -115,6 +147,16 @@ describe("review.reattach", function()
             _G.notifs[#_G.notifs].msg
         )
         assert.are.same({}, s.panel.landed)
+        restore()
+    end)
+
+    -- resume's whole purpose is re-entering draft mode, so it can't wait on the diff
+    it("reattaches with no diff window built yet", function()
+        local s = fake_session(nil, FILES)
+        local _, restore = stub({ review_id = "existing" }, s)
+        review.reattach(s)
+        assert.are.equal("existing", s.review_id)
+        assert.are.same({ "c.lua" }, s.panel.landed)
         restore()
     end)
 end)

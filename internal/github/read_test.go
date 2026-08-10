@@ -205,7 +205,7 @@ func TestGetThreadsPagination(t *testing.T) {
 func TestGetPendingReview(t *testing.T) {
 	body := `{"data":{"repository":{"pullRequest":{"reviews":{"nodes":[
       {"id":"REVIEW_1","comments":{"nodes":[
-        {"fullDatabaseId":"5001","path":"a.go","diffSide":"RIGHT","line":10,"startLine":null,"startDiffSide":null,"body":"draft"}
+        {"fullDatabaseId":"5001","path":"a.go","line":10,"startLine":null,"body":"draft"}
       ]}}
     ]}}}}}`
 	c := newClient(func(*http.Request) (*http.Response, error) {
@@ -218,8 +218,13 @@ func TestGetPendingReview(t *testing.T) {
 	if pr.ReviewID == nil || *pr.ReviewID != "REVIEW_1" {
 		t.Fatalf("review id wrong: %+v", pr.ReviewID)
 	}
-	if len(pr.Comments) != 1 || pr.Comments[0].ID != 5001 || pr.Comments[0].Side != "RIGHT" || pr.Comments[0].Body != "draft" {
+	if len(pr.Comments) != 1 || pr.Comments[0].ID != 5001 || pr.Comments[0].Body != "draft" {
 		t.Errorf("draft comment wrong: %+v", pr.Comments)
+	}
+	// PullRequestReviewComment has no diffSide; asking for one made the whole query
+	// invalid, so the fixture must not carry a field GitHub cannot return
+	if pr.Comments[0].Line != 10 || pr.Comments[0].Side != "" {
+		t.Errorf("draft anchor wrong: %+v", pr.Comments[0])
 	}
 }
 

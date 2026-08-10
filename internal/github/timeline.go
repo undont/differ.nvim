@@ -10,7 +10,7 @@ import "context"
 func (c *Client) GetTimeline(ctx context.Context, owner, repo string, number int) (*Timeline, error) {
 	out := &Timeline{Comments: []TimelineComment{}, Reviews: []ReviewSummary{}}
 	cursor := ""
-	for {
+	for n := 0; n < gqlMaxPages; n++ {
 		var page timelineGQL
 		vars := map[string]any{"owner": owner, "repo": repo, "number": number}
 		if cursor != "" {
@@ -39,10 +39,11 @@ func (c *Client) GetTimeline(ctx context.Context, owner, repo string, number int
 				})
 			}
 		}
-		if !pr.Comments.PageInfo.HasNextPage {
+		next, more := nextCursor(cursor, pr.Comments.PageInfo)
+		if !more {
 			break
 		}
-		cursor = pr.Comments.PageInfo.EndCursor
+		cursor = next
 	}
 	return out, nil
 }

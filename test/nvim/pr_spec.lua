@@ -86,6 +86,88 @@ describe("pr session notifies", function()
         end
     end)
 
+    -- get_pr fetches the whole file list, so a big PR answers slower than a small one
+    -- asked for after it. the open the user made last is the one they meant
+    it("lands on the PR opened last even when its response arrives first", function()
+        local pending = {} -- get_pr callbacks, released by hand
+        local real = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_pr" then
+                pending[params.number] = function()
+                    cb(nil, get_pr_result({ title = "pr " .. params.number }))
+                end
+                return
+            end
+            vim.schedule(function()
+                cb(nil, method == "get_file_versions" and { base = {}, head = {} } or {})
+            end)
+        end
+
+        pr.show({ owner = "acme", repo = "widget", number = 10 })
+        pr.show({ owner = "acme", repo = "widget", number = 20 })
+        assert.is_truthy(pending[10] and pending[20])
+
+        pending[20]() -- the one the user asked for last answers first
+        pending[10]() -- the superseded, slower one lands after
+
+        assert.is_true(vim.wait(1000, function()
+            return pr.current_session() ~= nil
+        end))
+        assert.are.equal(20, pr.current_session().pr.number)
+
+        sidecar.request = real
+    end)
+
+    -- the neighbour prefetch is speculative and outlives the session that issued it, so
+    -- its callback has to prove the session is still the live one before writing the memo
+    it("a prefetch landing after a PR switch stays out of the new session's memo", function()
+        -- disjoint file sets, so b.txt can only reach PR 8's memo by contamination
+        local function files_for(number)
+            local names = number == 7 and { "a.txt", "b.txt" } or { "c.txt", "d.txt" }
+            local out = {}
+            for _, path in ipairs(names) do
+                out[#out + 1] = { path = path, status = "modified", additions = 1, deletions = 1 }
+            end
+            return out
+        end
+        local held -- b.txt's blob, released by hand after the switch
+        local real = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_file_versions" and params.path == "b.txt" and not held then
+                held = function()
+                    cb(nil, { base = { content = "stale\n" }, head = { content = "STALE\n" } })
+                end
+                return
+            end
+            vim.schedule(function()
+                if method == "get_pr" then
+                    return cb(nil, get_pr_result({ files = files_for(params.number) }))
+                elseif method == "get_file_versions" then
+                    return cb(nil, { base = { content = "a\n" }, head = { content = "A\n" } })
+                end
+                cb(nil, {})
+            end)
+        end
+
+        pr.show(PR)
+        assert.is_true(vim.wait(1000, function()
+            return held ~= nil -- the first session issued the neighbour prefetch
+        end))
+        local first = pr.current_session()
+
+        pr.show({ owner = "acme", repo = "widget", number = 8 })
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s ~= first
+        end))
+        local second = pr.current_session()
+
+        held() -- the superseded session's blob finally lands
+        assert.is_nil(second.versions["b.txt"])
+
+        sidecar.request = real
+    end)
+
     it("warns when opening a check with no url from the checks float", function()
         local restore = stub_sidecar({
             get_pr = { result = get_pr_result() },

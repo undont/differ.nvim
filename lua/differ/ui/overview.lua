@@ -114,6 +114,14 @@ local function timeline(tl)
             state = r.state,
         }
     end
+    -- an outdated thread has no line in the current diff, only the one it was written
+    -- against; nil when even that is gone, so the row says so instead of claiming line 0
+    local function anchor_of(t)
+        local function real(n)
+            return type(n) == "number" and n >= 1 and n or nil
+        end
+        return real(t.line) or real(t.original_line)
+    end
     for _, t in ipairs(tl.threads or {}) do
         if not t.is_pending then
             local first = (t.comments or {})[1] or {}
@@ -124,7 +132,8 @@ local function timeline(tl)
                 ts = first.created_at,
                 path = t.path,
                 side = t.side,
-                line = t.line,
+                line = anchor_of(t),
+                outdated = t.outdated == true, -- vim.NIL-safe
                 diff_hunk = first.diff_hunk, -- the root comment's, rendered under the header
                 resolved = t.resolved == true, -- vim.NIL-safe
                 replies = math.max(0, #(t.comments or {}) - 1),
@@ -243,17 +252,24 @@ function M.build(data, opts)
     ---@param item table
     local function render_thread(item)
         local row_start = #lines + 1
-        push({
+        local header = {
             { TOP, "differOverviewMeta" },
             { "@" .. (item.author or "?"), "differOverviewAuthor" },
             { " commented on ", "differOverviewMeta" },
-            { (item.path or "?") .. ":" .. (item.line or 0), "differOverviewBody" },
             {
-                item.resolved and " · resolved" or " · unresolved",
-                item.resolved and "differOverviewMeta" or "differOverviewChanges",
+                (item.path or "?") .. (item.line and (":" .. item.line) or ""),
+                "differOverviewBody",
             },
-            { " · " .. reltime(item.ts or ""), "differOverviewMeta" },
-        })
+        }
+        if item.outdated then
+            header[#header + 1] = { " · outdated", "differOverviewMeta" }
+        end
+        header[#header + 1] = {
+            item.resolved and " · resolved" or " · unresolved",
+            item.resolved and "differOverviewMeta" or "differOverviewChanges",
+        }
+        header[#header + 1] = { " · " .. reltime(item.ts or ""), "differOverviewMeta" }
+        push(header)
         -- the code the comment anchors to, github-style, on spine rows between header and
         -- body. +/- rows carry the diff's full-width line tints (recorded directly, since
         -- push only emits column spans); code rows are collected marker-stripped for the

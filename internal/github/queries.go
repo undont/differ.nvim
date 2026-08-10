@@ -44,9 +44,11 @@ query GetThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           startLine
+          originalLine
           diffSide
           startDiffSide
           comments(first: 100) {
@@ -84,10 +86,8 @@ query GetPendingReview($owner: String!, $repo: String!, $number: Int!) {
             nodes {
               fullDatabaseId
               path
-              diffSide
               line
               startLine
-              startDiffSide
               body
             }
           }

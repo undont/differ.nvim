@@ -91,3 +91,46 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 		t.Errorf("clear should force a refetch: want 4 content calls, got %d", contentCalls)
 	}
 }
+
+// a mutation invalidating the thread cache mid-pagination must win: the walk in flight
+// assembled its snapshot before the change, so caching it would resurrect the pre-
+// mutation list and hide the new comment for the life of the session.
+func TestInvalidateDuringWalkDropsTheStaleSnapshot(t *testing.T) {
+	var c *Client
+	c = newClient(func(*http.Request) (*http.Response, error) {
+		// invalidate while the walk is mid-flight, as a concurrent mutation would
+		c.cache.invalidateThreads()
+		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
+			`"nodes":[{"id":"th_1","path":"a.txt","comments":{"nodes":[]}}],`+
+			`"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
+	})
+
+	got, err := c.GetThreads(context.Background(), "acme", "widget", 7)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("the caller still gets the walk's result, got %d", len(got))
+	}
+	if _, ok := c.cache.thread(threadKey("acme", "widget", 7)); ok {
+		t.Error("a snapshot assembled before the invalidation must not be cached")
+	}
+}
+
+// the ordinary path still caches, so the guard hasn't disabled the memo outright
+func TestThreadWalkCachesWhenNothingInvalidates(t *testing.T) {
+	calls := 0
+	c := newClient(func(*http.Request) (*http.Response, error) {
+		calls++
+		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
+			`"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
+	})
+	for i := 0; i < 2; i++ {
+		if _, err := c.GetThreads(context.Background(), "acme", "widget", 7); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Errorf("want the second call served from cache, got %d requests", calls)
+	}
+}

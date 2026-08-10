@@ -59,16 +59,21 @@ type FileBlob struct {
 // operates on. Side/StartSide are LEFT/RIGHT; StartSide/StartLine are set
 // only on range threads. IsPending is true for an unsubmitted draft thread.
 type Thread struct {
-	ID        int64           `json:"id"`
-	ThreadID  string          `json:"thread_id"`
-	Path      string          `json:"path"`
-	Side      string          `json:"side"`
-	Line      int             `json:"line"`
-	StartSide string          `json:"start_side,omitempty"`
-	StartLine int             `json:"start_line,omitempty"`
-	Resolved  bool            `json:"resolved"`
-	IsPending bool            `json:"is_pending"`
-	Comments  []ThreadComment `json:"comments"`
+	ID        int64  `json:"id"`
+	ThreadID  string `json:"thread_id"`
+	Path      string `json:"path"`
+	Side      string `json:"side"`
+	Line      int    `json:"line"`
+	StartSide string `json:"start_side,omitempty"`
+	StartLine int    `json:"start_line,omitempty"`
+	// github nulls line/start_line once a thread's anchor leaves the diff. outdated says
+	// so explicitly, and original_line carries where it used to sit, so the client can
+	// place it deliberately rather than reading the zero as line 0
+	Outdated     bool            `json:"outdated"`
+	OriginalLine int             `json:"original_line,omitempty"`
+	Resolved     bool            `json:"resolved"`
+	IsPending    bool            `json:"is_pending"`
+	Comments     []ThreadComment `json:"comments"`
 }
 
 // ThreadComment is one comment in a Thread. ID is the numeric comment id; NodeID is

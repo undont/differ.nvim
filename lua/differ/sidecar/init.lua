@@ -10,6 +10,10 @@ local PROTOCOL = 1
 local BASE_BACKOFF_MS = 200
 local MAX_BACKOFF_MS = 8000
 local MAX_ATTEMPTS = 5
+-- ceiling on one request. the Go client's 30s timeout is per HTTP call, so a handler
+-- that paginates (or never returns) outlives it; generous enough for a large PR's file
+-- walk, since firing early would fail a request that was going to succeed
+local REQUEST_TIMEOUT_MS = 60000
 
 local M = {}
 
@@ -20,7 +24,7 @@ local M = {}
 ---@field ready boolean        -- hello handshake completed
 ---@field stopping boolean     -- intentional stop; suppress restart
 ---@field next_id integer
----@field pending table<integer, fun(err: table|nil, result: any)>
+---@field pending table<integer, { cb: fun(err: table|nil, result: any), timer: any }>
 ---@field queue { method: string, params: any, cb: fun(err: table|nil, result: any) }[]
 ---@field stdout_buf string
 ---@field attempts integer     -- consecutive restart attempts (backoff)
@@ -82,14 +86,53 @@ local function send(obj)
     end
 end
 
+-- take a pending entry off the map and disarm its timer, returning its callback for the
+-- caller to run. nil when the id already went (a response racing its own timeout).
+local function take(id)
+    local entry = client and client.pending[id]
+    if not entry then
+        return nil
+    end
+    client.pending[id] = nil
+    entry.timer:stop()
+    if not entry.timer:is_closing() then
+        entry.timer:close()
+    end
+    return entry.cb
+end
+
+-- register `cb` under `id` with a timeout, so a handler that never answers rejects the
+-- caller instead of stranding it. the sidecar has no cancel frame, so a late response
+-- to a timed-out id finds no pending entry and is dropped.
+local function await(id, cb)
+    local self = client
+    local timer = vim.uv.new_timer()
+    client.pending[id] = { cb = cb, timer = timer }
+    timer:start(REQUEST_TIMEOUT_MS, 0, function()
+        vim.schedule(function()
+            if client ~= self then
+                return -- this client was replaced; its pending map went with it
+            end
+            local fn = take(id)
+            if fn then
+                fn(mkerr("network", "the sidecar did not answer in time"))
+            end
+        end)
+    end)
+end
+
 -- fail in-flight (sent, awaiting response) requests; queued-but-unsent ones are left
 -- for a restart to flush after re-handshake.
 local function fail_pending(err)
     local pend = client.pending
     client.pending = {}
-    for _, cb in pairs(pend) do
+    for _, entry in pairs(pend) do
+        entry.timer:stop()
+        if not entry.timer:is_closing() then
+            entry.timer:close()
+        end
         vim.schedule(function()
-            cb(err)
+            entry.cb(err)
         end)
     end
 end
@@ -110,7 +153,7 @@ end
 function do_request(method, params, cb)
     local id = client.next_id
     client.next_id = id + 1
-    client.pending[id] = cb
+    await(id, cb)
     send({ id = id, method = method, params = params or vim.empty_dict() })
 end
 
@@ -126,7 +169,7 @@ function handshake()
     local self = client
     local id = client.next_id
     client.next_id = id + 1
-    client.pending[id] = function(err, result)
+    await(id, function(err, result)
         if client ~= self then
             return -- this client was stopped/replaced; its handshake result is moot
         end
@@ -156,7 +199,7 @@ function handshake()
         client.attempts = 0
         client.binary = result.binary
         flush_queue()
-    end
+    end)
     send({ id = id, method = "hello", params = { client = "differ.nvim", protocol = PROTOCOL } })
 end
 
@@ -179,8 +222,7 @@ function on_stdout(err, data)
         if line ~= "" then
             local ok, msg = pcall(vim.json.decode, line)
             if ok and type(msg) == "table" and msg.id ~= nil and client.pending[msg.id] then
-                local cb = client.pending[msg.id]
-                client.pending[msg.id] = nil
+                local cb = take(msg.id)
                 local e, result
                 if msg.error then
                     e = {

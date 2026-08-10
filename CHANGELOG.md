@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Neovim 0.12 is the minimum, documented and enforced at startup. Every diff uses `vim.text.diff`, which 0.10 and 0.11 don't have
+
+### Fixed
+
+- Review actions taken from the overview page (submit, discard, post, delete, resolve) reached GitHub but were ignored by the session, leaving a stale draft id, invisible comments, and conflicts reported nowhere
+- `:Differ pr review` and `resume` dropped the draft when they answered before the diff had loaded, so `ga` posted live comments while the title said draft
+- Switching pull requests mid-request mixed the two: a prefetch, a viewed toggle or a state transition could land on the wrong session
+- Opening two pull requests in quick succession landed on whichever answered last, not the one asked for last
+- A comment posted against whatever file the diff showed at submit time rather than the one it was written on, and closing the diff mid-compose raised an error
+- A comment posted while the thread list was still loading stayed invisible for the rest of the session
+- Outdated review threads stacked on line 1 and read as `path:0`; they now sit where they were written, marked outdated
+- Thread, file and timeline pagination could loop until the token hit a rate limit; a sidecar request that never answers now fails after a minute
+- Closing a diff with `:q` skipped teardown, leaking a buffer, its parsed diff and an autocmd each time
+- `:Differ pr review resume` failed: the query behind it asked GitHub for a field that doesn't exist on a review comment, so it failed with an internal error, and opening a PR didn't adopt an existing draft either
+- Opening a PR and going straight to the files bounced you back to the overview a moment later: the page's own render was still in flight and took the window back, closing the diff it found there
+
+## [0.1.25] — 2026-08-10
+
 ### Fixed
 
 - A failed GitHub request says what GitHub said. The status was mapped before the response body was read, leaving the branch that reads GitHub's own message unreachable: a rejected comment reported `422 Unprocessable Entity` where GitHub had named the line it was not part of, and an expired token reported `401 Unauthorized` rather than `Bad credentials`

@@ -75,9 +75,16 @@ function M.owns_buffer(b)
     return b ~= nil and vim.api.nvim_buf_is_valid(b) and vim.api.nvim_buf_get_name(b) == BUFNAME
 end
 
+-- monotonic page token. a page render is several async hops long, and the session can
+-- leave the page while they run: entering the files disarms, and render would otherwise
+-- take the window back, close the diff just built and hide the panel
+local page_gen = 0
+
 -- drop the navigate-away guard. the page window becomes the diff's on entry, so the
--- guard must not fire when the view repurposes it
+-- guard must not fire when the view repurposes it, and any render still in flight is
+-- for a surface the session has already left
 function M.disarm()
+    page_gen = page_gen + 1
     pcall(vim.api.nvim_del_augroup_by_name, GUARD)
 end
 
@@ -367,9 +374,16 @@ function M.open(session)
     if not session then
         return require("differ.pr").notify("open a PR first")
     end
+    -- claim the page: a later open supersedes this one, and so does entering the files
+    page_gen = page_gen + 1
+    local gen = page_gen
+    ---@return boolean
+    local function ours()
+        return still_live(session) and page_gen == gen
+    end
     client.get_timeline(session.pr, function(err, tl)
-        if not still_live(session) then
-            return -- session torn down while the timeline was in flight
+        if not ours() then
+            return -- session torn down, or it left the page, while the timeline was in flight
         end
         if err then
             return require("differ.pr").notify_err(err)
@@ -380,7 +394,7 @@ function M.open(session)
             reviews = type(tl) == "table" and type(tl.reviews) == "table" and tl.reviews or {},
         }
         require("differ.pr.threads").ensure(session, function()
-            if not still_live(session) then
+            if not ours() then
                 return
             end
             if session.checks then
@@ -389,7 +403,9 @@ function M.open(session)
             -- no cached checks: fetch once, cache on the session, then render (degrade
             -- to nil if the fetch fails — the rollup line just reads "n/a")
             client.get_checks(session.pr, function(cerr, checks)
-                if not still_live(session) then
+                -- the checks fetch is the longest hop, so this is the likeliest place to
+                -- find the session already in the files
+                if not ours() then
                     return
                 end
                 if not cerr and type(checks) == "table" then

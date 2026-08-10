@@ -15,9 +15,12 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 	if t, ok := c.cache.thread(key); ok {
 		return t, nil
 	}
+	// captured before the walk: an invalidation landing mid-pagination must win over the
+	// snapshot this walk is assembling
+	gen := c.cache.threadGeneration()
 	out := []Thread{} // non-nil so an empty PR marshals to [] (null would decode to vim.NIL)
 	cursor := ""
-	for {
+	for n := 0; n < gqlMaxPages; n++ {
 		var page threadsGQL
 		vars := map[string]any{"owner": owner, "repo": repo, "number": number}
 		if cursor != "" {
@@ -29,14 +32,16 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 		threads := page.Repository.PullRequest.ReviewThreads
 		for _, n := range threads.Nodes {
 			t := Thread{
-				ThreadID:  n.ID,
-				Path:      n.Path,
-				Side:      n.DiffSide,
-				Line:      deref(n.Line),
-				StartSide: n.StartSide,
-				StartLine: deref(n.StartLine),
-				Resolved:  n.IsResolved,
-				Comments:  make([]ThreadComment, 0, len(n.Comments.Nodes)),
+				ThreadID:     n.ID,
+				Path:         n.Path,
+				Side:         n.DiffSide,
+				Line:         deref(n.Line),
+				StartSide:    n.StartSide,
+				StartLine:    deref(n.StartLine),
+				Outdated:     n.IsOutdated,
+				OriginalLine: deref(n.OriginalLine),
+				Resolved:     n.IsResolved,
+				Comments:     make([]ThreadComment, 0, len(n.Comments.Nodes)),
 			}
 			for _, cm := range n.Comments.Nodes {
 				t.Comments = append(t.Comments, ThreadComment{
@@ -55,12 +60,13 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 			}
 			out = append(out, t)
 		}
-		if !threads.PageInfo.HasNextPage {
+		next, more := nextCursor(cursor, threads.PageInfo)
+		if !more {
 			break
 		}
-		cursor = threads.PageInfo.EndCursor
+		cursor = next
 	}
-	c.cache.putThreads(key, out)
+	c.cache.putThreads(key, out, gen)
 	return out, nil
 }
 
@@ -81,12 +87,12 @@ func (c *Client) GetPendingReview(ctx context.Context, owner, repo string, numbe
 	id := r.ID
 	out := &PendingReview{ReviewID: &id}
 	for _, cm := range r.Comments.Nodes {
+		// PullRequestReviewComment carries no diff side, so Side/StartSide stay empty
+		// here; a draft's side is only available through the thread it belongs to
 		out.Comments = append(out.Comments, PendingComment{
 			ID:        parseID(cm.FullDatabaseID),
 			Path:      cm.Path,
-			Side:      cm.DiffSide,
 			Line:      deref(cm.Line),
-			StartSide: cm.StartSide,
 			StartLine: deref(cm.StartLine),
 			Body:      cm.Body,
 		})

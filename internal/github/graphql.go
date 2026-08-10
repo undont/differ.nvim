@@ -9,6 +9,19 @@ import (
 	"github.com/undont/differ.nvim/internal/protocol"
 )
 
+// gqlMaxPages bounds every cursor walk, mirroring getPaged's REST cap.
+const gqlMaxPages = 100
+
+// nextCursor reports the cursor to fetch next and whether the walk continues. it stops
+// on the last page, on a null endCursor, and on a cursor that hasn't moved: an empty
+// cursor is omitted from the query variables, so either of those refetches page 1.
+func nextCursor(prev string, info pageInfoGQL) (string, bool) {
+	if !info.HasNextPage || info.EndCursor == "" || info.EndCursor == prev {
+		return "", false
+	}
+	return info.EndCursor, true
+}
+
 // graphql posts a raw GraphQL query (no go-gh, no typed dep) and decodes
 // the data field into out. top-level GraphQL errors map via mapGraphQL even on a
 // 200; HTTP-level failures map via mapHTTP.

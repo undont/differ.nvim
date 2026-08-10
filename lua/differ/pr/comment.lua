@@ -6,6 +6,7 @@
 -- without nvim; compose/post own the vim + IPC surface
 
 local client = require("differ.pr.client")
+local guard = require("differ.pr.guard")
 
 local M = {}
 
@@ -99,6 +100,16 @@ local function active_column(session)
     end
 end
 
+-- the file the gesture was made against. the compose window is a real split, so the
+-- diff can move (or close) before the body is submitted; the anchor's path is fixed
+-- at the same instant as its side/line
+---@param session table
+---@return string|nil
+local function gesture_path(session)
+    local model = session.view and session.view.model
+    return model and model.path
+end
+
 -- ga (normal): comment on the line under the cursor
 ---@param session table
 function M.comment(session)
@@ -111,7 +122,7 @@ function M.comment(session)
     if not anchor then
         return notify(err or "no commentable line here")
     end
-    M.compose(session, { anchor = anchor, anchor_win = win })
+    M.compose(session, { anchor = anchor, anchor_win = win, path = gesture_path(session) })
 end
 
 -- ga (visual): comment on the selected range. reads the visual marks before leaving
@@ -129,7 +140,7 @@ function M.comment_range(session)
     if not anchor then
         return notify(err or "no commentable line here")
     end
-    M.compose(session, { anchor = anchor, anchor_win = win })
+    M.compose(session, { anchor = anchor, anchor_win = win, path = gesture_path(session) })
 end
 
 -- gp: reply to the thread under the cursor (its node id, from slice 3's overlay index)
@@ -175,26 +186,36 @@ function M.delete(session)
         return
     end
     client.delete_comment(session.pr, target.node_id, function(err, _)
-        if not (session and session.view and session.view:is_open()) then
-            return -- session torn down while the delete was in flight
+        if not guard.owns(session) then
+            return -- session torn down (or replaced) while the delete was in flight
         end
         if err then
             return require("differ.pr").notify_err(err)
         end
-        session.threads = nil
-        require("differ.pr.threads").refresh(session)
+        local threads = require("differ.pr.threads")
+        threads.invalidate(session)
+        threads.refresh(session)
         notify(root and "thread deleted" or "comment deleted")
     end)
 end
 
 -- ── compose + post ────────────────────────────────────────────────────────────────
 
+-- where a comment attaches, and how it composes. anchor + path address a new thread and
+-- are fixed together at gesture time; in_reply_to addresses an existing one instead
+---@class differ.pr.CommentOpts
+---@field anchor table|nil  -- { side, line } or a range's { start_side, start_line, side, line }
+---@field path string|nil  -- the file the anchor is against
+---@field anchor_win integer|nil  -- diff window the compose split opens below
+---@field in_reply_to string|nil  -- thread node id, in place of anchor + path
+---@field initial string|nil  -- pre-filled body (the conflict re-prompt)
+---@field stale boolean|nil  -- the head moved under the original anchor
+
 -- open the compose float for `opts` (a gesture anchor, or a reply target). the title
 -- names the mode so a live post is never mistaken for a draft: draft when a review is
--- active, "posts immediately" otherwise. opts.initial pre-fills the body (the
--- conflict re-prompt), opts.stale flags the head moved
+-- active, "posts immediately" otherwise
 ---@param session table
----@param opts { anchor?: table, anchor_win?: integer, in_reply_to?: string, initial?: string, stale?: boolean }
+---@param opts differ.pr.CommentOpts
 function M.compose(session, opts)
     local base = opts.in_reply_to and "Reply"
         or (session.review_id and "Comment (draft)" or "Comment (posts immediately)")
@@ -217,7 +238,7 @@ end
 -- guard, then re-fetch threads on success so the new comment renders authoritatively.
 -- a conflict means the head moved: refresh + re-anchor + re-prompt, never a silent post
 ---@param session table
----@param opts table
+---@param opts differ.pr.CommentOpts
 ---@param body string
 function M.post(session, opts, body)
     local args = { body = body, expected_head = session.pr_meta.head_sha }
@@ -225,7 +246,10 @@ function M.post(session, opts, body)
         args.in_reply_to = opts.in_reply_to
     else
         local a = opts.anchor
-        args.path = session.view.model.path
+        if not opts.path then
+            return notify("lost track of the file this comment anchors to; nothing posted")
+        end
+        args.path = opts.path
         args.side, args.line = a.side, a.line
         args.start_side, args.start_line = a.start_side, a.start_line
     end
@@ -233,8 +257,8 @@ function M.post(session, opts, body)
         args.review_id = session.review_id
     end
     client.post_comment(session.pr, args, function(err, res)
-        if not (session and session.view and session.view:is_open()) then
-            return -- session torn down while the post was in flight
+        if not guard.owns(session) then
+            return -- session torn down (or replaced) while the post was in flight
         end
         if err then
             if err.code == "conflict" then
@@ -255,8 +279,9 @@ function M.post(session, opts, body)
         end
         -- the sidecar invalidated its thread cache on the post, so a fresh fetch carries
         -- the new comment (right author/draft state, correct thread grouping)
-        session.threads = nil
-        require("differ.pr.threads").refresh(session)
+        local threads = require("differ.pr.threads")
+        threads.invalidate(session)
+        threads.refresh(session)
         notify(session.review_id and "comment added to your review draft" or "comment posted")
     end)
 end

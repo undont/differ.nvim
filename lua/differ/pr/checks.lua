@@ -150,6 +150,9 @@ end
 ---@param session table  -- the live pr session ({ pr = { owner, repo, number } })
 function M.show(session)
     client.get_checks(session.pr, function(err, checks)
+        if not require("differ.pr.guard").owns(session) then
+            return -- session torn down (or replaced) while the fetch was in flight
+        end
         if err then
             return require("differ.pr").notify_err(err)
         end
