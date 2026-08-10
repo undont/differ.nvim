@@ -381,6 +381,73 @@ describe("git.apply_patch (target)", function()
     end)
 end)
 
+-- the missing-final-newline bug was never that the patch text looked wrong: it looked
+-- plausible, git apply reported success, and the index silently gained a joined line.
+-- the unit fixtures pin the text; only real git can pin the bytes it writes, and under
+-- `--unidiff-zero` a side with no lines leaves git trusting the header rather than
+-- failing loudly. every shape here round-trips, so an over-eager widening is caught
+-- too: unstaging has to land back on the original blob byte-for-byte
+describe("git hunk staging round-trip (real git apply, EOF terminators)", function()
+    local patch = require("differ.git.patch")
+    local INDEX = { kind = "index", label = "INDEX" }
+    local WT = { kind = "worktree", label = "WORKTREE" }
+
+    -- raw stdout, no text=true: that collapses the very terminators under test
+    local function indexed(root, path)
+        local res = vim.system({ "git", "cat-file", "blob", ":" .. path }, { cwd = root }):wait()
+        assert(res.code == 0, res.stderr)
+        return res.stdout
+    end
+
+    -- committed, so the index starts equal to HEAD, with the worktree carrying the edit
+    local function repo_with(base, edited)
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        write(root .. "/f.txt", base)
+        git(root, "add", "f.txt")
+        git(root, "commit", "-q", "-m", "base")
+        write(root .. "/f.txt", edited)
+        return root
+    end
+
+    -- stage the hunk, then unstage the same patch, checking the index blob at each
+    -- step. one hunk, so no offset: `reverse` only picks which way git reads it, which
+    -- is exactly what the staging keys do
+    local function round_trip(base, edited)
+        local root = repo_with(base, edited)
+        local model = git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
+        assert.are.equal(1, #model.hunks)
+        local p = patch.hunk("f.txt", model.hunks[1], model.old_text, model.new_text, 0, "old")
+
+        local ok, err = git_src.apply_patch(root, p, false)
+        assert.is_true(ok, "stage failed: " .. tostring(err) .. "\n" .. p)
+        assert.are.equal(edited, indexed(root, "f.txt"))
+
+        ok, err = git_src.apply_patch(root, p, true)
+        assert.is_true(ok, "unstage failed: " .. tostring(err) .. "\n" .. p)
+        assert.are.equal(base, indexed(root, "f.txt"))
+    end
+
+    it("appends past an unterminated last line, giving it its newline", function()
+        round_trip("a\nb", "a\nb\nc\n")
+    end)
+
+    it("deletes the tail, leaving the new last line unterminated", function()
+        round_trip("a\nb\nc\n", "a\nb")
+    end)
+
+    it("appends unterminated onto unterminated", function()
+        round_trip("a\nb", "a\nb\nc")
+    end)
+
+    -- the control: an unterminated file whose hunk stops short of EOF must not widen,
+    -- and must not quietly acquire a trailing newline on the way through
+    it("leaves an unterminated file unterminated when the hunk is mid-file", function()
+        round_trip("a\nb", "a\nX\nb")
+    end)
+end)
+
 describe("git.file_entries (rev-pair sources)", function()
     it("unions in untracked files for a worktree new-side, but not a rev new-side", function()
         local root = fresh_repo()
