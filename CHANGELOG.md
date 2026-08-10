@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.1.25] — 2026-08-10
+
 ### Fixed
 
 - A failed GitHub request says what GitHub said. The status was mapped before the response body was read, leaving the branch that reads GitHub's own message unreachable: a rejected comment reported `422 Unprocessable Entity` where GitHub had named the line it was not part of, and an expired token reported `401 Unauthorized` rather than `Bad credentials`
