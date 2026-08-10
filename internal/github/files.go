@@ -2,7 +2,6 @@ package github
 
 import (
 	"context"
-	"io"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -85,23 +84,15 @@ func (c *Client) rawBlob(ctx context.Context, owner, repo, path, ref string) (Fi
 	req.Header.Set("Accept", "application/vnd.github.raw+json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return FileBlob{}, protocol.NewError(protocol.CodeNetwork, "network error: "+err.Error())
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode == http.StatusNotFound {
+	resp, body, err := c.send(req)
+	if resp != nil && resp.StatusCode == http.StatusNotFound {
 		// a missing path at a sha is itself immutable, so cache it too.
 		blob := FileBlob{Missing: true}
 		c.cache.putBlob(key, blob)
 		return blob, nil
 	}
-	body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
-	if perr := mapHTTP(resp, body, nil); perr != nil {
-		return FileBlob{}, perr
-	}
-	if rerr != nil {
-		return FileBlob{}, protocol.NewError(protocol.CodeNetwork, "reading response: "+rerr.Error())
+	if err != nil {
+		return FileBlob{}, err
 	}
 	blob := FileBlob{Content: string(body)}
 	c.cache.putBlob(key, blob)

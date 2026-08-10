@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"io"
 	"net/http"
 
 	"github.com/undont/differ.nvim/internal/protocol"
@@ -30,18 +29,9 @@ func (c *Client) graphql(ctx context.Context, query string, vars map[string]any,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", apiVersion)
 
-	resp, err := c.http.Do(req)
-	if perr := mapHTTP(resp, nil, err); perr != nil {
-		return perr
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
+	_, body, err := c.send(req)
 	if err != nil {
-		return protocol.NewError(protocol.CodeNetwork, "reading response: "+err.Error())
-	}
-	if perr := mapHTTP(resp, body, nil); perr != nil {
-		return perr
+		return err
 	}
 
 	var envelope struct {

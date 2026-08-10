@@ -8,6 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A failed GitHub request says what GitHub said. The status was mapped before the response body was read, leaving the branch that reads GitHub's own message unreachable: a rejected comment reported `422 Unprocessable Entity` where GitHub had named the line it was not part of, and an expired token reported `401 Unauthorized` rather than `Bad credentials`
+- A secondary rate limit is reported as a rate limit rather than as a permissions problem. GitHub signals one with a 403 carrying only a message, no rate-limit headers and usually no `Retry-After`, so it read as a denied scope and sent you looking for a permission you already had. It is now recognised by that message, which the fix above is what makes readable
+- A failing GitHub request no longer leaks its connection. The body was left unclosed on every non-2xx path, so each failure opened a fresh connection instead of reusing the pooled one. It bit hardest where failures arrive in bulk: a wall of 403s at a rate limit, or a repeated 401 on an expired token
+
+## [0.1.24] — 2026-08-10
+
+### Fixed
+
 - A pull request's head branch name can no longer run commands on checkout. `:Differ pr checkout` handed it to `git fetch` as a positional argument, and git reads one beginning with `-` as an option rather than as a ref: a branch named `--upload-pack=<command>` had its value run through a shell. Branch names are now checked against git's own ref-name rules before any git call. A `--` separator is not the fix here, since it would turn the `checkout` that follows into a pathspec restore
 - Staging a hunk at the end of a file with no trailing newline no longer corrupts the index. The `\ No newline at end of file` marker attaches to a line, and a zero-context hunk has none on the side that owns the terminator, so it was dropped: appending to such a file staged its last two lines merged into one, and `git apply` reported success. The hunk is widened by the line that owns the terminator, the way git's own diff does it, and deleting a file's tail is the mirror. Any file without a final newline was affected, which editors and generated files produce routinely
 - `:Differ pr checkout` works on a pull request from a fork. A cross-repo PR's head branch lives on the contributor's own repository and never reaches `origin`, so fetching it by name failed outright with `couldn't find remote ref`. It falls back to `refs/pull/<number>/head`, the ref `origin` does publish for such a PR, and lands on a local branch named for the head ref. An existing local branch of that name is checked out as it stands rather than moved, so nothing on it is lost

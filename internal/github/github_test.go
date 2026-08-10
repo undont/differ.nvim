@@ -3,9 +3,14 @@ package github
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/undont/differ.nvim/internal/protocol"
@@ -21,26 +26,65 @@ func newClient(f rtFunc) *Client {
 	return New(&http.Client{Transport: f}, "test-token", nil)
 }
 
+// bodies tallies every response body resp() hands out against every Close() on one.
+// wrapping bodies in io.NopCloser made a leak structurally invisible: the client
+// could return before closing and every test still passed. atomic because the
+// concurrent-blob path hands out two bodies from two goroutines
+var bodies struct{ opened, closed atomic.Int64 }
+
+type countingBody struct{ io.Reader }
+
+func (countingBody) Close() error { bodies.closed.Add(1); return nil }
+
+// TestMain is the package-wide net: any test that leaves a body open fails the
+// package, whether or not it went looking. trackBodies localises it to one test
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if opened, closed := bodies.opened.Load(), bodies.closed.Load(); code == 0 && opened != closed {
+		fmt.Fprintf(os.Stderr, "response body leak: %d handed out, %d closed\n", opened, closed)
+		code = 1
+	}
+	os.Exit(code)
+}
+
+// trackBodies fails t if any body handed out during it outlives it.
+func trackBodies(t *testing.T) {
+	t.Helper()
+	opened, closed := bodies.opened.Load(), bodies.closed.Load()
+	t.Cleanup(func() {
+		got, want := bodies.closed.Load()-closed, bodies.opened.Load()-opened
+		if got != want {
+			t.Errorf("%d of %d response bodies closed", got, want)
+		}
+	})
+}
+
 func resp(status int, body string, headers map[string]string) *http.Response {
 	h := http.Header{}
 	for k, v := range headers {
 		h.Set(k, v)
 	}
+	bodies.opened.Add(1)
 	return &http.Response{
 		StatusCode: status,
 		Status:     http.StatusText(status),
-		Body:       io.NopCloser(strings.NewReader(body)),
+		Body:       countingBody{strings.NewReader(body)},
 		Header:     h,
 	}
 }
 
-func codeOf(t *testing.T, err error) string {
+func perrOf(t *testing.T, err error) *protocol.Error {
 	t.Helper()
 	var pe *protocol.Error
 	if !errors.As(err, &pe) {
 		t.Fatalf("want *protocol.Error, got %T: %v", err, err)
 	}
-	return pe.Code
+	return pe
+}
+
+func codeOf(t *testing.T, err error) string {
+	t.Helper()
+	return perrOf(t, err).Code
 }
 
 // ── list_prs ────────────────────────────────────────────────────────────────
@@ -233,6 +277,9 @@ func TestGetPRGraphQLFilesPagination(t *testing.T) {
 
 // ── error mapping ───────────────────────────────────────────────────────────
 
+// the message half matters as much as the code: "403 Forbidden" sends the user
+// looking for a missing scope, where GitHub's own body says which secondary limit
+// they hit or which line of the diff a 422 rejected
 func TestErrorMappingTable(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -240,26 +287,110 @@ func TestErrorMappingTable(t *testing.T) {
 		body    string
 		headers map[string]string
 		want    string
+		wantMsg string
 	}{
-		{"unauthorized", 401, `{"message":"Bad credentials"}`, nil, protocol.CodeAuth},
-		{"forbidden_perms", 403, `{"message":"Forbidden"}`, nil, protocol.CodeAuth},
-		{"forbidden_ratelimit", 403, `{"message":"rate limit"}`, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "9999999999"}, protocol.CodeRateLimited},
-		{"too_many", 429, `{"message":"slow down"}`, map[string]string{"Retry-After": "30"}, protocol.CodeRateLimited},
-		{"not_found", 404, `{"message":"Not Found"}`, nil, protocol.CodeNotFound},
-		{"conflict", 409, `{"message":"conflict"}`, nil, protocol.CodeConflict},
-		{"unprocessable", 422, `{"message":"Validation Failed"}`, nil, protocol.CodeBadRequest},
-		{"server", 500, `{"message":"boom"}`, nil, protocol.CodeInternal},
+		{"unauthorized", 401, `{"message":"Bad credentials"}`, nil, protocol.CodeAuth, "Bad credentials"},
+		{"forbidden_perms", 403, `{"message":"Resource not accessible by integration"}`, nil, protocol.CodeAuth, "Resource not accessible by integration"},
+		{"forbidden_ratelimit", 403, `{"message":"API rate limit exceeded"}`, map[string]string{"X-RateLimit-Remaining": "0", "X-RateLimit-Reset": "9999999999"}, protocol.CodeRateLimited, "API rate limit exceeded"},
+		{"forbidden_secondary", 403, `{"message":"You have exceeded a secondary rate limit"}`, nil, protocol.CodeRateLimited, "You have exceeded a secondary rate limit"},
+		{"forbidden_abuse", 403, `{"message":"You have triggered an abuse detection mechanism"}`, nil, protocol.CodeRateLimited, "You have triggered an abuse detection mechanism"},
+		{"too_many", 429, `{"message":"slow down"}`, map[string]string{"Retry-After": "30"}, protocol.CodeRateLimited, "slow down"},
+		{"not_found", 404, `{"message":"Not Found"}`, nil, protocol.CodeNotFound, "Not Found"},
+		{"conflict", 409, `{"message":"conflict"}`, nil, protocol.CodeConflict, "conflict"},
+		{"unprocessable", 422, `{"message":"Validation Failed: line must be part of the diff"}`, nil, protocol.CodeBadRequest, "Validation Failed: line must be part of the diff"},
+		{"server", 500, `{"message":"boom"}`, nil, protocol.CodeInternal, "boom"},
+		// no envelope to read: the status line is all there is to say
+		{"empty_body", 404, ``, nil, protocol.CodeNotFound, http.StatusText(http.StatusNotFound)},
+		{"non_json_body", 502, `<html>bad gateway</html>`, nil, protocol.CodeInternal, http.StatusText(http.StatusBadGateway)},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			trackBodies(t)
 			c := newClient(func(*http.Request) (*http.Response, error) {
 				return resp(tc.status, tc.body, tc.headers), nil
 			})
-			err := c.getJSON(context.Background(), c.restURL+"/x", nil)
-			if got := codeOf(t, err); got != tc.want {
-				t.Fatalf("status %d → %q, want %q", tc.status, got, tc.want)
+			pe := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
+			if pe.Code != tc.want {
+				t.Fatalf("status %d → %q, want %q", tc.status, pe.Code, tc.want)
+			}
+			if pe.Message != tc.wantMsg {
+				t.Fatalf("status %d message = %q, want %q", tc.status, pe.Message, tc.wantMsg)
 			}
 		})
+	}
+}
+
+// a permissions 403 and a secondary-limit 403 are the same status with the same
+// (absent) headers; only the message tells them apart, so this is the case that
+// dies first if the body ever stops reaching mapHTTP again
+func TestSecondaryRateLimitIsNotAnAuthError(t *testing.T) {
+	c := newClient(func(*http.Request) (*http.Response, error) {
+		return resp(403, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`, nil), nil
+	})
+	err := c.getJSON(context.Background(), c.restURL+"/x", nil)
+	if got := codeOf(t, err); got != protocol.CodeRateLimited {
+		t.Fatalf("secondary rate limit → %q, want rate_limited", got)
+	}
+}
+
+// a mapped status must not skip the body's Close: every path through send has one
+// registered, and each caller below reaches it differently (paged, graphql, the
+// blob path with its own 404 special case)
+func TestErrorPathsCloseTheBody(t *testing.T) {
+	paths := map[string]func(*Client) error{
+		"getJSON": func(c *Client) error {
+			return c.getJSON(context.Background(), c.restURL+"/x", nil)
+		},
+		"getPaged": func(c *Client) error {
+			_, err := getPaged[PRFile](context.Background(), c, c.restURL+"/x")
+			return err
+		},
+		"graphql": func(c *Client) error {
+			return c.graphql(context.Background(), "query{}", nil, nil)
+		},
+		"rawBlob": func(c *Client) error {
+			_, err := c.rawBlob(context.Background(), "o", "r", "a.go", "sha")
+			return err
+		},
+	}
+	for name, call := range paths {
+		t.Run(name, func(t *testing.T) {
+			trackBodies(t)
+			c := newClient(func(*http.Request) (*http.Response, error) {
+				return resp(403, `{"message":"nope"}`, nil), nil
+			})
+			if err := call(c); err == nil {
+				t.Fatal("want an error from a 403")
+			}
+		})
+	}
+}
+
+// the connection is only reusable if the body was drained and closed; a real
+// transport is the only thing that can prove it, so this one skips the fake
+func TestRepeatedFailuresReuseTheConnection(t *testing.T) {
+	var conns atomic.Int64
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"nope"}`))
+	}))
+	srv.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.Start()
+	defer srv.Close()
+
+	c := New(srv.Client(), "test-token", nil)
+	c.restURL = srv.URL
+	for range 10 {
+		if err := c.getJSON(context.Background(), c.restURL+"/x", nil); err == nil {
+			t.Fatal("want an error from a 403")
+		}
+	}
+	if n := conns.Load(); n != 1 {
+		t.Fatalf("10 failing requests opened %d connections, want 1 (bodies unclosed)", n)
 	}
 }
 
@@ -267,9 +398,8 @@ func TestRetryAfterPropagates(t *testing.T) {
 	c := newClient(func(*http.Request) (*http.Response, error) {
 		return resp(429, `{"message":"slow"}`, map[string]string{"Retry-After": "30"}), nil
 	})
-	err := c.getJSON(context.Background(), c.restURL+"/x", nil)
-	var pe *protocol.Error
-	if !errors.As(err, &pe) || pe.RetryAfter != 30 {
+	pe := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
+	if pe.RetryAfter != 30 {
 		t.Fatalf("want retry_after=30, got %+v", pe)
 	}
 }
