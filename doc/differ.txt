@@ -90,10 +90,10 @@ Table of Contents                                   *differ-table-of-contents*
         last_file = "G",
         next_section = "]]",         -- panel: sections (Staged/Unstaged); history: commits
         prev_section = "[[",
-        scroll_down = "f",           -- all three (shadows native f/b; set false to restore)
+        scroll_down = "f",           -- shadows native f/b; set false to restore
         scroll_up = "b",
-        select = { "<CR>", "o" },    -- panel, history
-        help = "g?",                 -- panel, history
+        select = { "<CR>", "o" },    -- diff, pr overview, panel, history
+        help = "g?",                 -- diff, pr overview, panel, history
         toggle_listing = "i",        -- panel: toggle tree / name
         close_node = "c",            -- panel: collapse the dir under the cursor; history: the commit
         close_all = "C",             -- panel/history: collapse every dir / commit
