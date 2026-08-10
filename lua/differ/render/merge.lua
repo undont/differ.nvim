@@ -77,6 +77,20 @@ end
 
 -- build the merge columns. base is shown only under the diff4 layout (it's read
 -- + carried regardless, so the toggle costs nothing); the result column is always last
+-- the input panes are built from raw stage blobs, so on a CRLF repo every line ends `\r`
+-- and renders as a trailing `^M`. strip it for display only, after the regions have been
+-- located: the located spans are line indices and the line count is unchanged, and the
+-- model keeps the raw text its slab matching depends on
+---@param lines string[]
+---@return string[]
+local function strip_cr(lines)
+    local out = {}
+    for i, line in ipairs(lines) do
+        out[i] = (line:gsub("\r$", ""))
+    end
+    return out
+end
+
 ---@param model differ.MergeModel
 ---@param opts { layout?: "default"|"diff4" }|nil
 ---@return differ.merge.RenderResult
@@ -92,7 +106,7 @@ function M.render(model, opts)
     local columns = {
         {
             side = "ours",
-            lines = ours,
+            lines = strip_cr(ours),
             regions = ours_regions,
             folds = fold_ranges(#ours, ours_regions),
         },
@@ -102,7 +116,7 @@ function M.render(model, opts)
         local base_regions = locate_regions(base, model.regions, "base")
         columns[#columns + 1] = {
             side = "base",
-            lines = base,
+            lines = strip_cr(base),
             regions = base_regions,
             folds = fold_ranges(#base, base_regions),
         }
@@ -110,7 +124,7 @@ function M.render(model, opts)
     local theirs_regions = locate_regions(theirs, model.regions, "theirs")
     columns[#columns + 1] = {
         side = "theirs",
-        lines = theirs,
+        lines = strip_cr(theirs),
         regions = theirs_regions,
         folds = fold_ranges(#theirs, theirs_regions),
     }

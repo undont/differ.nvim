@@ -862,3 +862,210 @@ describe(":Differ mergetool diff4 base pane", function()
         assert.is_true(has_marker(s.result_buf)) -- the third conflict is still open
     end)
 end)
+
+-- take-base recovers the ancestor from a slab table keyed by the conflict's *original*
+-- index, so the live->original map has to survive anything that changes the region count.
+-- when it doesn't, take-base splices a different conflict's ancestor into the file, and
+-- :w stages it: wrong bytes in a tracked file with no warning
+describe(":Differ mergetool take-base anchoring", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    -- three conflicts in one file, ancestors base5 / base15 / base25, far enough apart that
+    -- a mis-mapped slab is unmistakable. default conflictStyle: the markers carry no base,
+    -- so take-base goes through the recovered slabs
+    local function three_conflict_repo()
+        local function body(a, b, c)
+            local out = {}
+            for i = 1, 4 do
+                out[#out + 1] = "line" .. i
+            end
+            out[#out + 1] = a
+            for i = 6, 14 do
+                out[#out + 1] = "line" .. i
+            end
+            out[#out + 1] = b
+            for i = 16, 24 do
+                out[#out + 1] = "line" .. i
+            end
+            out[#out + 1] = c
+            out[#out + 1] = "tail"
+            return table.concat(out, "\n") .. "\n"
+        end
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git_ok(root, "init", "-q")
+        write(root .. "/f.txt", body("base5", "base15", "base25"))
+        git_ok(root, "add", "f.txt")
+        git_ok(root, "commit", "-q", "-m", "base")
+        git_ok(root, "checkout", "-q", "-b", "feature")
+        write(root .. "/f.txt", body("THEIRS5", "THEIRS15", "THEIRS25"))
+        git_ok(root, "commit", "-q", "-am", "theirs")
+        git_ok(root, "checkout", "-q", "main")
+        write(root .. "/f.txt", body("OURS5", "OURS15", "OURS25"))
+        git_ok(root, "commit", "-q", "-am", "ours")
+        git(root, "merge", "feature")
+        return root
+    end
+
+    -- the line the cursor must sit on for `region_at` to pick conflict `n` (1-based)
+    local function nth_marker_row(buf, n)
+        local seen = 0
+        for i, l in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+            if l:sub(1, 7) == "<<<<<<<" then
+                seen = seen + 1
+                if seen == n then
+                    return i
+                end
+            end
+        end
+    end
+
+    local function body_of(buf)
+        return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+    end
+
+    -- hand-resolving an *earlier* conflict changes the region count, which is what
+    -- collapses the map; take-base on what is now the first region must still recover
+    -- that region's own ancestor
+    it("recovers the right ancestor after an earlier conflict is hand-resolved", function()
+        local root = three_conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = assert(merge.current())
+
+        -- hand-resolve conflict 1: replace its whole block with OURS5
+        local first = nth_marker_row(s.result_buf, 1)
+        local last = first
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        while lines[last]:sub(1, 7) ~= ">>>>>>>" do
+            last = last + 1
+        end
+        vim.bo[s.result_buf].modifiable = true
+        vim.api.nvim_buf_set_lines(s.result_buf, first - 1, last, false, { "OURS5" })
+
+        vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+
+        local out = body_of(s.result_buf)
+        assert.is_truthy(out:find("base15", 1, true)) -- its own ancestor
+        assert.is_nil(out:find("base5\n", 1, true)) -- not conflict 1's
+
+        -- and through to the index: :w auto-stages once no markers remain, so the wrong
+        -- bytes were committable without another gesture
+        vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
+        fire(s.result_buf, "differ: take ours")
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        local staged = git_ok(root, "show", ":f.txt")
+        assert.is_truthy(staged:find("base15", 1, true))
+        assert.is_nil(staged:find("base5\n", 1, true))
+    end)
+
+    -- no hand-editing at all: two keymap resolves then one undo restores a region, so the
+    -- count no longer matches what the splices left behind
+    it("recovers the right ancestor after a resolve is undone", function()
+        local root = three_conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = assert(merge.current())
+
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
+        fire(s.result_buf, "differ: take ours")
+        -- force a new undo block, the way returning to the keyboard between two real
+        -- keystrokes does; without it both splices coalesce and one undo reverts both
+        vim.api.nvim_buf_call(s.result_buf, function()
+            vim.cmd("let &l:undolevels = &l:undolevels")
+        end)
+        vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
+        fire(s.result_buf, "differ: take ours")
+        vim.cmd("silent undo")
+
+        vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+
+        -- the restored conflict is the middle one, so its ancestor is base15; any other
+        -- conflict's ancestor appearing means the map handed back the wrong slab
+        local out = body_of(s.result_buf)
+        assert.is_truthy(out:find("base15", 1, true))
+        assert.is_nil(out:find("base25", 1, true))
+        assert.is_nil(out:find("base5\n", 1, true))
+    end)
+end)
+
+-- the stages are raw blob bytes, so on a CRLF repo each line ends `\r`. nvim strips that
+-- into fileformat=dos when it loads the worktree file, so a base slab carrying its own CR
+-- makes :w write two — wrong bytes in a tracked file, silently staged
+describe(":Differ mergetool take-base on CRLF", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    local function crlf_conflict_repo()
+        local function body(mid)
+            local out = {}
+            for i = 1, 5 do
+                out[#out + 1] = "line" .. i
+            end
+            out[#out + 1] = mid
+            out[#out + 1] = "line7"
+            return table.concat(out, "\r\n") .. "\r\n"
+        end
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git_ok(root, "init", "-q")
+        write(root .. "/f.txt", body("base6"))
+        git_ok(root, "add", "f.txt")
+        git_ok(root, "commit", "-q", "-m", "base")
+        git_ok(root, "checkout", "-q", "-b", "feature")
+        write(root .. "/f.txt", body("THEIRS6"))
+        git_ok(root, "commit", "-q", "-am", "theirs")
+        git_ok(root, "checkout", "-q", "main")
+        write(root .. "/f.txt", body("OURS6"))
+        git_ok(root, "commit", "-q", "-am", "ours")
+        git(root, "merge", "feature")
+        return root
+    end
+
+    local function bytes_of(path)
+        local fd = assert(io.open(path, "rb"))
+        local data = fd:read("*a")
+        fd:close()
+        return data
+    end
+
+    it("writes one CR per line, not two", function()
+        local root = crlf_conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = assert(merge.current())
+        assert.are.equal("dos", vim.bo[s.result_buf].fileformat)
+
+        assert.is_true(fire(s.result_buf, "differ: take base"))
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+
+        local data = bytes_of(root .. "/f.txt")
+        assert.is_nil(data:find("\r\r", 1, true)) -- the doubled CR
+        assert.is_truthy(data:find("base6\r\n", 1, true)) -- the ancestor, cleanly terminated
+    end)
+
+    it("renders the input panes without a trailing ^M", function()
+        local root = crlf_conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        local s = assert(merge.current())
+        for _, inp in ipairs(s.inputs) do
+            local buf = vim.api.nvim_win_get_buf(inp.win)
+            for _, line in ipairs(vim.api.nvim_buf_get_lines(buf, 0, -1, false)) do
+                assert.is_nil(line:find("\r", 1, true), inp.side .. " pane carries a CR")
+            end
+        end
+    end)
+end)
