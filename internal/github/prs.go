@@ -64,7 +64,7 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (*PR
 	viewed := map[string]string{}
 	var meta prDetailGQL
 	cursor := ""
-	for {
+	for n := 0; n < gqlMaxPages; n++ {
 		var page prDetailGQL
 		vars := map[string]any{"owner": owner, "repo": repo, "number": number}
 		if cursor != "" {
@@ -80,10 +80,11 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (*PR
 		for _, n := range files.Nodes {
 			viewed[n.Path] = n.ViewerViewedState
 		}
-		if !files.PageInfo.HasNextPage {
+		next, more := nextCursor(cursor, files.PageInfo)
+		if !more {
 			break
 		}
-		cursor = files.PageInfo.EndCursor
+		cursor = next
 	}
 
 	rawURL := c.restURL + "/repos/" + owner + "/" + repo + "/pulls/" + strconv.Itoa(number) + "/files?per_page=100"
