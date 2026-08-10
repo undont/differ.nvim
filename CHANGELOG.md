@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Outdated review threads stacked on line 1 and read as `path:0`; they now sit where they were written, marked outdated
 - Thread, file and timeline pagination could loop until the token hit a rate limit; a sidecar request that never answers now fails after a minute
 - Closing a diff with `:q` skipped teardown, leaking a buffer, its parsed diff and an autocmd each time
+- `:Differ pr review resume` failed: the query behind it asked GitHub for a field that doesn't exist on a review comment, so it failed with an internal error, and opening a PR didn't adopt an existing draft either
 
 ## [0.1.25] — 2026-08-10
 

@@ -93,11 +93,10 @@ type threadsGQL struct {
 					StartLine  *int   `json:"startLine"`
 					// where the thread anchored in the diff it was written against.
 					// still present when line/startLine have gone null
-					OriginalLine      *int   `json:"originalLine"`
-					OriginalStartLine *int   `json:"originalStartLine"`
-					DiffSide          string `json:"diffSide"`
-					StartSide         string `json:"startDiffSide"`
-					Comments          struct {
+					OriginalLine *int   `json:"originalLine"`
+					DiffSide     string `json:"diffSide"`
+					StartSide    string `json:"startDiffSide"`
+					Comments     struct {
 						Nodes []commentGQL `json:"nodes"`
 					} `json:"comments"`
 				} `json:"nodes"`
@@ -132,10 +131,8 @@ type pendingReviewGQL struct {
 						Nodes []struct {
 							FullDatabaseID string `json:"fullDatabaseId"`
 							Path           string `json:"path"`
-							DiffSide       string `json:"diffSide"`
 							Line           *int   `json:"line"`
 							StartLine      *int   `json:"startLine"`
-							StartSide      string `json:"startDiffSide"`
 							Body           string `json:"body"`
 						} `json:"nodes"`
 					} `json:"comments"`

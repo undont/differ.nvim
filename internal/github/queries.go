@@ -49,7 +49,6 @@ query GetThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String
           line
           startLine
           originalLine
-          originalStartLine
           diffSide
           startDiffSide
           comments(first: 100) {
@@ -87,10 +86,8 @@ query GetPendingReview($owner: String!, $repo: String!, $number: Int!) {
             nodes {
               fullDatabaseId
               path
-              diffSide
               line
               startLine
-              startDiffSide
               body
             }
           }

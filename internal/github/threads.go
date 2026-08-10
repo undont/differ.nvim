@@ -87,12 +87,12 @@ func (c *Client) GetPendingReview(ctx context.Context, owner, repo string, numbe
 	id := r.ID
 	out := &PendingReview{ReviewID: &id}
 	for _, cm := range r.Comments.Nodes {
+		// PullRequestReviewComment carries no diff side, so Side/StartSide stay empty
+		// here; a draft's side is only available through the thread it belongs to
 		out.Comments = append(out.Comments, PendingComment{
 			ID:        parseID(cm.FullDatabaseID),
 			Path:      cm.Path,
-			Side:      cm.DiffSide,
 			Line:      deref(cm.Line),
-			StartSide: cm.StartSide,
 			StartLine: deref(cm.StartLine),
 			Body:      cm.Body,
 		})
