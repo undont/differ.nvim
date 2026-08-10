@@ -312,38 +312,66 @@ function M.apply_box(session, view, g, reltime)
     })
 end
 
--- ensure the PR's threads are fetched (once, PR-wide), then run cb(err). callers
--- while a fetch is in flight queue behind it; a fetch error notifies once and runs
--- the queue with the error (threads stay nil, so the additive surfaces degrade and a
--- later ensure retries). the overview and the diff overlay share this, so landing on
--- either warms the other
+-- drop the fetched thread list so the next ensure refetches. the generation bump is
+-- what stops a fetch already in flight from being joined, or from landing its
+-- pre-mutation list on top of the change that invalidated it
+---@param session table
+function M.invalidate(session)
+    session.threads = nil
+    session.threads_gen = (session.threads_gen or 0) + 1
+end
+
+-- settle the fetch that started at `gen`: store its list, then run everyone queued
+-- behind it. an error notifies once and leaves threads nil, so the additive surfaces
+-- degrade and a later ensure retries
+---@param session table
+---@param gen integer
+---@param err table|nil
+---@param list any
+local function deliver(session, gen, err, list)
+    if require("differ.pr").current_session() ~= session then
+        return -- session torn down (or replaced) while the fetch was in flight
+    end
+    if session.threads_fetch_gen ~= gen then
+        return -- invalidated meanwhile; the fresh fetch owns the waiters now
+    end
+    local waiters = session.threads_waiters or {}
+    session.threads_waiters = nil
+    if err then
+        require("differ.pr").notify_err(err)
+    else
+        -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on
+        -- type rather than `list or {}`
+        session.threads = type(list) == "table" and list or {}
+    end
+    for _, fn in ipairs(waiters) do
+        fn(err)
+    end
+end
+
+-- ensure the PR's threads are fetched (once, PR-wide), then run cb(err). callers while
+-- a fetch is in flight queue behind it. the overview and the diff overlay share this,
+-- so landing on either warms the other
 ---@param session table
 ---@param cb fun(err: table|nil)
 function M.ensure(session, cb)
     if session.threads then
         return cb(nil)
     end
-    if session.threads_waiters then
+    local gen = session.threads_gen or 0
+    -- only a fetch started under the current generation may be shared; one issued before
+    -- an invalidation is carrying a pre-mutation list, so joining it would miss the change
+    if session.threads_waiters and session.threads_fetch_gen == gen then
         table.insert(session.threads_waiters, cb)
         return
     end
-    session.threads_waiters = { cb }
+    -- a superseded fetch's waiters still want an answer, so they roll onto this one
+    local queued = session.threads_waiters or {}
+    queued[#queued + 1] = cb
+    session.threads_waiters = queued
+    session.threads_fetch_gen = gen
     client.get_threads(session.pr, function(err, list)
-        if require("differ.pr").current_session() ~= session then
-            return -- session torn down (or replaced) while the fetch was in flight
-        end
-        local waiters = session.threads_waiters or {}
-        session.threads_waiters = nil
-        if err then
-            require("differ.pr").notify_err(err)
-        else
-            -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on
-            -- type rather than `list or {}`
-            session.threads = type(list) == "table" and list or {}
-        end
-        for _, fn in ipairs(waiters) do
-            fn(err)
-        end
+        deliver(session, gen, err, list)
     end)
 end
 

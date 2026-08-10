@@ -15,6 +15,9 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 	if t, ok := c.cache.thread(key); ok {
 		return t, nil
 	}
+	// captured before the walk: an invalidation landing mid-pagination must win over the
+	// snapshot this walk is assembling
+	gen := c.cache.threadGeneration()
 	out := []Thread{} // non-nil so an empty PR marshals to [] (null would decode to vim.NIL)
 	cursor := ""
 	for n := 0; n < gqlMaxPages; n++ {
@@ -61,7 +64,7 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 		}
 		cursor = next
 	}
-	c.cache.putThreads(key, out)
+	c.cache.putThreads(key, out, gen)
 	return out, nil
 }
 

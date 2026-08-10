@@ -28,13 +28,14 @@ describe("pr.threads.ensure (in-flight coalescing)", function()
         local real_cs = pr.current_session
         local real_get = client.get_threads
         local real_notify = pr.notify_err
-        local sent, notified, captured = 0, 0, nil
+        local sent, notified = 0, 0
+        local captured = {} -- every get_threads cb, in issue order
         pr.current_session = function()
             return session
         end
         client.get_threads = function(_pr, cb)
             sent = sent + 1
-            captured = cb
+            captured[#captured + 1] = cb
         end
         pr.notify_err = function()
             notified = notified + 1
@@ -51,8 +52,10 @@ describe("pr.threads.ensure (in-flight coalescing)", function()
             notified = function()
                 return notified
             end,
-            fire = function(err, list)
-                captured(err, list)
+            -- fire the nth fetch's callback (default the first), so a test can land an
+            -- older fetch after a newer one
+            fire = function(err, list, nth)
+                captured[nth or 1](err, list)
             end,
         }
     end
@@ -80,6 +83,41 @@ describe("pr.threads.ensure (in-flight coalescing)", function()
         assert.are.equal(1, h.sent()) -- still one request total
         assert.are.equal(1, #session.threads) -- the list is stored on the session
         assert.is_nil(session.threads_waiters) -- the queue is drained
+    end)
+
+    -- posting a comment while the first fetch is still running: the mutation invalidates,
+    -- and the refresh behind it must not join a fetch that predates the comment
+    it("refuses to piggyback a fetch issued before an invalidation", function()
+        local session = { pr = PR, threads = nil }
+        local h = harness(session)
+
+        local before, after = 0, 0
+        threads.ensure(session, function()
+            before = before + 1
+        end)
+        assert.are.equal(1, h.sent())
+
+        threads.invalidate(session) -- a comment posted mid-fetch
+        threads.ensure(session, function()
+            after = after + 1
+        end)
+        assert.are.equal(2, h.sent()) -- a fresh fetch, not a queue-up
+
+        -- the stale fetch lands first, carrying the pre-comment list
+        h.fire(nil, { { thread_id = "old", path = "a.txt", line = 2, comments = {} } }, 1)
+        assert.is_nil(session.threads) -- its snapshot is dropped, not stored
+        assert.are.equal(0, before)
+        assert.are.equal(0, after)
+
+        h.fire(nil, {
+            { thread_id = "old", path = "a.txt", line = 2, comments = {} },
+            { thread_id = "new", path = "a.txt", line = 4, comments = {} },
+        }, 2)
+        assert.are.equal(2, #session.threads) -- the post-comment list wins
+        assert.are.equal("new", session.threads[2].thread_id)
+        assert.are.equal(1, before) -- the superseded fetch's waiter is still answered
+        assert.are.equal(1, after)
+        assert.is_nil(session.threads_waiters)
     end)
 
     it("on error notifies once but still runs both queued callbacks with the err", function()

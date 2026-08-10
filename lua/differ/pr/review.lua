@@ -19,7 +19,7 @@ end
 -- sidecar invalidates its thread cache on each mutation)
 ---@param session table
 local function repaint_threads(session)
-    session.threads = nil
+    require("differ.pr.threads").invalidate(session)
     require("differ.pr.threads").refresh(session)
 end
 

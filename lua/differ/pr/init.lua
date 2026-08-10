@@ -443,7 +443,7 @@ function M.handle_conflict(on_ready)
         s.pr_meta.head_sha = detail.head_sha
         s.pr_meta.head_ref = detail.head_ref
         s.versions = {} -- the blob memo was pinned to the old shas
-        s.threads = nil -- re-fetch threads against the fresh head
+        require("differ.pr.threads").invalidate(s) -- refetch against the fresh head
         -- the memo drop above is the reconciliation; re-sourcing is a ui touch, so it
         -- waits on a visible sidebar and a hidden one just refetches on re-entry
         local cur = s.panel:is_open() and s.panel:current_entry()

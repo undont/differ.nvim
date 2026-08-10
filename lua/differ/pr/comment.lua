@@ -192,8 +192,9 @@ function M.delete(session)
         if err then
             return require("differ.pr").notify_err(err)
         end
-        session.threads = nil
-        require("differ.pr.threads").refresh(session)
+        local threads = require("differ.pr.threads")
+        threads.invalidate(session)
+        threads.refresh(session)
         notify(root and "thread deleted" or "comment deleted")
     end)
 end
@@ -278,8 +279,9 @@ function M.post(session, opts, body)
         end
         -- the sidecar invalidated its thread cache on the post, so a fresh fetch carries
         -- the new comment (right author/draft state, correct thread grouping)
-        session.threads = nil
-        require("differ.pr.threads").refresh(session)
+        local threads = require("differ.pr.threads")
+        threads.invalidate(session)
+        threads.refresh(session)
         notify(session.review_id and "comment added to your review draft" or "comment posted")
     end)
 end

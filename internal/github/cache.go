@@ -14,6 +14,10 @@ type cache struct {
 	mu      sync.Mutex
 	blobs   map[string]FileBlob
 	threads map[string][]Thread
+	// bumped on every thread invalidation. a paginating walk captures it up front and
+	// hands it back, so a snapshot assembled before a mutation can't re-seed the cache
+	// after it.
+	threadGen uint64
 }
 
 func newCache() *cache {
@@ -48,9 +52,21 @@ func (c *cache) thread(key string) ([]Thread, bool) {
 	return t, ok
 }
 
-func (c *cache) putThreads(key string, t []Thread) {
+// threadGeneration is captured before a thread walk starts and passed to putThreads.
+func (c *cache) threadGeneration() uint64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.threadGen
+}
+
+// putThreads stores a walk's result unless the cache was invalidated while it ran, in
+// which case the snapshot predates the mutation and is dropped rather than cached.
+func (c *cache) putThreads(key string, t []Thread, gen uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if gen != c.threadGen {
+		return
+	}
 	c.threads[key] = t
 }
 
@@ -61,6 +77,7 @@ func (c *cache) invalidateThreads() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	clear(c.threads)
+	c.threadGen++
 }
 
 func (c *cache) clearAll() {
@@ -68,4 +85,5 @@ func (c *cache) clearAll() {
 	defer c.mu.Unlock()
 	clear(c.blobs)
 	clear(c.threads)
+	c.threadGen++
 }
