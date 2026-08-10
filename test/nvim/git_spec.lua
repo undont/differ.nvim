@@ -3239,3 +3239,61 @@ describe(":Differ session supersession (cross-kind)", function()
         assert.is_nil(History.current())
     end)
 end)
+
+-- :q on the diff window is the most natural way to leave a session, and it means the
+-- window is already gone when the panel's on_close runs. the teardown has to happen
+-- anyway, or every cycle strands a buffer holding a whole DiffModel, the armed
+-- WinClosed autocmd, and the canonical differ:// name the next session wants
+describe("git session teardown after :q on the diff", function()
+    local function differ_bufs()
+        local n = 0
+        for _, b in ipairs(vim.api.nvim_list_bufs()) do
+            if
+                vim.api.nvim_buf_is_valid(b)
+                and vim.api.nvim_buf_get_name(b):find("differ://", 1, true)
+            then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    local function viewclose_autocmds()
+        local n = 0
+        for _, a in ipairs(vim.api.nvim_get_autocmds({ event = "WinClosed" })) do
+            if
+                type(a.group_name) == "string" and a.group_name:find("differ.viewclose", 1, true)
+            then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    it("leaks no buffers or autocmds across repeated open/:q cycles", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n")
+        git(root, "add", "a.lua")
+        git(root, "commit", "-q", "-am", "seed")
+        write(root .. "/a.lua", "1x\n2\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        local bufs_before, aus_before = differ_bufs(), viewclose_autocmds()
+
+        for _ = 1, 3 do
+            git_src.panel({ rev = {}, open_first = true })
+            local v = require("differ.view").current()
+            assert.is_not_nil(v)
+            local win = v.columns[1].winid
+            assert.is_true(vim.api.nvim_win_is_valid(win))
+
+            -- the gesture: the window is gone before on_close runs. nvim_win_close
+            -- rather than :quit, which would take headless nvim down with it
+            vim.api.nvim_win_close(win, false)
+            require("differ.git").close()
+        end
+
+        assert.are.equal(bufs_before, differ_bufs())
+        assert.are.equal(aus_before, viewclose_autocmds())
+    end)
+end)
