@@ -87,12 +87,17 @@ type threadsGQL struct {
 				Nodes []struct {
 					ID         string `json:"id"`
 					IsResolved bool   `json:"isResolved"`
+					IsOutdated bool   `json:"isOutdated"`
 					Path       string `json:"path"`
 					Line       *int   `json:"line"`
 					StartLine  *int   `json:"startLine"`
-					DiffSide   string `json:"diffSide"`
-					StartSide  string `json:"startDiffSide"`
-					Comments   struct {
+					// where the thread anchored in the diff it was written against.
+					// still present when line/startLine have gone null
+					OriginalLine      *int   `json:"originalLine"`
+					OriginalStartLine *int   `json:"originalStartLine"`
+					DiffSide          string `json:"diffSide"`
+					StartSide         string `json:"startDiffSide"`
+					Comments          struct {
 						Nodes []commentGQL `json:"nodes"`
 					} `json:"comments"`
 				} `json:"nodes"`

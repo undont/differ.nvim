@@ -31,6 +31,30 @@ describe("pr.threads.anchor_row", function()
     it("returns nil when nothing is rendered on that side", function()
         assert.is_nil(threads.anchor_row({}, 5))
     end)
+
+    -- github nulls the line once a thread's anchor leaves the diff and the wire carries
+    -- 0. degrading is for a near miss, so a non-line must not be dragged to the lowest
+    -- rendered row, which would stack every outdated thread on the top of the file
+    it("refuses a line that isn't a real line rather than degrading it", function()
+        assert.is_nil(threads.anchor_row(index, 0))
+        assert.is_nil(threads.anchor_row(index, nil))
+        assert.is_nil(threads.anchor_row(index, -3))
+    end)
+end)
+
+describe("pr.threads.anchor_line", function()
+    it("uses the current line when the thread still anchors in the diff", function()
+        assert.are.equal(12, threads.anchor_line({ line = 12, original_line = 4 }))
+    end)
+
+    it("falls back to where an outdated thread was written", function()
+        assert.are.equal(4, threads.anchor_line({ line = 0, original_line = 4, outdated = true }))
+    end)
+
+    it("is nil when neither line survives", function()
+        assert.is_nil(threads.anchor_line({ line = 0, original_line = 0 }))
+        assert.is_nil(threads.anchor_line({}))
+    end)
 end)
 
 describe("pr.threads.stack_sort", function()

@@ -98,6 +98,52 @@ describe("ui.overview.timeline (merge + sort)", function()
         assert.are.equal(1, items[1].replies)
     end)
 
+    -- an outdated thread carries line 0 from the wire; the row has to say where it was
+    -- written and that it's outdated, never "line 0"
+    it("anchors an outdated thread to where it was written", function()
+        local items = overview.timeline({
+            comments = {},
+            reviews = {},
+            threads = {
+                {
+                    path = "a.txt",
+                    side = "RIGHT",
+                    line = 0,
+                    original_line = 42,
+                    outdated = true,
+                    resolved = false,
+                    comments = {
+                        { author = "t", body = "stale", created_at = "2026-01-01T00:00:00Z" },
+                    },
+                },
+            },
+        })
+        assert.are.equal(42, items[1].line)
+        assert.is_true(items[1].outdated)
+    end)
+
+    it("leaves an unanchorable thread with no line at all", function()
+        local items = overview.timeline({
+            comments = {},
+            reviews = {},
+            threads = {
+                {
+                    path = "a.txt",
+                    side = "RIGHT",
+                    line = 0,
+                    original_line = 0,
+                    outdated = true,
+                    resolved = false,
+                    comments = {
+                        { author = "t", body = "gone", created_at = "2026-01-01T00:00:00Z" },
+                    },
+                },
+            },
+        })
+        assert.is_nil(items[1].line) -- never 0, which would read as line 0
+        assert.is_true(items[1].outdated)
+    end)
+
     it("drops a pending draft thread", function()
         local items = overview.timeline({
             comments = {},

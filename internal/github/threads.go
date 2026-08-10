@@ -32,14 +32,16 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 		threads := page.Repository.PullRequest.ReviewThreads
 		for _, n := range threads.Nodes {
 			t := Thread{
-				ThreadID:  n.ID,
-				Path:      n.Path,
-				Side:      n.DiffSide,
-				Line:      deref(n.Line),
-				StartSide: n.StartSide,
-				StartLine: deref(n.StartLine),
-				Resolved:  n.IsResolved,
-				Comments:  make([]ThreadComment, 0, len(n.Comments.Nodes)),
+				ThreadID:     n.ID,
+				Path:         n.Path,
+				Side:         n.DiffSide,
+				Line:         deref(n.Line),
+				StartSide:    n.StartSide,
+				StartLine:    deref(n.StartLine),
+				Outdated:     n.IsOutdated,
+				OriginalLine: deref(n.OriginalLine),
+				Resolved:     n.IsResolved,
+				Comments:     make([]ThreadComment, 0, len(n.Comments.Nodes)),
 			}
 			for _, cm := range n.Comments.Nodes {
 				t.Comments = append(t.Comments, ThreadComment{

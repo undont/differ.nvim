@@ -31,11 +31,17 @@ end
 
 -- the derived buffer row for source line `line` in `index` (a from_old/from_new map).
 -- an out-of-context anchor (no exact key) degrades to the nearest rendered line rather
--- than being dropped; nil only when nothing is rendered on that side
+-- than being dropped; nil only when nothing is rendered on that side, or when `line` is
+-- not a real line number. degrading is for a near miss, so a thread with no anchor at
+-- all (github nulls the line once it leaves the diff, and the wire carries 0) is
+-- refused rather than dragged to whichever row happens to be lowest
 ---@param index table<integer, integer>
----@param line integer
+---@param line integer|nil
 ---@return integer|nil
 function M.anchor_row(index, line)
+    if type(line) ~= "number" or line < 1 then
+        return nil
+    end
     if index[line] then
         return index[line]
     end
@@ -47,6 +53,18 @@ function M.anchor_row(index, line)
         end
     end
     return best_row
+end
+
+-- the source line a thread anchors by. github nulls `line` once the anchor leaves the
+-- diff (the wire carries 0), and original_line is then the only record of where it sat,
+-- so an outdated thread falls back to that: near where it was written, or nowhere
+---@param t table
+---@return integer|nil
+function M.anchor_line(t)
+    local function real(n)
+        return type(n) == "number" and n >= 1 and n or nil
+    end
+    return real(t.line) or real(t.original_line)
 end
 
 -- a thread's ordering key: its first comment's creation time. ISO-8601/RFC3339 UTC
@@ -172,7 +190,7 @@ function M.apply(session)
             local side = M.side_of(t)
             local col = view:column_for(side)
             local index = col and (side == "old" and col.map.from_old or col.map.from_new)
-            local row = index and M.anchor_row(index, t.line)
+            local row = index and M.anchor_row(index, M.anchor_line(t))
             if col and row then
                 local key = col.bufnr .. ":" .. row
                 groups[key] = groups[key]

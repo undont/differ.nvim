@@ -44,9 +44,12 @@ query GetThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String
         nodes {
           id
           isResolved
+          isOutdated
           path
           line
           startLine
+          originalLine
+          originalStartLine
           diffSide
           startDiffSide
           comments(first: 100) {
