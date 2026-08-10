@@ -1,6 +1,7 @@
 -- runs under headless nvim: the pending-review draft lifecycle. stubs pr.client (the
 -- one seam review.lua reaches the sidecar through), so a fake session with a fake panel
 -- is enough to drive start / reattach without a real PR session
+---@diagnostic disable: duplicate-set-field  -- the stubs reassign module fields by design
 local client = require("differ.pr.client")
 local review = require("differ.pr.review")
 
@@ -17,10 +18,14 @@ local function stub(pending, live)
         get_pending_review = client.get_pending_review,
         current_session = pr.current_session,
     }
+    -- TODO: type busted properly (and remove those disables)
+
+    ---@diagnostic disable-next-line: unused-local
     client.start_review = function(_pr, cb)
         calls[#calls + 1] = "start_review"
         cb(nil, { review_id = "fresh" })
     end
+    ---@diagnostic disable-next-line: unused-local
     client.get_pending_review = function(_pr, cb)
         calls[#calls + 1] = "get_pending_review"
         cb(nil, pending)

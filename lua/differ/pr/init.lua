@@ -127,28 +127,29 @@ end
 local LOOKAHEAD = 1
 ---@param entry differ.FileEntry
 local function prefetch_around(entry)
-    if not session then
+    local s = session
+    if not s then
         return
     end
-    local idx = viewed.index_of(session.entries, entry)
+    local idx = viewed.index_of(s.entries, entry)
     if not idx then
         return
     end
-    session.prefetching = session.prefetching or {}
+    s.prefetching = s.prefetching or {}
     for _, dir in ipairs({ -1, 1 }) do
         for step = 1, LOOKAHEAD do
-            local nb = session.entries[idx + dir * step]
-            if nb and not session.versions[nb.path] and not session.prefetching[nb.path] then
+            local nb = s.entries[idx + dir * step]
+            if nb and not s.versions[nb.path] and not s.prefetching[nb.path] then
                 local path = nb.path
-                session.prefetching[path] = true
-                local refs = { base = session.pr_meta.base_sha, head = session.pr_meta.head_sha }
-                client.get_file_versions(session.pr, path, refs, function(err, vers)
-                    if not session then
-                        return -- session torn down while the prefetch was in flight
+                s.prefetching[path] = true
+                local refs = { base = s.pr_meta.base_sha, head = s.pr_meta.head_sha }
+                client.get_file_versions(s.pr, path, refs, function(err, vers)
+                    if not guard.owns(s) then
+                        return -- session torn down (or replaced) while it was in flight
                     end
-                    session.prefetching[path] = nil
+                    s.prefetching[path] = nil
                     if not err and vers then
-                        session.versions[path] = vers
+                        s.versions[path] = vers
                     end
                 end)
             end
@@ -612,13 +613,14 @@ end
 -- guard on the string type
 ---@param pr { owner: string, repo: string, number: integer }
 local function adopt_pending_review(pr)
+    local s = session
     client.get_pending_review(pr, function(err, res)
-        if err or not (session and session.pr == pr) then
+        if err or not guard.owns(s) then
             return -- fetch failed, or the session was replaced/closed meanwhile
         end
         local review_id = res and res.review_id
         if type(review_id) == "string" and review_id ~= "" then
-            session.review_id = review_id
+            s.review_id = review_id
             notify(
                 "you have a pending review here - comments are drafts (:Differ pr review resume to manage)"
             )
@@ -1145,16 +1147,17 @@ function M.set_state(verb)
         return notify("unknown lifecycle verb: " .. tostring(verb), vim.log.levels.WARN)
     end
     local function run()
-        client.set_pr_state(session.pr, state, function(err, res)
-            if not session then
-                return -- session torn down while the mutation was in flight
+        local s = session
+        client.set_pr_state(s.pr, state, function(err, res)
+            if not guard.owns(s) then
+                return -- session torn down (or replaced) while the mutation was in flight
             end
             if err then
                 return notify_err(err)
             end
             local new_state = (res and res.state) or state
-            session.pr_meta.state = new_state
-            session.pr_meta.draft = new_state == "draft"
+            s.pr_meta.state = new_state
+            s.pr_meta.draft = new_state == "draft"
             notify("pull request " .. new_state)
         end)
     end
