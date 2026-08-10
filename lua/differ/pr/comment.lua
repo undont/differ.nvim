@@ -6,6 +6,7 @@
 -- without nvim; compose/post own the vim + IPC surface
 
 local client = require("differ.pr.client")
+local guard = require("differ.pr.guard")
 
 local M = {}
 
@@ -175,8 +176,8 @@ function M.delete(session)
         return
     end
     client.delete_comment(session.pr, target.node_id, function(err, _)
-        if not (session and session.view and session.view:is_open()) then
-            return -- session torn down while the delete was in flight
+        if not guard.owns(session) then
+            return -- session torn down (or replaced) while the delete was in flight
         end
         if err then
             return require("differ.pr").notify_err(err)
@@ -233,8 +234,8 @@ function M.post(session, opts, body)
         args.review_id = session.review_id
     end
     client.post_comment(session.pr, args, function(err, res)
-        if not (session and session.view and session.view:is_open()) then
-            return -- session torn down while the post was in flight
+        if not guard.owns(session) then
+            return -- session torn down (or replaced) while the post was in flight
         end
         if err then
             if err.code == "conflict" then

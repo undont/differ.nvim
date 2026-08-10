@@ -248,6 +248,37 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    -- a mutation submitted from the overview can conflict, and its refetch lands with
+    -- the view nil'd and the sidebar hidden: state has to reconcile, but re-sourcing the
+    -- diff there would build a fresh view over the page the user is reading
+    it("a conflict refetch on the overview reconciles state without rebuilding the diff", function()
+        local responses = default_responses()
+        local restore = open_overview(responses)
+        enter_at_thread()
+
+        local s = pr.current_session()
+        local diff_buf = s.view:column_for("new").bufnr
+        local before = overview_tick()
+        assert.is_true(fire(diff_buf, "PR overview")) -- go-hop
+        wait_overview(before)
+        assert.is_nil(s.view)
+        assert.is_false(s.panel:is_open())
+
+        s.versions["a.txt"] = { base = {}, head = {} } -- a memo pinned to the old head
+        responses.get_pr = { result = get_pr_result({ head_sha = "ccc3333" }) }
+        pr.handle_conflict()
+
+        assert.is_true(vim.wait(1000, function()
+            return s.pr_meta.head_sha == "ccc3333"
+        end))
+        assert.are.same({}, s.versions) -- the stale memo dropped
+        assert.is_nil(s.threads)
+        assert.is_nil(s.view) -- and nothing drawn over the page
+        assert.are.equal(overview_buf(), vim.api.nvim_win_get_buf(s.overview_win))
+
+        restore()
+    end)
+
     it("re-entering via e restores the stashed diff position", function()
         local restore = open_overview(default_responses())
 

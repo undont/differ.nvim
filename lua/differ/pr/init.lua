@@ -7,6 +7,7 @@
 
 local repo = require("differ.pr.repo")
 local client = require("differ.pr.client")
+local guard = require("differ.pr.guard")
 local viewed = require("differ.pr.viewed")
 
 local M = {}
@@ -231,14 +232,18 @@ local function show_file(entry, focus_line)
     -- the pinned shas skip the sidecar's prRefs round-trip (latency discipline)
     local refs = { base = session.pr_meta.base_sha, head = session.pr_meta.head_sha }
     client.get_file_versions(session.pr, entry.path, refs, function(err, vers)
+        if not guard.owns(s) then
+            return -- session torn down (or replaced) while the blob was in flight
+        end
         if err then
             return notify_err(err)
         end
-        if session ~= s or not (s.panel and s.panel:is_open()) then
-            return -- session torn down (or replaced) while the blob was in flight
-        end
+        -- the memo is keyed on pinned shas, so it stands whether or not the panel is
+        -- showing; only the render waits on a visible sidebar (the overview hop hides it)
         s.versions[entry.path] = vers
-        render(vers)
+        if s.panel and s.panel:is_open() then
+            render(vers)
+        end
     end)
 end
 
@@ -251,23 +256,24 @@ local function mark_viewed(entry, target)
     if not (session and session.panel) or entry.viewed == target then
         return
     end
+    local s = session
     local prev = entry.viewed
     entry.viewed = target
-    session.panel:repaint()
-    client.set_file_viewed(session.pr, entry.path, target, function(err, res)
-        if not (session and session.panel and session.panel:is_open()) then
-            return -- session torn down while the mutation was in flight
+    s.panel:repaint()
+    client.set_file_viewed(s.pr, entry.path, target, function(err, res)
+        if not guard.owns(s) then
+            return -- session torn down (or replaced) while the mutation was in flight
         end
         if err then
             entry.viewed = prev
-            session.panel:repaint()
+            s.panel:repaint()
             return notify_err(err)
         end
         -- reconcile: DISMISSED counts as viewed, like map_files
         local server = res and (res.viewed_state == "VIEWED" or res.viewed_state == "DISMISSED")
         if server ~= nil and server ~= entry.viewed then
             entry.viewed = server
-            session.panel:repaint()
+            s.panel:repaint()
         end
     end)
 end
@@ -395,17 +401,17 @@ function M.resolve()
     target.resolved = new_state
     threads.apply(s)
     client.resolve_thread(s.pr, target.thread_id, new_state, function(err, res)
-        if not (session and session.view and session.view:is_open()) then
-            return -- session torn down while the mutation was in flight
+        if not guard.owns(s) then
+            return -- session torn down (or replaced) while the mutation was in flight
         end
         if err then
             target.resolved = not new_state
-            threads.apply(session)
+            threads.apply(s)
             return notify_err(err)
         end
         if res and res.resolved ~= nil and res.resolved ~= target.resolved then
             target.resolved = res.resolved
-            threads.apply(session)
+            threads.apply(s)
         end
     end)
 end
@@ -419,19 +425,22 @@ function M.handle_conflict(on_ready)
     if not (session and session.panel) then
         return
     end
-    client.get_pr(session.pr, function(err, detail)
-        if not (session and session.panel and session.panel:is_open()) then
-            return
+    local s = session
+    client.get_pr(s.pr, function(err, detail)
+        if not guard.owns(s) then
+            return -- session torn down (or replaced) while the refetch was in flight
         end
         if err then
             return notify_err(err)
         end
-        session.pr_meta.base_sha = detail.base_sha
-        session.pr_meta.head_sha = detail.head_sha
-        session.pr_meta.head_ref = detail.head_ref
-        session.versions = {} -- the blob memo was pinned to the old shas
-        session.threads = nil -- re-fetch threads against the fresh head
-        local cur = session.panel:current_entry()
+        s.pr_meta.base_sha = detail.base_sha
+        s.pr_meta.head_sha = detail.head_sha
+        s.pr_meta.head_ref = detail.head_ref
+        s.versions = {} -- the blob memo was pinned to the old shas
+        s.threads = nil -- re-fetch threads against the fresh head
+        -- the memo drop above is the reconciliation; re-sourcing is a ui touch, so it
+        -- waits on a visible sidebar and a hidden one just refetches on re-entry
+        local cur = s.panel:is_open() and s.panel:current_entry()
         if cur then
             show_file(cur) -- re-source the diff + overlay at the new head
         end
@@ -1099,9 +1108,10 @@ function M.merge(method_arg)
         if not session then
             return
         end
-        client.merge_pr(session.pr, { method = method }, function(err, res)
-            if not session then
-                return -- session torn down while the merge was in flight
+        local s = session
+        client.merge_pr(s.pr, { method = method }, function(err, res)
+            if not guard.owns(s) then
+                return -- session torn down (or replaced) while the merge was in flight
             end
             if err then
                 if err.code == "conflict" then
@@ -1114,9 +1124,9 @@ function M.merge(method_arg)
             end
             local sha = res and res.sha
             notify(("merged" .. (sha and (" (" .. short(sha) .. ")") or "")))
-            session.pr_meta.state = "merged"
-            if session.panel and session.panel:is_open() then
-                session.panel:close() -- the PR is merged; end the session
+            s.pr_meta.state = "merged"
+            if guard.panel_alive(s) then
+                s.panel:close() -- the PR is merged; end the session
             end
         end)
     end)

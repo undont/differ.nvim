@@ -5,6 +5,7 @@
 -- and reacts to a conflict by refreshing rather than auto-retrying
 
 local client = require("differ.pr.client")
+local guard = require("differ.pr.guard")
 
 local M = {}
 
@@ -12,13 +13,6 @@ local M = {}
 ---@param level integer|nil
 local function notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
-end
-
--- a session is still live (panel open) when an async mutation returns
----@param session table
----@return boolean
-local function alive(session)
-    return session ~= nil and session.view ~= nil and session.view:is_open()
 end
 
 -- re-fetch threads so the overlay reflects a draft/submit/discard authoritatively (the
@@ -51,7 +45,7 @@ function M.start(session, opts)
         return M.reattach(session, opts)
     end
     client.start_review(session.pr, function(err, res)
-        if not alive(session) then
+        if not guard.owns(session) then
             return
         end
         if err then
@@ -71,7 +65,7 @@ end
 ---@param opts { jump?: boolean }|nil
 function M.reattach(session, opts)
     client.get_pending_review(session.pr, function(err, res)
-        if not alive(session) then
+        if not guard.owns(session) then
             return
         end
         if err then
@@ -132,7 +126,7 @@ function M._do_submit(session, event, body)
         body = body,
         expected_head = session.pr_meta.head_sha,
     }, function(err, _)
-        if not alive(session) then
+        if not guard.owns(session) then
             return
         end
         if err then
@@ -162,7 +156,7 @@ function M.discard(session)
         return
     end
     client.discard_review(session.pr, session.review_id, function(err, _)
-        if not alive(session) then
+        if not guard.owns(session) then
             return
         end
         if err then
