@@ -6,7 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- differ warns once when `termguicolors` is off, which is what leaves the diff rendering uncoloured
+- The README documents `:Differ sidecar`, `:Differ cache clear`, `:Differ mergetool`, `:Differ gofile` and `:Differ edit`, including how to open the merge tool, and the `details` keymap default
+
 ### Fixed
+
+- Installing asked for an exact Go patch release, so the build hook pulled down a second toolchain on machines that already had Go 1.26, and failed outright under a distro-packaged Go or `GOTOOLCHAIN=local`
+- A sidecar protocol mismatch told you to run `:Differ build`, which is not a command. It now names `make go-build`
+
+## [0.1.29] — 2026-08-11
 
 - `gx` on a thread with more than 100 comments deleted the wrong one, which could be another author's published comment rather than your own draft. It now asks GitHub for the thread's newest comment instead of taking the last one it had read
 - `gx` and `gp` on a line carrying more than one thread silently acted on the oldest, so you could delete from or reply to a thread you weren't reading. They now ask which one
