@@ -1869,6 +1869,107 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- confirm() drains scheduled callbacks while it blocks, so a watcher fire can
+    -- re-source the view between the prompt and the revert. the stub stands in for that
+    -- drain by doing what refresh_external ends at: a set_source under the open prompt
+    it("reverts nothing when the same file is re-sourced under the prompt", function()
+        local root = fresh_repo()
+        local base = {}
+        for i = 1, 30 do
+            base[i] = ("line%02d"):format(i)
+        end
+        write(root .. "/a.lua", table.concat(base, "\n") .. "\n")
+        git(root, "commit", "-q", "-am", "30 lines")
+        local edited = vim.deepcopy(base)
+        edited[5], edited[15], edited[25] = "CHANGED05", "CHANGED15", "CHANGED25"
+        write(root .. "/a.lua", table.concat(edited, "\n") .. "\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal(3, #v.model.hunks)
+        local asked_on = v.model
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 }) -- the CHANGED15 hunk
+
+        _G.notifs = {}
+        local swapped -- read inside the stub, so it holds however the revert goes on
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            -- the first hunk goes away outside differ, so hunk 2 is now CHANGED25
+            local dropped = vim.deepcopy(edited)
+            dropped[5] = base[5]
+            write(root .. "/a.lua", table.concat(dropped, "\n") .. "\n")
+            p:refresh()
+            vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+            p:select()
+            swapped = v.model ~= asked_on
+            return 1
+        end
+        local ok, err = pcall(function()
+            v:revert_hunk()
+        end)
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.is_true(swapped) -- the re-source landed, so this isn't vacuous
+        local after = worktree(root, "a.lua")
+        assert.is_not_nil(after:find("CHANGED15", 1, true)) -- the hunk the prompt named
+        assert.is_not_nil(after:find("CHANGED25", 1, true)) -- the one index 2 slid onto
+        assert.are.equal(
+            "differ: the diff changed while the prompt was up; nothing was reverted",
+            _G.notifs[#_G.notifs].msg
+        )
+        p:close()
+    end)
+
+    -- when the shown file goes clean mid-prompt the watcher hands the window to another
+    -- file, and revert is path-agnostic: it would patch whatever model it was handed
+    it("reverts nothing when a different file is re-sourced under the prompt", function()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "local z = 9\nreturn z\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-m", "add z")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/z.lua", "local z = 99\nreturn z\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
+
+        _G.notifs = {}
+        local swapped_to -- read inside the stub, so it holds however the revert goes on
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "z.lua"), 0 })
+            p:select()
+            swapped_to = v.model.path
+            return 1
+        end
+        local ok, err = pcall(function()
+            v:revert_hunk()
+        end)
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.are.equal("z.lua", swapped_to) -- the re-source landed
+        -- the prompt named a.lua, so z.lua was never in the question
+        assert.are.equal("local z = 99\nreturn z\n", worktree(root, "z.lua"))
+        assert.are.equal("local x = 2\nreturn x\n", worktree(root, "a.lua"))
+        assert.are.equal(
+            "differ: the diff changed while the prompt was up; nothing was reverted",
+            _G.notifs[#_G.notifs].msg
+        )
+        p:close()
+    end)
+
     it("reverts a staged hunk out of the index and the worktree together", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")

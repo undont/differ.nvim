@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Reverting a hunk with `X` could destroy a different hunk, or a hunk in another file, when anything changed the repo while the confirm prompt was up
+
+## [0.1.27] — 2026-08-11
+
+### Fixed
+
 - The merge tool could splice a different conflict's ancestor into the file. Take-base looked the ancestor up by position in a map that reset whenever the number of conflict regions changed, which happens when you hand-resolve one or undo a resolve: the text landed silently, `:w` staged it, and it was committable with no warning. Only under git's default `merge.conflictStyle`, where differ has to recover the ancestor itself
 - The merge tool wrote a doubled carriage return on CRLF files. Take-base's ancestor came from the raw stage blob, so its lines kept the CR the buffer had already stripped, and saving added a second one. The base pane rendered the stray `^M` too
 
