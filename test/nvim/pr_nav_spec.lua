@@ -767,3 +767,204 @@ describe("pr overview cheatsheet (g?)", function()
         restore()
     end)
 end)
+
+local REPLY = "reply to thread"
+local DELETE_COMMENT = "delete comment"
+
+-- two threads on the same new-side line. the overlay stacks them into one block ordered
+-- oldest first, so neither gp nor gx has a cursor position inside it to read
+local function stacked_threads_result()
+    local threads = threads_result()
+    threads[1].newest_comment = { node_id = "gid1", body = "please fix" }
+    threads[2] = {
+        id = "t2",
+        thread_id = "th_2",
+        path = "a.txt",
+        side = "RIGHT",
+        line = THREAD_LINE,
+        resolved = false,
+        is_pending = true,
+        comments = {
+            {
+                id = "c2",
+                node_id = "gid2",
+                author = "me",
+                body = "my draft",
+                created_at = "2026-02-02T00:00:00Z",
+            },
+        },
+        newest_comment = { node_id = "gid2", body = "my draft" },
+    }
+    return threads
+end
+
+-- swap vim.ui.select for one that records what it was offered and answers with
+-- `choose(items)`; returning nil from `choose` is the cancelled pick
+---@param choose fun(items: table[]): table|nil
+local function stub_select(choose)
+    local real = vim.ui.select
+    local box = { calls = 0 }
+    ---@diagnostic disable-next-line: duplicate-set-field
+    vim.ui.select = function(items, opts, cb)
+        box.calls = box.calls + 1
+        box.items = items
+        box.labels = vim.tbl_map(opts.format_item, items)
+        cb(choose(items))
+    end
+    return box, function()
+        vim.ui.select = real
+    end
+end
+
+-- put the cursor on the stacked overlay's anchor row, in the window showing it
+---@param s table
+---@return integer bufnr
+local function focus_thread_anchor(s)
+    local a = (s.thread_anchors or {})[1]
+    assert.is_truthy(a)
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+        if vim.api.nvim_win_get_buf(win) == a.bufnr then
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_win_set_cursor(win, { a.row, 0 })
+            return a.bufnr
+        end
+    end
+    error("no window shows the anchored buffer")
+end
+
+describe("stacked-row thread gestures pick a thread rather than assuming the first", function()
+    local comment = require("differ.pr.comment")
+    local client = require("differ.pr.client")
+
+    local restore_all = {}
+
+    local function track(restore)
+        restore_all[#restore_all + 1] = restore
+    end
+
+    after_each(function()
+        for i = #restore_all, 1, -1 do
+            restore_all[i]()
+        end
+        restore_all = {}
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- a live session sitting on the stacked anchor row, with confirm() answering yes
+    ---@return table session, integer bufnr
+    local function stacked_session()
+        local responses = default_responses()
+        responses.get_threads = { result = stacked_threads_result() }
+        track(open_overview(responses))
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            local a = (pr.current_session().thread_anchors or {})[1]
+            return a ~= nil and #a.threads == 2
+        end))
+        local orig = vim.fn.confirm
+        ---@diagnostic disable-next-line: duplicate-set-field
+        vim.fn.confirm = function()
+            return 1
+        end
+        track(function()
+            vim.fn.confirm = orig
+        end)
+        return s, focus_thread_anchor(s)
+    end
+
+    ---@return table box  -- { node_id }
+    local function capture_delete()
+        local real = client.delete_comment
+        local box = {}
+        ---@diagnostic disable-next-line: duplicate-set-field
+        client.delete_comment = function(_pr, node_id, _cb)
+            box.node_id = node_id
+        end
+        track(function()
+            client.delete_comment = real
+        end)
+        return box
+    end
+
+    it("gx offers both threads and deletes from the one chosen, not threads[1]", function()
+        local _, buf = stacked_session()
+        local deleted = capture_delete()
+        -- pick the newer draft, which is threads[2] under the oldest-first stack order
+        local picked = stub_select(function(items)
+            return items[2]
+        end)
+
+        assert.is_true(fire(buf, DELETE_COMMENT))
+
+        -- the load-bearing one: threads[1] is the older "please fix" (gid1)
+        assert.are.equal("gid2", deleted.node_id)
+        assert.are.equal(1, picked.calls)
+        assert.are.equal(2, #picked.items)
+        -- the labels name the author and state so the choice is readable
+        assert.is_truthy(picked.labels[1]:find("@reviewer", 1, true))
+        assert.is_truthy(picked.labels[2]:find("(draft)", 1, true))
+    end)
+
+    it("gx deletes nothing when the pick is cancelled", function()
+        local _, buf = stacked_session()
+        local deleted = capture_delete()
+        local picked = stub_select(function()
+            return nil
+        end)
+
+        assert.is_true(fire(buf, DELETE_COMMENT))
+
+        assert.are.equal(1, picked.calls)
+        assert.is_nil(deleted.node_id)
+    end)
+
+    it("gp replies to the thread chosen, not the oldest on the row", function()
+        local _, buf = stacked_session()
+        local real = comment.compose
+        local box = {}
+        ---@diagnostic disable-next-line: duplicate-set-field
+        comment.compose = function(_s, opts)
+            box.opts = opts
+        end
+        track(function()
+            comment.compose = real
+        end)
+        local picked = stub_select(function(items)
+            return items[2]
+        end)
+
+        assert.is_true(fire(buf, REPLY))
+
+        assert.are.equal(1, picked.calls)
+        assert.are.equal("th_2", box.opts.in_reply_to)
+    end)
+
+    it("a row with one thread acts straight away, without a picker", function()
+        track(open_overview(default_responses()))
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            return (pr.current_session().thread_anchors or {})[1] ~= nil
+        end))
+        s.threads[1].newest_comment = { node_id = "gid1", body = "please fix" }
+        local buf = focus_thread_anchor(s)
+        local deleted = capture_delete()
+        local picked = stub_select(function(items)
+            return items[1]
+        end)
+        local orig = vim.fn.confirm
+        ---@diagnostic disable-next-line: duplicate-set-field
+        vim.fn.confirm = function()
+            return 1
+        end
+        track(function()
+            vim.fn.confirm = orig
+        end)
+
+        assert.is_true(fire(buf, DELETE_COMMENT))
+
+        assert.are.equal(0, picked.calls)
+        assert.are.equal("gid1", deleted.node_id)
+    end)
+end)

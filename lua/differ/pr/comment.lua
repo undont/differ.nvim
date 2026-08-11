@@ -143,6 +143,54 @@ function M.comment_range(session)
     M.compose(session, { anchor = anchor, anchor_win = win, path = gesture_path(session) })
 end
 
+-- ── thread gestures (reply / delete) ──────────────────────────────────────────────
+
+-- a body's first line, clipped for a prompt or a picker label
+---@param body string|nil
+---@return string
+local function snippet(body)
+    local first = (body or ""):match("[^\n]*") or ""
+    if #first > 40 then
+        first = first:sub(1, 39) .. "…"
+    end
+    return first
+end
+
+-- the picker label for one thread, mirroring the collapsed box line the user reads
+---@param t table
+---@return string
+local function thread_label(t)
+    local comments = t.comments or {}
+    local first = comments[1] or {}
+    local tag = (t.is_pending and " (draft)") or (t.resolved and " (resolved)") or ""
+    return ('%d %s · @%s: "%s"%s'):format(
+        #comments,
+        #comments == 1 and "comment" or "comments",
+        first.author or "?",
+        snippet(first.body),
+        tag
+    )
+end
+
+-- the thread a cursor-row gesture acts on. a row can stack several threads and they
+-- render as one block oldest first, so there is no cursor position inside it to read:
+-- anything past the first asks instead of guessing, which matters most for gx. `cb`
+-- goes unrun on a cancelled pick
+---@param anchor table  -- { threads }
+---@param prompt string
+---@param cb fun(thread: table)
+local function pick_thread(anchor, prompt, cb)
+    local threads = anchor.threads
+    if #threads == 1 then
+        return cb(threads[1])
+    end
+    vim.ui.select(threads, { prompt = prompt, format_item = thread_label }, function(choice)
+        if choice then
+            cb(choice)
+        end
+    end)
+end
+
 -- gp: reply to the thread under the cursor (its node id, from slice 3's overlay index)
 ---@param session table
 function M.reply(session)
@@ -153,36 +201,29 @@ function M.reply(session)
     if not anchor then
         return notify("no thread under the cursor to reply to")
     end
-    M.compose(session, { in_reply_to = anchor.threads[1].thread_id, anchor_win = win })
+    pick_thread(anchor, "Reply to which thread?", function(thread)
+        if not guard.owns(session) then
+            return -- the picker can be async; the session may have gone under it
+        end
+        M.compose(session, { in_reply_to = thread.thread_id, anchor_win = win })
+    end)
 end
 
--- gx: delete the most recent comment of the thread under the
--- cursor (usually a draft you just wrote). deleting the only/root comment removes the
+-- delete `thread`'s most recent comment. deleting the only/root comment removes the
 -- whole thread; a later comment deletes just that reply. confirms first (destructive),
 -- then re-fetches so the overlay updates
 ---@param session table
-function M.delete(session)
-    local win = vim.api.nvim_get_current_win()
-    local buf = vim.api.nvim_win_get_buf(win)
-    local row = vim.api.nvim_win_get_cursor(win)[1]
-    local anchor = require("differ.pr.threads").anchor_at(session, buf, row)
-    if not anchor then
-        return notify("no thread under the cursor to delete from")
-    end
-    local thread = anchor.threads[1]
+---@param thread table
+local function delete_from(session, thread)
     local comments = thread.comments or {}
     -- comments is capped; newest_comment is the thread's last one whatever its length
     local target = thread.newest_comment
     if not (target and target.node_id and target.node_id ~= "") then
         return notify("this comment can't be deleted")
     end
-    local snippet = (target.body or ""):match("[^\n]*") or ""
-    if #snippet > 40 then
-        snippet = snippet:sub(1, 39) .. "…"
-    end
     local root = #comments == 1
     local prompt = (root and 'Delete this thread? "' or 'Delete the last reply? "')
-        .. snippet
+        .. snippet(target.body)
         .. '"'
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
         return
@@ -198,6 +239,25 @@ function M.delete(session)
         threads.invalidate(session)
         threads.refresh(session)
         notify(root and "thread deleted" or "comment deleted")
+    end)
+end
+
+-- gx: delete the most recent comment of the thread under the cursor (usually a draft
+-- you just wrote), asking which one when the row stacks more than a single thread
+---@param session table
+function M.delete(session)
+    local win = vim.api.nvim_get_current_win()
+    local buf = vim.api.nvim_win_get_buf(win)
+    local row = vim.api.nvim_win_get_cursor(win)[1]
+    local anchor = require("differ.pr.threads").anchor_at(session, buf, row)
+    if not anchor then
+        return notify("no thread under the cursor to delete from")
+    end
+    pick_thread(anchor, "Delete from which thread?", function(thread)
+        if not guard.owns(session) then
+            return -- the picker can be async; the session may have gone under it
+        end
+        delete_from(session, thread)
     end)
 end
 
