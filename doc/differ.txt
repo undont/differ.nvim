@@ -8,6 +8,7 @@ Table of Contents                                   *differ-table-of-contents*
 3. Configuration                                        |differ-configuration|
 4. Usage                                                        |differ-usage|
   - Runtime controls                           |differ-usage-runtime-controls|
+  - Session and sidecar commands   |differ-usage-session-and-sidecar-commands|
   - Keymaps                                             |differ-usage-keymaps|
   - Launchers                                         |differ-usage-launchers|
   - Statusline                                       |differ-usage-statusline|
@@ -34,6 +35,7 @@ Table of Contents                                   *differ-table-of-contents*
 2. Requirements                                          *differ-requirements*
 
 - Neovim 0.12+ (`vim.text.diff` sets the floor; also uses `vim.system` and `vim.uv`)
+- `termguicolors` on - nvim enables it itself on any terminal it detects as 24-bit capable, so this is usually already true; without it the diff, merge and thread highlights render uncoloured
 - git on `PATH`
 - A Treesitter parser for the languages you diff (optional)
 - For PR review: Go + make on `PATH`, and `gh` authenticated
@@ -93,6 +95,7 @@ Table of Contents                                   *differ-table-of-contents*
         scroll_down = "f",           -- shadows native f/b; set false to restore
         scroll_up = "b",
         select = { "<CR>", "o" },    -- diff, pr overview, panel, history
+        details = "K",               -- history: float the full commit message
         help = "g?",                 -- diff, pr overview, panel, history
         toggle_listing = "i",        -- panel: toggle tree / name
         close_node = "c",            -- panel: collapse the dir under the cursor; history: the commit
@@ -192,6 +195,49 @@ command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must
 start with an uppercase letter (enforced by vim, not by me). If you lazy-load
 on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see
 troubleshooting <TROUBLESHOOTING.md#command_alias-and-lazy-loading> for why.
+
+
+SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
+
+  -----------------------------------------------------------------------
+  Command                             Effect
+  ----------------------------------- -----------------------------------
+  :Differ mergetool [path]            Open the merge tool on a conflicted
+                                      file; no argument takes the current
+                                      file, else the only conflicted one,
+                                      else a picker
+
+  :Differ edit                        Edit the real file in a transient
+                                      split at the cursor’s mapped line,
+                                      keeping the session; :w re-sources
+                                      the diff. The df key
+
+  :Differ gofile                      Open the real file at the cursor’s
+                                      mapped line and end the session.
+                                      The de key
+
+  :Differ sidecar                     Smoke-check the Go sidecar: start
+                                      it, round-trip a handshake, and
+                                      report the binary and protocol
+                                      version
+
+  :Differ sidecar stop                Stop the supervised sidecar; the
+                                      next PR command starts a fresh one
+
+  :Differ cache clear                 Flush the sidecar’s in-process
+                                      caches (file blobs and PR review
+                                      threads)
+  -----------------------------------------------------------------------
+`:Differ sidecar` is the diagnostic to reach for when PR review doesn’t work.
+It tells a sidecar that was never built (`make go-build`) apart from a protocol
+mismatch or a `gh` auth failure, and it’s the only thing that reports which
+binary is actually running.
+
+`:Differ cache clear` is worth knowing about because the sidecar memoises
+review threads for the life of the process and flushes them only on your own
+mutations, so a colleague’s comment posted while you have the PR open won’t
+show up until you clear it. File blobs are keyed by commit sha and can’t go
+stale, so clearing those only costs a refetch.
 
 
 KEYMAPS                                                 *differ-usage-keymaps*
@@ -358,7 +404,9 @@ apart at a glance.
 
 MERGE TOOL ~
 
-Bound on the result buffer.
+`:Differ mergetool [path]` opens it: with no argument it takes the current file
+when that’s one of the conflicted ones, else the only conflicted file in the
+tree, else it offers a picker over them. Keys are bound on the result buffer.
 
   Key                    Action
   ---------------------- ------------------------------

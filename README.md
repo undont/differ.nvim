@@ -52,6 +52,7 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 ## Requirements
 
 - Neovim 0.12+ (`vim.text.diff` sets the floor; also uses `vim.system` and `vim.uv`)
+- `termguicolors` on - nvim enables it itself on any terminal it detects as 24-bit capable, so this is usually already true; without it the diff, merge and thread highlights render uncoloured
 - git on `PATH`
 - A Treesitter parser for the languages you diff (optional)
 - For PR review: Go + make on `PATH`, and `gh` authenticated
@@ -157,6 +158,7 @@ require("differ").setup({
     scroll_down = "f",           -- shadows native f/b; set false to restore
     scroll_up = "b",
     select = { "<CR>", "o" },    -- diff, pr overview, panel, history
+    details = "K",               -- history: float the full commit message
     help = "g?",                 -- diff, pr overview, panel, history
     toggle_listing = "i",        -- panel: toggle tree / name
     close_node = "c",            -- panel: collapse the dir under the cursor; history: the commit
@@ -230,6 +232,21 @@ These re-render the active view only. No refetch, no re-diff, and the state is l
 `context` defaults to the whole file, so no folds are created at all and a diff reads as the file it came from. Set it to a number to fold the long unchanged runs away instead: every line is in the buffer either way (search, yank, and motions all work), and `context` only decides where a native fold forms once an unchanged run exceeds it either side of a hunk. Folds are created open, not closed, so nothing is hidden until you close one yourself (`zc`/`za`/`zM`). `d-` narrows out of whole-file the same way, landing on a threshold of 10 and stepping down a line at a time from there; `d=` has nothing wider to reach, so it does nothing.
 
 Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. Names must start with an uppercase letter (enforced by vim, not by me). If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](TROUBLESHOOTING.md#command_alias-and-lazy-loading) for why.
+
+### Session and sidecar commands
+
+| Command | Effect |
+|---|---|
+| `:Differ mergetool [path]` | Open the [merge tool](#merge-tool) on a conflicted file; no argument takes the current file, else the only conflicted one, else a picker |
+| `:Differ edit` | Edit the real file in a transient split at the cursor's mapped line, keeping the session; `:w` re-sources the diff. The `df` key |
+| `:Differ gofile` | Open the real file at the cursor's mapped line and end the session. The `de` key |
+| `:Differ sidecar` | Smoke-check the Go sidecar: start it, round-trip a handshake, and report the binary and protocol version |
+| `:Differ sidecar stop` | Stop the supervised sidecar; the next PR command starts a fresh one |
+| `:Differ cache clear` | Flush the sidecar's in-process caches (file blobs and PR review threads) |
+
+`:Differ sidecar` is the diagnostic to reach for when PR review doesn't work. It tells a sidecar that was never built (`make go-build`) apart from a protocol mismatch or a `gh` auth failure, and it's the only thing that reports which binary is actually running.
+
+`:Differ cache clear` is worth knowing about because the sidecar memoises review threads for the life of the process and flushes them only on your own mutations, so a colleague's comment posted while you have the PR open won't show up until you clear it. File blobs are keyed by commit sha and can't go stale, so clearing those only costs a refetch.
 
 ### Keymaps
 
@@ -338,7 +355,7 @@ Code-comment threads render as a contained box (GitHub's outline, differ's left-
 
 #### Merge tool
 
-Bound on the result buffer.
+`:Differ mergetool [path]` opens it: with no argument it takes the current file when that's one of the conflicted ones, else the only conflicted file in the tree, else it offers a picker over them. Keys are bound on the result buffer.
 
 | Key | Action |
 |---|---|
