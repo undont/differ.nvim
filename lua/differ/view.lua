@@ -1299,8 +1299,19 @@ function View:revert_hunk()
     local label = self.staging.revert_label
     local prompt = label and ("Revert all of %s? This %s."):format(self.model.path, label)
         or ("Revert hunk %d/%d in %s?"):format(idx, #self.model.hunks, self.model.path)
+    -- confirm() drains scheduled callbacks while it blocks, so the fs-watcher can
+    -- re-source the view mid-prompt. idx and the prompt name the model that was on
+    -- screen when it was asked; against a new one they'd take a different hunk, or a
+    -- hunk in whatever file the panel moved to
+    local asked_on = self.model
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
         return
+    end
+    if self.model ~= asked_on then
+        return vim.notify(
+            "differ: the diff changed while the prompt was up; nothing was reverted",
+            vim.log.levels.WARN
+        )
     end
 
     local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0

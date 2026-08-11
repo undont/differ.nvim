@@ -125,4 +125,21 @@ function M.resolve(opts, cb)
     return cb({ code = "bad_request", message = msg })
 end
 
+-- whether `root` is a clone of `coords`. every github remote is checked, not just the
+-- one resolve() would pick: on a fork both sides are legitimate local checkouts, and
+-- which of them wins the precedence order says nothing about the pr being opened
+---@param root string
+---@param coords { owner: string, repo: string }
+---@return boolean
+function M.has_remote(root, coords)
+    for _, name in ipairs(list_remotes(root)) do
+        local url = remote_url(name, root)
+        local c = url and url ~= "" and M.parse_remote(url) or nil
+        if c and c.owner == coords.owner and c.repo == coords.repo then
+            return true
+        end
+    end
+    return false
+end
+
 return M

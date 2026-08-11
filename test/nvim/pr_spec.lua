@@ -290,3 +290,118 @@ describe("pr review lifecycle keymaps", function()
         restore()
     end)
 end)
+
+describe("pr session root", function()
+    local function git(cwd, ...)
+        local args = { "git", "-c", "user.email=t@t", "-c", "user.name=t" }
+        vim.list_extend(args, { ... })
+        local res = vim.system(args, { cwd = cwd, text = true }):wait()
+        assert(res.code == 0, "git failed: " .. table.concat({ ... }, " "))
+        return res.stdout
+    end
+
+    -- a repo whose remotes are `urls` keyed by remote name
+    ---@param urls table<string, string>
+    local function repo_with_remotes(urls)
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git(root, "init", "-q")
+        for name, url in pairs(urls) do
+            git(root, "remote", "add", name, url)
+        end
+        return root
+    end
+
+    local repo = require("differ.pr.repo")
+
+    it("matches a clone of the pr's repo, whichever remote carries it", function()
+        local root = repo_with_remotes({
+            origin = "git@github.com:me/widget.git",
+            upstream = "https://github.com/acme/widget",
+        })
+        -- a fork checkout is a legitimate local clone of either side, so both match
+        -- even though resolve() would only ever return upstream
+        assert.is_true(repo.has_remote(root, { owner = "acme", repo = "widget" }))
+        assert.is_true(repo.has_remote(root, { owner = "me", repo = "widget" }))
+        assert.is_false(repo.has_remote(root, { owner = "acme", repo = "other" }))
+        assert.is_false(repo.has_remote(root, { owner = "other", repo = "widget" }))
+    end)
+
+    it("ignores non-github and unparsable remotes", function()
+        local root = repo_with_remotes({
+            origin = "https://gitlab.com/acme/widget.git",
+            weird = "not a url",
+        })
+        assert.is_false(repo.has_remote(root, { owner = "acme", repo = "widget" }))
+    end)
+
+    -- session.root drives the edit verbs (which open root/path as "the real file") and
+    -- :Differ pr checkout (which fetches into it), so an unrelated cwd must not set it
+    local function show_from(cwd)
+        vim.cmd.cd(vim.fn.fnameescape(cwd)) -- global: after_each puts it back
+        local restore = stub_sidecar({
+            get_pr = { result = get_pr_result() },
+            get_file_versions = {
+                result = { base = { content = "a\n" }, head = { content = "b\n" } },
+            },
+            get_threads = { result = {} },
+        })
+        pr.show(PR)
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s and s.view and s.view:is_open()
+        end))
+        local s = pr.current_session()
+        restore()
+        return s
+    end
+
+    -- the spec files resolve `require` against a relative package.path, so a leaked cwd
+    -- breaks every suite loaded after this one
+    local saved_cwd
+    before_each(function()
+        saved_cwd = vim.fn.getcwd()
+    end)
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+        vim.cmd.cd(vim.fn.fnameescape(saved_cwd))
+    end)
+
+    it("takes the cwd's repo when it is a clone of the pr's repo", function()
+        local root = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(show_from(root).root))
+    end)
+
+    it("leaves root nil in an unrelated repo, rather than adopting its files", function()
+        local root = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        assert.is_nil(show_from(root).root)
+    end)
+
+    it(
+        "refuses :Differ pr checkout without a local clone, rather than fetching into the cwd",
+        function()
+            -- origin is a local bare repo, so a fetch that shouldn't happen fails here
+            -- rather than reaching github: the refusal is what's under test, not the fetch
+            local bare = vim.fn.tempname()
+            vim.fn.mkdir(bare, "p")
+            git(bare, "init", "-q", "--bare")
+            local root = repo_with_remotes({ origin = bare })
+            local s = show_from(root)
+            assert.is_nil(s.root)
+
+            _G.notifs = {}
+            pr.checkout()
+            assert.is_truthy(
+                _G.notifs[#_G.notifs].msg:find(
+                    "checkout needs a local clone of acme/widget",
+                    1,
+                    true
+                )
+            )
+            -- the unrelated repo is untouched: no branch created, no FETCH_HEAD
+            assert.are.equal("", vim.trim(git(root, "branch", "--list", "feature")))
+        end
+    )
+end)
