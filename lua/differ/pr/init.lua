@@ -55,6 +55,19 @@ local function short(sha)
     return sha and sha:sub(1, 7) or "?"
 end
 
+-- the cwd's repo, but only when it is a clone of the pr's own repo. an unrelated
+-- checkout has its own files at the same paths, so the edit verbs would open those as
+-- "the real file" and checkout would fetch into it; nil disables both instead
+---@param coords { owner: string, repo: string }
+---@return string|nil
+local function local_root(coords)
+    local root = require("differ.git").root(vim.fn.getcwd())
+    if root and require("differ.pr.repo").has_remote(root, coords) then
+        return root
+    end
+    return nil
+end
+
 -- run a session in its own tabpage (like git/init.lua): the invoking tab is never
 -- touched, so ending the session drops the tab and returns there
 ---@return integer return_tab, integer session_tab
@@ -505,7 +518,13 @@ local function editable_view()
         return nil
     end
     if not session.root then
-        notify("editing needs a local checkout of this repo", vim.log.levels.WARN)
+        notify(
+            ("editing needs a local clone of %s/%s"):format(
+                session.coords.owner,
+                session.coords.repo
+            ),
+            vim.log.levels.WARN
+        )
         return nil
     end
     warn_head_mismatch()
@@ -680,7 +699,7 @@ local function open_session(pr, detail, opts)
             draft = detail.draft,
             mergeable = detail.mergeable,
         },
-        root = require("differ.git").root(vim.fn.getcwd()), -- optional; for jump-to-file
+        root = local_root(pr), -- optional; for jump-to-file
         entries = entries, -- flat FileEntry[] (single section), shared by ref with the panel
         versions = {}, -- per-path blob memo; valid for the session (shas are pinned)
         prefetching = {}, -- paths with an in-flight predictive prefetch (dedupe guard)
@@ -1187,9 +1206,14 @@ function M.checkout()
             return notify("no head branch to check out", vim.log.levels.WARN)
         end
         local git = require("differ.git")
-        local root = s.root or git.root(vim.fn.getcwd())
+        -- no cwd fallback: fetching the pr's refs into an unrelated repo lands whatever
+        -- its own refs/pull/<n>/head happens to be, under this pr's branch name
+        local root = s.root
         if not root then
-            return notify("not inside a git repository", vim.log.levels.WARN)
+            return notify(
+                ("checkout needs a local clone of %s/%s"):format(s.coords.owner, s.coords.repo),
+                vim.log.levels.WARN
+            )
         end
         local ok, err = git.checkout(root, ref, s.pr.number)
         if not ok then

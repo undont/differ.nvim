@@ -454,7 +454,8 @@ local function enter_review()
 end
 
 -- a throwaway worktree holding `rel` on disk, so the edit verbs (which open the real
--- file at model.root/path) have something readable. redirect the view's model.root here
+-- file at model.root/path) have something readable. point session.root and the view's
+-- model.root here: the session's own root is nil under a cwd that isn't the pr's repo
 ---@param rel string
 ---@param content string
 local function make_worktree_file(rel, content)
@@ -562,7 +563,7 @@ describe("pr edit verbs (df/de)", function()
         local restore = open_overview(default_responses())
         local s = enter_review()
         local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
-        s.view.model.root = tmp.root
+        s.root, s.view.model.root = tmp.root, tmp.root
 
         local view = s.view
         local diff_buf = view:column_for("new").bufnr
@@ -591,7 +592,7 @@ describe("pr edit verbs (df/de)", function()
         local restore = open_overview(default_responses())
         local s = enter_review()
         local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
-        s.view.model.root = tmp.root
+        s.root, s.view.model.root = tmp.root, tmp.root
         review_tab = vim.api.nvim_get_current_tabpage()
 
         local view = s.view
@@ -618,7 +619,7 @@ describe("pr edit verbs (df/de)", function()
         local restore = open_overview(default_responses())
         local s = enter_review()
         local tmp = make_worktree_file("a.txt", "a\nB\nc\n")
-        s.view.model.root = tmp.root
+        s.root, s.view.model.root = tmp.root, tmp.root
         review_tab = vim.api.nvim_get_current_tabpage()
 
         local view = s.view
@@ -656,12 +657,14 @@ describe("pr edit verbs (df/de)", function()
     it("df without a local checkout (no session.root) notifies and no-ops", function()
         local restore = open_overview(default_responses())
         local s = enter_review()
-        s.root = nil -- simulate a repo with no local checkout
+        assert.is_nil(s.root) -- the test cwd is differ.nvim, not acme/widget
 
         local before = #_G.notifs
         pr.edit_split()
 
-        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("editing needs a local checkout", 1, true))
+        assert.is_truthy(
+            _G.notifs[#_G.notifs].msg:find("editing needs a local clone of acme/widget", 1, true)
+        )
         assert.is_nil(s.view.edit_win) -- no edit window opened
         assert.is_true(#_G.notifs > before)
 

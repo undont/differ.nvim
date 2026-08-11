@@ -317,7 +317,7 @@ On top of the diff + panel keys.
 | `gS` | Submit the review (pick a verdict, then write a summary) |
 | `gD` | Discard the review and its draft comments (confirms) |
 
-`df`/`de` edit the worktree file on disk, not the reviewed blob, so keep your checkout on the PR's head branch (`:Differ pr checkout`) or the two can drift; differ warns once a session if they don't match.
+`df`/`de` edit the worktree file on disk, not the reviewed blob, so keep your checkout on the PR's head branch (`:Differ pr checkout`) or the two can drift; differ warns once a session if they don't match. Both verbs, and `:Differ pr checkout` itself, need the current directory to be a clone of the PR's own repo - either side of a fork counts. Reviewing another repo's PR from your own checkout is read-only.
 
 #### PR overview
 
