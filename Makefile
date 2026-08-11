@@ -39,7 +39,7 @@ PANDOC_VERSION    := 3.10.1
 
 .PHONY: help \
 	lua-test lua-test-unit lua-test-nvim lua-lint lua-typecheck lua-fmt lua-fmt-check \
-	go-build go-test go-vet go-lint go-fmt go-fmt-check \
+	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check \
 	test lint fmt fmt-check check clean \
 	vimdoc \
 	demo demo-fixtures
@@ -98,6 +98,12 @@ go-build: ## Build the differ-sidecar binary into bin/
 	@go build -ldflags "$(GO_LDFLAGS)" -o $(GO_BIN) $(GO_PKG)
 	@$(OK) "Built $(GO_BIN)"
 
+# the demo's fixture sidecar compiles against internal/github, so a type change there can
+# break it. `./...` never expands into a dot-directory, so it needs the explicit path
+demo-build: ## Type-check the demo fixture sidecar (.demo is invisible to ./...)
+	@go build -o /dev/null ./.demo/fake-sidecar
+	@$(OK) "Demo fixture sidecar builds"
+
 go-test: ## Run Go tests
 	@go test ./...
 
@@ -110,11 +116,11 @@ go-lint: ## Run golangci-lint over the module
 	@$(OK) "Go lint clean"
 
 go-fmt: ## Format Go sources with gofmt
-	@gofmt -w cmd internal
+	@gofmt -w cmd internal .demo
 	@$(OK) "Go formatted"
 
 go-fmt-check: ## Verify Go formatting without writing
-	@out=$$(gofmt -l cmd internal); \
+	@out=$$(gofmt -l cmd internal .demo); \
 	if [ -n "$$out" ]; then \
 		printf "$(RED)gofmt needed:$(NC)\n%s\n" "$$out"; \
 		exit 1; \
@@ -176,7 +182,7 @@ fmt: lua-fmt go-fmt ## Format the whole codebase (Lua + Go)
 
 fmt-check: lua-fmt-check go-fmt-check ## Verify formatting across the codebase
 
-check: lint lua-typecheck go-vet test ## Run the full quality gate
+check: fmt-check lint lua-typecheck go-vet demo-build test ## Run the full quality gate
 
 clean: ## Remove build artefacts
 	@rm -rf bin differ-sidecar

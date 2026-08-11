@@ -6,10 +6,10 @@ import (
 )
 
 // GetThreads returns the PR's review threads with their comments, paginating the
-// thread list. inner comment lists are capped at 100 (threads rarely exceed that;
-// the cap is revisited with caching). per thread, ID is the root comment's numeric
-// id (the reply anchor), ThreadID is the GraphQL node id resolve_thread targets,
-// and IsPending marks an unsubmitted draft (root comment in PENDING state).
+// thread list. inner comment lists are capped at threadCommentsPage and flagged when
+// they hit it. per thread, ID is the root comment's numeric id (the reply anchor),
+// ThreadID is the GraphQL node id resolve_thread targets, and IsPending marks an
+// unsubmitted draft (root comment in PENDING state).
 func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int) ([]Thread, error) {
 	key := threadKey(owner, repo, number)
 	if t, ok := c.cache.thread(key); ok {
@@ -32,16 +32,20 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 		threads := page.Repository.PullRequest.ReviewThreads
 		for _, n := range threads.Nodes {
 			t := Thread{
-				ThreadID:     n.ID,
-				Path:         n.Path,
-				Side:         n.DiffSide,
-				Line:         deref(n.Line),
-				StartSide:    n.StartSide,
-				StartLine:    deref(n.StartLine),
-				Outdated:     n.IsOutdated,
-				OriginalLine: deref(n.OriginalLine),
-				Resolved:     n.IsResolved,
-				Comments:     make([]ThreadComment, 0, len(n.Comments.Nodes)),
+				ThreadID:          n.ID,
+				Path:              n.Path,
+				Side:              n.DiffSide,
+				Line:              deref(n.Line),
+				StartSide:         n.StartSide,
+				StartLine:         deref(n.StartLine),
+				Outdated:          n.IsOutdated,
+				OriginalLine:      deref(n.OriginalLine),
+				Resolved:          n.IsResolved,
+				Comments:          make([]ThreadComment, 0, len(n.Comments.Nodes)),
+				CommentsTruncated: len(n.Comments.Nodes) >= threadCommentsPage,
+			}
+			if newest := n.NewestComment.Nodes; len(newest) > 0 {
+				t.NewestComment = &NewestComment{NodeID: newest[0].ID, Body: newest[0].Body}
 			}
 			for _, cm := range n.Comments.Nodes {
 				t.Comments = append(t.Comments, ThreadComment{

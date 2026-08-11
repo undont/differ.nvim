@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `gx` on a thread with more than 100 comments deleted the wrong one, which could be another author's published comment rather than your own draft. It now asks GitHub for the thread's newest comment instead of taking the last one it had read
+- `gx` and `gp` on a line carrying more than one thread silently acted on the oldest, so you could delete from or reply to a thread you weren't reading. They now ask which one
+
+## [0.1.28] — 2026-08-11
+
+### Fixed
+
 - Reverting a hunk with `X` could destroy a different hunk, or a hunk in another file, when anything changed the repo while the confirm prompt was up
 - Discarding a file with `X` on the panel could delete it while leaving its staged copy in the index, if something staged it while the confirm prompt was up
 - `:Differ pr owner/repo#n` from an unrelated checkout treated your own files as the pull request's: `df`/`de` opened and saved them under its name, and `:Differ pr checkout` fetched into your repo. Both now need the current directory to be a clone of that repo

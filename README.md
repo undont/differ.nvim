@@ -463,53 +463,6 @@ require("differ").goto_hunk("next", {
 
 <!-- panvimdoc-ignore-start -->
 
-## Architecture
-
-A monorepo: a Lua renderer core (`lua/differ/`) and a Go sidecar (`cmd/differ-sidecar/`), so protocol changes land atomically across both. The hunk model is canonical and buffers are projections of it; renderers are pure functions over hunks, which is why a layout toggle is just a re-render.
-
-```
-frontends            core (lua/differ)
-┌──────────────┐     ┌──────────────────────────────┐
-│ local diff   │────▶│  hunk model (canonical)      │
-│ (git + diff) │     │  ├─ renderer: stacked        │
-├──────────────┤     │  ├─ renderer: side-by-side   │
-│ PR review    │────▶│  ├─ word-level highlight pass│
-│ (sidecar)    │     │  ├─ syntax pass (treesitter) │
-└──────┬───────┘     │  └─ line map (bidirectional) │
-       │             └──────────────────────────────┘
-       │ JSON over stdio
-       ▼
-┌──────────────────┐         ┌─────────────┐
-│ differ-sidecar   │────────▶│ GitHub API  │
-│ (Go, gh auth)    │         │ (REST+GQL)  │
-└──────────────────┘         └─────────────┘
-```
-
-<details>
-<summary><b>Repository layout</b></summary>
-
-```
-lua/differ/
-  init.lua          # setup() + public API (diff / open)
-  config.lua        # option defaults and merge
-  command.lua       # :Differ subcommand router
-  view.lua          # per-view state, windows, in-view keymaps
-  model/diff.lua    # hunk model from vim.diff
-  render/           # walk, line map, stacked + split renderers
-  worddiff/         # tokenizer, line pairing, span computation
-  syntax/           # treesitter pass projected through the line map
-  ui/               # statuscolumn rail, paint, highlight groups
-  git/              # local source: rev-spec grammar + git I/O
-cmd/differ-sidecar/ # go github sidecar
-test/
-  unit/             # pure-Lua busted specs (no Neovim runtime)
-  nvim/             # headless-nvim specs (extmark/window assertions)
-```
-
-</details>
-
----
-
 ## Licence
 
 [MIT](LICENCE)

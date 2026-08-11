@@ -40,6 +40,9 @@ jobs:
       - name: Build
         run: make go-build
 
+      - name: Build demo fixture sidecar
+        run: make demo-build
+
   stylua:
     runs-on: ubuntu-latest
     steps:

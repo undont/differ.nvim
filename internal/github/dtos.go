@@ -99,6 +99,12 @@ type threadsGQL struct {
 					Comments     struct {
 						Nodes []commentGQL `json:"nodes"`
 					} `json:"comments"`
+					NewestComment struct {
+						Nodes []struct {
+							ID   string `json:"id"`
+							Body string `json:"body"`
+						} `json:"nodes"`
+					} `json:"newestComment"`
 				} `json:"nodes"`
 				PageInfo pageInfoGQL `json:"pageInfo"`
 			} `json:"reviewThreads"`
