@@ -140,6 +140,14 @@ func (f *fixture) GetThreads(_ context.Context, _, _ string, _ int) ([]github.Th
 	defer f.mu.Unlock()
 	out := make([]github.Thread, len(f.threads))
 	copy(out, f.threads)
+	// nothing here is capped, so the last comment is the newest; the real client selects
+	// it separately because its list isn't
+	for i, t := range out {
+		if n := len(t.Comments); n > 0 {
+			last := t.Comments[n-1]
+			out[i].NewestComment = &github.NewestComment{NodeID: last.NodeID, Body: last.Body}
+		}
+	}
 	return out, nil
 }
 

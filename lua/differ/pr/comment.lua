@@ -169,8 +169,10 @@ function M.delete(session)
     if not anchor then
         return notify("no thread under the cursor to delete from")
     end
-    local comments = anchor.threads[1].comments or {}
-    local target = comments[#comments] -- the most recent comment on the thread
+    local thread = anchor.threads[1]
+    local comments = thread.comments or {}
+    -- comments is capped; newest_comment is the thread's last one whatever its length
+    local target = thread.newest_comment
     if not (target and target.node_id and target.node_id ~= "") then
         return notify("this comment can't be deleted")
     end

@@ -64,9 +64,10 @@ function M.set_file_viewed(pr, path, viewed, cb)
 end
 
 -- get_threads result: [{id, thread_id, path, side, line, start_side?, start_line?,
--- resolved, is_pending, comments:[{id, node_id, author, body, created_at}]}]. PR-wide;
--- the frontend keeps it per session and filters to the current file's path when
--- painting. node_id is the per-comment graphql id delete_comment targets
+-- resolved, is_pending, comments_truncated, newest_comment?:{node_id, body},
+-- comments:[{id, node_id, author, body, created_at}]}]. PR-wide; the frontend keeps it
+-- per session and filters to the current file's path when painting. comments is capped
+-- (comments_truncated says so); newest_comment is the thread's last one regardless
 ---@param pr { owner: string, repo: string, number: integer }
 ---@param cb fun(err: table|nil, result: any)
 function M.get_threads(pr, cb)

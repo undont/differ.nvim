@@ -31,11 +31,15 @@ query GetPR($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   }
 }`
 
+// the inner comments cap in getThreadsQuery, kept in step by TestThreadCommentsPage
+const threadCommentsPage = 100
+
 // getThreadsQuery fetches the PR's review threads (paginated) with their comments.
 // diffSide/startDiffSide carry the LEFT/RIGHT anchor; the comment state
 // distinguishes a submitted thread from an unsubmitted draft (is_pending); diffHunk
 // is the diff context each comment anchors to (the root's feeds the overview). inner
-// comments are capped at 100 (threads rarely exceed that).
+// comments are capped at threadCommentsPage; newestComment selects the last one, which
+// the cap may exclude.
 const getThreadsQuery = `
 query GetThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String) {
   repository(owner: $owner, name: $repo) {
@@ -60,6 +64,12 @@ query GetThreads($owner: String!, $repo: String!, $number: Int!, $cursor: String
               createdAt
               state
               diffHunk
+            }
+          }
+          newestComment: comments(last: 1) {
+            nodes {
+              id
+              body
             }
           }
         }

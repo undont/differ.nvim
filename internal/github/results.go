@@ -69,11 +69,19 @@ type Thread struct {
 	// github nulls line/start_line once a thread's anchor leaves the diff. outdated says
 	// so explicitly, and original_line carries where it used to sit, so the client can
 	// place it deliberately rather than reading the zero as line 0
-	Outdated     bool            `json:"outdated"`
-	OriginalLine int             `json:"original_line,omitempty"`
-	Resolved     bool            `json:"resolved"`
-	IsPending    bool            `json:"is_pending"`
-	Comments     []ThreadComment `json:"comments"`
+	Outdated          bool            `json:"outdated"`
+	OriginalLine      int             `json:"original_line,omitempty"`
+	Resolved          bool            `json:"resolved"`
+	IsPending         bool            `json:"is_pending"`
+	Comments          []ThreadComment `json:"comments"`
+	CommentsTruncated bool            `json:"comments_truncated"` // comments hit the cap
+	NewestComment     *NewestComment  `json:"newest_comment,omitempty"`
+}
+
+// NewestComment is a thread's last comment, which Comments may be too short to include.
+type NewestComment struct {
+	NodeID string `json:"node_id"`
+	Body   string `json:"body"`
 }
 
 // ThreadComment is one comment in a Thread. ID is the numeric comment id; NodeID is

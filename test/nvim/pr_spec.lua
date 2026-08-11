@@ -405,3 +405,121 @@ describe("pr session root", function()
         end
     )
 end)
+
+-- gx deletes a thread's newest comment, which on a long thread is not in the capped
+-- list the overlay renders from
+describe("pr comment delete targets the newest comment", function()
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    ---@param n integer  -- comments in the (capped) render list
+    ---@param newest table|nil  -- the thread's actual last comment
+    ---@return table  -- get_threads result
+    local function thread_of(n, newest)
+        local comments = {}
+        for i = 1, n do
+            comments[i] = {
+                id = 1000 + i,
+                node_id = "gid" .. i,
+                author = "reviewer",
+                body = "comment " .. i,
+                created_at = string.format("2026-01-01T00:%02d:00Z", i % 60),
+            }
+        end
+        return {
+            {
+                id = 1001,
+                thread_id = "th_1",
+                path = "a.txt",
+                side = "RIGHT",
+                line = 2,
+                resolved = false,
+                is_pending = false,
+                comments_truncated = newest ~= nil and newest.node_id ~= "gid" .. n,
+                newest_comment = newest,
+                comments = comments,
+            },
+        }
+    end
+
+    -- boot a session on a.txt with the given thread, put the cursor on its anchor row and
+    -- fire gx; returns the delete_comment params the sidecar saw, or nil
+    ---@param threads table
+    ---@return table|nil
+    local function gx_on(threads)
+        local seen = {}
+        local real = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "delete_comment" then
+                seen[#seen + 1] = params
+            end
+            local canned = {
+                get_pr = get_pr_result(),
+                get_file_versions = {
+                    base = { content = "a\nb\nc\n" },
+                    head = { content = "a\nB\nc\n" },
+                },
+                get_threads = threads,
+                get_timeline = { comments = {}, reviews = {} },
+                get_checks = { rollup = "SUCCESS", checks = {} },
+            }
+            vim.schedule(function()
+                cb(nil, canned[method] or {})
+            end)
+        end
+        local real_confirm = vim.fn.confirm
+        local prompts = {}
+        ---@diagnostic disable-next-line: duplicate-set-field
+        vim.fn.confirm = function(msg)
+            prompts[#prompts + 1] = msg
+            return 1 -- Yes
+        end
+
+        pr.show(PR)
+        assert.is_true(vim.wait(2000, function()
+            local s = pr.current_session()
+            return s and s.view and s.view:is_open() and s.threads ~= nil
+        end))
+        local s = pr.current_session()
+        assert.is_true(vim.wait(2000, function()
+            return #(s.thread_anchors or {}) > 0
+        end))
+        local a = s.thread_anchors[1]
+        vim.api.nvim_set_current_win(vim.fn.win_findbuf(a.bufnr)[1])
+        vim.api.nvim_win_set_cursor(0, { a.row, 0 })
+
+        _G.notifs = {}
+        assert.is_true(fire(a.bufnr, "delete comment"))
+        vim.wait(300, function()
+            return #seen > 0
+        end)
+
+        vim.fn.confirm = real_confirm
+        sidecar.request = real
+        return seen[1], prompts[1]
+    end
+
+    -- the render list stops at the cap, so its tail is whichever comment the cap reached;
+    -- deleting that destroys one the user never pointed at
+    it("deletes past the cap rather than the last comment it can see", function()
+        local sent, prompt = gx_on(thread_of(100, { node_id = "gid101", body = "the newest one" }))
+        assert.is_truthy(sent)
+        assert.are.equal("gid101", sent.comment_id)
+        assert.is_truthy(prompt:find("the newest one", 1, true))
+    end)
+
+    it("deletes the last comment of a thread that fits under the cap", function()
+        local sent = gx_on(thread_of(3, { node_id = "gid3", body = "comment 3" }))
+        assert.is_truthy(sent)
+        assert.are.equal("gid3", sent.comment_id)
+    end)
+
+    it("refuses when the thread carries no newest comment", function()
+        local sent = gx_on(thread_of(3, nil))
+        assert.is_nil(sent)
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("can't be deleted", 1, true))
+    end)
+end)
