@@ -721,13 +721,39 @@ local function remove_ok(abs)
     return true
 end
 
+-- the entry's status as git reports it now, or nil when the path has no changes left.
+-- the panel's entries are a snapshot taken before the confirm, and the same side of
+-- the file the entry came from is the side to re-read
+---@param root string
+---@param entry differ.FileEntry
+---@return string|nil status
+local function live_status(root, entry)
+    local out = git({ "status", "--porcelain=v1", "-z", "-uall", "--", entry.path }, root)
+    for _, s in ipairs(rev.parse_status(out or "")) do
+        if s.path == entry.path then
+            return s.x == "?" and "?" or (entry.staged and s.x or s.y)
+        end
+    end
+    return nil
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
--- destructive, so the panel confirms before calling this
+-- destructive, so the panel confirms before calling this. confirm() drains scheduled
+-- callbacks while it blocks, so the status the caller holds can have moved under the
+-- prompt: the three branches differ in whether they delete the file, so a status that
+-- no longer matches refuses rather than picking by the stale one
 ---@param root string
 ---@param entry differ.FileEntry
 ---@return boolean ok
 function M.discard(root, entry)
+    if live_status(root, entry) ~= entry.status then
+        notify(
+            ("discard skipped: %s changed since the prompt"):format(entry.path),
+            vim.log.levels.WARN
+        )
+        return false
+    end
     local abs = root .. "/" .. entry.path
     local ok
     if entry.status == "?" then

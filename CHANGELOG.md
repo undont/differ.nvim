@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - Reverting a hunk with `X` could destroy a different hunk, or a hunk in another file, when anything changed the repo while the confirm prompt was up
+- Discarding a file with `X` on the panel could delete it while leaving its staged copy in the index, if something staged it while the confirm prompt was up
 - `:Differ pr owner/repo#n` from an unrelated checkout treated your own files as the pull request's: `df`/`de` opened and saved them under its name, and `:Differ pr checkout` fetched into your repo. Both now need the current directory to be a clone of that repo
 
 ## [0.1.27] — 2026-08-11

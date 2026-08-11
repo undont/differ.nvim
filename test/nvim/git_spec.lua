@@ -1162,6 +1162,33 @@ describe(":Differ panel staging (slice C)", function()
         p:close()
     end)
 
+    -- confirm() drains scheduled callbacks while it blocks, so the entry's status can
+    -- move under the prompt. an untracked file staged from outside is the sharp case:
+    -- the "?" branch deletes it while the index keeps the add
+    it("refuses to discard a file whose status moved under the prompt", function()
+        local root = fresh_repo()
+        write(root .. "/u.lua", "untracked\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "u.lua"), 0 })
+
+        _G.notifs = {}
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            git(root, "add", "u.lua") -- "?" -> a staged add, from outside differ
+            return 1
+        end
+        p:discard()
+        vim.fn.confirm = orig
+
+        assert.are.equal(1, vim.fn.filereadable(root .. "/u.lua"))
+        -- and the index still has the add, so the two can't disagree
+        assert.are.equal("untracked\n", git(root, "show", ":u.lua"))
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("discard skipped: u.lua", 1, true))
+        p:close()
+    end)
+
     it("stages and unstages every file under a directory row", function()
         local root = fresh_repo()
         -- two files under src/, plus a sibling at the root so src/ stays a foldable
