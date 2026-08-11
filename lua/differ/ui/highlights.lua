@@ -262,6 +262,24 @@ local function apply()
     end
 end
 
+-- the palette groups carry gui fg/bg and no cterm pair, so without termguicolors
+-- every blended tint is dropped and the diff renders uncoloured (the plain links
+-- above still ride the theme's cterm attributes). warn once rather than refusing:
+-- nvim enables the option itself on any terminal it detects as 24-bit capable, and
+-- one that genuinely isn't should still get a usable session
+local warned = false
+
+local function check_termguicolors()
+    if warned or vim.o.termguicolors then
+        return
+    end
+    warned = true
+    vim.notify(
+        "differ.nvim needs 'termguicolors' for its diff colours; without it the diff renders uncoloured",
+        vim.log.levels.WARN
+    )
+end
+
 local registered = false
 
 function M.setup()
@@ -272,6 +290,13 @@ function M.setup()
             group = vim.api.nvim_create_augroup("differ.highlights", { clear = true }),
             callback = apply,
         })
+        -- a colorscheme or a late option file can still turn it on, so a setup() during
+        -- startup asks after startup rather than now
+        if vim.v.vim_did_enter == 1 then
+            check_termguicolors()
+        else
+            vim.api.nvim_create_autocmd("VimEnter", { once = true, callback = check_termguicolors })
+        end
     end
 end
 
