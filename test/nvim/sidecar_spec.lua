@@ -1,11 +1,12 @@
 -- runs under headless nvim: drives the real differ-sidecar binary (bin/) over the
--- live stdio protocol, so it doubles as the client + handshake smoke test. needs
--- the binary built (make go-build); skips with a clear message when it is absent.
+-- live stdio protocol, so it doubles as the client + handshake smoke test. `make
+-- lua-test-nvim` builds it first; a direct busted run without it fails on the spot
+-- rather than as a 5s timeout per test
 local sidecar = require("differ.sidecar")
 
 require("differ").setup({})
 
--- the binary the client would resolve, so the suite can skip cleanly when unbuilt.
+-- the binary the client would resolve
 local function has_binary()
     local root = vim.fn.getcwd()
     return vim.fn.executable(root .. "/bin/differ-sidecar") == 1
@@ -34,6 +35,41 @@ local function running_sidecars()
     return n
 end
 
+-- the pid of the sidecar this nvim spawned, scoped as running_sidecars is
+local function sidecar_pid()
+    local out = vim.fn.system({
+        "pgrep",
+        "-P",
+        tostring(vim.uv.os_getpid()),
+        "-x",
+        "differ-sidecar",
+    })
+    return tonumber(out:match("%d+"))
+end
+
+-- a vim.uv.new_timer stand-in whose timers fire after `ms` whatever duration they are
+-- started with. a table rather than the handle itself, since a uv handle is userdata and
+-- takes no field assignment; it forwards the four methods the client uses
+local function clamped_timers(ms, real)
+    return function()
+        local timer = real()
+        return {
+            start = function(_, _, repeat_ms, cb)
+                return timer:start(ms, repeat_ms, cb)
+            end,
+            stop = function()
+                return timer:stop()
+            end,
+            close = function()
+                return timer:close()
+            end,
+            is_closing = function()
+                return timer:is_closing()
+            end,
+        }
+    end
+end
+
 -- run one request synchronously by pumping the event loop until the callback fires.
 local function call(method, params)
     local done, gerr, gres = false, nil, nil
@@ -50,13 +86,7 @@ local function call(method, params)
 end
 
 describe("sidecar client", function()
-    if not has_binary() then
-        -- one-arg pending(name) is valid busted;
-        -- the type stub only declares pending(name, block)
-        ---@diagnostic disable-next-line: missing-parameter
-        pending("bin/differ-sidecar not built (run `make go-build`)")
-        return
-    end
+    assert(has_binary(), "bin/differ-sidecar not built (run `make go-build`)")
 
     after_each(function()
         sidecar.stop()
@@ -130,5 +160,37 @@ describe("sidecar client", function()
         -- get_pr without a number is validated server-side as bad_request.
         local err = call("get_pr", { owner = "o", repo = "r" })
         assert.are.equal("bad_request", err.code)
+    end)
+
+    it("rejects a request the sidecar never answers", function()
+        assert.is_nil(call("cache_clear", nil))
+        local pid = sidecar_pid()
+        assert.is_number(pid)
+
+        -- SIGSTOP leaves the process alive and connected but completing no read, which is
+        -- the handler-that-never-returns condition without a stub binary. the write still
+        -- lands: the pipe buffers it
+        assert.are.equal(0, vim.uv.kill(pid, "sigstop"))
+
+        -- the real ceiling is 60s, so the timer is clamped where it is made. the client is
+        -- ready by now, so the request arms its timer inside this call and the global is
+        -- put back before anything waits on it
+        local done, gerr = false, nil
+        local real_new_timer = vim.uv.new_timer
+        vim.uv.new_timer = clamped_timers(200, real_new_timer)
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        vim.uv.new_timer = real_new_timer
+
+        local fired = vim.wait(3000, function()
+            return done
+        end)
+        -- let it run again so the teardown can end it the way it always does
+        vim.uv.kill(pid, "sigcont")
+
+        assert.is_true(fired, "the pending request was never rejected")
+        assert.are.equal("network", gerr.code)
+        assert.are.equal("the sidecar did not answer in time", gerr.message)
     end)
 end)

@@ -24,6 +24,33 @@ jobs:
         with:
           fetch-depth: 0
 
+      # release.yml tags but cannot rewrite the changelog, since main takes no push, so a
+      # shipped release sits under [Unreleased] until someone renames it and the next entry
+      # files itself alongside. runs on every PR: an exempt one merging first would let a
+      # second release land and leave two releases' entries in one section
+      - name: Close off the last release
+        run: |
+          LATEST=$(git tag --sort=-v:refname | head -1)
+          [ -n "$LATEST" ] || exit 0
+
+          unreleased=$(git show HEAD:CHANGELOG.md |
+            awk '/^## \[Unreleased\]/ { inside = 1; next } /^## / { inside = 0 } inside' |
+            grep -v '^[[:space:]]*$' || true)
+          if [ -z "$unreleased" ]; then
+            echo "[Unreleased] is empty, nothing to close off"
+            exit 0
+          fi
+
+          NEWEST=$(git show HEAD:CHANGELOG.md |
+            grep -m1 -oE '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' | tr -d '#[] ')
+          if [ "$NEWEST" = "${LATEST#v}" ]; then
+            echo "CHANGELOG.md is closed off at $LATEST"
+            exit 0
+          fi
+
+          echo "::error::CHANGELOG.md: $LATEST is released but the newest heading is [$NEWEST]. Retitle '## [Unreleased]' as version ${LATEST#v}, dated $(git log -1 --format=%as "$LATEST"), and open an empty '## [Unreleased]' above it"
+          exit 1
+
       - name: Require an Unreleased entry
         env:
           TITLE: ${{ github.event.pull_request.title }}

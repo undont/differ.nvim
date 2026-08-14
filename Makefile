@@ -28,18 +28,27 @@ LUALS_VERSION := 3.18.2
 LUALS_DIR     := .tools/lua-language-server-$(LUALS_VERSION)
 LUALS_BIN     := $(LUALS_DIR)/bin/lua-language-server
 
-# pinned panvimdoc: doc/differ.txt is generated from README.md, so the vimdoc and
-# the readme can't drift. fetched into .tools rather than taken from PATH. pandoc is
-# pinned and version-checked too, since ci only verifies the committed file: a
-# different pandoc would fail that check with a diff you didn't write
+# fetched into .tools rather than taken from PATH so they can't drift
 PANVIMDOC_VERSION := v4.0.1
 PANVIMDOC_DIR     := .tools/panvimdoc-$(PANVIMDOC_VERSION:v%=%)
 PANVIMDOC_BIN     := $(PANVIMDOC_DIR)/panvimdoc.sh
 PANDOC_VERSION    := 3.10.1
 
+GOLANGCI_VERSION := 2.12.2
+GOLANGCI_DIR     := .tools/golangci-lint-$(GOLANGCI_VERSION)
+GOLANGCI_BIN     := $(GOLANGCI_DIR)/golangci-lint
+
+STYLUA_VERSION := 2.5.2
+STYLUA_DIR     := .tools/stylua-$(STYLUA_VERSION)
+STYLUA_BIN     := $(STYLUA_DIR)/stylua
+
+LUACHECK_VERSION := 1.2.0
+LUACHECK_DIR     := .tools/luacheck-$(LUACHECK_VERSION)
+LUACHECK_BIN     := $(LUACHECK_DIR)/bin/luacheck
+
 .PHONY: help \
-	lua-test lua-test-unit lua-test-nvim lua-lint lua-typecheck lua-fmt lua-fmt-check \
-	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check \
+	lua-test lua-test-unit lua-test-nvim lua-lint lua-luacheck lua-typecheck lua-fmt lua-fmt-check \
+	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check gql-validate \
 	test lint fmt fmt-check check clean \
 	vimdoc \
 	demo demo-fixtures
@@ -54,22 +63,26 @@ lua-test-unit: ## Run pure-Lua unit tests only (fast, no Neovim runtime)
 	@$(INFO) "Running unit tests"
 	@busted --run unit
 
-lua-test-nvim: ## Run headless-nvim tests (needs nlua on PATH)
+# go-build first: sidecar_spec drives the real binary, and skipped itself when it was absent
+lua-test-nvim: go-build ## Run headless-nvim tests (needs nlua on PATH)
 	@$(INFO) "Running headless-nvim tests"
 	@eval $$(luarocks --lua-version=5.1 path) && busted --lua=nlua --run nvim
 
-lua-lint: ## Luacheck + stylua --check on Lua sources
-	@$(INFO) "Linting Lua"
-	@luacheck lua
-	@stylua --check lua plugin test
-	@$(OK) "Lua lint clean"
+lua-lint: lua-luacheck lua-fmt-check ## Luacheck + stylua --check on Lua sources
 
-lua-fmt: ## Format Lua sources with stylua
-	@stylua lua plugin test
+lua-luacheck: $(LUACHECK_BIN) ## Luacheck over lua/
+	@$(INFO) "Linting Lua (luacheck $(LUACHECK_VERSION))"
+	@$(LUACHECK_BIN) lua
+	@$(OK) "Luacheck clean"
+
+lua-fmt: $(STYLUA_BIN) ## Format Lua sources with stylua
+	@$(STYLUA_BIN) lua plugin test
 	@$(OK) "Lua formatted"
 
-lua-fmt-check: ## Verify Lua formatting without writing
-	@stylua --check lua plugin test
+lua-fmt-check: $(STYLUA_BIN) ## Verify Lua formatting without writing
+	@$(INFO) "Checking Lua formatting (stylua $(STYLUA_VERSION))"
+	@$(STYLUA_BIN) --check lua plugin test
+	@$(OK) "Lua formatting clean"
 
 # checks lua/ only; test specs deliberately pass invalid inputs. lua_ls config
 # discovery is path-sensitive, so point at the repo-root .luarc.json explicitly
@@ -89,6 +102,29 @@ $(LUALS_BIN):
 	url="https://github.com/LuaLS/lua-language-server/releases/download/$(LUALS_VERSION)/lua-language-server-$(LUALS_VERSION)-$$os-$$arch.tar.gz"; \
 	curl -fsSL "$$url" | tar -xz -C $(LUALS_DIR) && $(OK) "Installed lua_ls $(LUALS_VERSION)"
 
+$(STYLUA_BIN):
+	@$(INFO) "Fetching stylua $(STYLUA_VERSION)"
+	@mkdir -p $(STYLUA_DIR)
+	@os=$$(uname -s | tr 'A-Z' 'a-z'); \
+	arch=$$(uname -m); \
+	case "$$os" in darwin) os=macos;; linux) ;; *) printf "$(RED)unsupported OS: $$os$(NC)\n"; exit 1;; esac; \
+	case "$$arch" in x86_64) arch=x86_64;; aarch64|arm64) arch=aarch64;; esac; \
+	url="https://github.com/JohnnyMorganz/StyLua/releases/download/v$(STYLUA_VERSION)/stylua-$$os-$$arch.zip"; \
+	tmp=$$(mktemp -d); \
+	curl -fsSL -o "$$tmp/stylua.zip" "$$url" && unzip -qj -d $(STYLUA_DIR) "$$tmp/stylua.zip"; \
+	rm -rf "$$tmp"; \
+	test -x $(STYLUA_BIN) || { printf "$(RED)stylua missing from the archive$(NC)\n"; exit 1; }
+	@$(OK) "Installed stylua $(STYLUA_VERSION)"
+
+# luacheck ships as a rock, so it pins into its own luarocks tree rather than an archive.
+# the interpreter is half the pin: 1.2.0 does not run on lua 5.5, and 5.1 is what the
+# rest of the suite uses
+$(LUACHECK_BIN):
+	@$(INFO) "Fetching luacheck $(LUACHECK_VERSION)"
+	@luarocks install --tree $(LUACHECK_DIR) --lua-version 5.1 luacheck $(LUACHECK_VERSION) >/dev/null
+	@test -x $(LUACHECK_BIN) || { printf "$(RED)luacheck missing from $(LUACHECK_DIR)$(NC)\n"; exit 1; }
+	@$(OK) "Installed luacheck $(LUACHECK_VERSION)"
+
 # ──────────────────────────────────────────────────────────────────────────────
 ##@ Go sidecar
 # ──────────────────────────────────────────────────────────────────────────────
@@ -104,16 +140,33 @@ demo-build: ## Type-check the demo fixture sidecar (.demo is invisible to ./...)
 	@go build -o /dev/null ./.demo/fake-sidecar
 	@$(OK) "Demo fixture sidecar builds"
 
-go-test: ## Run Go tests
-	@go test ./...
+go-test: ## Run Go tests with the race detector
+	@go test -race ./...
 
 go-vet: ## Run go vet over the module
 	@go vet ./...
 
-go-lint: ## Run golangci-lint over the module
-	@$(INFO) "Linting Go"
-	@golangci-lint run ./...
+# out of `check`: it needs network and an authenticated gh
+gql-validate: ## Post every graphql document to github's live schema
+	@$(INFO) "Validating GraphQL documents against the live schema"
+	@DIFFER_GRAPHQL_VALIDATE=1 go test -count=1 -run TestDocumentsValidateAgainstLiveSchema ./internal/github/
+
+go-lint: $(GOLANGCI_BIN) ## Run golangci-lint over the module
+	@$(INFO) "Linting Go (golangci-lint $(GOLANGCI_VERSION))"
+	@$(GOLANGCI_BIN) run ./...
 	@$(OK) "Go lint clean"
+
+$(GOLANGCI_BIN):
+	@$(INFO) "Fetching golangci-lint $(GOLANGCI_VERSION)"
+	@mkdir -p $(GOLANGCI_DIR)
+	@os=$$(uname -s | tr 'A-Z' 'a-z'); \
+	arch=$$(uname -m); \
+	case "$$arch" in x86_64) arch=amd64;; aarch64|arm64) arch=arm64;; esac; \
+	case "$$os" in darwin|linux) ;; *) printf "$(RED)unsupported OS: $$os$(NC)\n"; exit 1;; esac; \
+	url="https://github.com/golangci/golangci-lint/releases/download/v$(GOLANGCI_VERSION)/golangci-lint-$(GOLANGCI_VERSION)-$$os-$$arch.tar.gz"; \
+	curl -fsSL "$$url" | tar -xz --strip-components=1 -C $(GOLANGCI_DIR); \
+	test -x $(GOLANGCI_BIN) || { printf "$(RED)golangci-lint missing from the archive$(NC)\n"; exit 1; }
+	@$(OK) "Installed golangci-lint $(GOLANGCI_VERSION)"
 
 go-fmt: ## Format Go sources with gofmt
 	@gofmt -w cmd internal .demo
