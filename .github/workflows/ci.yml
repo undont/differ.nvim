@@ -48,6 +48,23 @@ jobs:
       - name: Build demo fixture sidecar
         run: make demo-build
 
+  gql-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # the only check that can see a query github would refuse: every other go test fakes
+      # at the RoundTripper boundary, where canned json answers one. GITHUB_TOKEN only has
+      # to authenticate, since no document gets past variable coercion
+      - name: Validate GraphQL documents
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: make gql-validate
+
   stylua:
     runs-on: ubuntu-latest
     steps:

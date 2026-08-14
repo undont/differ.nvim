@@ -48,7 +48,7 @@ LUACHECK_BIN     := $(LUACHECK_DIR)/bin/luacheck
 
 .PHONY: help \
 	lua-test lua-test-unit lua-test-nvim lua-lint lua-luacheck lua-typecheck lua-fmt lua-fmt-check \
-	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check \
+	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check gql-validate \
 	test lint fmt fmt-check check clean \
 	vimdoc \
 	demo demo-fixtures
@@ -145,6 +145,11 @@ go-test: ## Run Go tests with the race detector
 
 go-vet: ## Run go vet over the module
 	@go vet ./...
+
+# out of `check`: it needs network and an authenticated gh
+gql-validate: ## Post every graphql document to github's live schema
+	@$(INFO) "Validating GraphQL documents against the live schema"
+	@DIFFER_GRAPHQL_VALIDATE=1 go test -count=1 -run TestDocumentsValidateAgainstLiveSchema ./internal/github/
 
 go-lint: $(GOLANGCI_BIN) ## Run golangci-lint over the module
 	@$(INFO) "Linting Go (golangci-lint $(GOLANGCI_VERSION))"
