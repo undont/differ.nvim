@@ -4,20 +4,23 @@ import (
 	"context"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 // blobs are immutable per sha, so a second get_file_versions serves the file bytes
 // from cache; only the (uncached) ref lookup re-hits the network.
 func TestBlobCacheServesContents(t *testing.T) {
-	var refCalls, contentCalls int
+	// atomic: get_file_versions fetches base and head concurrently, so both blob
+	// requests land in this closure at once
+	var refCalls, contentCalls atomic.Int64
 	c := newClient(func(r *http.Request) (*http.Response, error) {
 		switch {
 		case strings.Contains(r.URL.Path, "/contents/"):
-			contentCalls++
+			contentCalls.Add(1)
 			return resp(200, "file body", nil), nil
 		case strings.HasSuffix(r.URL.Path, "/pulls/3"):
-			refCalls++
+			refCalls.Add(1)
 			return resp(200, `{"base":{"sha":"BASE"},"head":{"sha":"HEAD"}}`, nil), nil
 		}
 		t.Fatalf("unexpected path %s", r.URL.Path)
@@ -28,11 +31,11 @@ func TestBlobCacheServesContents(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if contentCalls != 2 {
-		t.Errorf("want 2 content fetches (base+head, once), got %d", contentCalls)
+	if contentCalls.Load() != 2 {
+		t.Errorf("want 2 content fetches (base+head, once), got %d", contentCalls.Load())
 	}
-	if refCalls != 2 {
-		t.Errorf("refs are not cached, want 2 lookups, got %d", refCalls)
+	if refCalls.Load() != 2 {
+		t.Errorf("refs are not cached, want 2 lookups, got %d", refCalls.Load())
 	}
 }
 
@@ -71,10 +74,10 @@ func TestThreadCacheAndInvalidation(t *testing.T) {
 }
 
 func TestClearCacheFlushesBlobs(t *testing.T) {
-	contentCalls := 0
+	var contentCalls atomic.Int64
 	c := newClient(func(r *http.Request) (*http.Response, error) {
 		if strings.Contains(r.URL.Path, "/contents/") {
-			contentCalls++
+			contentCalls.Add(1)
 			return resp(200, "body", nil), nil
 		}
 		return resp(200, `{"base":{"sha":"BASE"},"head":{"sha":"HEAD"}}`, nil), nil
@@ -87,8 +90,8 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 	if _, err := c.GetFileVersions(ctx, "o", "r", 3, "a.go", "", ""); err != nil {
 		t.Fatal(err)
 	}
-	if contentCalls != 4 {
-		t.Errorf("clear should force a refetch: want 4 content calls, got %d", contentCalls)
+	if contentCalls.Load() != 4 {
+		t.Errorf("clear should force a refetch: want 4 content calls, got %d", contentCalls.Load())
 	}
 }
 
