@@ -109,6 +109,11 @@ jobs:
           neovim: true
           version: ${{ matrix.neovim-version }}
 
+      # sidecar_spec drives the real binary, which `make lua-test-nvim` builds
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
       # lua 5.1 + luarocks so busted/nlua match the Makefile's headless suite
       - uses: leafo/gh-actions-lua@v13
         with:

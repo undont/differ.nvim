@@ -63,7 +63,8 @@ lua-test-unit: ## Run pure-Lua unit tests only (fast, no Neovim runtime)
 	@$(INFO) "Running unit tests"
 	@busted --run unit
 
-lua-test-nvim: ## Run headless-nvim tests (needs nlua on PATH)
+# go-build first: sidecar_spec drives the real binary, and skipped itself when it was absent
+lua-test-nvim: go-build ## Run headless-nvim tests (needs nlua on PATH)
 	@$(INFO) "Running headless-nvim tests"
 	@eval $$(luarocks --lua-version=5.1 path) && busted --lua=nlua --run nvim
 

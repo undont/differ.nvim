@@ -1,11 +1,12 @@
 -- runs under headless nvim: drives the real differ-sidecar binary (bin/) over the
--- live stdio protocol, so it doubles as the client + handshake smoke test. needs
--- the binary built (make go-build); skips with a clear message when it is absent.
+-- live stdio protocol, so it doubles as the client + handshake smoke test. `make
+-- lua-test-nvim` builds it first; a direct busted run without it fails on the spot
+-- rather than as a 5s timeout per test
 local sidecar = require("differ.sidecar")
 
 require("differ").setup({})
 
--- the binary the client would resolve, so the suite can skip cleanly when unbuilt.
+-- the binary the client would resolve
 local function has_binary()
     local root = vim.fn.getcwd()
     return vim.fn.executable(root .. "/bin/differ-sidecar") == 1
@@ -50,13 +51,7 @@ local function call(method, params)
 end
 
 describe("sidecar client", function()
-    if not has_binary() then
-        -- one-arg pending(name) is valid busted;
-        -- the type stub only declares pending(name, block)
-        ---@diagnostic disable-next-line: missing-parameter
-        pending("bin/differ-sidecar not built (run `make go-build`)")
-        return
-    end
+    assert(has_binary(), "bin/differ-sidecar not built (run `make go-build`)")
 
     after_each(function()
         sidecar.stop()
