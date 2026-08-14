@@ -104,8 +104,8 @@ demo-build: ## Type-check the demo fixture sidecar (.demo is invisible to ./...)
 	@go build -o /dev/null ./.demo/fake-sidecar
 	@$(OK) "Demo fixture sidecar builds"
 
-go-test: ## Run Go tests
-	@go test ./...
+go-test: ## Run Go tests with the race detector
+	@go test -race ./...
 
 go-vet: ## Run go vet over the module
 	@go vet ./...
