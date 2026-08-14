@@ -29,10 +29,15 @@ jobs:
       - name: Vet
         run: make go-vet
 
-      - name: Lint
-        uses: golangci/golangci-lint-action@v8
+      # the Makefile fetches a version-pinned golangci-lint into .tools, so ci and a
+      # local `make check` run the same binary; cache it on the Makefile that pins it
+      - uses: actions/cache@v4
         with:
-          version: latest
+          path: .tools/golangci-lint-*
+          key: golangci-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Lint
+        run: make go-lint
 
       - name: Test
         run: make go-test
@@ -48,28 +53,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: JohnnyMorganz/stylua-action@v4
+      - uses: actions/cache@v4
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          version: latest
-          args: --check lua plugin test
+          path: .tools/stylua-*
+          key: stylua-${{ runner.os }}-${{ hashFiles('Makefile') }}
+
+      - name: Format check
+        run: make lua-fmt-check
 
   luacheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - uses: lunarmodules/luacheck@v1
+      # luacheck is a rock and 1.2.0 refuses to load on lua 5.5, so the interpreter is
+      # half the pin: 5.1, the version both test suites already run on. the tree isn't
+      # cached, since the luarocks wrapper bakes in an interpreter path
+      - uses: leafo/gh-actions-lua@v13
         with:
-          args: lua
+          luaVersion: "5.1"
+
+      - uses: leafo/gh-actions-luarocks@v6
+
+      - name: Luacheck
+        run: make lua-luacheck
 
   lua-typecheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      # the Makefile fetches a version-pinned lua_ls into .tools; cache it on
-      # the pin (keying on the Makefile line that declares it)
+      # the Makefile fetches a version-pinned lua_ls into .tools; cache it on the
+      # Makefile that pins it
       - uses: actions/cache@v4
         with:
           path: .tools/lua-language-server-*

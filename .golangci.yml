@@ -1,0 +1,12 @@
+version: "2"
+
+# the v2 defaults, named rather than inherited. the file also anchors config resolution
+# here: golangci-lint otherwise walks up and adopts a parent directory's config
+linters:
+  default: none
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
