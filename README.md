@@ -15,7 +15,7 @@
 [![macOS](https://img.shields.io/badge/macOS-supported-6e7681?style=flat&logo=apple&logoColor=white)]()
 [![Linux](https://img.shields.io/badge/Linux-supported-6e7681?style=flat&logo=linux&logoColor=white)]()
 
-[Features](#features) · [Installation](#installation) · [Configuration](#configuration) · [Usage](#usage) · [Architecture](#architecture)
+[Features](#features) · [Installation](#installation) · [Configuration](#configuration) · [Usage](#usage)
 
 </div>
 
@@ -204,7 +204,7 @@ require("differ").setup({
 
 ## Usage
 
-`:Differ [revspec]` diffs the current file against a resolved source. The grammar mirrors git:
+`:Differ [revspec]` opens the file panel over the changed files for a resolved source, landing on the file you ran it from, or on the first file in the list when that file isn't one of them. The grammar mirrors git:
 
 | Command | Diffs |
 |---|---|
@@ -355,7 +355,7 @@ Code-comment threads render as a contained box (GitHub's outline, differ's left-
 
 #### Merge tool
 
-`:Differ mergetool [path]` opens it: with no argument it takes the current file when that's one of the conflicted ones, else the only conflicted file in the tree, else it offers a picker over them. Keys are bound on the result buffer.
+`:Differ mergetool [path]` opens it: with no argument it takes the current file when that's one of the conflicted ones, else the only conflicted file in the tree, else it offers a picker over them. A bare `:Differ` lands here too whenever the tree has conflicts, on the same target - mid-merge the thing you want is to resolve, not to diff. Only the no-argument form reroutes; `:Differ <rev>` still opens that diff. Keys are bound on the result buffer.
 
 | Key | Action |
 |---|---|
