@@ -40,6 +40,7 @@ type API interface {
 	SetFileViewed(ctx context.Context, owner, repo string, number int, path string, viewed bool) (*github.SetFileViewed, error)
 	MergePR(ctx context.Context, owner, repo string, number int, method string, deleteBranch bool, subject, body string) (*github.Merge, error)
 	SetPRState(ctx context.Context, owner, repo string, number int, state string) (*github.SetPRState, error)
+	TokenStatus() (status, message string)
 }
 
 // Deps are the handler dependencies, injected once at construction (no globals).

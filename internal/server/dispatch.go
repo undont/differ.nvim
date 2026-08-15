@@ -85,9 +85,9 @@ func (s *Server) run(ctx context.Context, req protocol.Request) (resp protocol.R
 // its code; anything else is internal (and the real error is logged, never
 // surfaced, so tokens can't leak).
 func toRPCError(err error) *protocol.RPCError {
-	var pe *protocol.Error
-	if errors.As(err, &pe) {
-		return &protocol.RPCError{Code: pe.Code, Message: pe.Message, RetryAfter: pe.RetryAfter}
+	var perr *protocol.Error
+	if errors.As(err, &perr) {
+		return &protocol.RPCError{Code: perr.Code, Message: perr.Message, RetryAfter: perr.RetryAfter}
 	}
 	return &protocol.RPCError{Code: protocol.CodeInternal, Message: "internal error"}
 }

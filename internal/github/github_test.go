@@ -77,11 +77,11 @@ func resp(status int, body string, headers map[string]string) *http.Response {
 
 func perrOf(t *testing.T, err error) *protocol.Error {
 	t.Helper()
-	var pe *protocol.Error
-	if !errors.As(err, &pe) {
+	var perr *protocol.Error
+	if !errors.As(err, &perr) {
 		t.Fatalf("want *protocol.Error, got %T: %v", err, err)
 	}
-	return pe
+	return perr
 }
 
 func codeOf(t *testing.T, err error) string {
@@ -311,12 +311,12 @@ func TestErrorMappingTable(t *testing.T) {
 			c := newClient(func(*http.Request) (*http.Response, error) {
 				return resp(tc.status, tc.body, tc.headers), nil
 			})
-			pe := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
-			if pe.Code != tc.want {
-				t.Fatalf("status %d → %q, want %q", tc.status, pe.Code, tc.want)
+			perr := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
+			if perr.Code != tc.want {
+				t.Fatalf("status %d → %q, want %q", tc.status, perr.Code, tc.want)
 			}
-			if pe.Message != tc.wantMsg {
-				t.Fatalf("status %d message = %q, want %q", tc.status, pe.Message, tc.wantMsg)
+			if perr.Message != tc.wantMsg {
+				t.Fatalf("status %d message = %q, want %q", tc.status, perr.Message, tc.wantMsg)
 			}
 		})
 	}
@@ -400,9 +400,9 @@ func TestRetryAfterPropagates(t *testing.T) {
 	c := newClient(func(*http.Request) (*http.Response, error) {
 		return resp(429, `{"message":"slow"}`, map[string]string{"Retry-After": "30"}), nil
 	})
-	pe := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
-	if pe.RetryAfter != 30 {
-		t.Fatalf("want retry_after=30, got %+v", pe)
+	perr := perrOf(t, c.getJSON(context.Background(), c.restURL+"/x", nil))
+	if perr.RetryAfter != 30 {
+		t.Fatalf("want retry_after=30, got %+v", perr)
 	}
 }
 
@@ -486,5 +486,40 @@ func TestNilLoggerDiscards(t *testing.T) {
 	})
 	if _, err := c.ListPRs(context.Background(), "o", "r", "open"); err != nil {
 		t.Fatalf("a nil logger must not panic: %v", err)
+	}
+}
+
+func TestTokenStatus(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		status  string
+		message string
+	}{
+		{"resolved", nil, "ok", ""},
+		{
+			"no gh binary",
+			protocol.NewError(protocol.CodeGHMissing, "the gh CLI is not installed"),
+			"gh_missing", "the gh CLI is not installed",
+		},
+		{
+			"gh present but not logged in",
+			protocol.NewError(protocol.CodeAuth, "run `gh auth login`"),
+			"auth", "run `gh auth login`",
+		},
+		// anything not already carrying a code must still land inside the closed set
+		{"unmapped", errors.New("something else"), "internal", "something else"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := New(nil, "super-secret-token", tc.err, nil)
+			status, message := c.TokenStatus()
+			if status != tc.status || message != tc.message {
+				t.Errorf("got %q/%q, want %q/%q", status, message, tc.status, tc.message)
+			}
+			if strings.Contains(status+message, "super-secret-token") {
+				t.Error("the token must never appear in the status")
+			}
+		})
 	}
 }
