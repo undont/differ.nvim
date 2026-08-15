@@ -55,7 +55,7 @@ local function check_config()
         return health.ok("no problems found in the options passed to setup()")
     end
     for _, diag in ipairs(diags) do
-        health.error(diag)
+        health.warn(diag)
     end
 end
 

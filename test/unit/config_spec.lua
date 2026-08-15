@@ -154,8 +154,8 @@ describe("config.closed", function()
     -- the defaults can't see one, since it only walks keys that are actually set
     it("names a real default for every closed set", function()
         for path, allowed in pairs(config.closed) do
-            local section, key = path:match("^(.-)%.(.+)$")
-            local default = section and config.defaults[section][key] or config.defaults[path]
+            local holder, key = config.locate(config.defaults, path)
+            local default = holder and holder[key]
             assert.is_not_nil(default, path .. " has no default")
             local found = false
             for _, ok in ipairs(allowed) do

@@ -340,6 +340,32 @@ function M.resolve_keymaps(user_km)
     return out
 end
 
+-- resolve a dotted `M.closed` path against `t`: the table holding the final key, and
+-- that key. a path with no dot is top level, so `t` holds it directly
+---@param t table
+---@param path string
+---@return table|nil holder, string key
+function M.locate(t, path)
+    local section, key = path:match("^(.-)%.(.+)$")
+    if not section then
+        return t, path
+    end
+    return type(t[section]) == "table" and t[section] or nil, key
+end
+
+-- put any out-of-set value back to its default. a value no branch matches is worse
+-- than the default: `panel.position = "middle"` opened the bottom split (the else
+-- arm) while rendering as a sidebar (the top/bottom test), so nothing downstream
+-- agreed on what it meant
+local function clamp_closed(cfg)
+    for path, allowed in pairs(M.closed) do
+        local holder, key = M.locate(cfg, path)
+        if holder and not vim.tbl_contains(allowed, holder[key]) then
+            holder[key] = (M.locate(M.defaults, path))[key]
+        end
+    end
+end
+
 -- merge user opts over defaults and return the resolved config. keymaps are resolved
 -- into per-surface tables separately (a plain deep-extend would index-merge the
 -- multi-lhs lists)
@@ -349,6 +375,7 @@ function M.resolve(user)
     user = user or {}
     local cfg = vim.tbl_deep_extend("force", M.defaults, user)
     cfg.keymaps = M.resolve_keymaps(user.keymaps)
+    clamp_closed(cfg)
     return cfg
 end
 

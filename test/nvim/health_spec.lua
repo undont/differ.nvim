@@ -101,13 +101,10 @@ describe("differ.health", function()
         require("differ").setup({ pannel = {}, panel = { position = "middle" } })
         local calls = capture()
 
-        -- error, not warn: a key that can never do what it says is wrong for everyone,
-        -- unlike a missing gh CLI, which is only wrong if you review PRs
-        assert.are.equal("error", find(calls, "configuration", 'unknown option "pannel"').kind)
-        assert.are.equal(
-            "error",
-            find(calls, "configuration", "panel.position must be one of").kind
-        )
+        -- warn, matching the notification setup() already fires: differ still runs, it
+        -- just runs on defaults where the config could not be honoured
+        assert.are.equal("warn", find(calls, "configuration", 'unknown option "pannel"').kind)
+        assert.are.equal("warn", find(calls, "configuration", "panel.position must be one of").kind)
     end)
 
     it("reports a sidecar that dies without abandoning the report", function()
