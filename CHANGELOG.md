@@ -8,8 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `:checkhealth differ` reports the Neovim floor, git, the options you passed to `setup()`, the sidecar binary and its handshake, and whether a GitHub token is available
-- `DIFFER_LOG_LEVEL=debug` traces the sidecar: a line per request, and a line per GitHub call carrying its status and the rate limit you have left
+- `:checkhealth differ` reports the Neovim floor, git, the options you passed to `setup()`, the sidecar binary and its handshake, whether a GitHub token is available, and anything the sidecar has logged
 
 ### Fixed
 

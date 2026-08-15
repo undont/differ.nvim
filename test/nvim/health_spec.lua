@@ -124,6 +124,26 @@ describe("differ.health", function()
         assert.are.equal(0, notified, "check() let a notification escape")
     end)
 
+    it("reports what a healthy, still-running sidecar has logged", function()
+        -- a recovered panic leaves the process up, so there is no exit to report and
+        -- the stack would otherwise be readable nowhere
+        require("differ").setup({
+            sidecar_bin = fake_sidecar({
+                'echo \'level=ERROR msg="handler panic" stack="goroutine 1"\' >&2',
+                "while IFS= read -r line; do",
+                '  id=$(printf %s "$line" | sed \'s/.*"id":\\([0-9]*\\).*/\\1/\')',
+                '  printf \'{"id":%s,"result":{"protocol":1,"binary":"fake"}}\\n\' "$id"',
+                "done",
+            }),
+        })
+        local calls = capture()
+
+        assert.is_truthy(find(calls, "sidecar", "handshake ok"))
+        local logged = find(calls, "sidecar", "handler panic")
+        assert.is_truthy(logged, "the running sidecar's output was not reported")
+        assert.are.equal("info", logged.kind)
+    end)
+
     it("warns rather than failing when no binary is resolvable", function()
         require("differ").setup({ sidecar_bin = "/nonexistent/differ-sidecar-xyz" })
         local calls = capture()

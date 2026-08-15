@@ -59,20 +59,25 @@ local function check_config()
     end
 end
 
--- reported even when the sidecar is healthy now; a crash-restart leaves no other trace
-local function check_last_exit(sidecar)
+-- whatever the sidecar has said, dead or alive. a crash-restart leaves no other trace,
+-- and neither does a recovered panic: dispatch logs the stack and keeps the process up,
+-- so the caller gets a bare "internal error" and this is where the stack surfaces
+local function check_sidecar_output(sidecar)
     local exit = sidecar.last_exit()
-    if not exit then
-        return
-    end
-    health.warn(
-        sidecar.with_tail(
-            ("the sidecar exited unexpectedly this session (code %d), last words:"):format(
-                exit.code
-            ),
-            exit.stderr
+    if exit then
+        health.warn(
+            sidecar.with_tail(
+                ("the sidecar exited unexpectedly this session (code %d), last words:"):format(
+                    exit.code
+                ),
+                exit.stderr
+            )
         )
-    )
+    end
+    local lines = sidecar.stderr_lines()
+    if #lines > 0 then
+        health.info(sidecar.with_tail("the running sidecar has logged:", lines))
+    end
 end
 
 -- returns the hello result so the auth section needs no second ping
@@ -113,12 +118,12 @@ local function check_sidecar(sidecar)
 
     if not pinged or not done then
         health.error(("no answer to a hello within %dms"):format(PING_TIMEOUT_MS))
-        check_last_exit(sidecar)
+        check_sidecar_output(sidecar)
         return nil
     end
     if gerr then
-        -- no check_last_exit: a death on the way up already folded its stderr in here,
-        -- and a handshake that failed any other way left no exit to report
+        -- no check_sidecar_output: a death on the way up already folded its stderr in
+        -- here, and a handshake that failed any other way left no exit to report
         health.error(gerr.message or gerr.code)
         return nil
     end
@@ -126,7 +131,7 @@ local function check_sidecar(sidecar)
     health.ok(
         ("handshake ok: protocol %d, binary %s"):format(ginfo.protocol or 0, ginfo.binary or "?")
     )
-    check_last_exit(sidecar)
+    check_sidecar_output(sidecar)
     return ginfo
 end
 

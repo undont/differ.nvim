@@ -257,21 +257,11 @@ closed set (`panel.position = "middle"`), is reported once at startup and again
 by `:checkhealth`. differ still starts, and the value it can’t honour falls
 back to its default.
 
-`DIFFER_LOG_LEVEL` sets how much the sidecar logs: `debug`, `info` (the
-default), `warn` or `error`. At `debug` it writes one line per request (method,
-duration, outcome) and one per GitHub call (status, duration, and the rate
-limit you have left), which is what to reach for when PR review is slow or
-returns less than you expect. The sidecar inherits the environment Neovim was
-started in, so `DIFFER_LOG_LEVEL=debug nvim` covers a session.
-
->
-    level=DEBUG msg=request method=get_pr id=4 ms=812 code=ok
-    level=DEBUG msg="github call" verb=POST url=https://api.github.com/graphql status=200 ms=790 ratelimit_remaining=4832
-<
-
-The sidecar logs to its stderr, which differ keeps rather than discards: the
-tail of it rides along with the error if the process dies, and `:checkhealth
-differ` shows it. Nothing there carries your token.
+The sidecar logs to its stderr, which differ keeps rather than lets through to
+your terminal, so `:checkhealth differ` is where it surfaces: what a process
+said before it died, and what a running one has said since. The tail also comes
+with the error when a request fails on a sidecar that has just died. Nothing
+there carries your token.
 
 
 KEYMAPS                                                 *differ-usage-keymaps*
