@@ -1,4 +1,4 @@
--- plugin options: defaults, user merge, and shallow validation
+-- plugin options: defaults, user merge, and validation
 
 ---@class differ.Config.Panel
 ---@field position "bottom"|"top"|"left"|"right"
@@ -42,6 +42,15 @@ local M = {}
 -- own `keymaps.<surface>` override subtable
 local SURFACES = { "diff", "panel", "history", "merge" }
 local SURFACE_SET = { diff = true, panel = true, history = true, merge = true }
+
+-- the closed value sets the options below draw from. named once and shared, so a
+-- set used by two options (position) has one definition; `M.closed` maps each
+-- option to its set
+local POSITION = { "bottom", "top", "left", "right" }
+local LISTING = { "tree", "name" }
+local LAYOUT = { "stacked", "split" }
+local PANES = { "default", "diff4" }
+local GRAIN = { "word", "char" }
 
 ---@type differ.Config
 M.defaults = {
@@ -172,6 +181,129 @@ M.defaults = {
     -- uppercase letter (a vim user-command rule); registered by setup()
     command_alias = nil,
 }
+
+-- option path -> the set it must fall in. a value outside its set merges cleanly
+-- and then silently does nothing, which is what makes these worth checking by name
+---@type table<string, string[]>
+M.closed = {
+    ["layout"] = LAYOUT,
+    ["panel.position"] = POSITION,
+    ["panel.listing"] = LISTING,
+    ["history.position"] = POSITION,
+    ["merge.layout"] = PANES,
+    ["deep_diff.granularity"] = GRAIN,
+}
+
+-- options that default to nil, so the defaults table carries no key for them and
+-- the unknown-key walk can't see them. keep in step with the nil entries above
+local NILABLE = { base = true, sidecar_bin = true, command_alias = true }
+
+local function show(value)
+    if type(value) == "string" then
+        return '"' .. value .. '"'
+    end
+    return tostring(value)
+end
+
+local function check_enum(path, value, diags)
+    local allowed = M.closed[path]
+    if not allowed or value == nil then
+        return
+    end
+    for _, ok in ipairs(allowed) do
+        if value == ok then
+            return
+        end
+    end
+    local quoted = {}
+    for i, ok in ipairs(allowed) do
+        quoted[i] = '"' .. ok .. '"'
+    end
+    diags[#diags + 1] = ("%s must be one of %s (got %s)"):format(
+        path,
+        table.concat(quoted, ", "),
+        show(value)
+    )
+end
+
+-- one level down into a known table option: unknown sub-keys and their enums.
+-- every nested default is non-nil, so absence from the default is a real typo
+local function check_section(key, value, diags)
+    local default = M.defaults[key]
+    if type(default) ~= "table" then
+        return
+    end
+    if type(value) ~= "table" then
+        diags[#diags + 1] = ("%s must be a table (got %s)"):format(key, type(value))
+        return
+    end
+    for sub, sub_value in pairs(value) do
+        local path = key .. "." .. sub
+        if default[sub] == nil then
+            diags[#diags + 1] = ('unknown option "%s"'):format(path)
+        else
+            check_enum(path, sub_value, diags)
+        end
+    end
+end
+
+-- keymaps is flat action -> lhs plus the per-surface subtables, so it doesn't
+-- follow the nested-table shape the other sections do
+local function check_keymaps(value, diags)
+    if type(value) ~= "table" then
+        diags[#diags + 1] = ("keymaps must be a table (got %s)"):format(type(value))
+        return
+    end
+    for action, lhs in pairs(value) do
+        if SURFACE_SET[action] then
+            if type(lhs) ~= "table" then
+                diags[#diags + 1] = ("keymaps.%s must be a table of actions (got %s)"):format(
+                    action,
+                    type(lhs)
+                )
+            else
+                for sub in pairs(lhs) do
+                    if M.defaults.keymaps[sub] == nil then
+                        diags[#diags + 1] = ('unknown keymap action "keymaps.%s.%s"'):format(
+                            action,
+                            sub
+                        )
+                    end
+                end
+            end
+        elseif M.defaults.keymaps[action] == nil then
+            diags[#diags + 1] = ('unknown keymap action "keymaps.%s"'):format(action)
+        end
+    end
+end
+
+-- check user opts against the defaults: unknown keys at the top level and one level
+-- into each known table, plus the closed value sets. warnings only, and side-effect
+-- free so setup() and :checkhealth can both render the same list. pure (no vim), like
+-- resolve_keymaps, so it stays in the busted suite
+---@param user table|nil
+---@return string[]
+function M.validate(user)
+    if user == nil then
+        return {}
+    end
+    if type(user) ~= "table" then
+        return { ("setup() expects a table of options (got %s)"):format(type(user)) }
+    end
+    local diags = {}
+    for key, value in pairs(user) do
+        if key == "keymaps" then
+            check_keymaps(value, diags)
+        elseif M.defaults[key] == nil and not NILABLE[key] then
+            diags[#diags + 1] = ('unknown option "%s"'):format(key)
+        else
+            check_enum(key, value, diags)
+            check_section(key, value, diags)
+        end
+    end
+    table.sort(diags) -- pairs order is arbitrary; a stable list keeps the notice readable
+    return diags
+end
 
 -- resolve the keymaps config into per-surface action tables. the shared (top-level)
 -- defaults take any top-level user override, then each surface layers its own

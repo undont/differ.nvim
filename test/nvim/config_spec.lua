@@ -31,3 +31,44 @@ describe("config.resolve merge", function()
         assert.are.equal("right", cfg.panel.position)
     end)
 end)
+
+describe("setup config warnings", function()
+    local saved
+
+    -- setup() also runs the highlight registration, which warns about
+    -- termguicolors under headless nvim; only the config notice is ours
+    local function config_notifs()
+        local out = {}
+        for _, n in ipairs(_G.notifs) do
+            if (n.msg or ""):find("config warnings", 1, true) then
+                out[#out + 1] = n
+            end
+        end
+        return out
+    end
+
+    before_each(function()
+        saved = require("differ").config
+        _G.notifs = {}
+    end)
+
+    after_each(function()
+        require("differ").config = saved
+    end)
+
+    it("warns once, listing every diagnostic, and still applies the valid keys", function()
+        require("differ").setup({ pannel = {}, panel = { position = "middle" } })
+        local warnings = config_notifs()
+        assert.are.equal(1, #warnings)
+        assert.are.equal(vim.log.levels.WARN, warnings[1].level)
+        assert.is_truthy(warnings[1].msg:find('unknown option "pannel"', 1, true))
+        assert.is_truthy(warnings[1].msg:find("panel.position must be one of", 1, true))
+        -- warn-only: the bad value still merges, exactly as it did before
+        assert.are.equal("middle", require("differ").get_config().panel.position)
+    end)
+
+    it("stays quiet on a valid config", function()
+        require("differ").setup({ panel = { position = "left" } })
+        assert.are.equal(0, #config_notifs())
+    end)
+end)
