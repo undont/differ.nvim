@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"time"
 
 	"github.com/undont/differ.nvim/internal/protocol"
 )
@@ -22,11 +23,21 @@ const maxResponse = 32 * 1024 * 1024 // bound a single response body
 // returned even on a mapped error, for callers that special-case a status; its body
 // is spent, so only headers and the status line are readable from it
 func (c *Client) send(req *http.Request) (*http.Response, []byte, error) {
+	start := time.Now()
 	resp, err := c.http.Do(req)
 	if err != nil {
+		// URL.Redacted, not URL.String: the only secret a URL can carry is userinfo,
+		// and the token itself rides in a header that is never logged
+		c.log.Debug("github call failed", "verb", req.Method, "url", req.URL.Redacted(),
+			"ms", time.Since(start).Milliseconds(), "err", err)
 		return nil, nil, protocol.NewError(protocol.CodeNetwork, "network error: "+err.Error())
 	}
 	defer func() { _ = resp.Body.Close() }()
+	// the single choke point for REST and GraphQL alike, so this one line accounts
+	// for every call the sidecar makes, and for the budget it spends doing it
+	c.log.Debug("github call", "verb", req.Method, "url", req.URL.Redacted(),
+		"status", resp.StatusCode, "ms", time.Since(start).Milliseconds(),
+		"ratelimit_remaining", resp.Header.Get("X-RateLimit-Remaining"))
 
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	// the status outranks a truncated read: a 403 that also failed to read is still a

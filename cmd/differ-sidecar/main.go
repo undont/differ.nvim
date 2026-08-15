@@ -5,7 +5,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"os/signal"
 	"syscall"
@@ -20,7 +19,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	log := logx.New(slog.LevelInfo)
+	raw := os.Getenv(logx.LevelEnv)
+	level, known := logx.ParseLevel(raw)
+	log := logx.New(level)
+	if !known {
+		log.Warn("unrecognised log level, using info", "var", logx.LevelEnv, "value", raw)
+	}
 
 	// token resolution failure is non-fatal: the handshake still works and the
 	// error is handed to the client so only PR methods surface gh_missing/auth.
@@ -28,7 +32,7 @@ func main() {
 	if tokenErr != nil {
 		log.Warn("github auth not ready", "err", tokenErr)
 	}
-	gh := github.New(nil, token, tokenErr)
+	gh := github.New(nil, token, tokenErr, log)
 
 	reg := handlers.NewRegistry(handlers.Deps{GH: gh, Log: log})
 	srv := server.New(reg, log)

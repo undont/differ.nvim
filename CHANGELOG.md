@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `:checkhealth differ` reports the Neovim floor, git, the options you passed to `setup()`, the sidecar binary and its handshake, whether a GitHub token is available, and anything the sidecar has logged
+
+### Fixed
+
+- A sidecar that crashed reported only an exit code, discarding the Go logs and panic stack. Its last output now comes with the error, and `:checkhealth differ` keeps it
+- An option that didn't name a real key, or carried a value outside a closed set like `panel.position = "middle"`, was accepted in silence. Those are now reported, and the value falls back to its default correctly
+
 ## [0.1.30] — 2026-08-12
 
 ### Added

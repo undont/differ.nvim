@@ -194,3 +194,121 @@ describe("sidecar client", function()
         assert.are.equal("the sidecar did not answer in time", gerr.message)
     end)
 end)
+
+describe("sidecar stderr", function()
+    local saved_config
+
+    -- a stand-in binary: the real one is quiet at the default log level, so the only
+    -- way to assert on stderr deterministically is to control what gets written
+    local function fake_sidecar(lines)
+        local path = vim.fn.tempname()
+        vim.fn.writefile(vim.list_extend({ "#!/bin/sh" }, lines), path)
+        vim.fn.setfperm(path, "rwxr-xr-x")
+        require("differ").setup({ sidecar_bin = path })
+        return path
+    end
+
+    before_each(function()
+        saved_config = require("differ").config
+    end)
+
+    after_each(function()
+        sidecar.stop()
+        require("differ").config = saved_config
+        vim.wait(100)
+    end)
+
+    it("carries the dying process's stderr into the exit error", function()
+        -- answers the handshake, then dies on the next request with an in-flight
+        -- caller waiting: the fail_pending path
+        fake_sidecar({
+            "while IFS= read -r line; do",
+            '  case "$line" in',
+            '    *hello*) printf \'{"id":1,"result":{"protocol":1,"binary":"fake"}}\\n\' ;;',
+            '    *) echo \'level=ERROR msg="handler panic" stack="goroutine 1"\' >&2; exit 3 ;;',
+            "  esac",
+            "done",
+        })
+
+        local done, gerr = false, nil
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        assert.is_true(
+            vim.wait(5000, function()
+                return done
+            end),
+            "the in-flight request was never failed"
+        )
+        assert.are.equal("internal", gerr.code)
+        assert.is_truthy(gerr.message:find("sidecar exited (code 3)", 1, true))
+        assert.is_truthy(gerr.message:find("handler panic", 1, true))
+        assert.is_truthy(gerr.message:find("goroutine 1", 1, true))
+    end)
+
+    it("explains why a binary that never comes up failed", function()
+        fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
+
+        local done, gerr = false, nil
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        assert.is_true(
+            vim.wait(5000, function()
+                return done
+            end),
+            "the queued request was never failed"
+        )
+        -- dying before hello fails the handshake, which stops the client outright:
+        -- the restart/give-up path is never reached, so this is the caller's only error
+        assert.are.equal("internal", gerr.code)
+        assert.is_truthy(gerr.message:find("handshake failed", 1, true))
+        assert.is_truthy(gerr.message:find("sidecar exited (code 1)", 1, true))
+        assert.is_truthy(gerr.message:find("fatal: cannot start", 1, true))
+    end)
+
+    it("cuts an oversized tail from the far end, keeping what was said last", function()
+        -- slog puts a whole panic stack on one line, so one line can outrun the cap
+        fake_sidecar({
+            'i=0; while [ $i -lt 400 ]; do echo "filler line $i" >&2; i=$((i+1)); done',
+            "echo 'level=ERROR msg=\"the last thing it said\"' >&2",
+            "exit 2",
+        })
+
+        local done, gerr = false, nil
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        assert.is_true(vim.wait(5000, function()
+            return done
+        end))
+
+        -- 400 filler lines against the 200-line cap, then ~2000 bytes of that against
+        -- the byte cap: the newest survive both, the oldest survive neither
+        assert.is_truthy(gerr.message:find("the last thing it said", 1, true))
+        assert.is_truthy(gerr.message:find("filler line 399", 1, true))
+        assert.is_nil(gerr.message:find("filler line 100", 1, true))
+        assert.is_true(#gerr.message < 2500, "tail was not capped: " .. #gerr.message)
+
+        -- the stored log keeps more than any one message shows, for :checkhealth
+        assert.are.equal(200, #sidecar.last_exit().stderr)
+    end)
+
+    it("keeps the last crash reachable after the client is gone", function()
+        fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
+
+        local done = false
+        sidecar.request("cache_clear", nil, function()
+            done = true
+        end)
+        assert.is_true(vim.wait(5000, function()
+            return done
+        end))
+
+        sidecar.stop() -- the client and its log are gone; the crash record is not
+        local exit = sidecar.last_exit()
+        assert.are.equal(1, exit.code)
+        assert.are.same({ "fatal: cannot start" }, exit.stderr)
+        assert.are.same({}, sidecar.stderr_lines())
+    end)
+end)

@@ -7,6 +7,12 @@ local M = {}
 ---@type differ.Config|nil
 M.config = nil
 
+-- the options setup() was handed, kept unresolved so :checkhealth can re-run
+-- validation against what was actually written rather than the merged result, where
+-- an unknown key is indistinguishable from a deliberate one
+---@type table|nil
+M.user_opts = nil
+
 -- register each `command_alias` as an ex-command routing to the `:Differ` dispatcher.
 -- a bad name (e.g. not starting uppercase) warns rather than aborting setup()
 ---@param alias string|string[]|nil
@@ -31,9 +37,21 @@ local function register_aliases(alias)
     end
 end
 
+-- warn on anything config.validate flagged. one notification for the lot: a typo'd
+-- table tends to produce several, and one line each buries the rest of the notify log
+---@param diags string[]
+local function warn_config(diags)
+    if #diags == 0 then
+        return
+    end
+    vim.notify("differ: config warnings:\n  " .. table.concat(diags, "\n  "), vim.log.levels.WARN)
+end
+
 -- resolve options and register highlight groups; call once from user config
 ---@param opts table|nil
 function M.setup(opts)
+    warn_config(config.validate(opts))
+    M.user_opts = opts
     M.config = config.resolve(opts)
     require("differ.ui.highlights").setup()
     register_aliases(M.config.command_alias)

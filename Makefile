@@ -33,6 +33,8 @@ PANVIMDOC_VERSION := v4.0.1
 PANVIMDOC_DIR     := .tools/panvimdoc-$(PANVIMDOC_VERSION:v%=%)
 PANVIMDOC_BIN     := $(PANVIMDOC_DIR)/panvimdoc.sh
 PANDOC_VERSION    := 3.10.1
+PANDOC_DIR        := .tools/pandoc-$(PANDOC_VERSION)
+PANDOC_BIN        := $(PANDOC_DIR)/bin/pandoc
 
 GOLANGCI_VERSION := 2.12.2
 GOLANGCI_DIR     := .tools/golangci-lint-$(GOLANGCI_VERSION)
@@ -183,22 +185,16 @@ go-fmt-check: ## Verify Go formatting without writing
 ##@ Docs
 # ──────────────────────────────────────────────────────────────────────────────
 
-vimdoc: $(PANVIMDOC_BIN) ## Regenerate doc/differ.txt from README.md (needs pandoc)
-	@have=$$(pandoc --version 2>/dev/null | head -1 | awk '{print $$2}'); \
-	if [ -z "$$have" ]; then \
-		printf "$(RED)pandoc not found on PATH$(NC) (brew install pandoc)\n"; \
-		exit 1; \
-	elif [ "$$have" != "$(PANDOC_VERSION)" ]; then \
-		printf "$(RED)pandoc $$have, need $(PANDOC_VERSION)$(NC) (output differs between versions)\n"; \
-		exit 1; \
-	fi
+vimdoc: $(PANVIMDOC_BIN) $(PANDOC_BIN) ## Regenerate doc/differ.txt from README.md
 	@$(INFO) "Generating doc/differ.txt (panvimdoc $(PANVIMDOC_VERSION), pandoc $(PANDOC_VERSION))"
 	@# LC_ALL=C keeps the nbsp pandoc puts after "e.g." intact: the writer wraps with
 	@# lua patterns, and %s is locale-dependent, so bsd libc in a utf-8 locale counts
 	@# 0xa0 as space and splits it into u+fffd. --description replaces the header's
 	@# daily "Last change" stamp, and GITHUB_ACTIONS is cleared because panvimdoc.sh
-	@# hardcodes /scripts when it's set, over --scripts-dir. output prints on failure
-	@out=$$(LC_ALL=C GITHUB_ACTIONS=false bash $(PANVIMDOC_BIN) \
+	@# hardcodes /scripts when it's set, over --scripts-dir. output prints on failure.
+	@# panvimdoc.sh calls `pandoc` by name, so the pinned one leads on PATH: pandoc's
+	@# output differs between releases, and a brew upgrade would otherwise decide it
+	@out=$$(PATH="$(CURDIR)/$(PANDOC_DIR)/bin:$$PATH" LC_ALL=C GITHUB_ACTIONS=false bash $(PANVIMDOC_BIN) \
 		--scripts-dir "$(PANVIMDOC_DIR)/scripts" \
 		--project-name differ \
 		--input-file README.md \
@@ -222,6 +218,32 @@ $(PANVIMDOC_BIN):
 	@mkdir -p .tools
 	@curl -fsSL "https://github.com/kdheepak/panvimdoc/archive/refs/tags/$(PANVIMDOC_VERSION).tar.gz" \
 		| tar -xz -C .tools && $(OK) "Installed panvimdoc $(PANVIMDOC_VERSION)"
+
+# pandoc ships a zip on macos and a tarball on linux, and spells the architecture
+# differently in each, so this can't follow stylua's one-liner shape
+$(PANDOC_BIN):
+	@$(INFO) "Fetching pandoc $(PANDOC_VERSION)"
+	@mkdir -p .tools
+	@os=$$(uname -s | tr 'A-Z' 'a-z'); \
+	arch=$$(uname -m); \
+	tmp=$$(mktemp -d); \
+	base="https://github.com/jgm/pandoc/releases/download/$(PANDOC_VERSION)"; \
+	case "$$os" in \
+		darwin) \
+			case "$$arch" in aarch64|arm64) arch=arm64;; *) arch=x86_64;; esac; \
+			curl -fsSL -o "$$tmp/p.zip" "$$base/pandoc-$(PANDOC_VERSION)-$$arch-macOS.zip" \
+				&& unzip -q -d "$$tmp" "$$tmp/p.zip";; \
+		linux) \
+			case "$$arch" in aarch64|arm64) arch=arm64;; *) arch=amd64;; esac; \
+			curl -fsSL "$$base/pandoc-$(PANDOC_VERSION)-linux-$$arch.tar.gz" \
+				| tar -xz -C "$$tmp";; \
+		*) printf "$(RED)unsupported OS: $$os$(NC)\n"; exit 1;; \
+	esac; \
+	src=$$(find "$$tmp" -type f -name pandoc -perm -u+x | head -1); \
+	test -n "$$src" || { printf "$(RED)pandoc missing from the archive$(NC)\n"; rm -rf "$$tmp"; exit 1; }; \
+	mkdir -p $(PANDOC_DIR)/bin && cp "$$src" $(PANDOC_BIN); \
+	rm -rf "$$tmp"
+	@$(OK) "Installed pandoc $(PANDOC_VERSION)"
 
 # ──────────────────────────────────────────────────────────────────────────────
 ##@ Aggregate

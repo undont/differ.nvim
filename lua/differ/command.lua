@@ -270,7 +270,14 @@ function M.sidecar(arg)
     end
     sidecar.ping(function(err, info)
         if err then
-            return notify("sidecar: " .. (err.message or err.code), vim.log.levels.ERROR)
+            -- a spawn/handshake failure already carries the binary's own stderr; a
+            -- protocol-level one doesn't, so fall back to whatever it last said
+            local msg = "sidecar: " .. (err.message or err.code)
+            local exit = sidecar.last_exit()
+            if not msg:find("\n", 1, true) and exit then
+                msg = sidecar.with_tail(msg, exit.stderr)
+            end
+            return notify(msg, vim.log.levels.ERROR)
         end
         notify(
             ("sidecar ok — binary %s, protocol %d"):format(info.binary or "?", info.protocol or 0)

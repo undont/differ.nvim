@@ -28,6 +28,12 @@ The Lua type-check runs a version-pinned lua-language-server, downloaded into gi
 
 Modules under `test/unit` must not touch any Neovim or `vim` API, at load or in the functions they test — that's what keeps them fast and dependency-free. Neovim-only behaviour (windows, extmarks, treesitter) belongs in `test/nvim` instead.
 
+## Debugging the sidecar
+
+`DIFFER_LOG_LEVEL` sets the sidecar's log level: `debug`, `info` (the default), `warn` or `error`. At `debug` it writes a line per request (method, duration, outcome) and a line per GitHub call (status, duration, remaining rate limit). The level is read when the process starts and the sidecar inherits Neovim's environment, so `DIFFER_LOG_LEVEL=debug nvim` covers a session; to turn it on without restarting, set `vim.env.DIFFER_LOG_LEVEL` then `:Differ sidecar stop`.
+
+Its stderr is piped to the client, never to your terminal. `:checkhealth differ` shows the tail — of a process that died, and of one still running — and the tail also comes with the error when a request fails on a sidecar that has just died. The client keeps the last 200 lines per process, so a long `debug` trace loses its beginning; nothing writes it to disk. Tokens are never logged, by contract in `logx`'s package doc and asserted in the `github` tests.
+
 ## Docs
 
 `doc/differ.txt` is generated from `README.md`, so a change to the readme has to carry the regenerated vimdoc with it:

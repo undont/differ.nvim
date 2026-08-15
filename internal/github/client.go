@@ -5,6 +5,7 @@
 package github
 
 import (
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -21,6 +22,7 @@ type Client struct {
 	http     *http.Client
 	token    string
 	tokenErr error // resolution failure (gh_missing/auth), surfaced on authed calls
+	log      *slog.Logger
 	restURL  string
 	gqlURL   string
 
@@ -34,11 +36,15 @@ type Client struct {
 // timeout. token is the resolved GitHub token (see ResolveToken); tokenErr is the
 // resolution failure, if any, returned to the caller on the first authed request
 // so the precise gh_missing/auth code reaches the client instead of a bare 401.
-func New(hc *http.Client, token string, tokenErr error) *Client {
+// log receives one debug line per GitHub call; nil discards them.
+func New(hc *http.Client, token string, tokenErr error, log *slog.Logger) *Client {
 	if hc == nil {
 		hc = &http.Client{Timeout: 30 * time.Second}
 	}
-	return &Client{http: hc, token: token, tokenErr: tokenErr, restURL: defaultREST, gqlURL: defaultGQL, cache: newCache()}
+	if log == nil {
+		log = slog.New(slog.DiscardHandler)
+	}
+	return &Client{http: hc, token: token, tokenErr: tokenErr, log: log, restURL: defaultREST, gqlURL: defaultGQL, cache: newCache()}
 }
 
 // ClearCache flushes the blob and thread caches; the cache_clear method, surfaced as

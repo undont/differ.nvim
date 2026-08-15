@@ -309,3 +309,6 @@ func (f *fixture) MergePR(_ context.Context, _, _ string, _ int, _ string, _ boo
 func (f *fixture) SetPRState(_ context.Context, _, _ string, _ int, state string) (*github.SetPRState, error) {
 	return &github.SetPRState{State: state}, nil
 }
+
+// the demo never touches github, so auth is always ready as far as it is concerned
+func (f *fixture) TokenStatus() (string, string) { return "ok", "" }

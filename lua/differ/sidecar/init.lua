@@ -14,6 +14,15 @@ local MAX_ATTEMPTS = 5
 -- that paginates (or never returns) outlives it; generous enough for a large PR's file
 -- walk, since firing early would fail a request that was going to succeed
 local REQUEST_TIMEOUT_MS = 60000
+-- the binary's structured logs land on stderr, kept per process and capped so a chatty
+-- log level can't grow without limit across a session measured in days. without them
+-- the only account of a crash is an exit code
+local STDERR_MAX = 200
+-- how much of that log gets folded onto an error, in bytes rather than lines: slog
+-- renders a multi-line value (the panic stack dispatch logs) as one long quoted line,
+-- which costs the same screen height once wrapped as the same bytes spread over many
+-- lines, so counting lines would bound the wrong thing
+local STDERR_BYTES = 2000
 
 local M = {}
 
@@ -27,14 +36,22 @@ local M = {}
 ---@field pending table<integer, { cb: fun(err: table|nil, result: any), timer: any }>
 ---@field queue { method: string, params: any, cb: fun(err: table|nil, result: any) }[]
 ---@field stdout_buf string
+---@field stderr_buf string    -- unterminated tail of the stderr stream
+---@field stderr_log string[]  -- the last STDERR_MAX lines this process wrote
 ---@field attempts integer     -- consecutive restart attempts (backoff)
 ---@field binary string|nil    -- version reported by hello
 
 ---@type differ.sidecar.Client|nil
 local client = nil
 
+-- the last unintentional death, kept at module scope so it outlives the client the
+-- crash took with it: after the restart budget runs out there is no client left to
+-- ask, and that is exactly when someone goes looking
+---@type { code: integer, stderr: string[] }|nil
+local last_exit = nil
+
 -- forward declarations (mutual recursion across start/exit/restart)
-local start, on_stdout, on_exit, handshake, schedule_restart, flush_queue, do_request
+local start, on_stdout, on_stderr, on_exit, handshake, schedule_restart, flush_queue, do_request
 
 local function mkerr(code, message)
     return { code = code, message = message }
@@ -50,9 +67,60 @@ local function new_client()
         pending = {},
         queue = {},
         stdout_buf = "",
+        stderr_buf = "",
+        stderr_log = {},
         attempts = 0,
         binary = nil,
     }
+end
+
+-- append, dropping the oldest once at the cap. a shift per line past the cap, which at
+-- a couple of lines per user action does not earn a cleverer structure
+local function push_line(lines, line)
+    lines[#lines + 1] = line
+    if #lines > STDERR_MAX then
+        table.remove(lines, 1)
+    end
+end
+
+-- fold the sidecar's own last words onto an error. the Go logs are the only account of
+-- why it died, so an error that omits them leaves an exit code and nothing else.
+local function with_tail(msg, lines)
+    if not lines or #lines == 0 then
+        return msg
+    end
+    local out, size = {}, 0
+    for i = #lines, 1, -1 do
+        local line = lines[i]
+        if size + #line > STDERR_BYTES then
+            if #out == 0 then
+                -- one line can outrun the whole budget on its own (a stack is one
+                -- line); keep its head, where go puts the innermost frames
+                out[1] = line:sub(1, STDERR_BYTES) .. " …"
+            end
+            break
+        end
+        size = size + #line + 1
+        table.insert(out, 1, line)
+    end
+    return msg .. "\n" .. table.concat(out, "\n")
+end
+
+-- split `buf` on newlines, handing each complete line to `fn`; returns the
+-- unterminated remainder for the next chunk. both streams arrive in arbitrary
+-- chunks, so neither can assume a chunk boundary is a line boundary
+local function consume_lines(buf, fn)
+    while true do
+        local nl = buf:find("\n", 1, true)
+        if not nl then
+            return buf
+        end
+        local line = buf:sub(1, nl - 1)
+        buf = buf:sub(nl + 1)
+        if line ~= "" then
+            fn(line)
+        end
+    end
 end
 
 -- this file is lua/differ/sidecar/init.lua, so the plugin root is three dirs up.
@@ -174,14 +242,16 @@ function handshake()
             return -- this client was stopped/replaced; its handshake result is moot
         end
         if err then
+            -- a binary that dies before answering hello lands here, not in the restart
+            -- path, so this is the only error its callers ever see. `err` is the exit
+            -- error and carries the process's stderr; passing it on is what makes the
+            -- difference between "handshake failed" and the reason it failed
+            local why = "handshake failed: " .. (err.message or err.code)
             vim.schedule(function()
-                vim.notify(
-                    "differ: sidecar handshake failed: " .. (err.message or err.code),
-                    vim.log.levels.ERROR
-                )
+                vim.notify("differ: sidecar " .. why, vim.log.levels.ERROR)
             end)
             client.stopping = true
-            fail_all(mkerr("internal", "handshake failed"))
+            fail_all(mkerr("internal", why))
             return
         end
         if type(result) ~= "table" or result.protocol ~= PROTOCOL then
@@ -192,7 +262,13 @@ function handshake()
                 )
             end)
             client.stopping = true
-            fail_all(mkerr("internal", "protocol mismatch"))
+            -- the caller gets the same instruction the notification carries
+            fail_all(
+                mkerr(
+                    "internal",
+                    "protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)"
+                )
+            )
             return
         end
         client.ready = true
@@ -203,42 +279,48 @@ function handshake()
     send({ id = id, method = "hello", params = { client = "differ.nvim", protocol = PROTOCOL } })
 end
 
+-- an id-less frame is a v1 no-op (the seam for phase-6 server→client
+-- notifications); only a response matching a pending id is dispatched.
+local function dispatch_line(line)
+    local ok, msg = pcall(vim.json.decode, line)
+    if not (ok and type(msg) == "table" and msg.id ~= nil and client.pending[msg.id]) then
+        return
+    end
+    local cb = take(msg.id)
+    local e, result
+    if msg.error then
+        e = {
+            code = msg.error.code or "internal",
+            message = msg.error.message,
+            retry_after = msg.error.retry_after,
+        }
+    else
+        result = msg.result
+    end
+    vim.schedule(function()
+        cb(e, result)
+    end)
+end
+
 -- libuv fast context: accumulate stdout and dispatch each complete line. only
 -- vim.json.decode / vim.schedule are touched here (both fast-context safe).
 function on_stdout(err, data)
     if err or not data or not client then
         return
     end
-    client.stdout_buf = client.stdout_buf .. data
-    while true do
-        local nl = client.stdout_buf:find("\n", 1, true)
-        if not nl then
-            break
-        end
-        local line = client.stdout_buf:sub(1, nl - 1)
-        client.stdout_buf = client.stdout_buf:sub(nl + 1)
-        -- an id-less frame is a v1 no-op (the seam for phase-6 server→client
-        -- notifications); only a response matching a pending id is dispatched.
-        if line ~= "" then
-            local ok, msg = pcall(vim.json.decode, line)
-            if ok and type(msg) == "table" and msg.id ~= nil and client.pending[msg.id] then
-                local cb = take(msg.id)
-                local e, result
-                if msg.error then
-                    e = {
-                        code = msg.error.code or "internal",
-                        message = msg.error.message,
-                        retry_after = msg.error.retry_after,
-                    }
-                else
-                    result = msg.result
-                end
-                vim.schedule(function()
-                    cb(e, result)
-                end)
-            end
-        end
+    client.stdout_buf = consume_lines(client.stdout_buf .. data, dispatch_line)
+end
+
+-- libuv fast context, as on_stdout: string and table work only. a nil `data` is
+-- EOF, which leaves any unterminated tail for on_exit to flush
+function on_stderr(err, data)
+    if err or not data or not client then
+        return
     end
+    local log = client.stderr_log
+    client.stderr_buf = consume_lines(client.stderr_buf .. data, function(line)
+        push_line(log, line)
+    end)
 end
 
 function on_exit(obj)
@@ -248,7 +330,15 @@ function on_exit(obj)
     client.running = false
     client.ready = false
     client.proc = nil
-    fail_pending(mkerr("internal", "sidecar exited (code " .. tostring(obj.code) .. ")"))
+    if client.stderr_buf ~= "" then
+        push_line(client.stderr_log, client.stderr_buf) -- a last line with no newline
+        client.stderr_buf = ""
+    end
+    local lines = client.stderr_log
+    last_exit = { code = obj.code, stderr = lines }
+    fail_pending(
+        mkerr("internal", with_tail("sidecar exited (code " .. tostring(obj.code) .. ")", lines))
+    )
     if client.stopping then
         client.stopping = false
         return
@@ -263,7 +353,12 @@ function schedule_restart()
         vim.schedule(function()
             vim.notify("differ: sidecar keeps crashing; giving up", vim.log.levels.ERROR)
         end)
-        fail_all(mkerr("internal", "sidecar unavailable"))
+        -- the tail matters most here: a request made before the handshake sits in the
+        -- queue, so the per-exit failure above never reaches it and this is the only
+        -- error a caller sees on a binary that never comes up
+        fail_all(
+            mkerr("internal", with_tail("sidecar unavailable", last_exit and last_exit.stderr))
+        )
         return
     end
     local delay = math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ^ (client.attempts - 1))
@@ -289,6 +384,8 @@ function start()
         return false, "sidecar binary not found (run `make go-build`, or set sidecar_bin)"
     end
     client.stdout_buf = ""
+    client.stderr_buf = ""
+    client.stderr_log = {} -- per process: the previous one's lines live on in last_exit
     client.ready = false
     -- every callback below belongs to the client that spawned this process. a stop (or
     -- a crash-restart) can leave an older process still dying while a newer one runs, and
@@ -305,7 +402,7 @@ function start()
     local ok, proc = pcall(vim.system, { bin }, {
         stdin = true,
         stdout = owned(on_stdout),
-        stderr = function() end, -- structured logs on the binary's stderr; the client ignores them
+        stderr = owned(on_stderr),
     }, owned(on_exit))
     if not ok then
         return false, tostring(proc)
@@ -342,9 +439,17 @@ function M.request(method, params, cb)
     end
 end
 
--- prove the round trip without touching GitHub: an explicit hello, returning
--- { protocol, binary }. drives the :Differ sidecar smoke check.
----@param cb fun(err: table|nil, info: table|nil)
+-- the handshake result. auth and auth_message are absent from a sidecar built before
+-- they were added, which reads as unknown rather than as "no token"
+---@class differ.sidecar.Hello
+---@field protocol integer
+---@field binary string
+---@field auth string|nil          -- "ok" | "gh_missing" | "auth"
+---@field auth_message string|nil  -- what to do about a non-ok auth
+
+-- prove the round trip without touching GitHub: an explicit hello. drives the
+-- :Differ sidecar smoke check and the :checkhealth sidecar section.
+---@param cb fun(err: table|nil, info: differ.sidecar.Hello|nil)
 function M.ping(cb)
     M.request("hello", { client = "differ.nvim", protocol = PROTOCOL }, cb)
 end
@@ -384,6 +489,40 @@ end
 -- whether the handshake has completed and requests flow without queueing.
 function M.is_ready()
     return client ~= nil and client.ready
+end
+
+-- the binary a request would spawn, by the same resolution order, or nil when not
+-- reachable. used by :checkhealth, to report the path
+---@return string|nil
+function M.binary_path()
+    return resolve_bin()
+end
+
+-- what the running sidecar has said, oldest first, back to the cap. empty
+-- when nothing is running or the binary has been quiet, which at the default log
+-- level it is. callers cut it to their own length with `with_tail`
+---@return string[]
+function M.stderr_lines()
+    if not client then
+        return {}
+    end
+    return vim.list_slice(client.stderr_log, 1)
+end
+
+-- the last crash: its exit code and the stderr it left behind. nil when nothing has
+-- died unexpectedly this session (an intentional stop is not recorded)
+---@return { code: integer, stderr: string[] }|nil
+function M.last_exit()
+    return last_exit
+end
+
+-- append a capped tail of `lines` to `msg`, as the client's own errors do. exported so
+-- callers surfacing a stored crash cut it to the same length rather than their own
+---@param msg string
+---@param lines string[]|nil
+---@return string
+function M.with_tail(msg, lines)
+    return with_tail(msg, lines)
 end
 
 return M

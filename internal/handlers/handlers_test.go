@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/undont/differ.nvim/internal/github"
@@ -37,6 +38,8 @@ type mockAPI struct {
 	headSHA      string // the head HeadSHA returns (for the TOCTOU guard)
 	headErr      error
 	headCalled   bool
+	tokenStatus  string // what hello reports about auth
+	tokenMessage string
 }
 
 func (m *mockAPI) ListPRs(_ context.Context, _, _, filter string) ([]github.PR, error) {
@@ -157,22 +160,24 @@ func (m *mockAPI) SetPRState(_ context.Context, _, _ string, number int, state s
 
 func (m *mockAPI) ClearCache() { m.cleared = true }
 
+func (m *mockAPI) TokenStatus() (string, string) { return m.tokenStatus, m.tokenMessage }
+
 func deps(m *mockAPI) Deps {
 	return Deps{GH: m, Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func wantBadRequest(t *testing.T, err error) {
 	t.Helper()
-	var pe *protocol.Error
-	if !errors.As(err, &pe) || pe.Code != protocol.CodeBadRequest {
+	var perr *protocol.Error
+	if !errors.As(err, &perr) || perr.Code != protocol.CodeBadRequest {
 		t.Fatalf("want bad_request, got %v", err)
 	}
 }
 
 func wantConflict(t *testing.T, err error) {
 	t.Helper()
-	var pe *protocol.Error
-	if !errors.As(err, &pe) || pe.Code != protocol.CodeConflict {
+	var perr *protocol.Error
+	if !errors.As(err, &perr) || perr.Code != protocol.CodeConflict {
 		t.Fatalf("want conflict, got %v", err)
 	}
 }
@@ -430,8 +435,8 @@ func TestPostCommentPropagatesHeadError(t *testing.T) {
 	_, err := deps(m).postComment(context.Background(), json.RawMessage(
 		fmt.Sprintf(postCommentBody, `,"expected_head":"abc123"`),
 	))
-	var pe *protocol.Error
-	if !errors.As(err, &pe) || pe.Code != protocol.CodeNetwork {
+	var perr *protocol.Error
+	if !errors.As(err, &perr) || perr.Code != protocol.CodeNetwork {
 		t.Fatalf("want network error, got %v", err)
 	}
 	if m.gotComment.Body != "" {
@@ -618,5 +623,40 @@ func TestPostCommentValidation(t *testing.T) {
 				t.Error("GH must not be called on invalid input")
 			}
 		})
+	}
+}
+
+func TestHelloReportsAuthStatus(t *testing.T) {
+	m := &mockAPI{tokenStatus: "gh_missing", tokenMessage: "the gh CLI is not installed"}
+	res, err := deps(m).hello(context.Background(), json.RawMessage(`{"protocol":1}`))
+	if err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	got, ok := res.(helloResult)
+	if !ok {
+		t.Fatalf("want helloResult, got %T", res)
+	}
+	if got.Auth != "gh_missing" || got.AuthMessage != "the gh CLI is not installed" {
+		t.Errorf("auth not reported: %+v", got)
+	}
+	if got.Protocol != protocol.Version {
+		t.Errorf("want protocol %d, got %d", protocol.Version, got.Protocol)
+	}
+}
+
+func TestHelloWithoutGitHubOmitsAuth(t *testing.T) {
+	// the handshake must survive a registry built without a github surface, and say
+	// nothing about auth rather than guessing at it
+	d := Deps{Log: slog.New(slog.NewTextHandler(io.Discard, nil))}
+	res, err := d.hello(context.Background(), json.RawMessage(`{"protocol":1}`))
+	if err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	line, err := json.Marshal(res)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(line), "auth") {
+		t.Errorf("auth should be omitted entirely, got %s", line)
 	}
 }

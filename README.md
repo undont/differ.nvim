@@ -58,6 +58,8 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - For PR review: Go + make on `PATH`, and `gh` authenticated
 - Local diffs need none of the above beyond git
 
+`:checkhealth differ` reports which of these are satisfied.
+
 ---
 
 <!-- panvimdoc-ignore-start -->
@@ -247,6 +249,14 @@ Set `command_alias` in `setup()` to register a shorter name for the same command
 `:Differ sidecar` is the diagnostic to reach for when PR review doesn't work. It tells a sidecar that was never built (`make go-build`) apart from a protocol mismatch or a `gh` auth failure, and it's the only thing that reports which binary is actually running.
 
 `:Differ cache clear` is worth knowing about because the sidecar memoises review threads for the life of the process and flushes them only on your own mutations, so a colleague's comment posted while you have the PR open won't show up until you clear it. File blobs are keyed by commit sha and can't go stale, so clearing those only costs a refetch.
+
+### Diagnostics
+
+`:checkhealth differ` is the first thing to run when something doesn't work. It reports the Neovim floor and `termguicolors`, git, the options you passed to `setup()`, the resolved sidecar binary and whether it completes a handshake, and whether a GitHub token is available. A sidecar that died during the session is reported there too, with the last thing it wrote.
+
+An option that doesn't name a real key, or that carries a value outside a closed set (`panel.position = "middle"`), is reported once at startup and again by `:checkhealth`. differ still starts, and the value it can't honour falls back to its default.
+
+The sidecar logs to its stderr, which differ keeps rather than lets through to your terminal, so `:checkhealth differ` is where it surfaces: what a process said before it died, and what a running one has said since. The tail also comes with the error when a request fails on a sidecar that has just died. Nothing there carries your token.
 
 ### Keymaps
 
