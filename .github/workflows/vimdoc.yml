@@ -5,10 +5,10 @@ name: Vimdoc
 # pushed here with GITHUB_TOKEN triggers no workflows, which leaves every required
 # check parked at action_required on the new head and the pr unmergeable.
 #
-# `make vimdoc` pins panvimdoc, pandoc and the locale, and the header carries no
-# datestamp, so the output is reproducible and a plain diff is a fair check. the
-# pandoc version below is duplicated from the Makefile on purpose; `make vimdoc`
-# fails loudly when the two disagree.
+# `make vimdoc` fetches its own pinned panvimdoc and pandoc into .tools and pins the
+# locale, and the header carries no datestamp, so the output is reproducible and a
+# plain diff is a fair check. nothing here installs pandoc: the version lives in the
+# Makefile alone, and this runs the same binary a contributor does.
 
 on:
   pull_request:
@@ -27,9 +27,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: r-lib/actions/setup-pandoc@v2
+      - name: Cache pinned tools
+        uses: actions/cache@v4
         with:
-          pandoc-version: "3.10.1"
+          path: .tools
+          key: vimdoc-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
 
       - name: Regenerate doc/differ.txt
         run: make vimdoc
