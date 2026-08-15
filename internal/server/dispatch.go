@@ -5,9 +5,19 @@ import (
 	"errors"
 	"runtime/debug"
 	"sync"
+	"time"
 
 	"github.com/undont/differ.nvim/internal/protocol"
 )
+
+// outcome names how a request ended, for the debug trace: the error's closed-set
+// code, or "ok".
+func outcome(resp protocol.Response) string {
+	if resp.Error != nil {
+		return resp.Error.Code
+	}
+	return "ok"
+}
 
 // dispatch routes one request. hello is handled inline (no goroutine) so the
 // hello-first gate has no race; every other method runs in its own goroutine and
@@ -37,6 +47,14 @@ func (s *Server) dispatch(ctx context.Context, req protocol.Request, inflight *s
 // handler can never crash the process or corrupt the stream.
 func (s *Server) run(ctx context.Context, req protocol.Request) (resp protocol.Response) {
 	resp.ID = req.ID
+	// registered first, so it runs last and sees whatever the recover below settled
+	// on. one line per request is the spine of a debug trace: what was asked, how
+	// long it took, and what came back
+	start := time.Now()
+	defer func() {
+		s.log.Debug("request", "method", req.Method, "id", req.ID,
+			"ms", time.Since(start).Milliseconds(), "code", outcome(resp))
+	}()
 	defer func() {
 		if r := recover(); r != nil {
 			s.log.Error("handler panic", "method", req.Method, "panic", r, "stack", string(debug.Stack()))

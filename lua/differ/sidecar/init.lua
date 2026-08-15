@@ -14,11 +14,11 @@ local MAX_ATTEMPTS = 5
 -- that paginates (or never returns) outlives it; generous enough for a large PR's file
 -- walk, since firing early would fail a request that was going to succeed
 local REQUEST_TIMEOUT_MS = 60000
--- the binary's structured logs land on stderr, kept in a bounded ring per process so a
--- chatty log level can't grow without limit. without them the only account of a crash
--- is an exit code
-local STDERR_RING = 200
--- how much of that ring gets folded onto an error, in bytes rather than lines: slog
+-- the binary's structured logs land on stderr, kept per process and capped so a chatty
+-- log level can't grow without limit across a session measured in days. without them
+-- the only account of a crash is an exit code
+local STDERR_MAX = 200
+-- how much of that log gets folded onto an error, in bytes rather than lines: slog
 -- renders a multi-line value (the panic stack dispatch logs) as one long quoted line,
 -- which costs the same screen height once wrapped as the same bytes spread over many
 -- lines, so counting lines would bound the wrong thing
@@ -37,7 +37,7 @@ local M = {}
 ---@field queue { method: string, params: any, cb: fun(err: table|nil, result: any) }[]
 ---@field stdout_buf string
 ---@field stderr_buf string    -- unterminated tail of the stderr stream
----@field stderr_ring table    -- bounded line ring, { n = <total pushed>, [1..STDERR_RING] }
+---@field stderr_log string[]  -- the last STDERR_MAX lines this process wrote
 ---@field attempts integer     -- consecutive restart attempts (backoff)
 ---@field binary string|nil    -- version reported by hello
 
@@ -68,25 +68,19 @@ local function new_client()
         queue = {},
         stdout_buf = "",
         stderr_buf = "",
-        stderr_ring = { n = 0 },
+        stderr_log = {},
         attempts = 0,
         binary = nil,
     }
 end
 
-local function ring_push(ring, line)
-    ring.n = ring.n + 1
-    ring[(ring.n - 1) % STDERR_RING + 1] = line
-end
-
--- the ring's contents in write order, oldest first
-local function ring_lines(ring)
-    local out = {}
-    local total = math.min(ring.n, STDERR_RING)
-    for k = ring.n - total + 1, ring.n do
-        out[#out + 1] = ring[(k - 1) % STDERR_RING + 1]
+-- append, dropping the oldest once at the cap. a shift per line past the cap, which at
+-- a couple of lines per user action does not earn a cleverer structure
+local function push_line(lines, line)
+    lines[#lines + 1] = line
+    if #lines > STDERR_MAX then
+        table.remove(lines, 1)
     end
-    return out
 end
 
 -- fold the sidecar's own last words onto an error. the Go logs are the only account of
@@ -323,9 +317,9 @@ function on_stderr(err, data)
     if err or not data or not client then
         return
     end
-    local ring = client.stderr_ring
+    local log = client.stderr_log
     client.stderr_buf = consume_lines(client.stderr_buf .. data, function(line)
-        ring_push(ring, line)
+        push_line(log, line)
     end)
 end
 
@@ -337,10 +331,10 @@ function on_exit(obj)
     client.ready = false
     client.proc = nil
     if client.stderr_buf ~= "" then
-        ring_push(client.stderr_ring, client.stderr_buf) -- a last line with no newline
+        push_line(client.stderr_log, client.stderr_buf) -- a last line with no newline
         client.stderr_buf = ""
     end
-    local lines = ring_lines(client.stderr_ring)
+    local lines = client.stderr_log
     last_exit = { code = obj.code, stderr = lines }
     fail_pending(
         mkerr("internal", with_tail("sidecar exited (code " .. tostring(obj.code) .. ")", lines))
@@ -391,7 +385,7 @@ function start()
     end
     client.stdout_buf = ""
     client.stderr_buf = ""
-    client.stderr_ring = { n = 0 } -- per process: the previous one's logs live on in last_exit
+    client.stderr_log = {} -- per process: the previous one's lines live on in last_exit
     client.ready = false
     -- every callback below belongs to the client that spawned this process. a stop (or
     -- a crash-restart) can leave an older process still dying while a newer one runs, and
@@ -489,7 +483,7 @@ function M.is_ready()
     return client ~= nil and client.ready
 end
 
--- what the running sidecar has said, oldest first, back to the ring's limit. empty
+-- what the running sidecar has said, oldest first, back to the cap. empty
 -- when nothing is running or the binary has been quiet, which at the default log
 -- level it is. callers cut it to their own length with `with_tail`
 ---@return string[]
@@ -497,7 +491,7 @@ function M.stderr_lines()
     if not client then
         return {}
     end
-    return ring_lines(client.stderr_ring)
+    return vim.list_slice(client.stderr_log, 1)
 end
 
 -- the last crash: its exit code and the stderr it left behind. nil when nothing has

@@ -283,14 +283,14 @@ describe("sidecar stderr", function()
             return done
         end))
 
-        -- 400 filler lines against a 200-line ring, then ~2000 bytes of that against
+        -- 400 filler lines against the 200-line cap, then ~2000 bytes of that against
         -- the byte cap: the newest survive both, the oldest survive neither
         assert.is_truthy(gerr.message:find("the last thing it said", 1, true))
         assert.is_truthy(gerr.message:find("filler line 399", 1, true))
         assert.is_nil(gerr.message:find("filler line 100", 1, true))
         assert.is_true(#gerr.message < 2500, "tail was not capped: " .. #gerr.message)
 
-        -- the ring itself keeps more than any one message shows, for :checkhealth
+        -- the stored log keeps more than any one message shows, for :checkhealth
         assert.are.equal(200, #sidecar.last_exit().stderr)
     end)
 
@@ -305,7 +305,7 @@ describe("sidecar stderr", function()
             return done
         end))
 
-        sidecar.stop() -- the client and its ring are gone; the crash record is not
+        sidecar.stop() -- the client and its log are gone; the crash record is not
         local exit = sidecar.last_exit()
         assert.are.equal(1, exit.code)
         assert.are.same({ "fatal: cannot start" }, exit.stderr)

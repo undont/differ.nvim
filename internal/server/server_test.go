@@ -1,6 +1,7 @@
 package server
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"io"
@@ -209,4 +210,46 @@ func (b *lockedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+// captureLog returns a debug-level logger writing into buf.
+func captureLog(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewTextHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+func runWith(t *testing.T, log *slog.Logger, reg handlers.Registry, lines ...string) {
+	t.Helper()
+	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
+	var out strings.Builder
+	if err := New(reg, log).Run(context.Background(), in, &out); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestDebugTracesEveryRequest(t *testing.T) {
+	var buf bytes.Buffer
+	reg := handlers.NewRegistry(handlers.Deps{Log: captureLog(&buf)})
+	reg["boom"] = func(context.Context, json.RawMessage) (any, error) { panic("kaboom") }
+	runWith(t, captureLog(&buf), reg, helloLine, `{"id":3,"method":"boom","params":{}}`)
+
+	got := buf.String()
+	if !strings.Contains(got, "msg=request method=hello id=1") {
+		t.Errorf("hello was not traced:\n%s", got)
+	}
+	// the trace line is registered before the recover, so it runs after it and
+	// reports the code the caller actually received rather than "ok"
+	if !strings.Contains(got, "msg=request method=boom id=3") || !strings.Contains(got, "code=internal") {
+		t.Errorf("the panicking request was not traced with its outcome:\n%s", got)
+	}
+}
+
+func TestDefaultLevelTracesNothing(t *testing.T) {
+	var buf bytes.Buffer
+	log := slog.New(slog.NewTextHandler(&buf, nil)) // no level set: info
+	reg := handlers.NewRegistry(handlers.Deps{Log: log})
+	runWith(t, log, reg, helloLine)
+
+	if strings.Contains(buf.String(), "msg=request") {
+		t.Errorf("info level should not trace requests:\n%s", buf.String())
+	}
 }
