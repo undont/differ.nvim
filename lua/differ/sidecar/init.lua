@@ -439,9 +439,17 @@ function M.request(method, params, cb)
     end
 end
 
--- prove the round trip without touching GitHub: an explicit hello, returning
--- { protocol, binary }. drives the :Differ sidecar smoke check.
----@param cb fun(err: table|nil, info: table|nil)
+-- the handshake result. auth and auth_message are absent from a sidecar built before
+-- they were added, which reads as unknown rather than as "no token"
+---@class differ.sidecar.Hello
+---@field protocol integer
+---@field binary string
+---@field auth string|nil          -- "ok" | "gh_missing" | "auth"
+---@field auth_message string|nil  -- what to do about a non-ok auth
+
+-- prove the round trip without touching GitHub: an explicit hello. drives the
+-- :Differ sidecar smoke check and the :checkhealth sidecar section.
+---@param cb fun(err: table|nil, info: differ.sidecar.Hello|nil)
 function M.ping(cb)
     M.request("hello", { client = "differ.nvim", protocol = PROTOCOL }, cb)
 end
@@ -481,6 +489,13 @@ end
 -- whether the handshake has completed and requests flow without queueing.
 function M.is_ready()
     return client ~= nil and client.ready
+end
+
+-- the binary a request would spawn, by the same resolution order, or nil when not
+-- reachable. used by :checkhealth, to report the path
+---@return string|nil
+function M.binary_path()
+    return resolve_bin()
 end
 
 -- what the running sidecar has said, oldest first, back to the cap. empty
