@@ -62,10 +62,11 @@ function M.render(model, opts)
         }
     end
 
-    -- a binary file isn't diffed (it would blow up the word pass); show a placeholder
-    -- on both sides so the columns stay row-aligned
-    if model.binary then
-        push_row(BINARY_NOTICE, { kind = "meta" }, BINARY_NOTICE, { kind = "meta" })
+    -- a binary file isn't diffed (it would blow up the word pass), and a zero-hunk
+    -- entry has no lines to show; both notices go on both sides, keeping the rows aligned
+    local notice = model.binary and BINARY_NOTICE or model.notice
+    if notice then
+        push_row(notice, { kind = "meta" }, notice, { kind = "meta" })
         return result()
     end
 

@@ -109,6 +109,14 @@ function M.diff_args(source)
     return { o.rev, n.rev }
 end
 
+-- the old/new file modes off a `git diff --raw` run, whose first line is
+-- ":<oldmode> <newmode> <oldsha> <newsha> <status>\t<path>"
+---@param out string
+---@return string|nil old_mode, string|nil new_mode
+function M.parse_raw_modes(out)
+    return out:match("^:(%d+) (%d+) ")
+end
+
 -- split a NUL-delimited byte string into fields. pure (avoids vim.split's vim dep)
 -- and trailing-NUL tolerant, matching git's `-z` framing
 ---@param s string

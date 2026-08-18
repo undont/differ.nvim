@@ -236,3 +236,36 @@ describe("render.split identical content", function()
         assert.are.equal(0, r.new_map:len())
     end)
 end)
+
+describe("render.split notice", function()
+    -- a zero-hunk entry renders its notice on both sides, like a binary file does
+    local model = {
+        path = "x",
+        old_rev = "A",
+        new_rev = "B",
+        old_text = "a\n",
+        new_text = "a\n",
+        hunks = {},
+        notice = "Mode changed 100644 → 100755",
+    }
+
+    it("renders the notice as a meta row on both sides", function()
+        local r = render(model, { context = FULL })
+        assert.are.same({ "Mode changed 100644 → 100755" }, r.old_lines)
+        assert.are.same({ "Mode changed 100644 → 100755" }, r.new_lines)
+        assert.are.same({ "meta" }, kinds(r.old_map))
+        assert.are.same({ "meta" }, kinds(r.new_map))
+    end)
+
+    it("leaves a zero-hunk model with no notice empty", function()
+        local r = render({
+            path = "x",
+            old_rev = "A",
+            new_rev = "B",
+            old_text = "a\n",
+            new_text = "a\n",
+            hunks = {},
+        }, { context = FULL })
+        assert.are.same({}, r.old_lines)
+    end)
+end)

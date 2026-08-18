@@ -737,6 +737,58 @@ local function live_status(root, entry)
     return nil
 end
 
+-- the path's `diff --raw` line under `args`'s pair, or nil when the pair no longer
+-- lists it at all
+---@param root string
+---@param args string[]
+---@param path string
+---@return string|nil
+local function raw_line(root, args, path)
+    local full = { "diff", "--raw" }
+    vim.list_extend(full, args)
+    vim.list_extend(full, { "--", path })
+    local out = git(full, root)
+    if not out or chomp(out) == "" then
+        return nil
+    end
+    return out
+end
+
+-- the notice a zero-hunk entry opens on, or nil when it's stale (committed, staged
+-- away or reverted outside differ) and the caller should re-source instead. staleness
+-- is "the listing no longer carries it": `diff` for a tracked path, status for an
+-- untracked one, which `diff` never reports. an eol change can't be stale, since the
+-- sides still differ
+---@param root string
+---@param entry differ.FileEntry
+---@param model differ.DiffModel
+---@param args string[]  -- names the entry's pair for `diff --raw`
+---@return string|nil
+local function empty_notice(root, entry, model, args)
+    local reason = require("differ.model.diff").empty_reason(model)
+    if reason == "eol_added" then
+        return "Final newline added"
+    elseif reason == "eol_removed" then
+        return "Final newline removed"
+    end
+    local empty_or_not = reason == "empty" and "Empty file" or "No content change"
+    if entry.status == "?" then
+        return live_status(root, entry) == entry.status and empty_or_not or nil
+    end
+    local out = raw_line(root, args, entry.path)
+    if not out then
+        return nil
+    end
+    if (entry.status == "R" or entry.status == "C") and entry.previous_path then
+        return ("Renamed from %s, content unchanged"):format(entry.previous_path)
+    end
+    local old_mode, new_mode = rev.parse_raw_modes(out)
+    if old_mode and new_mode and old_mode ~= new_mode then
+        return ("Mode changed %s → %s"):format(old_mode, new_mode)
+    end
+    return empty_or_not
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
 -- destructive, so the panel confirms before calling this. confirm() drains scheduled
@@ -933,7 +985,7 @@ function M.panel(opts)
     -- the entry's staged flag (staged = HEAD↔index, else index↔worktree), while a
     -- rev-pair list diffs every entry against the one resolved source. `actions`
     -- (file-level staging) is only meaningful for the worktree-status source
-    local sections, model_for, actions
+    local sections, model_for, raw_args_for, actions
     if is_worktree_status(source) then
         sections = M.status_sections(root)
         model_for = function(entry)
@@ -942,6 +994,11 @@ function M.panel(opts)
             -- re-read HEAD per build so a branch switch under an open panel updates
             -- the synthetic buffer's statusline label, not just the diff content
             return M.model(s, root, entry, head_branch(root))
+        end
+        -- the entry's own pair as `diff` args: staged is HEAD↔index, unstaged
+        -- index↔worktree
+        raw_args_for = function(entry)
+            return entry.staged and { "--cached" } or {}
         end
         actions = {
             stage = function(entry)
@@ -967,6 +1024,9 @@ function M.panel(opts)
         sections = { { title = "Changes", entries = M.file_entries(source, root) } }
         model_for = function(entry)
             return M.model(source, root, entry, branch)
+        end
+        raw_args_for = function()
+            return rev.diff_args(source)
         end
     end
 
@@ -1172,16 +1232,14 @@ function M.panel(opts)
     local function show_entry(entry, focus_line, focus_col)
         local model = model_for(entry)
         if #model.hunks == 0 and not model.binary then
-            -- a pure rename or copy has identical content on both sides, so it diffs
-            -- to zero hunks but is still a real change worth opening (the file just
-            -- moved). a binary file also has no hunks but renders a placeholder, so it
-            -- opens too. any other zero-hunk entry is stale: committed, staged away, or
-            -- reverted outside differ
-            local is_move = (entry.status == "R" or entry.status == "C")
-                and entry.previous_path ~= nil
-            if not is_move then
+            -- a real change with no lines to show (a mode change, a rename, a final
+            -- newline, an empty new file) opens on a notice, like a binary file does;
+            -- a stale entry has no notice and tells the caller to re-source
+            local notice = empty_notice(root, entry, model, raw_args_for(entry))
+            if not notice then
                 return false
             end
+            model.notice = notice
         end
         local staging = stage_for(entry)
         if view and view:is_open() then

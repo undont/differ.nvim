@@ -3425,3 +3425,71 @@ describe("git session teardown after :q on the diff", function()
         assert.are.equal(aus_before, viewclose_autocmds())
     end)
 end)
+
+-- a change that diffs to no lines still opens a diff view (the session's anchor) on
+-- a notice naming the reason, rather than refusing the selection and re-notifying
+describe(":Differ panel (zero-hunk entries)", function()
+    local Panel = require("differ.panel")
+
+    local function open_only_entry(root)
+        git_src.panel({ open_first = true })
+        local p = assert(Panel.current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        return p, require("differ.view").current()
+    end
+
+    it("opens a mode-only change on a notice naming both modes", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493)) -- 0755
+        vim.cmd.edit(root .. "/a.lua")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("Mode changed 100644 → 100755", v.model.notice)
+        assert.are.same(
+            { "Mode changed 100644 → 100755" },
+            vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)
+        )
+        p:close()
+    end)
+
+    it("opens an empty untracked file on a notice", function()
+        local root = fresh_repo()
+        write(root .. "/empty.txt", "")
+        vim.cmd.edit(root .. "/empty.txt")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("empty.txt", v.model.path)
+        assert.are.equal("Empty file", v.model.notice)
+        p:close()
+    end)
+
+    it("opens a final-newline-only change on a notice", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", V1:sub(1, -2)) -- same content, no trailing newline
+        vim.cmd.edit(root .. "/a.lua")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("Final newline removed", v.model.notice)
+        p:close()
+    end)
+
+    it("still refuses a stale entry, so the list re-sources instead", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = assert(Panel.current())
+
+        -- commit the change behind the panel's back: its entry now diffs to nothing
+        git(root, "commit", "-qam", "outside")
+        -- on_select is what the panel calls on <CR>; false is "stale, re-source"
+        assert.is_false(p.on_select({ path = "a.lua", status = "M", staged = false }))
+        if Panel.current() then
+            p:close() -- the refresh may have emptied the list and ended the session
+        end
+    end)
+end)
