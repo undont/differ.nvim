@@ -1161,8 +1161,9 @@ function M.panel(opts)
     end
 
     ---@param entry differ.FileEntry
+    ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
-    local function stage_for(entry)
+    local function stage_for(entry, diff)
         if not stageable then
             return nil
         end
@@ -1170,7 +1171,7 @@ function M.panel(opts)
         local function settle()
             return settle_pair()
         end
-        if entry.status == "M" then
+        if entry.status == "M" and #diff.hunks > 0 then
             return {
                 initial = entry.staged and "staged" or "unstaged",
                 apply = function(model, hunk, offset, reverse)
@@ -1200,9 +1201,23 @@ function M.panel(opts)
             end
             return M.stage(root, entry.path)
         end
+        -- a modification with no hunks to patch: a mode change, a submodule pointer, a
+        -- binary file, a change git normalises away. `git add` stages exactly what git
+        -- would. no revert: `git checkout --` would also throw away content the diff
+        -- never showed, and the panel's own X still discards behind its confirm
+        if entry.status == "M" then
+            return {
+                initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
+                apply = whole_file_apply,
+                refresh = refresh_panel,
+                settle = settle,
+            }
+        end
         if entry.status == "?" or entry.status == "A" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
                 apply = whole_file_apply,
                 -- the file is the hunk, so reverting it is deleting it; `discard`
                 -- already knows to drop the staged add first
@@ -1217,6 +1232,7 @@ function M.panel(opts)
         if entry.status == "D" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
                 apply = whole_file_apply,
                 -- the mirror: a deletion is restored rather than removed
                 revert = function()
@@ -1251,7 +1267,7 @@ function M.panel(opts)
             end
             model.notice = notice
         end
-        local staging = stage_for(entry)
+        local staging = stage_for(entry, model)
         if view and view:is_open() then
             view:set_source(
                 model,

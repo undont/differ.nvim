@@ -3519,3 +3519,115 @@ describe(":Differ panel (zero-hunk entries)", function()
         end
     end)
 end)
+
+-- a whole-file source (a new or deleted file, a binary one, a change with no lines
+-- to show) stages as a unit. the keys act on the file rather than on the hunk under
+-- the cursor, which is what used to send them stepping off to another file
+describe(":Differ diff whole-file staging", function()
+    local Panel = require("differ.panel")
+
+    local function view_in_origin(p)
+        vim.api.nvim_set_current_win(p.origin_win)
+        return require("differ.view").current()
+    end
+    -- the mode git records for `path` in the index
+    local function index_mode(root, path)
+        return (git(root, "ls-files", "--stage", "--", path):match("^(%d+)"))
+    end
+    local function staged_entry(p, path)
+        for _, m in ipairs(p.meta) do
+            if m.kind == "file" and m.entry.path == path and m.entry.staged then
+                return m.entry
+            end
+        end
+    end
+
+    it("stages a mode-only change with s instead of stepping to another file", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        write(root .. "/b.lua", "other\n") -- a second file, to catch a step away
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "two files")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493))
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(0, #v.model.hunks) -- nothing to put a cursor on
+        assert.is_true(v.staging.whole_file)
+        assert.are.equal("100644", index_mode(root, "a.lua"))
+
+        v:stage_hunk()
+
+        assert.are.equal("100755", index_mode(root, "a.lua")) -- the mode really staged
+        assert.is_not_nil(staged_entry(p, "a.lua"))
+        assert.are.equal("a.lua", view_in_origin(p).model.path) -- never stepped away
+        p:close()
+    end)
+
+    it("unstages a staged mode change with u, which needs its seeded staged state", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493))
+        git(root, "add", "a.lua") -- stage the mode change: the only entry is staged
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("staged", v.staging.initial)
+        assert.is_true(v.staged_hunks[1]) -- seeded with no hunk behind it
+        assert.are.equal("100755", index_mode(root, "a.lua"))
+
+        v:unstage_hunk()
+
+        assert.are.equal("100644", index_mode(root, "a.lua"))
+        p:close()
+    end)
+
+    it("stages a new file from the old column's filler rows in split layout", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n") -- untracked: a pure add
+        write(root .. "/b.lua", "other\n") -- a second entry, to catch a step away
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("new.lua", v.model.path)
+        v:toggle_layout() -- -> split; the old column is all filler
+        assert.are.equal(2, #v.columns)
+
+        -- a pure add carries no old lines, so every old-column row is a meta row with
+        -- no hunk on it: the cursor lookup finds nothing there
+        vim.api.nvim_set_current_win(v.columns[1].winid)
+        vim.api.nvim_win_set_cursor(v.columns[1].winid, { 1, 0 })
+        assert.is_nil(v:_hunk_index_under_cursor())
+
+        v:stage_hunk()
+
+        assert.are.equal("one\ntwo\n", git(root, "show", ":new.lua"))
+        assert.is_not_nil(staged_entry(p, "new.lua"))
+        p:close()
+    end)
+
+    it("advertises the file, not the hunk, in the diff help", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\n")
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.is_true(v.staging.whole_file)
+        v:show_help()
+        local help_buf = vim.api.nvim_win_get_buf(0)
+        local text = table.concat(vim.api.nvim_buf_get_lines(help_buf, 0, -1, false), "\n")
+        assert.is_truthy(text:find("stage / unstage file", 1, true))
+        assert.is_nil(text:find("stage / unstage hunk", 1, true))
+        vim.api.nvim_win_close(0, true)
+        p:close()
+    end)
+end)
