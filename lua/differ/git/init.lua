@@ -23,6 +23,9 @@ local WORKTREE = { kind = "worktree", label = "WORKTREE" }
 -- so its files list and read as pure adds (history)
 local EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+-- git's mode for a submodule entry (a commit pointer)
+local GITLINK = "160000"
+
 ---@param msg string
 ---@param level integer|nil
 local function notify(msg, level)
@@ -755,10 +758,7 @@ local function raw_line(root, args, path)
 end
 
 -- the notice a zero-hunk entry opens on, or nil when it's stale (committed, staged
--- away or reverted outside differ) and the caller should re-source instead. staleness
--- is "the listing no longer carries it": `diff` for a tracked path, status for an
--- untracked one, which `diff` never reports. an eol change can't be stale, since the
--- sides still differ
+-- away or reverted outside differ) and the caller should re-source instead.
 ---@param root string
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
@@ -783,6 +783,16 @@ local function empty_notice(root, entry, model, args)
         return ("Renamed from %s, content unchanged"):format(entry.previous_path)
     end
     local old_mode, new_mode = rev.parse_raw_modes(out)
+    -- a gitlink has no blob behind it (`git show :path` fails), so both sides read
+    -- empty however the pointer moved.
+    if old_mode == GITLINK or new_mode == GITLINK then
+        if old_mode ~= GITLINK then
+            return "Submodule added"
+        elseif new_mode ~= GITLINK then
+            return "Submodule removed"
+        end
+        return "Submodule commit changed"
+    end
     if old_mode and new_mode and old_mode ~= new_mode then
         return ("Mode changed %s → %s"):format(old_mode, new_mode)
     end

@@ -3477,6 +3477,32 @@ describe(":Differ panel (zero-hunk entries)", function()
         p:close()
     end)
 
+    it("names a moved submodule pointer, which reads empty on both sides", function()
+        local root = fresh_repo()
+        -- the submodule's own repo lives outside root, so it adds no untracked entry
+        local sub = vim.fn.tempname()
+        vim.fn.mkdir(sub, "p")
+        git(sub, "init", "-q")
+        write(sub .. "/f", "one\n")
+        git(sub, "add", "f")
+        git(sub, "commit", "-q", "-m", "one")
+
+        git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "mod")
+        git(root, "commit", "-q", "-m", "add submodule")
+        write(root .. "/mod/f", "two\n") -- move the pointer: commit inside the submodule
+        git(root .. "/mod", "commit", "-q", "-am", "two")
+        vim.cmd.edit(root .. "/a.lua") -- put the session's origin inside this repo
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("mod", v.model.path)
+        -- `git show :mod` fails on a gitlink, so the model has no content either side
+        assert.are.equal("", v.model.old_text)
+        assert.are.equal("", v.model.new_text)
+        assert.are.equal("Submodule commit changed", v.model.notice)
+        p:close()
+    end)
+
     it("still refuses a stale entry, so the list re-sources instead", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
