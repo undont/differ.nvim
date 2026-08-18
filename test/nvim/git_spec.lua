@@ -3631,3 +3631,71 @@ describe(":Differ diff whole-file staging", function()
         p:close()
     end)
 end)
+
+-- rev.source turns any leftover arg into a rev ref, so a typo reaches git as a real
+-- lookup and comes back as a failed listing. reporting it as "no changes" hides that
+describe("git listing errors", function()
+    local Panel = require("differ.panel")
+
+    -- the notification the call under test produced, if any
+    local function last_notif()
+        return _G.notifs[#_G.notifs]
+    end
+
+    it("carries git's stderr off a failed listing instead of an empty list", function()
+        local root = fresh_repo()
+        local source = {
+            old = { kind = "rev", rev = "nosuchref", label = "nosuchref" },
+            new = {
+                kind = "worktree",
+                label = "WORKTREE",
+            },
+        }
+        local files, err = git_src.changed_files(source, root)
+        assert.are.same({}, files)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("nosuchref", 1, true))
+
+        -- file_entries stops at the failure rather than listing untracked files past it
+        local entries, ferr = git_src.file_entries(source, root)
+        assert.are.same({}, entries)
+        assert.are.equal(err, ferr)
+    end)
+
+    it("reports a mistyped revspec at ERROR, in git's words", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a real change, so INFO would lie
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        local p = git_src.panel({ rev = { "nosuchref" } })
+        assert.is_nil(p) -- no session opened
+        assert.is_nil(Panel.current())
+        local n = last_notif()
+        assert.are.equal(vim.log.levels.ERROR, n.level)
+        assert.is_truthy(n.msg:find("nosuchref", 1, true))
+        assert.is_nil(n.msg:find("no changes for this source", 1, true))
+    end)
+
+    it("still reports a genuinely empty source at INFO", function()
+        local root = fresh_repo() -- clean worktree: nothing to show, and no failure
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        assert.is_nil(git_src.panel({}))
+        local n = last_notif()
+        assert.are.equal("differ: no changes for this source", n.msg)
+        assert.are.equal(vim.log.levels.INFO, n.level)
+    end)
+
+    it("reports a mistyped rev-range history at ERROR too", function()
+        local root = fresh_repo()
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        git_src.range_history({ range = "nosuchref...HEAD" })
+        local n = last_notif()
+        assert.are.equal(vim.log.levels.ERROR, n.level)
+        assert.is_truthy(n.msg:find("nosuchref", 1, true))
+    end)
+end)

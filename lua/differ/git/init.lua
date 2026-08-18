@@ -374,27 +374,32 @@ function M.is_conflicted(root, relpath)
     return false
 end
 
--- list changed files for a resolved source (used by the picker/panel)
+-- list changed files for a resolved source (used by the picker/panel). rev.source is
+-- pure and can't tell a real ref from a typo, so this is the first call that finds
+-- out: git's stderr rides along, else a typo reads as an empty change set
 ---@param source differ.git.Source
 ---@param root string
----@return differ.git.ChangedFile[]
+---@return differ.git.ChangedFile[] files, string|nil err
 function M.changed_files(source, root)
     local args = { "diff", "--name-status", "-z" }
     vim.list_extend(args, rev.diff_args(source))
-    local out = git(args, root)
+    local out, err = git(args, root)
     if not out then
-        return {}
+        return {}, err
     end
     return rev.parse_name_status(out)
 end
 
--- the commits behind a history request, newest first. an empty list on git
--- failure (e.g. the path has no history). pure arg-building/parsing live in git/log.lua
+-- the commits behind a history request, newest first, plus git's stderr when the
+-- run failed. a path with no history exits clean with no output, so an empty list
+-- and no error is "nothing to show" rather than a failure. pure arg-building/parsing
+-- live in git/log.lua
 ---@param root string
 ---@param opts differ.git.LogOpts
----@return differ.git.Commit[]
+---@return differ.git.Commit[] commits, string|nil err
 function M.log_commits(root, opts)
-    return log.parse_log(git(log.log_args(opts), root) or "")
+    local out, err = git(log.log_args(opts), root)
+    return log.parse_log(out or ""), err
 end
 
 -- the "old" side for a commit's own diff: its first parent, or the empty tree when
@@ -415,7 +420,7 @@ end
 -- to keep only the right side (the branch's own commits), mirroring the dp flow
 ---@param root string
 ---@param range string
----@return differ.git.Commit[]
+---@return differ.git.Commit[] commits, string|nil err
 function M.range_commits(root, range)
     local extra = vim.split(range, "%s+", { trimempty = true })
     extra[#extra + 1] = "--no-merges"
@@ -435,7 +440,8 @@ function M.commit_files(root, sha)
         old = parent_or_empty(root, sha),
         new = { kind = "rev", rev = sha, label = sha:sub(1, 7) },
     }
-    return M.file_entries(source, root)
+    -- the sha came from git's own log, so there's no revspec here to mistype
+    return (M.file_entries(source, root))
 end
 
 -- resolve a source's refs to concrete revs (merge_base -> rev). returns nil if a
@@ -538,11 +544,15 @@ end
 -- disjoint
 ---@param source differ.git.Source -- resolved
 ---@param root string
----@return differ.FileEntry[]
+---@return differ.FileEntry[] entries, string|nil err
 function M.file_entries(source, root)
+    local files, err = M.changed_files(source, root)
+    if err then
+        return {}, err -- a failed listing isn't an empty one; the caller reports it
+    end
     local counts = numstat(rev.diff_args(source), root)
     local out = {}
-    for _, f in ipairs(M.changed_files(source, root)) do
+    for _, f in ipairs(files) do
         local c = counts[f.path] or {}
         out[#out + 1] = {
             path = f.path,
@@ -572,9 +582,10 @@ end
 -- (X status, HEAD↔index counts) and Unstaged (Y status, index↔worktree counts).
 -- empty sections are dropped by the caller
 ---@param root string
----@return differ.panel.Section[]
+---@return differ.panel.Section[] sections, string|nil err
 function M.status_sections(root)
-    local entries = rev.parse_status(git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
+    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
+    local entries = rev.parse_status(out or "")
     local staged_counts = numstat({ "--cached" }, root)
     local unstaged_counts = numstat({}, root)
     local staged, unstaged, untracked = {}, {}, {}
@@ -614,11 +625,12 @@ function M.status_sections(root)
             end
         end
     end
-    return {
+    local sections = {
         { title = "Staged", entries = staged },
         { title = "Unstaged", entries = unstaged },
         { title = "Untracked", entries = untracked },
     }
+    return sections, err
 end
 
 -- file-level staging ops driven from the panel (slice C); each is whole-file
@@ -996,8 +1008,9 @@ function M.panel(opts)
     -- rev-pair list diffs every entry against the one resolved source. `actions`
     -- (file-level staging) is only meaningful for the worktree-status source
     local sections, model_for, raw_args_for, actions
+    local list_err ---@type string|nil -- git's own words when the listing failed
     if is_worktree_status(source) then
-        sections = M.status_sections(root)
+        sections, list_err = M.status_sections(root)
         model_for = function(entry)
             local s = entry.staged and { old = HEAD, new = INDEX }
                 or { old = INDEX, new = WORKTREE }
@@ -1027,11 +1040,14 @@ function M.panel(opts)
                 M.discard(root, entry)
             end,
             reload = function()
-                return (nonempty_sections(M.status_sections(root)))
+                local live = M.status_sections(root)
+                return (nonempty_sections(live))
             end,
         }
     else
-        sections = { { title = "Changes", entries = M.file_entries(source, root) } }
+        local entries
+        entries, list_err = M.file_entries(source, root)
+        sections = { { title = "Changes", entries = entries } }
         model_for = function(entry)
             return M.model(source, root, entry, branch)
         end
@@ -1042,6 +1058,11 @@ function M.panel(opts)
 
     local nonempty, total = nonempty_sections(sections)
     if total == 0 then
+        -- an empty list and a failed one look the same from here, and a mistyped
+        -- revspec only ever lands as the second: report what git said
+        if list_err then
+            return notify(chomp(list_err), vim.log.levels.ERROR)
+        end
         return notify("no changes for this source")
     end
 
@@ -1295,7 +1316,8 @@ function M.panel(opts)
     ---@return differ.FileEntry[]
     local function entries_for_path(path)
         local out = {}
-        for _, sec in ipairs(M.status_sections(root)) do
+        local live = M.status_sections(root)
+        for _, sec in ipairs(live) do
             for _, e in ipairs(sec.entries) do
                 if e.path == path then
                     out[#out + 1] = e
@@ -1551,8 +1573,11 @@ function M.history(opts)
     -- file we're in; a `:Differ log <other>` has no meaningful origin line
     local origin = (origin_buf ~= "" and origin_buf == file) and origin_line or nil
 
-    local commits = M.log_commits(root, { path = relpath })
+    local commits, err = M.log_commits(root, { path = relpath })
     if #commits == 0 then
+        if err then
+            return notify(chomp(err), vim.log.levels.ERROR)
+        end
         return notify("no history for " .. relpath)
     end
     local branch = head_branch(root)
@@ -1635,8 +1660,11 @@ function M.range_history(opts)
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
-    local commits = M.range_commits(root, range)
+    local commits, err = M.range_commits(root, range)
     if #commits == 0 then
+        if err then
+            return notify(chomp(err), vim.log.levels.ERROR)
+        end
         return notify("no commits in " .. range)
     end
     local branch = head_branch(root)
