@@ -190,6 +190,22 @@ local function resolve_ref(ref, root)
     return { kind = "rev", rev = chomp(out), label = ref.label }
 end
 
+-- a file's bytes as they sit on disk, or nil when it isn't readable
+---@param abs string
+---@return string|nil
+local function read_file(abs)
+    if vim.fn.filereadable(abs) == 0 then
+        return nil
+    end
+    local fd = io.open(abs, "rb")
+    if not fd then
+        return nil
+    end
+    local data = fd:read("*a")
+    fd:close()
+    return data
+end
+
 -- worktree bytes as `git add` would store them (the clean filter: eol
 -- conversion, text attrs, custom filters), so worktree-side diffs compare in
 -- the repo domain, like `git diff`, and the hunk patches built from the model
@@ -253,17 +269,8 @@ end
 ---@return string|nil
 function M.read(ref, root, relpath)
     if ref.kind == "worktree" then
-        local abs = root .. "/" .. relpath
-        if vim.fn.filereadable(abs) == 0 then
-            return nil
-        end
-        local fd = io.open(abs, "rb")
-        if not fd then
-            return nil
-        end
-        local data = fd:read("*a")
-        fd:close()
-        return as_staged(root, relpath, data)
+        local data = read_file(root .. "/" .. relpath)
+        return data and as_staged(root, relpath, data) or nil
     end
     -- index (stage 0) is `:path`; a rev is `<rev>:path`
     local spec = (ref.kind == "index" and ":" or (ref.rev .. ":")) .. relpath
@@ -347,18 +354,47 @@ function M.untracked(root)
     return out and rev.parse_paths(out) or {}
 end
 
+-- untracked line counts, keyed by repo path and invalidated by the file's own
+-- mtime/size. every panel build and every refresh asks for all of them at once, and
+-- a file that hasn't moved can't have a different count. wiped wholesale past a cap
+-- rather than evicted one by one: the live set is whatever the panel lists, so a
+-- table this size is a session that has walked many repos, not a working set
+local untracked_counts, untracked_cached = {}, 0
+local UNTRACKED_CACHE_MAX = 4096
+
 -- an untracked file has no diff to numstat, so every line reads as an addition;
 -- binary content counts as 0, matching how numstat's `-` markers already read
--- binary tracked changes as 0/0
+-- binary tracked changes as 0/0. read raw rather than through the clean filter
+-- (M.read): eol conversion can't change how many lines there are, and the filter
+-- costs three git processes and a loose blob per `\r`-carrying file
 ---@param root string
 ---@param relpath string
 ---@return integer
 local function untracked_additions(root, relpath)
-    local content = M.read(WORKTREE, root, relpath)
-    if not content or text_util.is_binary(content) then
+    local abs = root .. "/" .. relpath
+    local st = (vim.uv or vim.loop).fs_stat(abs)
+    if not st then
         return 0
     end
-    return #text_util.to_lines(content)
+    local key = root .. "\0" .. relpath
+    local stamp = ("%d.%d:%d"):format(st.mtime.sec, st.mtime.nsec, st.size)
+    local hit = untracked_counts[key]
+    if hit and hit.stamp == stamp then
+        return hit.additions
+    end
+    local content = read_file(abs)
+    local additions = 0
+    if content and not text_util.is_binary(content) then
+        additions = #text_util.to_lines(content)
+    end
+    if untracked_cached >= UNTRACKED_CACHE_MAX then
+        untracked_counts, untracked_cached = {}, 0
+    end
+    if not hit then
+        untracked_cached = untracked_cached + 1
+    end
+    untracked_counts[key] = { stamp = stamp, additions = additions }
+    return additions
 end
 
 -- whether `relpath` is currently conflicted

@@ -3699,3 +3699,57 @@ describe("git listing errors", function()
         assert.is_truthy(n.msg:find("nosuchref", 1, true))
     end)
 end)
+
+-- the panel counts every untracked file's lines on every build and every refresh.
+-- reading them through the clean filter meant three git processes and a loose blob
+-- per CRLF-carrying file, every time
+describe("git.untracked_additions (cost)", function()
+    -- the number of loose objects in the repo's object store
+    local function loose_objects(root)
+        return #vim.fn.glob(root .. "/.git/objects/??/*", false, true)
+    end
+    local function untracked_entry(sections, path)
+        for _, sec in ipairs(sections) do
+            for _, e in ipairs(sec.entries) do
+                if e.path == path and e.status == "?" then
+                    return e
+                end
+            end
+        end
+    end
+
+    it("counts a CRLF untracked file without writing a blob into .git/objects", function()
+        local root = fresh_repo()
+        write(root .. "/crlf.txt", "one\r\ntwo\r\nthree\r\n")
+        local before = loose_objects(root)
+
+        for _ = 1, 3 do -- a build and two refreshes
+            local sections = git_src.status_sections(root)
+            assert.are.equal(3, untracked_entry(sections, "crlf.txt").additions)
+        end
+
+        assert.are.equal(before, loose_objects(root))
+    end)
+
+    it("reuses the count until the file's mtime or size moves", function()
+        local root = fresh_repo()
+        local path = root .. "/u.txt"
+        local uv = vim.uv or vim.loop
+        write(path, "a\nb\n") -- 4 bytes, two lines
+        assert(uv.fs_utime(path, 1700000000, 1700000000))
+
+        local sections = git_src.status_sections(root)
+        assert.are.equal(2, untracked_entry(sections, "u.txt").additions)
+
+        -- same byte count, same timestamp, different content: a re-read would say 1
+        write(path, "abc\n")
+        assert(uv.fs_utime(path, 1700000000, 1700000000))
+        sections = git_src.status_sections(root)
+        assert.are.equal(2, untracked_entry(sections, "u.txt").additions) -- served from cache
+
+        -- moving the timestamp is what lets the new count through
+        assert(uv.fs_utime(path, 1700000001, 1700000001))
+        sections = git_src.status_sections(root)
+        assert.are.equal(1, untracked_entry(sections, "u.txt").additions)
+    end)
+end)
