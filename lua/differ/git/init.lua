@@ -32,17 +32,61 @@ local function notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
 end
 
+-- how long a network git call may block the editor; `wait()` has no budget of its own
+M.fetch_timeout_ms = 20000
+
+-- what a network call runs under. git prompts for credentials on the controlling
+-- terminal, which under nvim is one nothing can be typed into, so prompting off turns
+-- a hang into an error. read per call: the budget is settable
+---@return { timeout: integer, env: table<string, string> }
+local function fetch_opts()
+    return { timeout = M.fetch_timeout_ms, env = { GIT_TERMINAL_PROMPT = "0" } }
+end
+
+-- spawn git and wait. vim.system raises when the process can't start (no git on PATH,
+-- a cwd that's gone), so the raise comes back as `err`. a nil res with no err is
+-- wait() answering nothing at all; only the caller knows if a budget explains it
+---@param cmd string[]
+---@param opts table
+---@return { code: integer, stdout: string|nil, stderr: string|nil }|nil res, string|nil err
+local function run(cmd, opts)
+    local ok, obj = pcall(vim.system, cmd, opts)
+    if not ok then
+        return nil, tostring(obj)
+    end
+    return obj:wait()
+end
+
 -- run git in `cwd`. returns stdout on success, or nil + stderr on failure.
 -- `text = true` normalises `\r\n` to `\n` in stdout, which is right for plumbing
 -- output (status/numstat/rev-parse/name-status/...) but would corrupt file
 -- content read via `git show`; content reads use git_raw instead
 ---@param args string[]
 ---@param cwd string
+---@param opts? { timeout?: integer, env?: table<string, string> }
 ---@return string|nil stdout, string|nil stderr
-local function git(args, cwd)
+local function git(args, cwd, opts)
     local cmd = { "git" }
     vim.list_extend(cmd, args)
-    local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    opts = opts or {}
+    local res, err = run(cmd, {
+        cwd = cwd,
+        text = true,
+        timeout = opts.timeout,
+        env = opts.env,
+    })
+    if err then
+        return nil, err -- never started
+    end
+    -- a killed process exits 124 with an empty stderr, or answers nothing at all when
+    -- a child outlives it holding the pipes (a fetch's transport helper does). both are
+    -- the budget, and neither says so itself
+    if opts.timeout and (not res or res.code == 124) then
+        return nil, ("git %s timed out after %ds"):format(args[1], opts.timeout / 1000)
+    end
+    if not res then
+        return nil, "git exited without a result"
+    end
     if res.code ~= 0 then
         return nil, res.stderr
     end
@@ -58,7 +102,10 @@ end
 local function git_raw(args, cwd)
     local cmd = { "git" }
     vim.list_extend(cmd, args)
-    local res = vim.system(cmd, { cwd = cwd }):wait()
+    local res, err = run(cmd, { cwd = cwd })
+    if not res then
+        return nil, err
+    end
     if res.code ~= 0 then
         return nil, res.stderr
     end
@@ -136,7 +183,8 @@ local function checkout_pull_ref(root, ref, number, fetch_err)
     if not number then
         return false, fetch_err
     end
-    local _, perr = git({ "fetch", "origin", ("refs/pull/%d/head"):format(number) }, root)
+    local _, perr =
+        git({ "fetch", "origin", ("refs/pull/%d/head"):format(number) }, root, fetch_opts())
     if perr then
         return false, fetch_err
     end
@@ -162,7 +210,7 @@ function M.checkout(root, ref, number)
     if not rev.valid_ref(ref) then
         return false, ("unsafe branch name, refusing to run git: %s"):format(ref)
     end
-    local _, ferr = git({ "fetch", "origin", ref }, root)
+    local _, ferr = git({ "fetch", "origin", ref }, root, fetch_opts())
     if ferr then
         return checkout_pull_ref(root, ref, number, ferr)
     end

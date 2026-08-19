@@ -3753,3 +3753,58 @@ describe("git.untracked_additions (cost)", function()
         assert.are.equal(1, untracked_entry(sections, "u.txt").additions)
     end)
 end)
+
+-- a fetch is the one git call that talks to a network, and it ran unbounded: a slow
+-- remote froze nvim until git gave up, and a credential prompt never came back
+describe("git.checkout (network budget)", function()
+    -- a `git` earlier on PATH than the real one, running `body`
+    local function fake_git(body)
+        local dir = vim.fn.tempname()
+        vim.fn.mkdir(dir, "p")
+        local path = dir .. "/git"
+        write(path, "#!/bin/sh\n" .. body .. "\n")
+        assert((vim.uv or vim.loop).fs_chmod(path, 493))
+        return dir
+    end
+
+    it("kills a fetch that outlasts its budget, and says so", function()
+        local root = fresh_repo()
+        local git_src_mod = require("differ.git")
+        local budget, path = git_src_mod.fetch_timeout_ms, vim.env.PATH
+        git_src_mod.fetch_timeout_ms = 300
+        vim.env.PATH = fake_git("sleep 30") .. ":" .. path
+
+        local started = (vim.uv or vim.loop).now()
+        local ok, err = git_src_mod.checkout(root, "feature", nil)
+        local took = (vim.uv or vim.loop).now() - started
+
+        git_src_mod.fetch_timeout_ms, vim.env.PATH = budget, path
+        assert.is_false(ok)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("timed out", 1, true))
+        assert.is_true(took < 10000) -- killed, not waited out
+    end)
+
+    it("returns the spawn error instead of raising it", function()
+        -- a cwd that isn't there fails to spawn the same way a missing git does
+        local ok, err = require("differ.git").checkout("/no/such/repo", "feature", nil)
+        assert.is_false(ok)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("ENOENT", 1, true))
+    end)
+
+    it("runs the fetch with terminal prompts disabled", function()
+        local root = fresh_repo()
+        local marker = vim.fn.tempname()
+        local path = vim.env.PATH
+        -- the fake records the env it saw, then fails so checkout stops there
+        vim.env.PATH = fake_git('printf "%s" "$GIT_TERMINAL_PROMPT" > ' .. marker .. "\nexit 1")
+            .. ":"
+            .. path
+
+        require("differ.git").checkout(root, "feature", nil)
+
+        vim.env.PATH = path
+        assert.are.equal("0", table.concat(vim.fn.readfile(marker), ""))
+    end)
+end)
