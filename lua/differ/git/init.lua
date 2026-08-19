@@ -23,10 +23,38 @@ local WORKTREE = { kind = "worktree", label = "WORKTREE" }
 -- so its files list and read as pure adds (history)
 local EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
+-- git's mode for a submodule entry (a commit pointer)
+local GITLINK = "160000"
+
 ---@param msg string
 ---@param level integer|nil
 local function notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
+end
+
+-- how long a network git call may block the editor; `wait()` has no budget of its own
+M.fetch_timeout_ms = 20000
+
+-- what a network call runs under. git prompts for credentials on the controlling
+-- terminal, which under nvim is one nothing can be typed into, so prompting off turns
+-- a hang into an error. read per call: the budget is settable
+---@return { timeout: integer, env: table<string, string> }
+local function fetch_opts()
+    return { timeout = M.fetch_timeout_ms, env = { GIT_TERMINAL_PROMPT = "0" } }
+end
+
+-- spawn git and wait. vim.system raises when the process can't start (no git on PATH,
+-- a cwd that's gone), so the raise comes back as `err`. a nil res with no err is
+-- wait() answering nothing at all; only the caller knows if a budget explains it
+---@param cmd string[]
+---@param opts table
+---@return { code: integer, stdout: string|nil, stderr: string|nil }|nil res, string|nil err
+local function run(cmd, opts)
+    local ok, obj = pcall(vim.system, cmd, opts)
+    if not ok then
+        return nil, tostring(obj)
+    end
+    return obj:wait()
 end
 
 -- run git in `cwd`. returns stdout on success, or nil + stderr on failure.
@@ -35,11 +63,30 @@ end
 -- content read via `git show`; content reads use git_raw instead
 ---@param args string[]
 ---@param cwd string
+---@param opts? { timeout?: integer, env?: table<string, string> }
 ---@return string|nil stdout, string|nil stderr
-local function git(args, cwd)
+local function git(args, cwd, opts)
     local cmd = { "git" }
     vim.list_extend(cmd, args)
-    local res = vim.system(cmd, { cwd = cwd, text = true }):wait()
+    opts = opts or {}
+    local res, err = run(cmd, {
+        cwd = cwd,
+        text = true,
+        timeout = opts.timeout,
+        env = opts.env,
+    })
+    if err then
+        return nil, err -- never started
+    end
+    -- a killed process exits 124 with an empty stderr, or answers nothing at all when
+    -- a child outlives it holding the pipes (a fetch's transport helper does). both are
+    -- the budget, and neither says so itself
+    if opts.timeout and (not res or res.code == 124) then
+        return nil, ("git %s timed out after %ds"):format(args[1], opts.timeout / 1000)
+    end
+    if not res then
+        return nil, "git exited without a result"
+    end
     if res.code ~= 0 then
         return nil, res.stderr
     end
@@ -55,7 +102,10 @@ end
 local function git_raw(args, cwd)
     local cmd = { "git" }
     vim.list_extend(cmd, args)
-    local res = vim.system(cmd, { cwd = cwd }):wait()
+    local res, err = run(cmd, { cwd = cwd })
+    if not res then
+        return nil, err
+    end
     if res.code ~= 0 then
         return nil, res.stderr
     end
@@ -133,7 +183,8 @@ local function checkout_pull_ref(root, ref, number, fetch_err)
     if not number then
         return false, fetch_err
     end
-    local _, perr = git({ "fetch", "origin", ("refs/pull/%d/head"):format(number) }, root)
+    local _, perr =
+        git({ "fetch", "origin", ("refs/pull/%d/head"):format(number) }, root, fetch_opts())
     if perr then
         return false, fetch_err
     end
@@ -159,7 +210,7 @@ function M.checkout(root, ref, number)
     if not rev.valid_ref(ref) then
         return false, ("unsafe branch name, refusing to run git: %s"):format(ref)
     end
-    local _, ferr = git({ "fetch", "origin", ref }, root)
+    local _, ferr = git({ "fetch", "origin", ref }, root, fetch_opts())
     if ferr then
         return checkout_pull_ref(root, ref, number, ferr)
     end
@@ -185,6 +236,22 @@ local function resolve_ref(ref, root)
         return nil
     end
     return { kind = "rev", rev = chomp(out), label = ref.label }
+end
+
+-- a file's bytes as they sit on disk, or nil when it isn't readable
+---@param abs string
+---@return string|nil
+local function read_file(abs)
+    if vim.fn.filereadable(abs) == 0 then
+        return nil
+    end
+    local fd = io.open(abs, "rb")
+    if not fd then
+        return nil
+    end
+    local data = fd:read("*a")
+    fd:close()
+    return data
 end
 
 -- worktree bytes as `git add` would store them (the clean filter: eol
@@ -250,17 +317,8 @@ end
 ---@return string|nil
 function M.read(ref, root, relpath)
     if ref.kind == "worktree" then
-        local abs = root .. "/" .. relpath
-        if vim.fn.filereadable(abs) == 0 then
-            return nil
-        end
-        local fd = io.open(abs, "rb")
-        if not fd then
-            return nil
-        end
-        local data = fd:read("*a")
-        fd:close()
-        return as_staged(root, relpath, data)
+        local data = read_file(root .. "/" .. relpath)
+        return data and as_staged(root, relpath, data) or nil
     end
     -- index (stage 0) is `:path`; a rev is `<rev>:path`
     local spec = (ref.kind == "index" and ":" or (ref.rev .. ":")) .. relpath
@@ -344,18 +402,47 @@ function M.untracked(root)
     return out and rev.parse_paths(out) or {}
 end
 
+-- untracked line counts, keyed by repo path and invalidated by the file's own
+-- mtime/size. every panel build and every refresh asks for all of them at once, and
+-- a file that hasn't moved can't have a different count. wiped wholesale past a cap
+-- rather than evicted one by one: the live set is whatever the panel lists, so a
+-- table this size is a session that has walked many repos, not a working set
+local untracked_counts, untracked_cached = {}, 0
+local UNTRACKED_CACHE_MAX = 4096
+
 -- an untracked file has no diff to numstat, so every line reads as an addition;
 -- binary content counts as 0, matching how numstat's `-` markers already read
--- binary tracked changes as 0/0
+-- binary tracked changes as 0/0. read raw rather than through the clean filter
+-- (M.read): eol conversion can't change how many lines there are, and the filter
+-- costs three git processes and a loose blob per `\r`-carrying file
 ---@param root string
 ---@param relpath string
 ---@return integer
 local function untracked_additions(root, relpath)
-    local content = M.read(WORKTREE, root, relpath)
-    if not content or text_util.is_binary(content) then
+    local abs = root .. "/" .. relpath
+    local st = (vim.uv or vim.loop).fs_stat(abs)
+    if not st then
         return 0
     end
-    return #text_util.to_lines(content)
+    local key = root .. "\0" .. relpath
+    local stamp = ("%d.%d:%d"):format(st.mtime.sec, st.mtime.nsec, st.size)
+    local hit = untracked_counts[key]
+    if hit and hit.stamp == stamp then
+        return hit.additions
+    end
+    local content = read_file(abs)
+    local additions = 0
+    if content and not text_util.is_binary(content) then
+        additions = #text_util.to_lines(content)
+    end
+    if untracked_cached >= UNTRACKED_CACHE_MAX then
+        untracked_counts, untracked_cached = {}, 0
+    end
+    if not hit then
+        untracked_cached = untracked_cached + 1
+    end
+    untracked_counts[key] = { stamp = stamp, additions = additions }
+    return additions
 end
 
 -- whether `relpath` is currently conflicted
@@ -371,27 +458,32 @@ function M.is_conflicted(root, relpath)
     return false
 end
 
--- list changed files for a resolved source (used by the picker/panel)
+-- list changed files for a resolved source (used by the picker/panel). rev.source is
+-- pure and can't tell a real ref from a typo, so this is the first call that finds
+-- out: git's stderr rides along, else a typo reads as an empty change set
 ---@param source differ.git.Source
 ---@param root string
----@return differ.git.ChangedFile[]
+---@return differ.git.ChangedFile[] files, string|nil err
 function M.changed_files(source, root)
     local args = { "diff", "--name-status", "-z" }
     vim.list_extend(args, rev.diff_args(source))
-    local out = git(args, root)
+    local out, err = git(args, root)
     if not out then
-        return {}
+        return {}, err
     end
     return rev.parse_name_status(out)
 end
 
--- the commits behind a history request, newest first. an empty list on git
--- failure (e.g. the path has no history). pure arg-building/parsing live in git/log.lua
+-- the commits behind a history request, newest first, plus git's stderr when the
+-- run failed. a path with no history exits clean with no output, so an empty list
+-- and no error is "nothing to show" rather than a failure. pure arg-building/parsing
+-- live in git/log.lua
 ---@param root string
 ---@param opts differ.git.LogOpts
----@return differ.git.Commit[]
+---@return differ.git.Commit[] commits, string|nil err
 function M.log_commits(root, opts)
-    return log.parse_log(git(log.log_args(opts), root) or "")
+    local out, err = git(log.log_args(opts), root)
+    return log.parse_log(out or ""), err
 end
 
 -- the "old" side for a commit's own diff: its first parent, or the empty tree when
@@ -412,7 +504,7 @@ end
 -- to keep only the right side (the branch's own commits), mirroring the dp flow
 ---@param root string
 ---@param range string
----@return differ.git.Commit[]
+---@return differ.git.Commit[] commits, string|nil err
 function M.range_commits(root, range)
     local extra = vim.split(range, "%s+", { trimempty = true })
     extra[#extra + 1] = "--no-merges"
@@ -432,7 +524,8 @@ function M.commit_files(root, sha)
         old = parent_or_empty(root, sha),
         new = { kind = "rev", rev = sha, label = sha:sub(1, 7) },
     }
-    return M.file_entries(source, root)
+    -- the sha came from git's own log, so there's no revspec here to mistype
+    return (M.file_entries(source, root))
 end
 
 -- resolve a source's refs to concrete revs (merge_base -> rev). returns nil if a
@@ -535,11 +628,15 @@ end
 -- disjoint
 ---@param source differ.git.Source -- resolved
 ---@param root string
----@return differ.FileEntry[]
+---@return differ.FileEntry[] entries, string|nil err
 function M.file_entries(source, root)
+    local files, err = M.changed_files(source, root)
+    if err then
+        return {}, err -- a failed listing isn't an empty one; the caller reports it
+    end
     local counts = numstat(rev.diff_args(source), root)
     local out = {}
-    for _, f in ipairs(M.changed_files(source, root)) do
+    for _, f in ipairs(files) do
         local c = counts[f.path] or {}
         out[#out + 1] = {
             path = f.path,
@@ -569,9 +666,10 @@ end
 -- (X status, HEAD↔index counts) and Unstaged (Y status, index↔worktree counts).
 -- empty sections are dropped by the caller
 ---@param root string
----@return differ.panel.Section[]
+---@return differ.panel.Section[] sections, string|nil err
 function M.status_sections(root)
-    local entries = rev.parse_status(git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
+    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
+    local entries = rev.parse_status(out or "")
     local staged_counts = numstat({ "--cached" }, root)
     local unstaged_counts = numstat({}, root)
     local staged, unstaged, untracked = {}, {}, {}
@@ -611,11 +709,12 @@ function M.status_sections(root)
             end
         end
     end
-    return {
+    local sections = {
         { title = "Staged", entries = staged },
         { title = "Unstaged", entries = unstaged },
         { title = "Untracked", entries = untracked },
     }
+    return sections, err
 end
 
 -- file-level staging ops driven from the panel (slice C); each is whole-file
@@ -735,6 +834,65 @@ local function live_status(root, entry)
         end
     end
     return nil
+end
+
+-- the path's `diff --raw` line under `args`'s pair, or nil when the pair no longer
+-- lists it at all
+---@param root string
+---@param args string[]
+---@param path string
+---@return string|nil
+local function raw_line(root, args, path)
+    local full = { "diff", "--raw" }
+    vim.list_extend(full, args)
+    vim.list_extend(full, { "--", path })
+    local out = git(full, root)
+    if not out or chomp(out) == "" then
+        return nil
+    end
+    return out
+end
+
+-- the notice a zero-hunk entry opens on, or nil when it's stale (committed, staged
+-- away or reverted outside differ) and the caller should re-source instead.
+---@param root string
+---@param entry differ.FileEntry
+---@param model differ.DiffModel
+---@param args string[]  -- names the entry's pair for `diff --raw`
+---@return string|nil
+local function empty_notice(root, entry, model, args)
+    local reason = require("differ.model.diff").empty_reason(model)
+    if reason == "eol_added" then
+        return "Final newline added"
+    elseif reason == "eol_removed" then
+        return "Final newline removed"
+    end
+    local empty_or_not = reason == "empty" and "Empty file" or "No content change"
+    if entry.status == "?" then
+        return live_status(root, entry) == entry.status and empty_or_not or nil
+    end
+    local out = raw_line(root, args, entry.path)
+    if not out then
+        return nil
+    end
+    if (entry.status == "R" or entry.status == "C") and entry.previous_path then
+        return ("Renamed from %s, content unchanged"):format(entry.previous_path)
+    end
+    local old_mode, new_mode = rev.parse_raw_modes(out)
+    -- a gitlink has no blob behind it (`git show :path` fails), so both sides read
+    -- empty however the pointer moved.
+    if old_mode == GITLINK or new_mode == GITLINK then
+        if old_mode ~= GITLINK then
+            return "Submodule added"
+        elseif new_mode ~= GITLINK then
+            return "Submodule removed"
+        end
+        return "Submodule commit changed"
+    end
+    if old_mode and new_mode and old_mode ~= new_mode then
+        return ("Mode changed %s → %s"):format(old_mode, new_mode)
+    end
+    return empty_or_not
 end
 
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
@@ -933,15 +1091,21 @@ function M.panel(opts)
     -- the entry's staged flag (staged = HEAD↔index, else index↔worktree), while a
     -- rev-pair list diffs every entry against the one resolved source. `actions`
     -- (file-level staging) is only meaningful for the worktree-status source
-    local sections, model_for, actions
+    local sections, model_for, raw_args_for, actions
+    local list_err ---@type string|nil -- git's own words when the listing failed
     if is_worktree_status(source) then
-        sections = M.status_sections(root)
+        sections, list_err = M.status_sections(root)
         model_for = function(entry)
             local s = entry.staged and { old = HEAD, new = INDEX }
                 or { old = INDEX, new = WORKTREE }
             -- re-read HEAD per build so a branch switch under an open panel updates
             -- the synthetic buffer's statusline label, not just the diff content
             return M.model(s, root, entry, head_branch(root))
+        end
+        -- the entry's own pair as `diff` args: staged is HEAD↔index, unstaged
+        -- index↔worktree
+        raw_args_for = function(entry)
+            return entry.staged and { "--cached" } or {}
         end
         actions = {
             stage = function(entry)
@@ -960,18 +1124,29 @@ function M.panel(opts)
                 M.discard(root, entry)
             end,
             reload = function()
-                return (nonempty_sections(M.status_sections(root)))
+                local live = M.status_sections(root)
+                return (nonempty_sections(live))
             end,
         }
     else
-        sections = { { title = "Changes", entries = M.file_entries(source, root) } }
+        local entries
+        entries, list_err = M.file_entries(source, root)
+        sections = { { title = "Changes", entries = entries } }
         model_for = function(entry)
             return M.model(source, root, entry, branch)
+        end
+        raw_args_for = function()
+            return rev.diff_args(source)
         end
     end
 
     local nonempty, total = nonempty_sections(sections)
     if total == 0 then
+        -- an empty list and a failed one look the same from here, and a mistyped
+        -- revspec only ever lands as the second: report what git said
+        if list_err then
+            return notify(chomp(list_err), vim.log.levels.ERROR)
+        end
         return notify("no changes for this source")
     end
 
@@ -1091,8 +1266,9 @@ function M.panel(opts)
     end
 
     ---@param entry differ.FileEntry
+    ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
-    local function stage_for(entry)
+    local function stage_for(entry, diff)
         if not stageable then
             return nil
         end
@@ -1100,7 +1276,7 @@ function M.panel(opts)
         local function settle()
             return settle_pair()
         end
-        if entry.status == "M" then
+        if entry.status == "M" and #diff.hunks > 0 then
             return {
                 initial = entry.staged and "staged" or "unstaged",
                 apply = function(model, hunk, offset, reverse)
@@ -1130,9 +1306,23 @@ function M.panel(opts)
             end
             return M.stage(root, entry.path)
         end
+        -- a modification with no hunks to patch: a mode change, a submodule pointer, a
+        -- binary file, a change git normalises away. `git add` stages exactly what git
+        -- would. no revert: `git checkout --` would also throw away content the diff
+        -- never showed, and the panel's own X still discards behind its confirm
+        if entry.status == "M" then
+            return {
+                initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
+                apply = whole_file_apply,
+                refresh = refresh_panel,
+                settle = settle,
+            }
+        end
         if entry.status == "?" or entry.status == "A" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
                 apply = whole_file_apply,
                 -- the file is the hunk, so reverting it is deleting it; `discard`
                 -- already knows to drop the staged add first
@@ -1147,6 +1337,7 @@ function M.panel(opts)
         if entry.status == "D" then
             return {
                 initial = entry.staged and "staged" or "unstaged",
+                whole_file = true,
                 apply = whole_file_apply,
                 -- the mirror: a deletion is restored rather than removed
                 revert = function()
@@ -1172,18 +1363,16 @@ function M.panel(opts)
     local function show_entry(entry, focus_line, focus_col)
         local model = model_for(entry)
         if #model.hunks == 0 and not model.binary then
-            -- a pure rename or copy has identical content on both sides, so it diffs
-            -- to zero hunks but is still a real change worth opening (the file just
-            -- moved). a binary file also has no hunks but renders a placeholder, so it
-            -- opens too. any other zero-hunk entry is stale: committed, staged away, or
-            -- reverted outside differ
-            local is_move = (entry.status == "R" or entry.status == "C")
-                and entry.previous_path ~= nil
-            if not is_move then
+            -- a real change with no lines to show (a mode change, a rename, a final
+            -- newline, an empty new file) opens on a notice, like a binary file does;
+            -- a stale entry has no notice and tells the caller to re-source
+            local notice = empty_notice(root, entry, model, raw_args_for(entry))
+            if not notice then
                 return false
             end
+            model.notice = notice
         end
-        local staging = stage_for(entry)
+        local staging = stage_for(entry, model)
         if view and view:is_open() then
             view:set_source(
                 model,
@@ -1211,7 +1400,8 @@ function M.panel(opts)
     ---@return differ.FileEntry[]
     local function entries_for_path(path)
         local out = {}
-        for _, sec in ipairs(M.status_sections(root)) do
+        local live = M.status_sections(root)
+        for _, sec in ipairs(live) do
             for _, e in ipairs(sec.entries) do
                 if e.path == path then
                     out[#out + 1] = e
@@ -1467,8 +1657,11 @@ function M.history(opts)
     -- file we're in; a `:Differ log <other>` has no meaningful origin line
     local origin = (origin_buf ~= "" and origin_buf == file) and origin_line or nil
 
-    local commits = M.log_commits(root, { path = relpath })
+    local commits, err = M.log_commits(root, { path = relpath })
     if #commits == 0 then
+        if err then
+            return notify(chomp(err), vim.log.levels.ERROR)
+        end
         return notify("no history for " .. relpath)
     end
     local branch = head_branch(root)
@@ -1551,8 +1744,11 @@ function M.range_history(opts)
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
-    local commits = M.range_commits(root, range)
+    local commits, err = M.range_commits(root, range)
     if #commits == 0 then
+        if err then
+            return notify(chomp(err), vim.log.levels.ERROR)
+        end
         return notify("no commits in " .. range)
     end
     local branch = head_branch(root)

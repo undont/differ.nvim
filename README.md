@@ -29,8 +29,6 @@ Everything runs through one renderer, so staging a hunk and replying to a review
 
 The GitHub side runs in a separate process rather than the editor, so opening a PR or posting a review doesn't block on the API, and results are cached between calls.
 
----
-
 <!-- panvimdoc-ignore-end -->
 
 ## Features
@@ -47,8 +45,6 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - Real buffer lines, so search, yank, and motions work as normal
 - One diff engine (`vim.text.diff()`, histogram) shared by every source
 
----
-
 ## Requirements
 
 - Neovim 0.12+ (`vim.text.diff` sets the floor; also uses `vim.system` and `vim.uv`)
@@ -59,8 +55,6 @@ The GitHub side runs in a separate process rather than the editor, so opening a 
 - Local diffs need none of the above beyond git
 
 `:checkhealth differ` reports which of these are satisfied.
-
----
 
 <!-- panvimdoc-ignore-start -->
 
@@ -104,8 +98,6 @@ Pin a release with `{ src = "https://github.com/undont/differ.nvim", version = "
 ### Other managers
 
 differ's only install step is building the Go sidecar, so point your manager's build / post-update hook at `make go-build`: pckr `run`, vim-plug `do`, or the equivalent.
-
----
 
 <!-- panvimdoc-ignore-end -->
 
@@ -201,8 +193,6 @@ require("differ").setup({
   command_alias = nil,           -- extra :command(s) routing to :Differ, e.g. "D" or { "D", "Df" }
 })
 ```
-
----
 
 ## Usage
 
@@ -485,13 +475,3 @@ require("differ").goto_hunk("next", {
   end,
 })
 ```
-
----
-
-<!-- panvimdoc-ignore-start -->
-
-## Licence
-
-[MIT](LICENCE)
-
-<!-- panvimdoc-ignore-end -->

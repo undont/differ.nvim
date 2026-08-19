@@ -35,11 +35,13 @@ function M.render(model, opts)
         end
     end
 
-    -- a binary file isn't diffed (it would blow up the word pass); show a placeholder
-    if model.binary then
+    -- a binary file isn't diffed (it would blow up the word pass), and a zero-hunk
+    -- entry has no lines to show; both render as a one-line notice
+    local notice = model.binary and BINARY_NOTICE or model.notice
+    if notice then
         map:push({ kind = "meta" })
         return {
-            columns = { { lines = { BINARY_NOTICE }, map = map, side = "unified", folds = folds } },
+            columns = { { lines = { notice }, map = map, side = "unified", folds = folds } },
             rows = 1,
         }
     end

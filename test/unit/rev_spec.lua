@@ -179,3 +179,22 @@ describe("git.rev.valid_ref", function()
         end
     end)
 end)
+
+describe("git.rev.parse_raw_modes", function()
+    it("reads both modes off a --raw line", function()
+        local old, new = rev.parse_raw_modes(":100644 100755 e69de29 e69de29 M\ta.lua\n")
+        assert.are.equal("100644", old)
+        assert.are.equal("100755", new)
+    end)
+
+    it("reads a rename line, whose path half carries two paths", function()
+        local old, new =
+            rev.parse_raw_modes(":100644 100644 aaaaaaa aaaaaaa R100\told.lua\tnew.lua\n")
+        assert.are.equal("100644", old)
+        assert.are.equal("100644", new)
+    end)
+
+    it("is nil when the run listed nothing", function()
+        assert.is_nil(rev.parse_raw_modes(""))
+    end)
+end)

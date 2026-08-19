@@ -162,3 +162,32 @@ describe("model.diff.revert_hunk", function()
         assert.are.equal("/repo", r.root)
     end)
 end)
+
+describe("model.diff.empty_reason", function()
+    ---@param old string
+    ---@param new string
+    local function reason(old, new)
+        return diff.empty_reason(
+            diff.build({ path = "x", old_rev = "A", new_rev = "B", old_text = old, new_text = new })
+        )
+    end
+
+    it("is nil when there are hunks to show", function()
+        assert.is_nil(reason("a\n", "b\n"))
+    end)
+
+    it("names an empty file, and identical content apart", function()
+        assert.are.equal("empty", reason("", ""))
+        assert.are.equal("identical", reason("a\n", "a\n"))
+    end)
+
+    it("names a final newline in either direction", function()
+        -- build ensures a trailing newline, so these reach zero hunks
+        assert.are.equal("eol_added", reason("a", "a\n"))
+        assert.are.equal("eol_removed", reason("a\n", "a"))
+    end)
+
+    it("is nil for binary content, which has its own placeholder", function()
+        assert.is_nil(reason("a\0b", "a\0c"))
+    end)
+end)

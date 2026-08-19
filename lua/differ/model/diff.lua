@@ -19,6 +19,7 @@
 ---@field head string|nil  -- git branch, for the synthetic buffer's statusline (set by the frontend)
 ---@field root string|nil  -- repo root (absolute), so jump-to-file can resolve the real file (set by the frontend)
 ---@field binary boolean|nil  -- either side is binary: no hunks, renderers show a placeholder
+---@field notice string|nil  -- why a zero-hunk diff has nothing to show; rendered in place of the diff
 
 local text_util = require("differ.util.text")
 local to_lines = text_util.to_lines
@@ -104,6 +105,21 @@ function M.build(opts)
         head = opts.head,
         root = opts.root,
     }
+end
+
+-- why a zero-hunk model has nothing to show, from its two texts alone. build
+-- ensures a trailing newline on both sides, so that's the only way two differing
+-- texts reach zero hunks. nil when only the frontend knows (a mode change, a rename)
+---@param model differ.DiffModel
+---@return "empty"|"eol_added"|"eol_removed"|"identical"|nil
+function M.empty_reason(model)
+    if #model.hunks > 0 or model.binary then
+        return nil
+    end
+    if model.old_text ~= model.new_text then
+        return model.new_text:sub(-1) == "\n" and "eol_added" or "eol_removed"
+    end
+    return model.old_text == "" and "empty" or "identical"
 end
 
 -- the new side's text with hunk `idx` undone: its old lines put back where its new

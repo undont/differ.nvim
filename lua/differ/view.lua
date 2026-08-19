@@ -80,7 +80,9 @@ local armed_view = nil
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
----@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer, reverse: boolean): boolean
+---@field whole_file? boolean  -- stages as a unit: the keys act on the file, not the hunk under the cursor
+-- `apply` takes a nil hunk on a whole-file source, which ignores it
+---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, offset: integer, reverse: boolean): boolean
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
@@ -169,13 +171,16 @@ function View.new(model, opts)
 end
 
 -- seed per-hunk staged state for the current source: a staged diff (HEAD↔index)
--- opens with every hunk staged, an unstaged diff (index↔worktree) with none
+-- opens with every hunk staged, an unstaged diff (index↔worktree) with none. a
+-- whole-file source seeds its single slot whether or not a hunk backs it, so a
+-- staged mode change (which has none) still opens knowing it's staged
 function View:_init_staged()
     self.staged_hunks = {}
-    if self.staging and self.staging.initial == "staged" then
-        for i = 1, #self.model.hunks do
-            self.staged_hunks[i] = true
-        end
+    if not (self.staging and self.staging.initial == "staged") then
+        return
+    end
+    for i = 1, math.max(#self.model.hunks, self:_whole_file() and 1 or 0) do
+        self.staged_hunks[i] = true
     end
 end
 
@@ -770,7 +775,8 @@ function View:show_help()
     -- per-file, not session-wide: a pure rename carries no staging capability at all, so
     -- listing s/u there would advertise keys that refuse
     if self:_can_stage_hunk() then
-        rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage hunk" }
+        local unit = self:_whole_file() and "file" or "hunk"
+        rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage " .. unit }
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
     end
     if self.staging and self.staging.revert then
@@ -990,11 +996,29 @@ function View:_hunk_index_under_cursor()
     return line and line.hunk or nil
 end
 
--- whether the hunk-staging keys act here: the session allows staging and this file's
--- capability implements it. gated on `apply` alone, since `revert` gates X on its own
+-- whether the staging keys act here: the session allows staging and this file's
+-- capability implements it
 ---@return boolean
 function View:_can_stage_hunk()
     return self.can_stage and self.staging ~= nil and self.staging.apply ~= nil
+end
+
+-- whether this file stages as one unit (e.g. a new/deleted file, a binary one,
+-- a change with no lines to show).
+---@return boolean
+function View:_whole_file()
+    return (self.staging and self.staging.whole_file) == true
+end
+
+-- the slot the staging keys act on: a whole-file source always uses slot 1, which is
+-- its one hunk where it has one and a virtual slot where it doesn't. anything else
+-- takes the hunk under the cursor
+---@return integer|nil
+function View:_target_index()
+    if self:_whole_file() then
+        return 1
+    end
+    return self:_hunk_index_under_cursor()
 end
 
 -- patch hunk `idx` to `want_staged` in the index from the frozen hunk model (never
@@ -1025,7 +1049,7 @@ function View:stage_hunk()
     if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
+    local idx = self:_target_index()
     if idx and not (self.staged_hunks[idx] or false) then
         self:_toggle_hunk(true)
     else
@@ -1039,7 +1063,7 @@ function View:unstage_hunk()
     if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
+    local idx = self:_target_index()
     if idx and (self.staged_hunks[idx] or false) then
         self:_toggle_hunk(false)
     else
@@ -1118,7 +1142,7 @@ function View:_toggle_hunk(want_staged)
     if not self:_can_stage_hunk() then
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
+    local idx = self:_target_index()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
@@ -1176,7 +1200,8 @@ function View:_toggle_all(want_staged)
         return false
     end
     local changed = false
-    for i = 1, #self.model.hunks do
+    -- a whole-file source has one slot to act on, backed by a hunk or not
+    for i = 1, math.max(#self.model.hunks, self:_whole_file() and 1 or 0) do
         if self:_apply_hunk(i, want_staged) then
             changed = true
         end

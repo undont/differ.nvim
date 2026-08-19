@@ -3425,3 +3425,386 @@ describe("git session teardown after :q on the diff", function()
         assert.are.equal(aus_before, viewclose_autocmds())
     end)
 end)
+
+-- a change that diffs to no lines still opens a diff view (the session's anchor) on
+-- a notice naming the reason, rather than refusing the selection and re-notifying
+describe(":Differ panel (zero-hunk entries)", function()
+    local Panel = require("differ.panel")
+
+    local function open_only_entry(root)
+        git_src.panel({ open_first = true })
+        local p = assert(Panel.current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        return p, require("differ.view").current()
+    end
+
+    it("opens a mode-only change on a notice naming both modes", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493)) -- 0755
+        vim.cmd.edit(root .. "/a.lua")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("Mode changed 100644 → 100755", v.model.notice)
+        assert.are.same(
+            { "Mode changed 100644 → 100755" },
+            vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)
+        )
+        p:close()
+    end)
+
+    it("opens an empty untracked file on a notice", function()
+        local root = fresh_repo()
+        write(root .. "/empty.txt", "")
+        vim.cmd.edit(root .. "/empty.txt")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("empty.txt", v.model.path)
+        assert.are.equal("Empty file", v.model.notice)
+        p:close()
+    end)
+
+    it("opens a final-newline-only change on a notice", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", V1:sub(1, -2)) -- same content, no trailing newline
+        vim.cmd.edit(root .. "/a.lua")
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("Final newline removed", v.model.notice)
+        p:close()
+    end)
+
+    it("names a moved submodule pointer, which reads empty on both sides", function()
+        local root = fresh_repo()
+        -- the submodule's own repo lives outside root, so it adds no untracked entry
+        local sub = vim.fn.tempname()
+        vim.fn.mkdir(sub, "p")
+        git(sub, "init", "-q")
+        write(sub .. "/f", "one\n")
+        git(sub, "add", "f")
+        git(sub, "commit", "-q", "-m", "one")
+
+        git(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", sub, "mod")
+        git(root, "commit", "-q", "-m", "add submodule")
+        write(root .. "/mod/f", "two\n") -- move the pointer: commit inside the submodule
+        git(root .. "/mod", "commit", "-q", "-am", "two")
+        vim.cmd.edit(root .. "/a.lua") -- put the session's origin inside this repo
+
+        local p, v = open_only_entry(root)
+        assert.is_not_nil(v)
+        assert.are.equal("mod", v.model.path)
+        -- `git show :mod` fails on a gitlink, so the model has no content either side
+        assert.are.equal("", v.model.old_text)
+        assert.are.equal("", v.model.new_text)
+        assert.are.equal("Submodule commit changed", v.model.notice)
+        p:close()
+    end)
+
+    it("still refuses a stale entry, so the list re-sources instead", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = assert(Panel.current())
+
+        -- commit the change behind the panel's back: its entry now diffs to nothing
+        git(root, "commit", "-qam", "outside")
+        -- on_select is what the panel calls on <CR>; false is "stale, re-source"
+        assert.is_false(p.on_select({ path = "a.lua", status = "M", staged = false }))
+        if Panel.current() then
+            p:close() -- the refresh may have emptied the list and ended the session
+        end
+    end)
+end)
+
+-- a whole-file source (a new or deleted file, a binary one, a change with no lines
+-- to show) stages as a unit. the keys act on the file rather than on the hunk under
+-- the cursor, which is what used to send them stepping off to another file
+describe(":Differ diff whole-file staging", function()
+    local Panel = require("differ.panel")
+
+    local function view_in_origin(p)
+        vim.api.nvim_set_current_win(p.origin_win)
+        return require("differ.view").current()
+    end
+    -- the mode git records for `path` in the index
+    local function index_mode(root, path)
+        return (git(root, "ls-files", "--stage", "--", path):match("^(%d+)"))
+    end
+    local function staged_entry(p, path)
+        for _, m in ipairs(p.meta) do
+            if m.kind == "file" and m.entry.path == path and m.entry.staged then
+                return m.entry
+            end
+        end
+    end
+
+    it("stages a mode-only change with s instead of stepping to another file", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        write(root .. "/b.lua", "other\n") -- a second file, to catch a step away
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "two files")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493))
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(0, #v.model.hunks) -- nothing to put a cursor on
+        assert.is_true(v.staging.whole_file)
+        assert.are.equal("100644", index_mode(root, "a.lua"))
+
+        v:stage_hunk()
+
+        assert.are.equal("100755", index_mode(root, "a.lua")) -- the mode really staged
+        assert.is_not_nil(staged_entry(p, "a.lua"))
+        assert.are.equal("a.lua", view_in_origin(p).model.path) -- never stepped away
+        p:close()
+    end)
+
+    it("unstages a staged mode change with u, which needs its seeded staged state", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493))
+        git(root, "add", "a.lua") -- stage the mode change: the only entry is staged
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("staged", v.staging.initial)
+        assert.is_true(v.staged_hunks[1]) -- seeded with no hunk behind it
+        assert.are.equal("100755", index_mode(root, "a.lua"))
+
+        v:unstage_hunk()
+
+        assert.are.equal("100644", index_mode(root, "a.lua"))
+        p:close()
+    end)
+
+    it("stages a new file from the old column's filler rows in split layout", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n") -- untracked: a pure add
+        write(root .. "/b.lua", "other\n") -- a second entry, to catch a step away
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("new.lua", v.model.path)
+        v:toggle_layout() -- -> split; the old column is all filler
+        assert.are.equal(2, #v.columns)
+
+        -- a pure add carries no old lines, so every old-column row is a meta row with
+        -- no hunk on it: the cursor lookup finds nothing there
+        vim.api.nvim_set_current_win(v.columns[1].winid)
+        vim.api.nvim_win_set_cursor(v.columns[1].winid, { 1, 0 })
+        assert.is_nil(v:_hunk_index_under_cursor())
+
+        v:stage_hunk()
+
+        assert.are.equal("one\ntwo\n", git(root, "show", ":new.lua"))
+        assert.is_not_nil(staged_entry(p, "new.lua"))
+        p:close()
+    end)
+
+    it("advertises the file, not the hunk, in the diff help", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\n")
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.is_true(v.staging.whole_file)
+        v:show_help()
+        local help_buf = vim.api.nvim_win_get_buf(0)
+        local text = table.concat(vim.api.nvim_buf_get_lines(help_buf, 0, -1, false), "\n")
+        assert.is_truthy(text:find("stage / unstage file", 1, true))
+        assert.is_nil(text:find("stage / unstage hunk", 1, true))
+        vim.api.nvim_win_close(0, true)
+        p:close()
+    end)
+end)
+
+-- rev.source turns any leftover arg into a rev ref, so a typo reaches git as a real
+-- lookup and comes back as a failed listing. reporting it as "no changes" hides that
+describe("git listing errors", function()
+    local Panel = require("differ.panel")
+
+    -- the notification the call under test produced, if any
+    local function last_notif()
+        return _G.notifs[#_G.notifs]
+    end
+
+    it("carries git's stderr off a failed listing instead of an empty list", function()
+        local root = fresh_repo()
+        local source = {
+            old = { kind = "rev", rev = "nosuchref", label = "nosuchref" },
+            new = {
+                kind = "worktree",
+                label = "WORKTREE",
+            },
+        }
+        local files, err = git_src.changed_files(source, root)
+        assert.are.same({}, files)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("nosuchref", 1, true))
+
+        -- file_entries stops at the failure rather than listing untracked files past it
+        local entries, ferr = git_src.file_entries(source, root)
+        assert.are.same({}, entries)
+        assert.are.equal(err, ferr)
+    end)
+
+    it("reports a mistyped revspec at ERROR, in git's words", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a real change, so INFO would lie
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        local p = git_src.panel({ rev = { "nosuchref" } })
+        assert.is_nil(p) -- no session opened
+        assert.is_nil(Panel.current())
+        local n = last_notif()
+        assert.are.equal(vim.log.levels.ERROR, n.level)
+        assert.is_truthy(n.msg:find("nosuchref", 1, true))
+        assert.is_nil(n.msg:find("no changes for this source", 1, true))
+    end)
+
+    it("still reports a genuinely empty source at INFO", function()
+        local root = fresh_repo() -- clean worktree: nothing to show, and no failure
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        assert.is_nil(git_src.panel({}))
+        local n = last_notif()
+        assert.are.equal("differ: no changes for this source", n.msg)
+        assert.are.equal(vim.log.levels.INFO, n.level)
+    end)
+
+    it("reports a mistyped rev-range history at ERROR too", function()
+        local root = fresh_repo()
+        vim.cmd.edit(root .. "/a.lua")
+
+        _G.notifs = {}
+        git_src.range_history({ range = "nosuchref...HEAD" })
+        local n = last_notif()
+        assert.are.equal(vim.log.levels.ERROR, n.level)
+        assert.is_truthy(n.msg:find("nosuchref", 1, true))
+    end)
+end)
+
+-- the panel counts every untracked file's lines on every build and every refresh.
+-- reading them through the clean filter meant three git processes and a loose blob
+-- per CRLF-carrying file, every time
+describe("git.untracked_additions (cost)", function()
+    -- the number of loose objects in the repo's object store
+    local function loose_objects(root)
+        return #vim.fn.glob(root .. "/.git/objects/??/*", false, true)
+    end
+    local function untracked_entry(sections, path)
+        for _, sec in ipairs(sections) do
+            for _, e in ipairs(sec.entries) do
+                if e.path == path and e.status == "?" then
+                    return e
+                end
+            end
+        end
+    end
+
+    it("counts a CRLF untracked file without writing a blob into .git/objects", function()
+        local root = fresh_repo()
+        write(root .. "/crlf.txt", "one\r\ntwo\r\nthree\r\n")
+        local before = loose_objects(root)
+
+        for _ = 1, 3 do -- a build and two refreshes
+            local sections = git_src.status_sections(root)
+            assert.are.equal(3, untracked_entry(sections, "crlf.txt").additions)
+        end
+
+        assert.are.equal(before, loose_objects(root))
+    end)
+
+    it("reuses the count until the file's mtime or size moves", function()
+        local root = fresh_repo()
+        local path = root .. "/u.txt"
+        local uv = vim.uv or vim.loop
+        write(path, "a\nb\n") -- 4 bytes, two lines
+        assert(uv.fs_utime(path, 1700000000, 1700000000))
+
+        local sections = git_src.status_sections(root)
+        assert.are.equal(2, untracked_entry(sections, "u.txt").additions)
+
+        -- same byte count, same timestamp, different content: a re-read would say 1
+        write(path, "abc\n")
+        assert(uv.fs_utime(path, 1700000000, 1700000000))
+        sections = git_src.status_sections(root)
+        assert.are.equal(2, untracked_entry(sections, "u.txt").additions) -- served from cache
+
+        -- moving the timestamp is what lets the new count through
+        assert(uv.fs_utime(path, 1700000001, 1700000001))
+        sections = git_src.status_sections(root)
+        assert.are.equal(1, untracked_entry(sections, "u.txt").additions)
+    end)
+end)
+
+-- a fetch is the one git call that talks to a network, and it ran unbounded: a slow
+-- remote froze nvim until git gave up, and a credential prompt never came back
+describe("git.checkout (network budget)", function()
+    -- a `git` earlier on PATH than the real one, running `body`
+    local function fake_git(body)
+        local dir = vim.fn.tempname()
+        vim.fn.mkdir(dir, "p")
+        local path = dir .. "/git"
+        write(path, "#!/bin/sh\n" .. body .. "\n")
+        assert((vim.uv or vim.loop).fs_chmod(path, 493))
+        return dir
+    end
+
+    it("kills a fetch that outlasts its budget, and says so", function()
+        local root = fresh_repo()
+        local git_src_mod = require("differ.git")
+        local budget, path = git_src_mod.fetch_timeout_ms, vim.env.PATH
+        git_src_mod.fetch_timeout_ms = 300
+        vim.env.PATH = fake_git("sleep 30") .. ":" .. path
+
+        local started = (vim.uv or vim.loop).now()
+        local ok, err = git_src_mod.checkout(root, "feature", nil)
+        local took = (vim.uv or vim.loop).now() - started
+
+        git_src_mod.fetch_timeout_ms, vim.env.PATH = budget, path
+        assert.is_false(ok)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("timed out", 1, true))
+        assert.is_true(took < 10000) -- killed, not waited out
+    end)
+
+    it("returns the spawn error instead of raising it", function()
+        -- a cwd that isn't there fails to spawn the same way a missing git does
+        local ok, err = require("differ.git").checkout("/no/such/repo", "feature", nil)
+        assert.is_false(ok)
+        assert.is_truthy(err)
+        assert.is_truthy(err:find("ENOENT", 1, true))
+    end)
+
+    it("runs the fetch with terminal prompts disabled", function()
+        local root = fresh_repo()
+        local marker = vim.fn.tempname()
+        local path = vim.env.PATH
+        -- the fake records the env it saw, then fails so checkout stops there
+        vim.env.PATH = fake_git('printf "%s" "$GIT_TERMINAL_PROMPT" > ' .. marker .. "\nexit 1")
+            .. ":"
+            .. path
+
+        require("differ.git").checkout(root, "feature", nil)
+
+        vim.env.PATH = path
+        assert.are.equal("0", table.concat(vim.fn.readfile(marker), ""))
+    end)
+end)

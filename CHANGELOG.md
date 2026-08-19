@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A change git lists that has no lines to show (a `chmod +x`, an empty new file, a trailing-newline-only edit, a rename, a moved submodule pointer) put a row in the panel that did nothing when you opened it, and reported "no changes" again on every try. Those rows now open a diff naming the reason
+- `s` and `u` were advertised on files that stage as a unit, then stepped to another file instead of staging it. A binary file, the zero-hunk changes above, and a new file opened from a split's left column now all stage where the keys say they will
+- A mistyped revspec reported "no changes for this source" while git actually emitted `fatal: bad revision`. `:Differ` and both `:Differ log` forms now report based on what git said
+- The panel read every untracked file from disk on every build and refresh, and one containing a carriage return also left a loose object in `.git/objects` each time. Those counts are now read once and reused until the file's timestamp or size moves
+- `:Differ pr checkout` froze nvim for as long as a slow remote took, and hung for good on a credential prompt. The fetch is now bounded and prompts are off, and git failing to start at all reports a message rather than a Lua error
+
+## [0.1.31] — 2026-08-15
+
 ### Added
 
 - `:checkhealth differ` reports the Neovim floor, git, the options you passed to `setup()`, the sidecar binary and its handshake, whether a GitHub token is available, and anything the sidecar has logged

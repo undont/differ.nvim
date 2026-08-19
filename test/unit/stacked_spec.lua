@@ -235,3 +235,19 @@ describe("render.stacked identical content", function()
         assert.are.equal(0, r.map:len())
     end)
 end)
+
+describe("render.stacked notice", function()
+    it("renders a zero-hunk entry's notice as a single meta row", function()
+        local col = render({
+            path = "x",
+            old_rev = "A",
+            new_rev = "B",
+            old_text = "a\n",
+            new_text = "a\n",
+            hunks = {},
+            notice = "Final newline removed",
+        }, { context = FULL })
+        assert.are.same({ "Final newline removed" }, col.lines)
+        assert.are.equal("meta", col.map.lines[1].kind)
+    end)
+end)
