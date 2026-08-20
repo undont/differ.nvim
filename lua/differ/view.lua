@@ -9,7 +9,8 @@ local paint = require("differ.ui.paint")
 local syntax = require("differ.syntax")
 local statuscolumn = require("differ.ui.statuscolumn")
 local nav = require("differ.nav")
-local bind = require("differ.util.keymap").bind
+local keymap = require("differ.util.keymap")
+local bind, unbind = keymap.bind, keymap.unbind
 local find_buf = require("differ.util.buf").find
 
 local ns = vim.api.nvim_create_namespace("differ")
@@ -111,6 +112,9 @@ local armed_view = nil
 ---@field _suppress_close boolean  -- true while we close a diff window ourselves (relayout/teardown)
 ---@field _closing boolean  -- re-entrancy guard once a user close has begun
 ---@field _close_group integer|nil  -- augroup id for the WinClosed close guard
+---@field _zoom_group integer|nil  -- augroup id for the zoom-tab return hook
+---@field _edit_group integer|nil  -- augroup id for the edit window's WinClosed sync
+---@field _edit_map { buf: integer, spec: string|string[]|false }|nil  -- g? bound on a real file buffer
 local View = {}
 View.__index = View
 
@@ -1553,6 +1557,7 @@ end
 function View:_arm_zoom_return(zoom_tab, return_tab)
     -- key on self.id so a second view's zoom doesn't clobber this one's guard
     local group = vim.api.nvim_create_augroup("differ.view.zoom." .. self.id, { clear = true })
+    self._zoom_group = group -- a session that ends with the zoom tab still open drops it
     vim.api.nvim_create_autocmd("TabClosed", {
         group = group,
         callback = function()
@@ -1560,6 +1565,7 @@ function View:_arm_zoom_return(zoom_tab, return_tab)
                 return -- some other tab closed
             end
             pcall(vim.api.nvim_del_augroup_by_id, group)
+            self._zoom_group = nil
             vim.schedule(function()
                 if vim.api.nvim_tabpage_is_valid(return_tab) then
                     vim.api.nvim_set_current_tabpage(return_tab)
@@ -1610,8 +1616,13 @@ function View:_open_edit_window(abs, target, tcol, anchor_win)
         vim.cmd("rightbelow split")
         local win = vim.api.nvim_get_current_win()
         self.edit_win = win
+        -- grouped, not a bare `once`: a window the user never closes would otherwise
+        -- leave an autocmd nothing can reach to remove
+        self._edit_group =
+            vim.api.nvim_create_augroup("differ.view.edit." .. self.id, { clear = true })
         vim.api.nvim_create_autocmd("WinClosed", {
             pattern = tostring(win),
+            group = self._edit_group,
             once = true,
             callback = function()
                 if self.edit_win == win then
@@ -1625,16 +1636,31 @@ function View:_open_edit_window(abs, target, tcol, anchor_win)
         place_cursor(target, tcol)
     end
     -- bind g? on the real-file buffer too, so the cheatsheet is reachable from the
-    -- edit window (shadows native g?/rot13, inert in this review flow)
-    bind(vim.api.nvim_get_current_buf(), self.keymaps.help, function()
+    -- edit window (shadows native g?/rot13, inert in this review flow). recorded
+    -- because that buffer is the user's: teardown has to take the map off by hand
+    self:_drop_edit_map() -- a reused edit window may hold an earlier file's map
+    local buf = vim.api.nvim_get_current_buf()
+    bind(buf, self.keymaps.help, function()
         self:show_help()
     end, "differ: keymap help")
+    self._edit_map = { buf = buf, spec = self.keymaps.help }
+end
+
+-- take our g? back off the real file buffer. it isn't ours to delete, so nothing
+-- reclaims the mapping for us
+function View:_drop_edit_map()
+    if not self._edit_map then
+        return
+    end
+    unbind(self._edit_map.buf, self._edit_map.spec)
+    self._edit_map = nil
 end
 
 -- drop the edit window without losing work: a window holding unsaved edits is left
 -- open (it's a normal file window, harmless to keep), otherwise it's closed. either
 -- way `edit_win` is cleared. called on a file switch (stale window) and on teardown
 function View:_release_edit_window()
+    self:_drop_edit_map()
     local win = self.edit_win
     self.edit_win = nil
     if not (win and vim.api.nvim_win_is_valid(win)) then
@@ -1774,6 +1800,9 @@ function View:_discard(col, keep_win)
     end
     by_buf[col.bufnr] = nil
     statuscolumn.clear(col.bufnr)
+    -- the buffer delete below takes the cursor-line autocmds with it, but not the group
+    -- they sat in; drop that too so a long session doesn't accrue one per diff buffer
+    pcall(vim.api.nvim_del_augroup_by_name, "differ.cursorline." .. col.bufnr)
     -- only close a window we still own: if the user swapped another buffer into it
     -- (a picker / :edit), it's theirs now, so leave it (and the navigation) alone
     if
@@ -1814,9 +1843,11 @@ function View:close(keep_win)
     if armed_view == self then
         armed_view = nil
     end
-    if self._close_group then
-        pcall(vim.api.nvim_del_augroup_by_id, self._close_group)
-        self._close_group = nil
+    for _, field in ipairs({ "_close_group", "_zoom_group", "_edit_group" }) do
+        if self[field] then
+            pcall(vim.api.nvim_del_augroup_by_id, self[field])
+            self[field] = nil
+        end
     end
     self:_release_edit_window() -- drop any edit-in-review window (keeps it if unsaved)
     for _, col in ipairs(self.columns) do
