@@ -9,6 +9,8 @@ local repo = require("differ.pr.repo")
 local client = require("differ.pr.client")
 local guard = require("differ.pr.guard")
 local viewed = require("differ.pr.viewed")
+local tab_util = require("differ.util.tab")
+local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
 
 local M = {}
 
@@ -66,26 +68,6 @@ local function local_root(coords)
         return root
     end
     return nil
-end
-
--- run a session in its own tabpage (like git/init.lua): the invoking tab is never
--- touched, so ending the session drops the tab and returns there
----@return integer return_tab, integer session_tab
-local function open_session_tab()
-    local return_tab = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tab split")
-    return return_tab, vim.api.nvim_get_current_tabpage()
-end
-
----@param tab integer|nil
-local function close_session_tab(tab)
-    if not (tab and vim.api.nvim_tabpage_is_valid(tab)) then
-        return
-    end
-    if #vim.api.nvim_list_tabpages() == 1 then
-        vim.cmd("tabnew")
-    end
-    pcall(vim.cmd, "tabclose " .. vim.api.nvim_tabpage_get_number(tab))
 end
 
 -- github's file-status words -> the single-letter codes the panel keys highlights on

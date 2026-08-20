@@ -9,6 +9,8 @@ local patch = require("differ.git.patch")
 local log = require("differ.git.log")
 local watch = require("differ.git.watch")
 local text_util = require("differ.util.text")
+local tab_util = require("differ.util.tab")
+local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
 
 local M = {}
 
@@ -115,33 +117,6 @@ end
 -- strip trailing whitespace from a git output line (e.g. rev-parse, show, log)
 local function chomp(s)
     return (s:gsub("%s+$", ""))
-end
-
--- run a session in its own tabpage (like diffview): the tab :Differ was invoked
--- from is never touched, so ending the session drops the tab and returns there with
--- the dashboard / file / window layout intact. `tab split` carries the current buffer
--- in, so it stays displayed in the invoking tab and isn't wiped when the diff takes
--- the session window. returns the tab to return to and the new session tab
----@return integer return_tab, integer session_tab
-local function open_session_tab()
-    local return_tab = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tab split")
-    return return_tab, vim.api.nvim_get_current_tabpage()
-end
-
--- close a session's tabpage, never leaving zero tabs (mirrors diffview). a no-op when
--- it's already gone: closing the last session window can collapse the tab first
----@param tab integer|nil
-local function close_session_tab(tab)
-    if not (tab and vim.api.nvim_tabpage_is_valid(tab)) then
-        return
-    end
-    if #vim.api.nvim_list_tabpages() == 1 then
-        vim.cmd("tabnew")
-    end
-    pcall(function()
-        vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(tab))
-    end)
 end
 
 -- repo root containing `path` (a file or directory), or nil if not in a repo

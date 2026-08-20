@@ -18,6 +18,7 @@
 
 local set_local = require("differ.util.win").set_local
 local keymap = require("differ.util.keymap")
+local tab_util = require("differ.util.tab")
 local bind, unbind = keymap.bind, keymap.unbind
 
 local M = {}
@@ -732,14 +733,7 @@ function M.close()
             pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end
     end
-    if vim.api.nvim_tabpage_is_valid(s.session_tab) then
-        if #vim.api.nvim_list_tabpages() == 1 then
-            vim.cmd("tabnew")
-        end
-        pcall(function()
-            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(s.session_tab))
-        end)
-    end
+    tab_util.close_session(s.session_tab)
     if vim.api.nvim_tabpage_is_valid(s.return_tab) then
         vim.api.nvim_set_current_tabpage(s.return_tab)
     end
@@ -809,9 +803,7 @@ function lay_out(root, relpath, model, layout)
     require("differ.ui.highlights").ensure()
     local result = require("differ.render.merge").render(model, { layout = layout })
 
-    local return_tab = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tab split")
-    local session_tab = vim.api.nvim_get_current_tabpage()
+    local return_tab, session_tab = tab_util.open_session()
     vim.cmd("silent! only")
 
     -- result spans the bottom; inputs share the top row left-to-right
