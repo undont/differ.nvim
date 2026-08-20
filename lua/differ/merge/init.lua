@@ -774,6 +774,9 @@ function lay_out(root, relpath, model, layout)
     if session then -- re-open over a live session
         M.close()
     end
+    -- the four slabs are told apart by colour alone, so the groups have to exist even
+    -- when the user never called setup()
+    require("differ.ui.highlights").ensure()
     local result = require("differ.render.merge").render(model, { layout = layout })
 
     local return_tab = vim.api.nvim_get_current_tabpage()

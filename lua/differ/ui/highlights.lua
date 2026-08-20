@@ -300,4 +300,13 @@ function M.setup()
     end
 end
 
+-- register the groups unless something already has. every ui surface calls this on
+-- open, so a user who never called setup() still gets the palette rather than four
+-- identically-rendered merge slabs; setup() itself stays a re-apply
+function M.ensure()
+    if not registered then
+        M.setup()
+    end
+end
+
 return M
