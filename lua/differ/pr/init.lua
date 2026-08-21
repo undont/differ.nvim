@@ -687,6 +687,7 @@ local function open_session(pr, detail, opts)
         prefetching = {}, -- paths with an in-flight predictive prefetch (dedupe guard)
         threads = nil, -- PR-wide review threads, fetched by pr.threads.refresh
         threads_at = nil, -- when it was fetched; pr.threads expires it on a TTL
+        threads_fail = nil, -- consecutive get_threads failures; drives the retry backoff
         thread_collapsed = {}, -- per thread_id collapse override (gc); nil = cursor-driven
         thread_active = nil, -- the anchor key (bufnr:row) the cursor expands (peek)
         review_id = nil, -- the active pending-review node id; nil = immediate mode

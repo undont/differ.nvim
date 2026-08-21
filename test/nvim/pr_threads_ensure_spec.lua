@@ -155,6 +155,61 @@ describe("pr.threads.ensure (coalescing + freshness)", function()
         assert.are.equal(1, h.sent())
     end)
 
+    -- refresh runs on every show_file, so an unbacked-off failure means a request and a
+    -- notification per ]f for as long as github is unreachable
+    it("backs off after a failure: no refetch, no second notification", function()
+        local session = { pr = PR, threads = nil }
+        local h = harness(session)
+
+        threads.ensure(session, function() end)
+        h.fire({ message = "boom" })
+        assert.are.equal(1, h.sent())
+        assert.are.equal(1, h.notified())
+
+        local seen
+        threads.ensure(session, function(e)
+            seen = e
+        end)
+        assert.are.equal(1, h.sent()) -- inside the window: no new request
+        assert.are.equal(1, h.notified()) -- and no second notification
+        assert.are.equal("boom", seen.message) -- the caller is still answered
+    end)
+
+    -- the run has to end on a success, or one failure silences every later one
+    it("retries once the window closes, and an unrelated failure notifies again", function()
+        local session = { pr = PR, threads = nil }
+        local h = harness(session)
+
+        threads.ensure(session, function() end)
+        h.fire({ message = "boom" })
+
+        session.threads_retry_at = vim.uv.now() - 1 -- the window has closed
+        threads.ensure(session, function() end)
+        assert.are.equal(2, h.sent())
+        h.fire(nil, {}, 2) -- run ends here
+        assert.is_nil(session.threads_fail)
+        assert.is_nil(session.threads_retry_at)
+
+        session.threads_at = nil -- force the next ensure to fetch
+        threads.ensure(session, function() end)
+        h.fire({ message = "later" }, nil, 3)
+        assert.are.equal(2, h.notified()) -- a new run notifies again
+    end)
+
+    -- a comment posted while backing off is an explicit "try now"
+    it("invalidate clears the backoff", function()
+        local session = { pr = PR, threads = nil }
+        local h = harness(session)
+
+        threads.ensure(session, function() end)
+        h.fire({ message = "boom" })
+
+        threads.invalidate(session)
+        assert.is_nil(session.threads_retry_at)
+        threads.ensure(session, function() end)
+        assert.are.equal(2, h.sent())
+    end)
+
     it("on error notifies once but still runs both queued callbacks with the err", function()
         local session = { pr = PR, threads = nil }
         local h = harness(session)

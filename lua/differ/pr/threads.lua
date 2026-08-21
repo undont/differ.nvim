@@ -336,12 +336,45 @@ end
 
 local TTL_MS = 30 * 1000
 
+-- a failing fetch doubles its wait per consecutive failure. refresh runs on every
+-- show_file, so without this a github that is down is re-asked on every ]f
+local RETRY_BASE_MS = 5 * 1000
+local RETRY_MAX_MS = 5 * 60 * 1000
+
 -- an unstamped list counts as stale, so it revalidates once
 ---@param session table
 ---@return boolean
 local function fresh(session)
     local at = session.threads_at
     return type(at) == "number" and (vim.uv.now() - at) < TTL_MS
+end
+
+-- whether a failed fetch's backoff window is still open
+---@param session table
+---@return boolean
+local function backing_off(session)
+    local at = session.threads_retry_at
+    return type(at) == "number" and vim.uv.now() < at
+end
+
+-- one notification per run of consecutive failures, not per render, and a retry window
+-- that widens with the run. the error is kept so callers during the backoff get an answer
+---@param session table
+---@param err table
+local function note_failure(session, err)
+    local n = (session.threads_fail or 0) + 1
+    local wait = math.min(RETRY_BASE_MS * 2 ^ (n - 1), RETRY_MAX_MS)
+    session.threads_fail, session.threads_err = n, err
+    session.threads_retry_at = vim.uv.now() + math.floor(wait)
+    if n == 1 then
+        require("differ.pr").notify_err(err)
+    end
+end
+
+-- end the run, so an unrelated failure later notifies again rather than staying silent
+---@param session table
+local function note_success(session)
+    session.threads_fail, session.threads_retry_at, session.threads_err = nil, nil, nil
 end
 
 -- drop the fetched thread list so the next ensure refetches. the generation bump is
@@ -352,11 +385,12 @@ function M.invalidate(session)
     session.threads = nil
     session.threads_at = nil
     session.threads_gen = (session.threads_gen or 0) + 1
+    note_success(session) -- a mutation is an explicit retry; don't sit out the backoff
 end
 
 -- settle the fetch that started at `gen`: store its list, then run everyone queued
--- behind it. an error notifies once and leaves threads nil, so the additive surfaces
--- degrade and a later ensure retries
+-- behind it. an error opens a backoff window and leaves threads nil, so the additive
+-- surfaces degrade and a later ensure retries once the window closes
 ---@param session table
 ---@param gen integer
 ---@param err table|nil
@@ -371,8 +405,9 @@ local function deliver(session, gen, err, list)
     local waiters = session.threads_waiters or {}
     session.threads_waiters = nil
     if err then
-        require("differ.pr").notify_err(err)
+        note_failure(session, err)
     else
+        note_success(session)
         -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on
         -- type rather than `list or {}`
         session.threads = type(list) == "table" and list or {}
@@ -383,14 +418,17 @@ local function deliver(session, gen, err, list)
     end
 end
 
--- ensure the PR's threads are fetched (once, PR-wide), then run cb(err). callers while
--- a fetch is in flight queue behind it. the overview and the diff overlay share this,
--- so landing on either warms the other
+-- ensure the PR's threads are fetched (once per TTL window, PR-wide), then run cb(err).
+-- callers while a fetch is in flight queue behind it. the overview and the diff overlay
+-- share this, so landing on either warms the other
 ---@param session table
 ---@param cb fun(err: table|nil)
 function M.ensure(session, cb)
     if session.threads and fresh(session) then
         return cb(nil)
+    end
+    if backing_off(session) then
+        return cb(session.threads_err) -- answered from the last failure, no new request
     end
     local gen = session.threads_gen or 0
     -- only a fetch started under the current generation may be shared; one issued before
@@ -413,6 +451,9 @@ end
 -- a fetch already running for this generation is left to it
 ---@param session table
 local function revalidate(session)
+    if backing_off(session) then
+        return -- the painted list stays; a failing github isn't re-asked per render
+    end
     local gen = session.threads_gen or 0
     if session.threads_waiters and session.threads_fetch_gen == gen then
         return
