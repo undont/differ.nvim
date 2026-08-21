@@ -5,13 +5,10 @@ import (
 	"strconv"
 )
 
-// GetThreads returns the PR's review threads with their comments, paginating the
-// thread list. inner comment lists are capped at threadCommentsPage and flagged when
-// they hit it. per thread, ID is the root comment's numeric id (the reply anchor),
-// ThreadID is the GraphQL node id resolve_thread targets, and IsPending marks an
-// unsubmitted draft (root comment in PENDING state). the walk reads through: the
-// client memoises the list per session behind its own freshness clock, so a memo
-// here would only delay a colleague's comment further.
+// GetThreads returns the PR's review threads, paginated; inner comment lists cap at
+// threadCommentsPage and set CommentsTruncated. per thread, ID is the root comment's
+// numeric id (the reply anchor), ThreadID the node id resolve_thread targets, IsPending
+// an unsubmitted draft. reads through, since the client owns thread freshness.
 func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int) ([]Thread, error) {
 	out := []Thread{} // non-nil so an empty PR marshals to [] (null would decode to vim.NIL)
 	cursor := ""

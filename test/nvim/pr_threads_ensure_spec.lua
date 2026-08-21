@@ -120,9 +120,8 @@ describe("pr.threads.ensure (coalescing + freshness)", function()
         assert.is_nil(session.threads_waiters)
     end)
 
-    -- the freshness clock: a list inside the window is served straight back, one past it
-    -- is refetched. without this a colleague's comment posted after the session opened
-    -- never appears, since only the user's own mutations invalidate
+    -- without the clock a colleague's comment never appears: only the user's own
+    -- mutations invalidate
     it("serves a fresh list without a fetch, and refetches a stale one", function()
         local list = { { thread_id = "th_1", path = "a.txt", line = 2, comments = {} } }
         local session = { pr = PR, threads = list, threads_at = vim.uv.now() }
@@ -148,8 +147,7 @@ describe("pr.threads.ensure (coalescing + freshness)", function()
         assert.is_true(session.threads_at > vim.uv.now() - 1000) -- restamped on delivery
     end)
 
-    -- an unstamped list (seeded directly, or carried over from before the clock existed)
-    -- must not read as fresh forever
+    -- an unstamped list must not read as fresh forever
     it("treats an unstamped list as stale", function()
         local session = { pr = PR, threads = {}, threads_at = nil }
         local h = harness(session)

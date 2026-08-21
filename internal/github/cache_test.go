@@ -61,8 +61,7 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 	}
 }
 
-// threads are not memoised in the sidecar: freshness is the client's clock, so every
-// get_threads reads through to GitHub rather than serving a list of unbounded age.
+// threads are the client's to keep fresh, so every walk reads through to GitHub.
 func TestThreadsAreNotCached(t *testing.T) {
 	calls := 0
 	c := newClient(func(*http.Request) (*http.Response, error) {
@@ -77,5 +76,77 @@ func TestThreadsAreNotCached(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Errorf("want both walks to reach github, got %d requests", calls)
+	}
+}
+
+// the real cache with a smaller cap, so eviction trips without allocating 64MB
+func smallCache(limit int) *cache {
+	c := newCache()
+	c.limit = limit
+	return c
+}
+
+func put(c *cache, key string, n int) {
+	c.putBlob(key, FileBlob{Content: strings.Repeat("x", n)})
+}
+
+// blobs never expire (immutable per sha), so the cap is the only thing bounding them.
+func TestBlobCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	c := smallCache(350) // three 100-byte entries fit (keys are charged too), four don't
+	put(c, "a", 100)
+	put(c, "b", 100)
+	put(c, "c", 100)
+
+	// read a, so b is now the coldest entry rather than a
+	if _, ok := c.blob("a"); !ok {
+		t.Fatal("a should still be cached")
+	}
+	put(c, "d", 100) // pushes past the cap: the coldest entry goes
+
+	if _, ok := c.blob("b"); ok {
+		t.Error("b was least-recently-used and should have been evicted")
+	}
+	for _, key := range []string{"a", "c", "d"} {
+		if _, ok := c.blob(key); !ok {
+			t.Errorf("%s should have survived eviction", key)
+		}
+	}
+	if c.bytes > c.limit {
+		t.Errorf("cache holds %d bytes, over its %d cap", c.bytes, c.limit)
+	}
+}
+
+// the charge must follow the entry, or a re-put leaks the accounting.
+func TestBlobCacheAccountsForReplacedEntries(t *testing.T) {
+	c := smallCache(1000)
+	put(c, "a", 100)
+	put(c, "a", 400)
+	if want := blobSize("a", FileBlob{Content: strings.Repeat("x", 400)}); c.bytes != want {
+		t.Errorf("want %d bytes charged after the replace, got %d", want, c.bytes)
+	}
+	if c.lru.Len() != 1 {
+		t.Errorf("a replace should reuse the entry, got %d", c.lru.Len())
+	}
+}
+
+// an entry larger than the whole cap must not wedge the eviction loop.
+func TestBlobCacheSurvivesAnOversizedEntry(t *testing.T) {
+	c := smallCache(50)
+	put(c, "big", 500)
+	if c.lru.Len() != 0 || c.bytes != 0 {
+		t.Errorf("an entry over the cap should not be retained, got %d entries / %d bytes", c.lru.Len(), c.bytes)
+	}
+	put(c, "small", 10) // the cache still works afterwards
+	if _, ok := c.blob("small"); !ok {
+		t.Error("the cache should still hold a fitting entry")
+	}
+}
+
+func TestClearCacheResetsTheCharge(t *testing.T) {
+	c := smallCache(1000)
+	put(c, "a", 100)
+	c.clearAll()
+	if c.bytes != 0 || c.lru.Len() != 0 || len(c.blobs) != 0 {
+		t.Errorf("clear should empty the cache, got %d bytes / %d entries / %d keys", c.bytes, c.lru.Len(), len(c.blobs))
 	}
 }

@@ -686,7 +686,7 @@ local function open_session(pr, detail, opts)
         versions = {}, -- per-path blob memo; valid for the session (shas are pinned)
         prefetching = {}, -- paths with an in-flight predictive prefetch (dedupe guard)
         threads = nil, -- PR-wide review threads, fetched by pr.threads.refresh
-        threads_at = nil, -- when that list was fetched; pr.threads expires it on a TTL
+        threads_at = nil, -- when it was fetched; pr.threads expires it on a TTL
         checks = nil, -- get_checks result, cached lazily by the overview
         thread_collapsed = {}, -- per thread_id collapse override (gc); nil = cursor-driven
         thread_active = nil, -- the anchor key (bufnr:row) the cursor expands (peek)

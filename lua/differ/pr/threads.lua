@@ -331,14 +331,12 @@ function M.apply_box(session, view, g, reltime)
 end
 
 -- ── freshness ───────────────────────────────────────────────────────────────────
--- the sidecar reads threads through, so this is the only clock on them: without it a
--- list fetched on open is served for the life of the session and a colleague's comment
--- never lands. long enough that a run of ]f never refetches mid-flow
+-- the sidecar reads threads through, so this is their only clock: without it the list
+-- fetched on open serves the whole session and a colleague's comment never lands
 
 local TTL_MS = 30 * 1000
 
--- whether the session's list is inside the freshness window. an unstamped list (a
--- caller that seeded threads directly) counts as stale, so it revalidates once
+-- an unstamped list counts as stale, so it revalidates once
 ---@param session table
 ---@return boolean
 local function fresh(session)
@@ -411,9 +409,8 @@ function M.ensure(session, cb)
     end)
 end
 
--- refetch under a list that stays painted. the stale list is still a good enough
--- anchor to render from, so the fetch runs with nobody waiting on it and swaps in when
--- it lands; a fetch already running for this generation is left to it
+-- refetch under a still-painted list: nobody waits on it, it swaps in when it lands.
+-- a fetch already running for this generation is left to it
 ---@param session table
 local function revalidate(session)
     local gen = session.threads_gen or 0
@@ -432,9 +429,8 @@ end
 
 -- fetch (via ensure) then paint the current file. threads are additive, so a fetch
 -- error never blocks the diff (apply over nil threads just clears the overlay). called
--- on every show_file render so a file switch re-anchors from the cached list. a list
--- past its TTL is painted anyway and refreshed underneath: ]f is the hot path and the
--- old anchors are near enough to be worth showing while the new ones fly
+-- on every show_file render, so a stale list is painted and refreshed underneath
+-- rather than made to wait: ]f is the hot path
 ---@param session table
 function M.refresh(session)
     if not (session and session.view) then
