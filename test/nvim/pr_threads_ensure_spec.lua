@@ -1,5 +1,5 @@
--- runs under headless nvim: exercises pr.threads.ensure's in-flight coalescing in
--- isolation. ensure defers to require("differ.pr").current_session() and
+-- runs under headless nvim: exercises pr.threads.ensure's in-flight coalescing and its
+-- freshness clock in isolation. ensure defers to require("differ.pr").current_session() and
 -- client.get_threads, so both are stubbed; the get_threads cb is captured (not fired)
 -- to hold a fetch "in flight" while a second caller queues behind it
 
@@ -11,7 +11,7 @@ local pr = require("differ.pr")
 
 local PR = { owner = "acme", repo = "widget", number = 7 }
 
-describe("pr.threads.ensure (in-flight coalescing)", function()
+describe("pr.threads.ensure (coalescing + freshness)", function()
     local restore
 
     after_each(function()
@@ -118,6 +118,43 @@ describe("pr.threads.ensure (in-flight coalescing)", function()
         assert.are.equal(1, before) -- the superseded fetch's waiter is still answered
         assert.are.equal(1, after)
         assert.is_nil(session.threads_waiters)
+    end)
+
+    -- the freshness clock: a list inside the window is served straight back, one past it
+    -- is refetched. without this a colleague's comment posted after the session opened
+    -- never appears, since only the user's own mutations invalidate
+    it("serves a fresh list without a fetch, and refetches a stale one", function()
+        local list = { { thread_id = "th_1", path = "a.txt", line = 2, comments = {} } }
+        local session = { pr = PR, threads = list, threads_at = vim.uv.now() }
+        local h = harness(session)
+
+        local ran = 0
+        threads.ensure(session, function()
+            ran = ran + 1
+        end)
+        assert.are.equal(0, h.sent()) -- inside the TTL: no network
+        assert.are.equal(1, ran) -- and the cb runs straight away
+
+        session.threads_at = vim.uv.now() - (10 * 60 * 1000) -- ten minutes old
+        threads.ensure(session, function()
+            ran = ran + 1
+        end)
+        assert.are.equal(1, h.sent()) -- past the TTL: refetched
+        assert.are.equal(1, ran) -- the caller waits for the fresh list
+
+        h.fire(nil, { { thread_id = "th_2", path = "a.txt", line = 4, comments = {} } })
+        assert.are.equal(2, ran)
+        assert.are.equal("th_2", session.threads[1].thread_id)
+        assert.is_true(session.threads_at > vim.uv.now() - 1000) -- restamped on delivery
+    end)
+
+    -- an unstamped list (seeded directly, or carried over from before the clock existed)
+    -- must not read as fresh forever
+    it("treats an unstamped list as stale", function()
+        local session = { pr = PR, threads = {}, threads_at = nil }
+        local h = harness(session)
+        threads.ensure(session, function() end)
+        assert.are.equal(1, h.sent())
     end)
 
     it("on error notifies once but still runs both queued callbacks with the err", function()

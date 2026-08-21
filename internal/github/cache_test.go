@@ -39,40 +39,6 @@ func TestBlobCacheServesContents(t *testing.T) {
 	}
 }
 
-func TestThreadCacheAndInvalidation(t *testing.T) {
-	threadCalls := 0
-	c := newClient(func(r *http.Request) (*http.Response, error) {
-		body := string(readBody(t, r))
-		switch {
-		case strings.Contains(body, "GetThreads"):
-			threadCalls++
-			return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}`, nil), nil
-		case strings.Contains(body, "resolveReviewThread"):
-			return resp(200, `{"data":{"result":{"thread":{"isResolved":true}}}}`, nil), nil
-		}
-		t.Fatalf("unexpected op: %s", body)
-		return nil, nil
-	})
-	ctx := context.Background()
-	for range 2 {
-		if _, err := c.GetThreads(ctx, "o", "r", 3); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if threadCalls != 1 {
-		t.Fatalf("second get_threads should be cached, got %d fetches", threadCalls)
-	}
-	if _, err := c.ResolveThread(ctx, "PRT_1", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.GetThreads(ctx, "o", "r", 3); err != nil {
-		t.Fatal(err)
-	}
-	if threadCalls != 2 {
-		t.Errorf("resolve must invalidate the thread cache, got %d fetches", threadCalls)
-	}
-}
-
 func TestClearCacheFlushesBlobs(t *testing.T) {
 	var contentCalls atomic.Int64
 	c := newClient(func(r *http.Request) (*http.Response, error) {
@@ -95,33 +61,9 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 	}
 }
 
-// a mutation invalidating the thread cache mid-pagination must win: the walk in flight
-// assembled its snapshot before the change, so caching it would resurrect the pre-
-// mutation list and hide the new comment for the life of the session.
-func TestInvalidateDuringWalkDropsTheStaleSnapshot(t *testing.T) {
-	var c *Client
-	c = newClient(func(*http.Request) (*http.Response, error) {
-		// invalidate while the walk is mid-flight, as a concurrent mutation would
-		c.cache.invalidateThreads()
-		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
-			`"nodes":[{"id":"th_1","path":"a.txt","comments":{"nodes":[]}}],`+
-			`"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
-	})
-
-	got, err := c.GetThreads(context.Background(), "acme", "widget", 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("the caller still gets the walk's result, got %d", len(got))
-	}
-	if _, ok := c.cache.thread(threadKey("acme", "widget", 7)); ok {
-		t.Error("a snapshot assembled before the invalidation must not be cached")
-	}
-}
-
-// the ordinary path still caches, so the guard hasn't disabled the memo outright
-func TestThreadWalkCachesWhenNothingInvalidates(t *testing.T) {
+// threads are not memoised in the sidecar: freshness is the client's clock, so every
+// get_threads reads through to GitHub rather than serving a list of unbounded age.
+func TestThreadsAreNotCached(t *testing.T) {
 	calls := 0
 	c := newClient(func(*http.Request) (*http.Response, error) {
 		calls++
@@ -133,7 +75,7 @@ func TestThreadWalkCachesWhenNothingInvalidates(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if calls != 1 {
-		t.Errorf("want the second call served from cache, got %d requests", calls)
+	if calls != 2 {
+		t.Errorf("want both walks to reach github, got %d requests", calls)
 	}
 }

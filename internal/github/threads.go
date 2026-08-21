@@ -9,15 +9,10 @@ import (
 // thread list. inner comment lists are capped at threadCommentsPage and flagged when
 // they hit it. per thread, ID is the root comment's numeric id (the reply anchor),
 // ThreadID is the GraphQL node id resolve_thread targets, and IsPending marks an
-// unsubmitted draft (root comment in PENDING state).
+// unsubmitted draft (root comment in PENDING state). the walk reads through: the
+// client memoises the list per session behind its own freshness clock, so a memo
+// here would only delay a colleague's comment further.
 func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int) ([]Thread, error) {
-	key := threadKey(owner, repo, number)
-	if t, ok := c.cache.thread(key); ok {
-		return t, nil
-	}
-	// captured before the walk: an invalidation landing mid-pagination must win over the
-	// snapshot this walk is assembling
-	gen := c.cache.threadGeneration()
 	out := []Thread{} // non-nil so an empty PR marshals to [] (null would decode to vim.NIL)
 	cursor := ""
 	for range gqlMaxPages {
@@ -70,7 +65,6 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 		}
 		cursor = next
 	}
-	c.cache.putThreads(key, out, gen)
 	return out, nil
 }
 
@@ -116,7 +110,6 @@ func (c *Client) ResolveThread(ctx context.Context, threadID string, resolved bo
 	if err := c.graphql(ctx, mutation, map[string]any{"threadId": threadID}, &out); err != nil {
 		return nil, err
 	}
-	c.cache.invalidateThreads()
 	return &ResolveThread{Resolved: out.Result.Thread.IsResolved}, nil
 }
 

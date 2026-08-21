@@ -1,5 +1,5 @@
--- inline thread overlay: fetch the PR's review threads once per session, anchor
--- each to a derived buffer row through the line map, stack same-row threads oldest
+-- inline thread overlay: fetch the PR's review threads (once per TTL window, PR-wide),
+-- anchor each to a derived buffer row through the line map, stack same-row threads oldest
 -- first, and paint them as extmark `virt_lines` below the anchor (plus a range
 -- background for multi-line threads). the overlay is extmark-only: it never touches the
 -- map and never re-renders the buffer, so a refresh just re-applies marks. the pure
@@ -330,12 +330,29 @@ function M.apply_box(session, view, g, reltime)
     })
 end
 
+-- ── freshness ───────────────────────────────────────────────────────────────────
+-- the sidecar reads threads through, so this is the only clock on them: without it a
+-- list fetched on open is served for the life of the session and a colleague's comment
+-- never lands. long enough that a run of ]f never refetches mid-flow
+
+local TTL_MS = 30 * 1000
+
+-- whether the session's list is inside the freshness window. an unstamped list (a
+-- caller that seeded threads directly) counts as stale, so it revalidates once
+---@param session table
+---@return boolean
+local function fresh(session)
+    local at = session.threads_at
+    return type(at) == "number" and (vim.uv.now() - at) < TTL_MS
+end
+
 -- drop the fetched thread list so the next ensure refetches. the generation bump is
 -- what stops a fetch already in flight from being joined, or from landing its
 -- pre-mutation list on top of the change that invalidated it
 ---@param session table
 function M.invalidate(session)
     session.threads = nil
+    session.threads_at = nil
     session.threads_gen = (session.threads_gen or 0) + 1
 end
 
@@ -361,6 +378,7 @@ local function deliver(session, gen, err, list)
         -- a PR with no threads decodes to vim.NIL (userdata, truthy), so guard on
         -- type rather than `list or {}`
         session.threads = type(list) == "table" and list or {}
+        session.threads_at = vim.uv.now()
     end
     for _, fn in ipairs(waiters) do
         fn(err)
@@ -373,7 +391,7 @@ end
 ---@param session table
 ---@param cb fun(err: table|nil)
 function M.ensure(session, cb)
-    if session.threads then
+    if session.threads and fresh(session) then
         return cb(nil)
     end
     local gen = session.threads_gen or 0
@@ -393,13 +411,38 @@ function M.ensure(session, cb)
     end)
 end
 
+-- refetch under a list that stays painted. the stale list is still a good enough
+-- anchor to render from, so the fetch runs with nobody waiting on it and swaps in when
+-- it lands; a fetch already running for this generation is left to it
+---@param session table
+local function revalidate(session)
+    local gen = session.threads_gen or 0
+    if session.threads_waiters and session.threads_fetch_gen == gen then
+        return
+    end
+    session.threads_waiters = {} -- no waiters, but non-nil marks the fetch in flight
+    session.threads_fetch_gen = gen
+    client.get_threads(session.pr, function(err, list)
+        deliver(session, gen, err, list)
+        if not err then
+            M.apply(session)
+        end
+    end)
+end
+
 -- fetch (via ensure) then paint the current file. threads are additive, so a fetch
 -- error never blocks the diff (apply over nil threads just clears the overlay). called
--- on every show_file render so a file switch re-anchors from the cached list
+-- on every show_file render so a file switch re-anchors from the cached list. a list
+-- past its TTL is painted anyway and refreshed underneath: ]f is the hot path and the
+-- old anchors are near enough to be worth showing while the new ones fly
 ---@param session table
 function M.refresh(session)
     if not (session and session.view) then
         return
+    end
+    if session.threads and not fresh(session) then
+        revalidate(session)
+        return M.apply(session)
     end
     M.ensure(session, function()
         M.apply(session)
