@@ -374,6 +374,7 @@ function M.open(session)
     if not session then
         return require("differ.pr").notify("open a PR first")
     end
+    require("differ.ui.highlights").ensure() -- the page is reachable without any diff view
     -- claim the page: a later open supersedes this one, and so does entering the files
     page_gen = page_gen + 1
     local gen = page_gen

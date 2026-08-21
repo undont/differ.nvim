@@ -1412,6 +1412,7 @@ end
 -- open the panel in its position and focus it
 ---@return differ.Panel
 function Panel:open()
+    require("differ.ui.highlights").ensure()
     self.origin_win = vim.api.nvim_get_current_win()
     self:_open_window()
     self:render()

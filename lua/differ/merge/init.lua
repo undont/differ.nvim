@@ -17,7 +17,9 @@
 -- regions are foldable, and a take-this briefly flashes the lines it produced
 
 local set_local = require("differ.util.win").set_local
-local bind = require("differ.util.keymap").bind
+local keymap = require("differ.util.keymap")
+local tab_util = require("differ.util.tab")
+local bind, unbind = keymap.bind, keymap.unbind
 
 local M = {}
 
@@ -74,6 +76,8 @@ local INPUT_HL = {
 ---@field saved_markdown_render boolean|nil -- the result buffer's prior render-markdown state, restored on close
 ---@field autoformat_warned boolean|nil   -- set once a save is seen to have reformatted the markers
 ---@field diag_aug integer|nil            -- the DiagnosticChanged hook that hushes the result
+---@field aug integer|nil                 -- the session augroup on the result buffer
+---@field bound_keys (string|string[]|false)[] -- the lhs specs bound on the result buffer
 
 ---@type differ.MergeSession|nil
 local session = nil
@@ -146,6 +150,22 @@ end
 -- the active session, or nil. exposed so :Differ close can route to it
 ---@return differ.MergeSession|nil
 function M.current()
+    return session
+end
+
+-- the session to act on, or nil once its result window has gone. every verb reads the
+-- cursor from that window, so a session that outlived it can't do anything but raise
+-- E5108 from inside a keymap: tear it down instead. the WinClosed/TabClosed hooks
+-- normally get there first; this is the net for a teardown they can't see
+---@return differ.MergeSession|nil
+local function live_session()
+    if not session then
+        return nil
+    end
+    if not vim.api.nvim_win_is_valid(session.result_win) then
+        M.close()
+        return nil
+    end
     return session
 end
 
@@ -480,7 +500,7 @@ end
 -- the emphasis, and scroll the input panes to the same conflict
 ---@param dir "next"|"prev"
 local function goto_conflict(dir)
-    if not (session and vim.api.nvim_win_is_valid(session.result_win)) then
+    if not live_session() then
         return
     end
     local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
@@ -528,7 +548,7 @@ end
 -- repaint, flash the produced lines, and advance to the next remaining conflict
 ---@param choice "ours"|"theirs"|"both"|"base"|"none"
 local function resolve_choice(choice)
-    if not session then
+    if not live_session() then
         return
     end
     local regions = live_regions()
@@ -687,29 +707,33 @@ function M.close()
     local s = session
     session = nil
     restore_timeout() -- net in case the tab teardown didn't fire BufLeave on the result buf
+    -- the result buffer is the user's real file and outlives the session, so it has to be
+    -- handed back clean: no session paint, no session keymaps, no session hooks
     if vim.api.nvim_buf_is_valid(s.result_buf) then
         vim.b[s.result_buf].disable_autoformat = s.saved_autoformat -- give autoformat back
         if s.saved_markdown_render then
             set_markdown_render(s.result_buf, true) -- re-render markdown if it was on
+        end
+        for _, ns in ipairs({ merge_ns, flash_ns, anchor_ns }) do
+            vim.api.nvim_buf_clear_namespace(s.result_buf, ns, 0, -1)
+        end
+        for _, spec in ipairs(s.bound_keys) do
+            unbind(s.result_buf, spec)
         end
     end
     -- drop the diagnostics hook; the producers re-lint the now-resolved file on their own
     if s.diag_aug then
         pcall(vim.api.nvim_del_augroup_by_id, s.diag_aug)
     end
+    if s.aug then
+        pcall(vim.api.nvim_del_augroup_by_id, s.aug)
+    end
     for _, buf in ipairs(s.bufs) do
         if vim.api.nvim_buf_is_valid(buf) then
             pcall(vim.api.nvim_buf_delete, buf, { force = true })
         end
     end
-    if vim.api.nvim_tabpage_is_valid(s.session_tab) then
-        if #vim.api.nvim_list_tabpages() == 1 then
-            vim.cmd("tabnew")
-        end
-        pcall(function()
-            vim.cmd("tabclose " .. vim.api.nvim_tabpage_get_number(s.session_tab))
-        end)
-    end
+    tab_util.close_session(s.session_tab)
     if vim.api.nvim_tabpage_is_valid(s.return_tab) then
         vim.api.nvim_set_current_tabpage(s.return_tab)
     end
@@ -774,11 +798,12 @@ function lay_out(root, relpath, model, layout)
     if session then -- re-open over a live session
         M.close()
     end
+    -- the four slabs are told apart by colour alone, so the groups have to exist even
+    -- when the user never called setup()
+    require("differ.ui.highlights").ensure()
     local result = require("differ.render.merge").render(model, { layout = layout })
 
-    local return_tab = vim.api.nvim_get_current_tabpage()
-    vim.cmd("tab split")
-    local session_tab = vim.api.nvim_get_current_tabpage()
+    local return_tab, session_tab = tab_util.open_session()
     vim.cmd("silent! only")
 
     -- result spans the bottom; inputs share the top row left-to-right
@@ -836,6 +861,7 @@ function lay_out(root, relpath, model, layout)
     local cfg = require("differ").get_config()
     local km = (cfg.keymaps.merge or require("differ.config").defaults.keymaps) --[[@as differ.KeymapSet]]
 
+    local bound = {} -- the specs actually bound below, so close drops exactly these
     local first = model.regions[1]
     session = {
         root = root,
@@ -861,6 +887,7 @@ function lay_out(root, relpath, model, layout)
         return_tab = return_tab,
         session_tab = session_tab,
         keymaps = km, -- for the g? cheatsheet
+        bound_keys = bound,
         diag_aug = suppress_diagnostics(result_buf), -- the markers aren't valid source
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
     }
@@ -895,6 +922,7 @@ function lay_out(root, relpath, model, layout)
     vim.b[result_buf].disable_autoformat = true
     local function rb(action, fn, desc)
         bind(result_buf, km[action], fn, desc)
+        bound[#bound + 1] = km[action]
     end
     rb("next_conflict", function()
         goto_conflict("next")
@@ -922,6 +950,7 @@ function lay_out(root, relpath, model, layout)
     -- left to native macro recording. `:Differ close` ends the session
 
     local aug = vim.api.nvim_create_augroup("differ.merge." .. result_buf, { clear = true })
+    session.aug = aug
     -- :w writes the real file; once no markers remain it auto-stages (git add = resolve),
     -- otherwise it just reports what's left. repaint so a hand-edit's regions stay current
     vim.api.nvim_create_autocmd("BufWritePost", {
@@ -975,12 +1004,46 @@ function lay_out(root, relpath, model, layout)
     vim.api.nvim_create_autocmd("BufEnter", {
         buffer = result_buf,
         group = aug,
-        callback = bump_timeout,
+        callback = function()
+            if session then -- never touch the global option outside a live session
+                bump_timeout()
+            end
+        end,
     })
     vim.api.nvim_create_autocmd("BufLeave", {
         buffer = result_buf,
         group = aug,
         callback = restore_timeout,
+    })
+    -- the session dies with its window: :tabclose on the merge tab, or a :q on the result
+    -- window, would otherwise leave a live session aimed at a dead window. deferred because
+    -- the tab is still collapsing when the event fires, and close moves tabs itself; tied to
+    -- this exact session so a close (or a new session) before the tick cancels it
+    local function teardown()
+        local this = session
+        if not this then
+            return
+        end
+        vim.schedule(function()
+            if session == this then
+                M.close()
+            end
+        end)
+    end
+    vim.api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(result_win),
+        group = aug,
+        callback = teardown,
+    })
+    -- TabClosed reports shifting tab numbers, not handles, so the callback checks the
+    -- session tab's validity rather than trying to match the one that closed
+    vim.api.nvim_create_autocmd("TabClosed", {
+        group = aug,
+        callback = function()
+            if not vim.api.nvim_tabpage_is_valid(session_tab) then
+                teardown()
+            end
+        end,
     })
     -- a hand-edit shifts the marker lines: re-parse + repaint so the regions, colour, and
     -- nav stay aligned to the live buffer (not just on splice/:w). InsertLeave covers a run

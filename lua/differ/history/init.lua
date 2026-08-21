@@ -845,6 +845,7 @@ end
 ---@param keep_focus boolean|nil  -- leave focus in the diff window (default true)
 ---@return differ.History
 function History:open(keep_focus)
+    require("differ.ui.highlights").ensure() -- the commit rows paint before any diff opens
     self.origin_win = vim.api.nvim_get_current_win()
     self:_open_window()
     current = self

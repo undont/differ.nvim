@@ -8,6 +8,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Closing the merge tool left its colouring, its conflict keymaps and its hooks on the worktree file you had been resolving, and opening that file again silently raised your `timeoutlen`. The file now comes back untouched
+- `:tabclose` on the merge tab, or closing its result window, left the session running against a window that no longer existed, so the next take-ours failed with `E5108`. Either now ends the session
+- Closing a diff left `g?` bound on the real file you had opened with `df`, along with autocommands that outlived the session
+- Without a call to `setup()`, the merge tool's panes all rendered in the same colour, and the PR overview, file panel and history panel rendered uncoloured. Any surface that needs the highlight groups now registers them
+
+## [0.1.32] — 2026-08-19
+
+### Fixed
+
 - A change git lists that has no lines to show (a `chmod +x`, an empty new file, a trailing-newline-only edit, a rename, a moved submodule pointer) put a row in the panel that did nothing when you opened it, and reported "no changes" again on every try. Those rows now open a diff naming the reason
 - `s` and `u` were advertised on files that stage as a unit, then stepped to another file instead of staging it. A binary file, the zero-hunk changes above, and a new file opened from a split's left column now all stage where the keys say they will
 - A mistyped revspec reported "no changes for this source" while git actually emitted `fatal: bad revision`. `:Differ` and both `:Differ log` forms now report based on what git said

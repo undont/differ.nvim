@@ -36,7 +36,7 @@ PANDOC_VERSION    := 3.10.1
 PANDOC_DIR        := .tools/pandoc-$(PANDOC_VERSION)
 PANDOC_BIN        := $(PANDOC_DIR)/bin/pandoc
 
-GOLANGCI_VERSION := 2.12.2
+GOLANGCI_VERSION := 2.13.1
 GOLANGCI_DIR     := .tools/golangci-lint-$(GOLANGCI_VERSION)
 GOLANGCI_BIN     := $(GOLANGCI_DIR)/golangci-lint
 

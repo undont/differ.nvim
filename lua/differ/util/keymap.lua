@@ -22,4 +22,20 @@ function M.bind(bufnr, spec, fn, desc, mode)
     end
 end
 
+-- drop every lhs in `spec` from `bufnr`, the inverse of bind. for the buffers we don't
+-- own (the merge result is the user's real file), where teardown can't just delete the
+-- buffer. an lhs that isn't mapped is not an error
+---@param bufnr integer
+---@param spec string|string[]|false|nil
+---@param mode? string|string[]
+function M.unbind(bufnr, spec, mode)
+    if not spec or not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+    end
+    local list = type(spec) == "table" and spec or { spec }
+    for _, lhs in ipairs(list) do
+        pcall(vim.keymap.del, mode or "n", lhs, { buffer = bufnr })
+    end
+end
+
 return M
