@@ -296,14 +296,14 @@ function M.compose(session, opts)
 end
 
 -- post the composed body: assemble the post_comment args (a reply by node id, else the
--- new-thread anchor), attach review_id when drafting and the session head for the
--- guard, then re-fetch threads on success so the new comment renders authoritatively.
+-- new-thread anchor plus the session head for the guard), attach review_id when
+-- drafting, then re-fetch threads on success so the new comment renders authoritatively.
 -- a conflict means the head moved: refresh + re-anchor + re-prompt, never a silent post
 ---@param session table
 ---@param opts differ.pr.CommentOpts
 ---@param body string
 function M.post(session, opts, body)
-    local args = { body = body, expected_head = session.pr_meta.head_sha }
+    local args = { body = body }
     if opts.in_reply_to then
         args.in_reply_to = opts.in_reply_to
     else
@@ -314,6 +314,10 @@ function M.post(session, opts, body)
         args.path = opts.path
         args.side, args.line = a.side, a.line
         args.start_side, args.start_line = a.start_side, a.start_line
+        -- only the anchored path pins the head: path/side/line mean something different
+        -- at a moved head, so the guard is worth a bounced submit there. a reply targets
+        -- a thread node id, which the head can't shift under it
+        args.expected_head = session.pr_meta.head_sha
     end
     if session.review_id then
         args.review_id = session.review_id
