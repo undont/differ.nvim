@@ -1069,3 +1069,161 @@ describe(":Differ mergetool take-base on CRLF", function()
         end
     end)
 end)
+
+-- an open/close cycle has to leave nothing behind. the result column is the user's real
+-- worktree file, so its extmarks, keymaps and hooks are differ's to take off by hand;
+-- and the session has to end when its window does, rather than outliving it
+describe(":Differ mergetool teardown", function()
+    local NAMESPACES = { "differ.merge", "differ.merge.flash", "differ.merge.anchor" }
+    local saved_timeoutlen
+
+    -- nvim_get_autocmds errors on an unknown group and returns {} for an empty one,
+    -- so a pcall is the existence check
+    local function group_exists(name)
+        return (pcall(vim.api.nvim_get_autocmds, { group = name }))
+    end
+
+    -- the scratch buffers differ owns, by their differ:// naming
+    local function differ_bufs()
+        local out = {}
+        for _, b in ipairs(vim.api.nvim_list_bufs()) do
+            local name = vim.api.nvim_buf_get_name(b)
+            if vim.api.nvim_buf_is_valid(b) and name:find("differ://", 1, true) then
+                out[#out + 1] = name:gsub(".*differ://", "differ://")
+            end
+        end
+        table.sort(out)
+        return out
+    end
+
+    -- differ.highlights is deliberately process-lifetime (one ColorScheme hook, registered
+    -- on first use), so it isn't part of what a session has to give back
+    local function differ_autocmds()
+        local n = 0
+        for _, ac in ipairs(vim.api.nvim_get_autocmds({})) do
+            local g = ac.group_name
+            if g and g:find("^differ%.") and g ~= "differ.highlights" then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    local function extmark_count(buf)
+        local n = 0
+        for _, name in ipairs(NAMESPACES) do
+            local ns = vim.api.nvim_create_namespace(name)
+            n = n + #vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, {})
+        end
+        return n
+    end
+
+    local function differ_maps(buf)
+        local out = {}
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+            if (m.desc or ""):find("differ", 1, true) then
+                out[#out + 1] = m.lhs
+            end
+        end
+        return out
+    end
+
+    before_each(function()
+        merge.close() -- a session an earlier case left open
+        saved_timeoutlen = vim.o.timeoutlen
+    end)
+
+    after_each(function()
+        merge.close()
+        vim.o.timeoutlen = saved_timeoutlen
+    end)
+
+    it("hands the real file back with no extmarks, keymaps or hooks", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        local bufs, autocmds = differ_bufs(), differ_autocmds()
+
+        merge.open({})
+        local s = assert(merge.current())
+        local buf = s.result_buf
+        assert.is_true(#differ_bufs() > #bufs) -- the ours/theirs scratch panes
+        assert.is_true(extmark_count(buf) > 0) -- the conflict paint
+        assert.is_true(#differ_maps(buf) > 0) -- the conflict chords
+        assert.is_true(group_exists("differ.merge." .. buf))
+
+        merge.close()
+        assert.are.same(bufs, differ_bufs())
+        assert.are.equal(autocmds, differ_autocmds())
+        assert.are.equal(0, extmark_count(buf))
+        assert.are.same({}, differ_maps(buf))
+        assert.is_false(group_exists("differ.merge." .. buf))
+        assert.is_false(group_exists("differ.merge.diag." .. buf))
+    end)
+
+    it("gives the user's timeoutlen back, and never bumps it again", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        vim.o.timeoutlen = 200 -- a which-key-style short timeout
+        merge.open({})
+        local buf = assert(merge.current()).result_buf
+        vim.api.nvim_exec_autocmds("BufEnter", { buffer = buf }) -- focus the result pane
+        assert.are.equal(1000, vim.o.timeoutlen) -- widened for the multi-key chords
+
+        merge.close()
+        assert.are.equal(200, vim.o.timeoutlen)
+        -- re-entering the file later is not a merge session
+        vim.cmd.edit(root .. "/f.txt")
+        vim.api.nvim_exec_autocmds("BufEnter", { buffer = vim.api.nvim_get_current_buf() })
+        assert.are.equal(200, vim.o.timeoutlen)
+    end)
+
+    it("ends the session when its tab closes, rather than stranding it", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        local bufs, autocmds = differ_bufs(), differ_autocmds()
+        merge.open({})
+        local buf = assert(merge.current()).result_buf
+
+        vim.cmd("tabclose")
+        vim.wait(200, function()
+            return merge.current() == nil
+        end)
+        assert.is_nil(merge.current()) -- not a live session aimed at a dead window
+        assert.are.same(bufs, differ_bufs())
+        assert.are.equal(autocmds, differ_autocmds())
+        assert.are.same({}, differ_maps(buf))
+    end)
+
+    it("ends the session when the result window closes", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local tabs = #vim.api.nvim_list_tabpages()
+        vim.api.nvim_set_current_win(assert(merge.current()).result_win)
+
+        vim.cmd("close")
+        vim.wait(200, function()
+            return merge.current() == nil
+        end)
+        assert.is_nil(merge.current())
+        assert.are.equal(tabs - 1, #vim.api.nvim_list_tabpages()) -- the session tab went too
+    end)
+
+    it("does not raise from a conflict verb once the window is gone", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = assert(merge.current())
+        local take_ours
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(s.result_buf, "n")) do
+            if (m.desc or "") == "differ: take ours" then
+                take_ours = m.callback
+            end
+        end
+        assert.is_truthy(take_ours)
+        -- close the window out from under the session without letting the hooks run
+        vim.api.nvim_win_close(s.result_win, true)
+        assert.is_true(pcall(take_ours)) -- used to raise E5108 on the dead window
+        assert.is_nil(merge.current()) -- and takes the session down with it
+    end)
+end)

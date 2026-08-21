@@ -26,6 +26,25 @@ local function extmarks(bufnr)
     return line_hl, word
 end
 
+local function write(dir, name, text)
+    vim.fn.mkdir(dir, "p")
+    local fd = assert(io.open(dir .. "/" .. name, "w"))
+    fd:write(text)
+    fd:close()
+end
+
+-- a file-backed model, so the edit verbs have a real file to open
+local function worktree_model(dir, path, old, new)
+    return diff.build({
+        path = path,
+        old_rev = "HEAD",
+        new_rev = "WORKTREE",
+        old_text = old,
+        new_text = new,
+        root = dir,
+    })
+end
+
 describe("view stacked", function()
     it("opens one window with rendered lines and line-level highlights", function()
         local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
@@ -844,24 +863,6 @@ describe("view jump-to-file", function()
 end)
 
 describe("view edit-in-review", function()
-    local function write(dir, name, text)
-        vim.fn.mkdir(dir, "p")
-        local fd = assert(io.open(dir .. "/" .. name, "w"))
-        fd:write(text)
-        fd:close()
-    end
-
-    local function worktree_model(dir, path, old, new)
-        return diff.build({
-            path = path,
-            old_rev = "HEAD",
-            new_rev = "WORKTREE",
-            old_text = old,
-            new_text = new,
-            root = dir,
-        })
-    end
-
     it("opens the real file in a kept-alive window at the mapped line", function()
         vim.cmd("silent! only")
         local dir = vim.fn.tempname()
@@ -1258,5 +1259,133 @@ describe("command router", function()
                 return v
             end)()
         )
+    end)
+end)
+
+-- a view's windows and buffers are its own, but the hooks and maps it hangs off them
+-- aren't all reclaimed by a buffer delete: the cursor-line group outlives the buffer it
+-- was keyed to, the zoom hook is global, and g? lands on the user's real file
+describe("view teardown", function()
+    -- nvim_get_autocmds errors on an unknown group and returns {} for an empty one,
+    -- so a pcall is the existence check
+    local function group_exists(name)
+        return (pcall(vim.api.nvim_get_autocmds, { group = name }))
+    end
+
+    local function differ_bufs()
+        local out = {}
+        for _, b in ipairs(vim.api.nvim_list_bufs()) do
+            local name = vim.api.nvim_buf_get_name(b)
+            if vim.api.nvim_buf_is_valid(b) and name:find("differ://", 1, true) then
+                out[#out + 1] = name:gsub(".*differ://", "differ://")
+            end
+        end
+        table.sort(out)
+        return out
+    end
+
+    -- differ.highlights is deliberately process-lifetime (one ColorScheme hook, registered
+    -- on first use), so it isn't part of what a session has to give back
+    local function differ_autocmds()
+        local n = 0
+        for _, ac in ipairs(vim.api.nvim_get_autocmds({})) do
+            local g = ac.group_name
+            if g and g:find("^differ%.") and g ~= "differ.highlights" then
+                n = n + 1
+            end
+        end
+        return n
+    end
+
+    local function differ_maps(buf)
+        local out = {}
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+            if (m.desc or ""):find("differ", 1, true) then
+                out[#out + 1] = m.lhs
+            end
+        end
+        return out
+    end
+
+    local function open_view(dir)
+        write(dir, "f.txt", "a\nB\nc\n")
+        local v = View.new(worktree_model(dir, "f.txt", "a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "split",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        return v:open()
+    end
+
+    it("leaves no buffers, hooks or maps behind after an open/close cycle", function()
+        vim.cmd("silent! only")
+        local bufs, autocmds = differ_bufs(), differ_autocmds()
+        local v = open_view(vim.fn.tempname())
+        local column_bufs = {}
+        for _, col in ipairs(v.columns) do
+            column_bufs[#column_bufs + 1] = col.bufnr
+        end
+        v:edit_file() -- the real file beside the diff: binds g? on a buffer we don't own
+        local real = vim.api.nvim_get_current_buf()
+
+        assert.is_true(#differ_bufs() > #bufs)
+        assert.is_true(group_exists("differ.cursorline." .. column_bufs[1]))
+        assert.are.same({ "g?" }, differ_maps(real))
+
+        v:close()
+        assert.are.same(bufs, differ_bufs())
+        assert.are.equal(autocmds, differ_autocmds())
+        assert.are.same({}, differ_maps(real)) -- the real file is the user's again
+        for _, bufnr in ipairs(column_bufs) do
+            assert.is_false(group_exists("differ.cursorline." .. bufnr))
+        end
+        assert.is_false(group_exists("differ.viewclose." .. v.id))
+        assert.is_false(group_exists("differ.view.edit." .. v.id))
+    end)
+
+    it("drops the zoom-return hook when the session ends before the zoom tab", function()
+        vim.cmd("silent! only")
+        local v = open_view(vim.fn.tempname())
+        v:edit_tab() -- the real file full-screen in its own tab, arming the return hook
+        local zoom_tab = v.zoom_tab
+        assert.is_true(group_exists("differ.view.zoom." .. v.id))
+
+        v:close() -- the session ends first; the zoom tab is the user's, so it stays
+        assert.is_false(group_exists("differ.view.zoom." .. v.id))
+        assert.is_true(vim.api.nvim_tabpage_is_valid(zoom_tab))
+        vim.api.nvim_set_current_tabpage(zoom_tab)
+        if #vim.api.nvim_list_tabpages() > 1 then
+            vim.cmd("tabclose") -- closing the view can have collapsed the invoking tab
+        end
+    end)
+
+    it("keeps one edit-window hook across repeated edit-in-review, not one per file", function()
+        vim.cmd("silent! only")
+        local dir = vim.fn.tempname()
+        local v = open_view(dir)
+        local function win_closed_hooks()
+            local grouped, ungrouped = 0, 0
+            for _, ac in ipairs(vim.api.nvim_get_autocmds({ event = "WinClosed" })) do
+                if ac.group then
+                    grouped = grouped + 1
+                else
+                    ungrouped = ungrouped + 1
+                end
+            end
+            return grouped, ungrouped
+        end
+        local before_grouped, before_ungrouped = win_closed_hooks()
+        for i = 1, 3 do
+            v:edit_file()
+            -- an unsaved edit window is kept at release, so nothing closes it for us and
+            -- its hook would sit there for the rest of the nvim session
+            vim.api.nvim_buf_set_lines(0, 0, 0, false, { "unsaved " .. i })
+            v:_release_edit_window()
+        end
+        local grouped, ungrouped = win_closed_hooks()
+        assert.are.equal(before_ungrouped, ungrouped) -- nothing ungrouped to accrue
+        assert.are.equal(before_grouped + 1, grouped) -- one hook, for the newest window
+        v:close()
+        assert.is_false(group_exists("differ.view.edit." .. v.id))
     end)
 end)
