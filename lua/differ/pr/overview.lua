@@ -365,9 +365,9 @@ local function render(session, timeline, checks)
     arm_guard(session, win)
 end
 
--- M.open(session): fetch the timeline, ensure threads (shared with the diff overlay;
--- feeds the header count + the timeline's thread sections), reuse cached checks, render
--- the page. guards the session is still live at every async hop (it can be torn down
+-- M.open(session): fetch the timeline and the checks, ensure threads (shared with the
+-- diff overlay; feeds the header count + the timeline's thread sections), render the
+-- page. guards the session is still live at every async hop (it can be torn down
 -- mid-fetch); threads and checks degrade rather than block the page
 ---@param session table|nil
 function M.open(session)
@@ -398,21 +398,18 @@ function M.open(session)
             if not ours() then
                 return
             end
-            if session.checks then
-                return render(session, timeline, session.checks)
-            end
-            -- no cached checks: fetch once, cache on the session, then render (degrade
-            -- to nil if the fetch fails — the rollup line just reads "n/a")
+            -- fetched per open, never memoised: the rollup is the most time-sensitive
+            -- thing on the page, and a kept copy would disagree with :Differ pr checks
             client.get_checks(session.pr, function(cerr, checks)
                 -- the checks fetch is the longest hop, so this is the likeliest place to
                 -- find the session already in the files
                 if not ours() then
                     return
                 end
-                if not cerr and type(checks) == "table" then
-                    session.checks = checks
+                if cerr or type(checks) ~= "table" then
+                    checks = nil -- if we couldn't fetch checks, don't block the call
                 end
-                render(session, timeline, session.checks)
+                render(session, timeline, checks)
             end)
         end)
     end)
