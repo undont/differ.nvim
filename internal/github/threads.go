@@ -20,7 +20,7 @@ func (c *Client) GetThreads(ctx context.Context, owner, repo string, number int)
 	gen := c.cache.threadGeneration()
 	out := []Thread{} // non-nil so an empty PR marshals to [] (null would decode to vim.NIL)
 	cursor := ""
-	for n := 0; n < gqlMaxPages; n++ {
+	for range gqlMaxPages {
 		var page threadsGQL
 		vars := map[string]any{"owner": owner, "repo": repo, "number": number}
 		if cursor != "" {

@@ -36,11 +36,9 @@ func (s *Server) dispatch(ctx context.Context, req protocol.Request, inflight *s
 		s.emit(badRequest(req.ID, "handshake required: send hello first"))
 		return
 	}
-	inflight.Add(1)
-	go func() {
-		defer inflight.Done()
+	inflight.Go(func() {
 		s.emit(s.run(ctx, req))
-	}()
+	})
 }
 
 // run invokes a handler, recovering panics into an internal error so one bad
@@ -85,8 +83,7 @@ func (s *Server) run(ctx context.Context, req protocol.Request) (resp protocol.R
 // its code; anything else is internal (and the real error is logged, never
 // surfaced, so tokens can't leak).
 func toRPCError(err error) *protocol.RPCError {
-	var perr *protocol.Error
-	if errors.As(err, &perr) {
+	if perr, ok := errors.AsType[*protocol.Error](err); ok {
 		return &protocol.RPCError{Code: perr.Code, Message: perr.Message, RetryAfter: perr.RetryAfter}
 	}
 	return &protocol.RPCError{Code: protocol.CodeInternal, Message: "internal error"}

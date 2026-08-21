@@ -26,7 +26,7 @@ func TestBlobCacheServesContents(t *testing.T) {
 		t.Fatalf("unexpected path %s", r.URL.Path)
 		return nil, nil
 	})
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +54,7 @@ func TestThreadCacheAndInvalidation(t *testing.T) {
 		return nil, nil
 	})
 	ctx := context.Background()
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := c.GetThreads(ctx, "o", "r", 3); err != nil {
 			t.Fatal(err)
 		}
@@ -128,7 +128,7 @@ func TestThreadWalkCachesWhenNothingInvalidates(t *testing.T) {
 		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
 			`"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
 	})
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := c.GetThreads(context.Background(), "acme", "widget", 7); err != nil {
 			t.Fatal(err)
 		}
