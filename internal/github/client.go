@@ -47,6 +47,5 @@ func New(hc *http.Client, token string, tokenErr error, log *slog.Logger) *Clien
 	return &Client{http: hc, token: token, tokenErr: tokenErr, log: log, restURL: defaultREST, gqlURL: defaultGQL, cache: newCache()}
 }
 
-// ClearCache flushes the blob and thread caches; the cache_clear method, surfaced as
-// :Differ cache clear, calls this.
+// ClearCache flushes the blob cache, behind :Differ cache clear.
 func (c *Client) ClearCache() { c.cache.clearAll() }

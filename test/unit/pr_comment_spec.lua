@@ -115,6 +115,24 @@ describe("pr.comment.post anchors to the gesture's file", function()
         restore()
     end)
 
+    -- the guard is for anchored posts: path/side/line mean something else at a moved
+    -- head. a reply targets a thread node id, so pinning the head only buys it a bounced
+    -- submit and a forced diff re-source every time someone pushes
+    it("pins the head on a new thread but not on a reply", function()
+        local box, restore = capture()
+        comment.post(
+            session("a.txt"),
+            { anchor = { side = "RIGHT", line = 2 }, path = "a.txt" },
+            "new"
+        )
+        assert.are.equal("bbb2222", box.args.expected_head)
+
+        comment.post(session("a.txt"), { in_reply_to = "PRRT_1" }, "reply")
+        assert.is_nil(box.args.expected_head)
+        assert.are.equal("PRRT_1", box.args.in_reply_to)
+        restore()
+    end)
+
     it("carries the path through the conflict re-prompt's opts", function()
         local box, restore = capture()
         local opts = { anchor = { side = "RIGHT", line = 2 }, path = "a.txt" }

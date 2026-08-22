@@ -64,7 +64,7 @@ func (c *Client) GetPR(ctx context.Context, owner, repo string, number int) (*PR
 	viewed := map[string]string{}
 	var meta prDetailGQL
 	cursor := ""
-	for n := 0; n < gqlMaxPages; n++ {
+	for range gqlMaxPages {
 		var page prDetailGQL
 		vars := map[string]any{"owner": owner, "repo": repo, "number": number}
 		if cursor != "" {

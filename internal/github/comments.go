@@ -23,9 +23,6 @@ func (c *Client) PostComment(ctx context.Context, owner, repo string, number int
 	default:
 		res, err = c.postNewThread(ctx, owner, repo, number, in)
 	}
-	if err == nil {
-		c.cache.invalidateThreads()
-	}
 	return res, err
 }
 
@@ -117,12 +114,10 @@ func (c *Client) postNewThread(ctx context.Context, owner, repo string, number i
 }
 
 // DeleteComment removes a single review comment by its node id (draft or published).
-// the thread cache is invalidated so the next get_threads reflects the removal.
 func (c *Client) DeleteComment(ctx context.Context, commentID string) error {
 	if err := c.graphql(ctx, deleteCommentMutation, map[string]any{"id": commentID}, nil); err != nil {
 		return err
 	}
-	c.cache.invalidateThreads()
 	return nil
 }
 

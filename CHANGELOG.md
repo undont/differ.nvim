@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A comment someone else posted whilst a pull request was open would never appear. The thread list was only refreshed when you commented yourself; it is now re-read as you move between files
+- The overview's `checks:` line kept reporting whatever CI was doing when you first opened the page, so it still read `pending` after a green build and disagreed with `:Differ pr checks`. It is now read fresh on every open
+- A long review kept every file version it had read for the life of the session, with `:Differ cache clear` the only way to release them. That cache is now capped at 64MB, and drops what you read longest ago
+- With GitHub unreachable, every `]f` asked for the thread list again and repeated the same error. A failed read now waits before retrying, and reports once rather than per file
+- Replying to a thread was rejected whenever anyone had pushed since you opened the pull request, discarding the reply and reloading the diff. A reply is anchored to the thread rather than to a line, so it no longer takes that check
+
+## [0.1.33] — 2026-08-22
+
+### Fixed
+
 - Closing the merge tool left its colouring, its conflict keymaps and its hooks on the worktree file you had been resolving, and opening that file again silently raised your `timeoutlen`. The file now comes back untouched
 - `:tabclose` on the merge tab, or closing its result window, left the session running against a window that no longer existed, so the next take-ours failed with `E5108`. Either now ends the session
 - Closing a diff left `g?` bound on the real file you had opened with `df`, along with autocommands that outlived the session

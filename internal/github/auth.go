@@ -18,8 +18,7 @@ func (c *Client) TokenStatus() (status, message string) {
 	if c.tokenErr == nil {
 		return "ok", ""
 	}
-	var perr *protocol.Error
-	if errors.As(c.tokenErr, &perr) {
+	if perr, ok := errors.AsType[*protocol.Error](c.tokenErr); ok {
 		return perr.Code, perr.Message
 	}
 	return protocol.CodeInternal, c.tokenErr.Error()

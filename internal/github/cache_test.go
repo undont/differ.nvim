@@ -26,7 +26,7 @@ func TestBlobCacheServesContents(t *testing.T) {
 		t.Fatalf("unexpected path %s", r.URL.Path)
 		return nil, nil
 	})
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", ""); err != nil {
 			t.Fatal(err)
 		}
@@ -36,40 +36,6 @@ func TestBlobCacheServesContents(t *testing.T) {
 	}
 	if refCalls.Load() != 2 {
 		t.Errorf("refs are not cached, want 2 lookups, got %d", refCalls.Load())
-	}
-}
-
-func TestThreadCacheAndInvalidation(t *testing.T) {
-	threadCalls := 0
-	c := newClient(func(r *http.Request) (*http.Response, error) {
-		body := string(readBody(t, r))
-		switch {
-		case strings.Contains(body, "GetThreads"):
-			threadCalls++
-			return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":""}}}}}}`, nil), nil
-		case strings.Contains(body, "resolveReviewThread"):
-			return resp(200, `{"data":{"result":{"thread":{"isResolved":true}}}}`, nil), nil
-		}
-		t.Fatalf("unexpected op: %s", body)
-		return nil, nil
-	})
-	ctx := context.Background()
-	for i := 0; i < 2; i++ {
-		if _, err := c.GetThreads(ctx, "o", "r", 3); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if threadCalls != 1 {
-		t.Fatalf("second get_threads should be cached, got %d fetches", threadCalls)
-	}
-	if _, err := c.ResolveThread(ctx, "PRT_1", true); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := c.GetThreads(ctx, "o", "r", 3); err != nil {
-		t.Fatal(err)
-	}
-	if threadCalls != 2 {
-		t.Errorf("resolve must invalidate the thread cache, got %d fetches", threadCalls)
 	}
 }
 
@@ -95,45 +61,92 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 	}
 }
 
-// a mutation invalidating the thread cache mid-pagination must win: the walk in flight
-// assembled its snapshot before the change, so caching it would resurrect the pre-
-// mutation list and hide the new comment for the life of the session.
-func TestInvalidateDuringWalkDropsTheStaleSnapshot(t *testing.T) {
-	var c *Client
-	c = newClient(func(*http.Request) (*http.Response, error) {
-		// invalidate while the walk is mid-flight, as a concurrent mutation would
-		c.cache.invalidateThreads()
-		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
-			`"nodes":[{"id":"th_1","path":"a.txt","comments":{"nodes":[]}}],`+
-			`"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
-	})
-
-	got, err := c.GetThreads(context.Background(), "acme", "widget", 7)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("the caller still gets the walk's result, got %d", len(got))
-	}
-	if _, ok := c.cache.thread(threadKey("acme", "widget", 7)); ok {
-		t.Error("a snapshot assembled before the invalidation must not be cached")
-	}
-}
-
-// the ordinary path still caches, so the guard hasn't disabled the memo outright
-func TestThreadWalkCachesWhenNothingInvalidates(t *testing.T) {
+// threads are the client's to keep fresh, so every walk reads through to GitHub.
+func TestThreadsAreNotCached(t *testing.T) {
 	calls := 0
 	c := newClient(func(*http.Request) (*http.Response, error) {
 		calls++
 		return resp(200, `{"data":{"repository":{"pullRequest":{"reviewThreads":{`+
 			`"nodes":[],"pageInfo":{"hasNextPage":false,"endCursor":null}}}}}}`, nil), nil
 	})
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		if _, err := c.GetThreads(context.Background(), "acme", "widget", 7); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if calls != 1 {
-		t.Errorf("want the second call served from cache, got %d requests", calls)
+	if calls != 2 {
+		t.Errorf("want both walks to reach github, got %d requests", calls)
+	}
+}
+
+// the real cache with a smaller cap, so eviction trips without allocating 64MB
+func smallCache(limit int) *cache {
+	c := newCache()
+	c.limit = limit
+	return c
+}
+
+func put(c *cache, key string, n int) {
+	c.putBlob(key, FileBlob{Content: strings.Repeat("x", n)})
+}
+
+// blobs never expire (immutable per sha), so the cap is the only thing bounding them.
+func TestBlobCacheEvictsLeastRecentlyUsed(t *testing.T) {
+	c := smallCache(350) // three 100-byte entries fit (keys are charged too), four don't
+	put(c, "a", 100)
+	put(c, "b", 100)
+	put(c, "c", 100)
+
+	// read a, so b is now the coldest entry rather than a
+	if _, ok := c.blob("a"); !ok {
+		t.Fatal("a should still be cached")
+	}
+	put(c, "d", 100) // pushes past the cap: the coldest entry goes
+
+	if _, ok := c.blob("b"); ok {
+		t.Error("b was least-recently-used and should have been evicted")
+	}
+	for _, key := range []string{"a", "c", "d"} {
+		if _, ok := c.blob(key); !ok {
+			t.Errorf("%s should have survived eviction", key)
+		}
+	}
+	if c.bytes > c.limit {
+		t.Errorf("cache holds %d bytes, over its %d cap", c.bytes, c.limit)
+	}
+}
+
+// the charge must follow the entry, or a re-put leaks the accounting.
+func TestBlobCacheAccountsForReplacedEntries(t *testing.T) {
+	c := smallCache(1000)
+	put(c, "a", 100)
+	put(c, "a", 400)
+	if want := blobSize("a", FileBlob{Content: strings.Repeat("x", 400)}); c.bytes != want {
+		t.Errorf("want %d bytes charged after the replace, got %d", want, c.bytes)
+	}
+	if c.lru.Len() != 1 {
+		t.Errorf("a replace should reuse the entry, got %d", c.lru.Len())
+	}
+}
+
+// an entry larger than the whole cap must not wedge the eviction loop.
+func TestBlobCacheSurvivesAnOversizedEntry(t *testing.T) {
+	c := smallCache(50)
+	put(c, "big", 500)
+	if c.lru.Len() != 0 || c.bytes != 0 {
+		t.Errorf("an entry over the cap should not be retained, got %d entries / %d bytes", c.lru.Len(), c.bytes)
+	}
+	put(c, "small", 10) // the cache still works afterwards
+	if _, ok := c.blob("small"); !ok {
+		t.Error("the cache should still hold a fitting entry")
+	}
+}
+
+func TestClearCacheResetsTheCharge(t *testing.T) {
+	c := smallCache(1000)
+	put(c, "a", 100)
+	c.clearAll()
+	if c.bytes != 0 || c.lru.Len() != 0 || len(c.blobs) != 0 {
+		t.Errorf("clear should empty the cache, got %d bytes / %d entries / %d keys", c.bytes, c.lru.Len(), len(c.blobs))
 	}
 }

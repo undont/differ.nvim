@@ -40,16 +40,14 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 
 	// sole owner of stdout: one goroutine, so writes are serialized without a mutex.
 	var writerDone sync.WaitGroup
-	writerDone.Add(1)
-	go func() {
-		defer writerDone.Done()
+	writerDone.Go(func() {
 		enc := json.NewEncoder(out)
 		for msg := range s.outbound {
 			if err := enc.Encode(msg); err != nil {
 				s.log.Error("encode response", "err", err)
 			}
 		}
-	}()
+	})
 
 	var inflight sync.WaitGroup
 	scanner := bufio.NewScanner(in)
