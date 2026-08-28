@@ -4,8 +4,9 @@ local health = vim.health
 
 local M = {}
 
--- a cold check pays a process start before the handshake answers
-local PING_TIMEOUT_MS = 5000
+-- added to the client's restart budget: giving up before it does reports a timeout
+-- instead of the crash. covers the process starts the retries pay for
+local PING_MARGIN_MS = 2000
 
 local function check_nvim()
     health.start("neovim")
@@ -99,6 +100,7 @@ local function check_sidecar(sidecar)
     end
     health.info("binary: " .. bin)
 
+    local timeout = sidecar.restart_budget_ms() + PING_MARGIN_MS
     local done, gerr = false, nil
     ---@type differ.sidecar.Hello|nil
     local ginfo
@@ -110,14 +112,14 @@ local function check_sidecar(sidecar)
         sidecar.ping(function(err, info)
             gerr, ginfo, done = err, info, true
         end)
-        return vim.wait(PING_TIMEOUT_MS, function()
+        return vim.wait(timeout, function()
             return done
         end)
     end)
     vim.notify = notify
 
     if not pinged or not done then
-        health.error(("no answer to a hello within %dms"):format(PING_TIMEOUT_MS))
+        health.error(("no answer to a hello within %dms"):format(timeout))
         check_sidecar_output(sidecar)
         return nil
     end

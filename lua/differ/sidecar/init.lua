@@ -10,6 +10,14 @@ local PROTOCOL = 1
 local BASE_BACKOFF_MS = 200
 local MAX_BACKOFF_MS = 8000
 local MAX_ATTEMPTS = 5
+-- the wall-clock a crash-looping binary costs before the client gives up
+local RESTART_BUDGET_MS = (function()
+    local total = 0
+    for i = 1, MAX_ATTEMPTS do
+        total = total + math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ^ (i - 1))
+    end
+    return total
+end)()
 -- ceiling on one request. the Go client's 30s timeout is per HTTP call, so a handler
 -- that paginates (or never returns) outlives it; generous enough for a large PR's file
 -- walk, since firing early would fail a request that was going to succeed
@@ -218,6 +226,27 @@ local function fail_all(err)
     end
 end
 
+local function teardown(err)
+    if not client then
+        return
+    end
+    client.stopping = true
+    client.ready = false
+    client.running = false
+    if client.proc then
+        pcall(function()
+            -- the binary traps SIGTERM only to cancel a context its blocking stdin scan
+            -- never observes, so EOF is what ends it and the signal is a backstop
+            ---@diagnostic disable-next-line: undefined-field
+            client.proc:write(nil)
+            ---@diagnostic disable-next-line: undefined-field
+            client.proc:kill(15)
+        end)
+    end
+    fail_all(err)
+    client = nil -- supersedes the dying process's callbacks; see `owned` in start()
+end
+
 function do_request(method, params, cb)
     local id = client.next_id
     client.next_id = id + 1
@@ -233,6 +262,14 @@ function flush_queue()
     end
 end
 
+-- the next request() spins a fresh client, so a rebuilt binary heals a mismatch
+local function handshake_failed(why)
+    vim.schedule(function()
+        vim.notify("differ: sidecar " .. why, vim.log.levels.ERROR)
+    end)
+    teardown(mkerr("internal", why))
+end
+
 function handshake()
     local self = client
     local id = client.next_id
@@ -242,32 +279,17 @@ function handshake()
             return -- this client was stopped/replaced; its handshake result is moot
         end
         if err then
-            -- a binary that dies before answering hello lands here, not in the restart
-            -- path, so this is the only error its callers ever see. `err` is the exit
-            -- error and carries the process's stderr; passing it on is what makes the
-            -- difference between "handshake failed" and the reason it failed
-            local why = "handshake failed: " .. (err.message or err.code)
-            vim.schedule(function()
-                vim.notify("differ: sidecar " .. why, vim.log.levels.ERROR)
-            end)
-            client.stopping = true
-            fail_all(mkerr("internal", why))
+            -- a death before hello is the supervisor's: on_exit already scheduled the
+            -- restart, and the queue survives to be flushed after it
+            if not client.running then
+                return
+            end
+            handshake_failed("handshake failed: " .. (err.message or err.code))
             return
         end
         if type(result) ~= "table" or result.protocol ~= PROTOCOL then
-            vim.schedule(function()
-                vim.notify(
-                    "differ: sidecar protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)",
-                    vim.log.levels.ERROR
-                )
-            end)
-            client.stopping = true
-            -- the caller gets the same instruction the notification carries
-            fail_all(
-                mkerr(
-                    "internal",
-                    "protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)"
-                )
+            handshake_failed(
+                "protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)"
             )
             return
         end
@@ -353,12 +375,16 @@ function schedule_restart()
         vim.schedule(function()
             vim.notify("differ: sidecar keeps crashing; giving up", vim.log.levels.ERROR)
         end)
-        -- the tail matters most here: a request made before the handshake sits in the
-        -- queue, so the per-exit failure above never reaches it and this is the only
-        -- error a caller sees on a binary that never comes up
-        fail_all(
-            mkerr("internal", with_tail("sidecar unavailable", last_exit and last_exit.stderr))
-        )
+        -- a request made before the handshake sits in the queue, so no per-exit failure
+        -- reaches it and this is the only error a caller sees
+        local why = "sidecar unavailable"
+        if last_exit then
+            why = ("sidecar unavailable after %d restarts (last exit code %d)"):format(
+                MAX_ATTEMPTS,
+                last_exit.code
+            )
+        end
+        fail_all(mkerr("internal", with_tail(why, last_exit and last_exit.stderr)))
         return
     end
     local delay = math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ^ (client.attempts - 1))
@@ -454,36 +480,16 @@ function M.ping(cb)
     M.request("hello", { client = "differ.nvim", protocol = PROTOCOL }, cb)
 end
 
--- intentional shutdown: close the sidecar's stdin, fail outstanding requests, and drop
--- the client so the next request() spins a fresh one.
---
--- closing stdin is what actually stops it. the binary traps SIGTERM, but only to cancel
--- a context, and its read loop is parked in a blocking scan of stdin that never observes
--- one, so a signal alone leaves the process running forever. EOF is the loop's own exit
--- condition: it drains inflight work, closes its writer and returns. the signal stays as
--- a backstop for a process wedged somewhere other than the read.
---
--- dropping the client is what suppresses the restart: the dying process's exit callback
--- finds itself superseded and no-ops, where before it would clear `proc`/`running` on
--- whatever client had since taken its place, orphaning that process and leaving the
--- client believing nothing was running
+-- intentional shutdown.
 function M.stop()
-    if not client then
-        return
-    end
-    client.stopping = true
-    client.ready = false
-    client.running = false
-    if client.proc then
-        pcall(function()
-            ---@diagnostic disable-next-line: undefined-field
-            client.proc:write(nil) -- EOF: the read loop's clean exit
-            ---@diagnostic disable-next-line: undefined-field
-            client.proc:kill(15)
-        end)
-    end
-    fail_all(mkerr("internal", "sidecar stopped"))
-    client = nil
+    teardown(mkerr("internal", "sidecar stopped"))
+end
+
+-- a caller waiting on a request has to outlast this, or it reports a timeout on a
+-- client that is mid-recovery
+---@return integer
+function M.restart_budget_ms()
+    return RESTART_BUDGET_MS
 end
 
 -- whether the handshake has completed and requests flow without queueing.

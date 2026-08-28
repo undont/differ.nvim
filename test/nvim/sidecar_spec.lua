@@ -208,6 +208,32 @@ describe("sidecar stderr", function()
         return path
     end
 
+    -- the whole restart backoff these tests would otherwise sit through. the number of
+    -- attempts is unchanged, only the wait between them
+    local function clamped_backoff()
+        local real = vim.defer_fn
+        vim.defer_fn = function(fn, _)
+            return real(fn, 5)
+        end
+        return function()
+            vim.defer_fn = real
+        end
+    end
+
+    local function crash_and_wait()
+        local restore = clamped_backoff()
+        local done, gerr = false, nil
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        local fired = vim.wait(5000, function()
+            return done
+        end)
+        restore()
+        assert.is_true(fired, "the queued request was never failed")
+        return gerr
+    end
+
     before_each(function()
         saved_config = require("differ").config
     end)
@@ -248,22 +274,12 @@ describe("sidecar stderr", function()
 
     it("explains why a binary that never comes up failed", function()
         fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
+        local gerr = crash_and_wait()
 
-        local done, gerr = false, nil
-        sidecar.request("cache_clear", nil, function(err)
-            gerr, done = err, true
-        end)
-        assert.is_true(
-            vim.wait(5000, function()
-                return done
-            end),
-            "the queued request was never failed"
-        )
-        -- dying before hello fails the handshake, which stops the client outright:
-        -- the restart/give-up path is never reached, so this is the caller's only error
+        -- a death before hello is retried, so the give-up at the end of the budget is
+        -- the caller's only error and has to carry the reason
         assert.are.equal("internal", gerr.code)
-        assert.is_truthy(gerr.message:find("handshake failed", 1, true))
-        assert.is_truthy(gerr.message:find("sidecar exited (code 1)", 1, true))
+        assert.is_truthy(gerr.message:find("sidecar unavailable", 1, true))
         assert.is_truthy(gerr.message:find("fatal: cannot start", 1, true))
     end)
 
@@ -275,13 +291,7 @@ describe("sidecar stderr", function()
             "exit 2",
         })
 
-        local done, gerr = false, nil
-        sidecar.request("cache_clear", nil, function(err)
-            gerr, done = err, true
-        end)
-        assert.is_true(vim.wait(5000, function()
-            return done
-        end))
+        local gerr = crash_and_wait()
 
         -- 400 filler lines against the 200-line cap, then ~2000 bytes of that against
         -- the byte cap: the newest survive both, the oldest survive neither
@@ -296,14 +306,7 @@ describe("sidecar stderr", function()
 
     it("keeps the last crash reachable after the client is gone", function()
         fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
-
-        local done = false
-        sidecar.request("cache_clear", nil, function()
-            done = true
-        end)
-        assert.is_true(vim.wait(5000, function()
-            return done
-        end))
+        crash_and_wait()
 
         sidecar.stop() -- the client and its log are gone; the crash record is not
         local exit = sidecar.last_exit()

@@ -69,6 +69,18 @@ describe("differ.health", function()
         return path
     end
 
+    -- the whole restart backoff this would otherwise sit through. the number of
+    -- attempts is unchanged, only the wait between them
+    local function clamped_backoff()
+        local real = vim.defer_fn
+        vim.defer_fn = function(fn, _)
+            return real(fn, 5)
+        end
+        return function()
+            vim.defer_fn = real
+        end
+    end
+
     before_each(function()
         local differ = require("differ")
         saved_config, saved_opts = differ.config, differ.user_opts
@@ -111,16 +123,21 @@ describe("differ.health", function()
         require("differ").setup({
             sidecar_bin = fake_sidecar({ "echo 'boom: cannot start' >&2", "exit 3" }),
         })
+        local restore = clamped_backoff()
         local calls = capture()
+        restore()
 
-        local err = find(calls, "sidecar", "sidecar exited (code 3)")
+        -- the ping window outlasts the restart budget, so the client's own verdict is
+        -- what health reports rather than a timeout on a recovery still in progress
+        local err = find(calls, "sidecar", "sidecar unavailable after")
         assert.is_truthy(err)
         assert.are.equal("error", err.kind)
+        assert.is_truthy(err.msg:find("last exit code 3", 1, true))
         assert.is_truthy(err.msg:find("boom: cannot start", 1, true)) -- its own last words
+        assert.is_nil(find(calls, "sidecar", "no answer to a hello"))
         -- the sections after the failure still ran
         assert.is_truthy(find(calls, "github auth", "the sidecar did not answer"))
-        -- the client notifies at error level on a failed handshake, which inside a real
-        -- :checkhealth raises out of the command and abandons everything after it
+        -- an error-level notify raises out of a real :checkhealth, abandoning the rest
         assert.are.equal(0, notified, "check() let a notification escape")
     end)
 
