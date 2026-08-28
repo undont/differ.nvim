@@ -28,7 +28,7 @@ func main() {
 
 	// token resolution failure is non-fatal: the handshake still works and the
 	// error is handed to the client so only PR methods surface gh_missing/auth.
-	token, tokenErr := github.ResolveToken()
+	token, tokenErr := github.ResolveToken(ctx)
 	if tokenErr != nil {
 		log.Warn("github auth not ready", "err", tokenErr)
 	}
