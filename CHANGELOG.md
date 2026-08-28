@@ -8,13 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A sidecar that crashed on the way up was never retried, so pull request review stayed broken for the rest of the session. It now restarts, and `:checkhealth differ` names the crash instead of reporting a timeout
+- With your keyring locked, the sidecar sat waiting on `gh auth token` and never answered, which read as a failed build. It now gives up and tells you the keyring is the problem
+- A request over the 16MB limit killed the sidecar and took whatever was queued behind it, which then never got a reply. The oversized request is now rejected on its own
+
+## [0.1.34] — 2026-08-22
+
+### Fixed
+
 - A comment someone else posted whilst a pull request was open would never appear. The thread list was only refreshed when you commented yourself; it is now re-read as you move between files
 - The overview's `checks:` line kept reporting whatever CI was doing when you first opened the page, so it still read `pending` after a green build and disagreed with `:Differ pr checks`. It is now read fresh on every open
 - A long review kept every file version it had read for the life of the session, with `:Differ cache clear` the only way to release them. That cache is now capped at 64MB, and drops what you read longest ago
 - With GitHub unreachable, every `]f` asked for the thread list again and repeated the same error. A failed read now waits before retrying, and reports once rather than per file
 - Replying to a thread was rejected whenever anyone had pushed since you opened the pull request, discarding the reply and reloading the diff. A reply is anchored to the thread rather than to a line, so it no longer takes that check
 
-## [0.1.33] — 2026-08-22
+## [0.1.33] — 2026-08-21
 
 ### Fixed
 

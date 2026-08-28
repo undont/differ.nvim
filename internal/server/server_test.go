@@ -126,23 +126,47 @@ func TestPanicBecomesInternal(t *testing.T) {
 	}
 }
 
-func TestOversizedLine(t *testing.T) {
+func TestOversizedLineResyncs(t *testing.T) {
 	reg := handlers.NewRegistry(handlers.Deps{Log: discardLog()})
-	// a line past the scanner cap makes Scan stop with an error; Run surfaces it
-	// rather than crashing or hanging.
-	big := `{"id":1,"method":"hello","params":{"junk":"` + strings.Repeat("a", maxLine+1) + `"}}`
-	in := strings.NewReader(big + "\n")
-	var out strings.Builder
-	srv := New(reg, discardLog())
-	done := make(chan error, 1)
-	go func() { done <- srv.Run(context.Background(), in, &out) }()
-	select {
-	case err := <-done:
-		if err == nil {
-			t.Fatal("want scanner error on oversized line")
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("Run hung on oversized line")
+	// a frame past the cap is answered and discarded to its terminator. drive fails
+	// the test if Run returns an error, so this also pins that it no longer does.
+	big := `{"id":2,"method":"hello","params":{"junk":"` + strings.Repeat("a", maxLine) + `"}}`
+	after := `{"id":3,"method":"hello","params":{"client":"differ.nvim","protocol":1}}`
+	resps := drive(t, reg, helloLine, big, after)
+
+	if len(resps) != 3 {
+		t.Fatalf("want 3 responses, got %d: %+v", len(resps), resps)
+	}
+	if resps[0].ID != 1 || resps[0].Error != nil {
+		t.Errorf("hello before the oversized frame should succeed, got %+v", resps[0])
+	}
+	// the id is unrecoverable from an unparsed frame, so the error carries 0
+	if resps[1].ID != 0 || resps[1].Error == nil || resps[1].Error.Code != protocol.CodeBadRequest {
+		t.Errorf("oversized frame should yield bad_request, got %+v", resps[1])
+	}
+	// the point of the resync: the frame behind the oversized one is still served
+	if resps[2].ID != 3 || resps[2].Error != nil {
+		t.Errorf("request after the oversized frame should succeed, got %+v", resps[2])
+	}
+}
+
+func TestFrameAtCapIsServed(t *testing.T) {
+	reg := handlers.NewRegistry(handlers.Deps{Log: discardLog()})
+	// the cap is inclusive, and the frame spans several reader buffers on the way to
+	// it: the length has to be checked against the whole frame, not the last chunk
+	head := `{"id":4,"method":"hello","params":{"client":"differ.nvim","protocol":1,"junk":"`
+	tail := `"}}`
+	atCap := head + strings.Repeat("a", maxLine-len(head)-len(tail)) + tail
+	if len(atCap) != maxLine {
+		t.Fatalf("test frame is %d bytes, want %d", len(atCap), maxLine)
+	}
+
+	resps := drive(t, reg, atCap)
+	if len(resps) != 1 {
+		t.Fatalf("want 1 response, got %d", len(resps))
+	}
+	if resps[0].ID != 4 || resps[0].Error != nil {
+		t.Errorf("a frame at the cap should be served, got %+v", resps[0])
 	}
 }
 

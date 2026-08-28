@@ -85,6 +85,16 @@ local function call(method, params)
     return gerr, gres
 end
 
+-- a stand-in binary: the real one is quiet at the default log level and never dies on
+-- cue, so the only way to drive either deterministically is to control what it does
+local function fake_sidecar(lines)
+    local path = vim.fn.tempname()
+    vim.fn.writefile(vim.list_extend({ "#!/bin/sh" }, lines), path)
+    vim.fn.setfperm(path, "rwxr-xr-x")
+    require("differ").setup({ sidecar_bin = path })
+    return path
+end
+
 describe("sidecar client", function()
     assert(has_binary(), "bin/differ-sidecar not built (run `make go-build`)")
 
@@ -150,6 +160,18 @@ describe("sidecar client", function()
         )
     end)
 
+    it("stops the sidecar when nvim exits", function()
+        assert.is_nil(call("cache_clear", nil))
+        assert.are.equal(1, running_sidecars())
+        vim.api.nvim_exec_autocmds("VimLeavePre", { group = "differ.sidecar" })
+        assert.is_true(
+            vim.wait(3000, function()
+                return running_sidecars() == 0
+            end),
+            "sidecar still running after VimLeavePre"
+        )
+    end)
+
     it("maps an unknown method to a bad_request error envelope", function()
         local err, res = call("does_not_exist", nil)
         assert.is_nil(res)
@@ -198,14 +220,30 @@ end)
 describe("sidecar stderr", function()
     local saved_config
 
-    -- a stand-in binary: the real one is quiet at the default log level, so the only
-    -- way to assert on stderr deterministically is to control what gets written
-    local function fake_sidecar(lines)
-        local path = vim.fn.tempname()
-        vim.fn.writefile(vim.list_extend({ "#!/bin/sh" }, lines), path)
-        vim.fn.setfperm(path, "rwxr-xr-x")
-        require("differ").setup({ sidecar_bin = path })
-        return path
+    -- the whole restart backoff these tests would otherwise sit through. the number of
+    -- attempts is unchanged, only the wait between them
+    local function clamped_backoff()
+        local real = vim.defer_fn
+        vim.defer_fn = function(fn, _)
+            return real(fn, 5)
+        end
+        return function()
+            vim.defer_fn = real
+        end
+    end
+
+    local function crash_and_wait()
+        local restore = clamped_backoff()
+        local done, gerr = false, nil
+        sidecar.request("cache_clear", nil, function(err)
+            gerr, done = err, true
+        end)
+        local fired = vim.wait(5000, function()
+            return done
+        end)
+        restore()
+        assert.is_true(fired, "the queued request was never failed")
+        return gerr
     end
 
     before_each(function()
@@ -248,22 +286,12 @@ describe("sidecar stderr", function()
 
     it("explains why a binary that never comes up failed", function()
         fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
+        local gerr = crash_and_wait()
 
-        local done, gerr = false, nil
-        sidecar.request("cache_clear", nil, function(err)
-            gerr, done = err, true
-        end)
-        assert.is_true(
-            vim.wait(5000, function()
-                return done
-            end),
-            "the queued request was never failed"
-        )
-        -- dying before hello fails the handshake, which stops the client outright:
-        -- the restart/give-up path is never reached, so this is the caller's only error
+        -- a death before hello is retried, so the give-up at the end of the budget is
+        -- the caller's only error and has to carry the reason
         assert.are.equal("internal", gerr.code)
-        assert.is_truthy(gerr.message:find("handshake failed", 1, true))
-        assert.is_truthy(gerr.message:find("sidecar exited (code 1)", 1, true))
+        assert.is_truthy(gerr.message:find("sidecar unavailable", 1, true))
         assert.is_truthy(gerr.message:find("fatal: cannot start", 1, true))
     end)
 
@@ -275,13 +303,7 @@ describe("sidecar stderr", function()
             "exit 2",
         })
 
-        local done, gerr = false, nil
-        sidecar.request("cache_clear", nil, function(err)
-            gerr, done = err, true
-        end)
-        assert.is_true(vim.wait(5000, function()
-            return done
-        end))
+        local gerr = crash_and_wait()
 
         -- 400 filler lines against the 200-line cap, then ~2000 bytes of that against
         -- the byte cap: the newest survive both, the oldest survive neither
@@ -296,19 +318,51 @@ describe("sidecar stderr", function()
 
     it("keeps the last crash reachable after the client is gone", function()
         fake_sidecar({ "echo 'fatal: cannot start' >&2", "exit 1" })
-
-        local done = false
-        sidecar.request("cache_clear", nil, function()
-            done = true
-        end)
-        assert.is_true(vim.wait(5000, function()
-            return done
-        end))
+        crash_and_wait()
 
         sidecar.stop() -- the client and its log are gone; the crash record is not
         local exit = sidecar.last_exit()
         assert.are.equal(1, exit.code)
         assert.are.same({ "fatal: cannot start" }, exit.stderr)
         assert.are.same({}, sidecar.stderr_lines())
+    end)
+end)
+
+describe("sidecar recovery", function()
+    local saved_config
+
+    before_each(function()
+        saved_config = require("differ").config
+    end)
+
+    after_each(function()
+        sidecar.stop()
+        require("differ").config = saved_config
+        vim.wait(100)
+    end)
+
+    it("fails a request its process died on, then recovers", function()
+        local marker = vim.fn.tempname()
+        -- the first process answers hello and exits in the same turn, so the queued
+        -- request is flushed into a pipe that is already gone. every later one stays up
+        fake_sidecar({
+            ("first=0; if [ ! -f %s ]; then : > %s; first=1; fi"):format(marker, marker),
+            "while IFS= read -r line; do",
+            '  id=$(printf %s "$line" | sed \'s/.*"id":\\([0-9]*\\).*/\\1/\')',
+            '  printf \'{"id":%s,"result":{"protocol":1,"binary":"fake"}}\\n\' "$id"',
+            '  if [ "$first" = 1 ]; then exit 0; fi',
+            "done",
+        })
+
+        -- written before the death, so it is failed rather than replayed: the sidecar
+        -- may have acted on it, and a mutation must not run twice. the error names the
+        -- exit rather than waiting out the request timeout
+        local err = call("cache_clear", nil)
+        assert.are.equal("internal", err.code)
+        assert.is_truthy(err.message:find("sidecar exited (code 0)", 1, true))
+
+        -- only a request that never left is retried, and the restart serves it
+        assert.is_nil(call("cache_clear", nil))
+        assert.is_true(sidecar.is_ready())
     end)
 end)
