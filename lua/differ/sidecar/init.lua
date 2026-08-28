@@ -460,6 +460,14 @@ function M.request(method, params, cb)
     cb = cb or function() end
     if not client then
         client = new_client()
+        -- nvim closing our stdin on teardown would end it too, but only as a side effect
+        -- of the pipe going; this is the same clean stop a `:Differ sidecar stop` makes
+        vim.api.nvim_create_autocmd("VimLeavePre", {
+            group = vim.api.nvim_create_augroup("differ.sidecar", { clear = true }),
+            callback = function()
+                M.stop()
+            end,
+        })
     end
     if not client.running then
         local ok, err = start()

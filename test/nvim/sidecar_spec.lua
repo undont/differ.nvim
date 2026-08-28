@@ -160,6 +160,18 @@ describe("sidecar client", function()
         )
     end)
 
+    it("stops the sidecar when nvim exits", function()
+        assert.is_nil(call("cache_clear", nil))
+        assert.are.equal(1, running_sidecars())
+        vim.api.nvim_exec_autocmds("VimLeavePre", { group = "differ.sidecar" })
+        assert.is_true(
+            vim.wait(3000, function()
+                return running_sidecars() == 0
+            end),
+            "sidecar still running after VimLeavePre"
+        )
+    end)
+
     it("maps an unknown method to a bad_request error envelope", function()
         local err, res = call("does_not_exist", nil)
         assert.is_nil(res)
