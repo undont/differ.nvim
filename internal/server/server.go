@@ -5,8 +5,11 @@ package server
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"sync"
@@ -19,6 +22,10 @@ import (
 // maxLine bounds a single request frame (large get_file_versions blobs land on
 // the response side, not here).
 const maxLine = 16 * 1024 * 1024
+
+// readBuf is the reader's working buffer; frames larger than this are accumulated
+// across reads, up to maxLine.
+const readBuf = 64 * 1024
 
 // Server owns the dispatch loop and its handler registry.
 type Server struct {
@@ -50,24 +57,73 @@ func (s *Server) Run(ctx context.Context, in io.Reader, out io.Writer) error {
 	})
 
 	var inflight sync.WaitGroup
-	scanner := bufio.NewScanner(in)
-	scanner.Buffer(make([]byte, 0, 64*1024), maxLine)
+	reader := bufio.NewReaderSize(in, readBuf)
 
-	for scanner.Scan() {
-		line := append([]byte(nil), scanner.Bytes()...)
-		var req protocol.Request
-		if err := json.Unmarshal(line, &req); err != nil {
-			s.emit(badRequest(0, "invalid JSON"))
-			continue
+	var readErr error
+	for {
+		line, oversized, err := readFrame(reader)
+		if oversized {
+			// the id is unrecoverable: the frame was never parsed, and a client
+			// encoding its object in any key order can put id past the cap
+			s.emit(badRequest(0, fmt.Sprintf("request exceeds the %d byte frame limit", maxLine)))
 		}
-		s.dispatch(ctx, req, &inflight)
+		if len(line) > 0 {
+			var req protocol.Request
+			if uerr := json.Unmarshal(line, &req); uerr != nil {
+				s.emit(badRequest(0, "invalid JSON"))
+			} else {
+				s.dispatch(ctx, req, &inflight)
+			}
+		}
+		if err != nil {
+			if !errors.Is(err, io.EOF) {
+				readErr = err
+			}
+			break
+		}
 	}
-	scanErr := scanner.Err()
 
 	inflight.Wait()
 	close(s.outbound)
 	writerDone.Wait()
-	return scanErr
+	return readErr
+}
+
+// readFrame returns the next newline-terminated frame. a frame past maxLine is
+// discarded to its terminator and reported oversized, so the stream resyncs on the
+// next request rather than the process dying with one queued behind it.
+func readFrame(r *bufio.Reader) (line []byte, oversized bool, err error) {
+	for {
+		chunk, e := r.ReadSlice('\n')
+		full := errors.Is(e, bufio.ErrBufferFull)
+		if !full {
+			// only the last chunk can carry the terminator, and the cap is on the
+			// frame rather than on the frame plus its newline
+			chunk = bytes.TrimSuffix(chunk, []byte{'\n'})
+		}
+		// ReadSlice aliases the reader's buffer, so the frame has to be copied out
+		// before the next read overwrites it
+		line = append(line, chunk...)
+		if len(line) > maxLine {
+			if full {
+				e = discardFrame(r)
+			}
+			return nil, true, e
+		}
+		if !full {
+			return line, false, e
+		}
+	}
+}
+
+// discardFrame drops whatever remains of the current frame, leaving the reader on
+// the next one.
+func discardFrame(r *bufio.Reader) error {
+	for {
+		if _, err := r.ReadSlice('\n'); !errors.Is(err, bufio.ErrBufferFull) {
+			return err
+		}
+	}
 }
 
 // emit queues an outbound frame for the writer goroutine.
