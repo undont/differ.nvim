@@ -155,11 +155,14 @@ local function resolve_bin()
     return nil
 end
 
+-- false when there is no process to write to
 local function send(obj)
-    if client and client.proc then
-        ---@diagnostic disable-next-line: undefined-field
-        client.proc:write(vim.json.encode(obj) .. "\n")
+    if not (client and client.proc) then
+        return false
     end
+    ---@diagnostic disable-next-line: undefined-field
+    client.proc:write(vim.json.encode(obj) .. "\n")
+    return true
 end
 
 -- take a pending entry off the map and disarm its timer, returning its callback for the
@@ -250,8 +253,14 @@ end
 function do_request(method, params, cb)
     local id = client.next_id
     client.next_id = id + 1
+    -- the write is synchronous and a response arrives on a later loop turn, so awaiting
+    -- after it cannot miss one. back on the queue if the process went: a restart is
+    -- already scheduled, and the queue is what survives it
+    if not send({ id = id, method = method, params = params or vim.empty_dict() }) then
+        table.insert(client.queue, { method = method, params = params, cb = cb })
+        return
+    end
     await(id, cb)
-    send({ id = id, method = method, params = params or vim.empty_dict() })
 end
 
 function flush_queue()
@@ -292,6 +301,9 @@ function handshake()
                 "protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)"
             )
             return
+        end
+        if not client.running then
+            return -- it answered and died in the same turn; the restart owns the queue
         end
         client.ready = true
         client.attempts = 0
