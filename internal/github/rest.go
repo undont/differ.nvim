@@ -42,7 +42,7 @@ func (c *Client) send(req *http.Request) (*http.Response, []byte, error) {
 	body, rerr := io.ReadAll(io.LimitReader(resp.Body, maxResponse))
 	// the status outranks a truncated read: a 403 that also failed to read is still a
 	// 403, and its message is the useful half
-	if perr := mapHTTP(resp, body, nil); perr != nil {
+	if perr := mapHTTP(resp, body); perr != nil {
 		return resp, body, perr
 	}
 	if rerr != nil {
