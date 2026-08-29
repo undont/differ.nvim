@@ -193,3 +193,24 @@ func TestPublishCommentOutOfDiffIsBadRequest(t *testing.T) {
 		t.Errorf("github's own message must survive: %v", err)
 	}
 }
+
+// the draft path fails differently: GitHub answers 200 with no errors array at all and
+// a null thread (captured live), so nothing maps it. left unchecked the caller is told
+// a comment landed that GitHub never stored.
+func TestDraftThreadNullThreadIsBadRequest(t *testing.T) {
+	c := newClient(func(r *http.Request) (*http.Response, error) {
+		if op := commentOp(t, readBody(t, r)); op != "AddThread" {
+			t.Fatalf("a draft post must use AddThread, got op %s", op)
+		}
+		return resp(200, `{"data":{"addPullRequestReviewThread":{"thread":null}}}`, nil), nil
+	})
+	pc, err := c.PostComment(context.Background(), "o", "r", 3, PostCommentInput{
+		Path: "a.go", Side: "RIGHT", Line: 999999, Body: "nit", ReviewID: "PRR_1",
+	})
+	if pc != nil {
+		t.Errorf("a dropped draft must not return a comment: %+v", pc)
+	}
+	if got := codeOf(t, err); got != protocol.CodeBadRequest {
+		t.Fatalf("null thread → %q, want %q", got, protocol.CodeBadRequest)
+	}
+}

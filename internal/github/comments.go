@@ -64,7 +64,14 @@ func (c *Client) draftThread(ctx context.Context, in PostCommentInput) (*PostCom
 	if err := c.graphql(ctx, addThreadMutation, vars, &out); err != nil {
 		return nil, err
 	}
+	// an anchor outside the diff is not an error here: GitHub answers 200 with no
+	// errors array and a null thread, so the draft silently never exists. the publish
+	// path rejects the same anchor with UNPROCESSABLE, so report it the same way
 	thread := out.AddPullRequestReviewThread.Thread
+	if thread.ID == "" {
+		return nil, protocol.NewError(protocol.CodeBadRequest,
+			"line could not be resolved: the comment must anchor to a line in the diff")
+	}
 	pc := &PostComment{ThreadID: thread.ID}
 	if len(thread.Comments.Nodes) > 0 {
 		pc.ID = parseID(thread.Comments.Nodes[0].FullDatabaseID)
