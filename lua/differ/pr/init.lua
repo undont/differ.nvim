@@ -39,11 +39,33 @@ local CODE_HINT = {
     gh_missing = "install gh or set GH_TOKEN",
     rate_limited = "github rate limit hit, retry shortly",
 }
+
+---@param secs integer
+---@return string
+local function wait_for(secs)
+    if secs < 60 then
+        return secs .. "s"
+    end
+    return math.ceil(secs / 60) .. "m"
+end
+
+-- github only sends a retry-after on a primary rate limit
+---@param err table|nil
+---@return string|nil
+function M.error_hint(err)
+    local code = err and err.code
+    local secs = err and err.retry_after
+    if code == "rate_limited" and type(secs) == "number" and secs > 0 then
+        return "github rate limit hit, retry in " .. wait_for(secs)
+    end
+    return CODE_HINT[code]
+end
+
 ---@param err table|nil
 local function notify_err(err)
     local code = (err and err.code) or "internal"
     local msg = (err and err.message) or code
-    local hint = CODE_HINT[code]
+    local hint = M.error_hint(err)
     notify(hint and (msg .. " (" .. hint .. ")") or msg, vim.log.levels.ERROR)
 end
 
