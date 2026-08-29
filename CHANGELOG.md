@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A comment anchored to a line outside the diff was dropped without a word when it went into a review draft, and reported as an internal error otherwise. Both now tell you the line could not be resolved
+- A GitHub rate limit always said to retry shortly. It now names the wait when GitHub gives one
+
+## [0.1.35] — 2026-08-28
+
+### Fixed
+
 - A sidecar that crashed on the way up was never retried, so pull request review stayed broken for the rest of the session. It now restarts, and `:checkhealth differ` names the crash instead of reporting a timeout
 - With your keyring locked, the sidecar sat waiting on `gh auth token` and never answered, which read as a failed build. It now gives up and tells you the keyring is the problem
 - A request over the 16MB limit killed the sidecar and took whatever was queued behind it, which then never got a reply. The oversized request is now rejected on its own
