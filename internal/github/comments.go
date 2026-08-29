@@ -7,9 +7,9 @@ import (
 )
 
 // PostComment creates a review comment. InReplyTo (a thread node id) replies into an
-// existing thread; with ReviewID set a new thread joins the pending draft (GraphQL);
-// otherwise the comment publishes immediately (REST). anchor shape (side, line
-// ordering) is validated by the handler before this runs.
+// existing thread; with ReviewID set a new thread joins the pending draft; otherwise
+// the comment publishes immediately. anchor shape (side, line ordering) is validated
+// by the handler before this runs.
 func (c *Client) PostComment(ctx context.Context, owner, repo string, number int, in PostCommentInput) (*PostComment, error) {
 	var (
 		res *PostComment
@@ -81,10 +81,9 @@ func (c *Client) draftThread(ctx context.Context, in PostCommentInput) (*PostCom
 
 // postNewThread opens a new top-level thread without an explicit review. GitHub allows
 // one pending review per PR, so the route depends on whether one already exists: if it
-// does, the comment must join it as a draft (and we echo the review id so the frontend
-// adopts it); if not, the comment publishes immediately as its own COMMENT review. the
-// thread shape matches the draft path, so deleted-file / cross-side anchors behave the
-// same (the REST line-based endpoint was too strict and 422'd on those anchors).
+// does, the comment must join it as a draft, otherwise the comment publishes immediately
+// as its own COMMENT review. the thread shape matches the draft path, so deleted-file /
+// cross-side anchors all behave the same.
 func (c *Client) postNewThread(ctx context.Context, owner, repo string, number int, in PostCommentInput) (*PostComment, error) {
 	prID, pendingID, err := c.prAndPendingReview(ctx, owner, repo, number)
 	if err != nil {

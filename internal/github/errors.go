@@ -45,6 +45,8 @@ func mapHTTP(resp *http.Response, body []byte) *protocol.Error {
 		return protocol.RateLimited(msg, ra)
 	case http.StatusNotFound:
 		return protocol.NewError(protocol.CodeNotFound, msg)
+	// every write goes through graphql, so REST is GETs only
+	// kept here defensively in case any writes via REST get added in the future
 	case http.StatusConflict:
 		return protocol.NewError(protocol.CodeConflict, msg)
 	case http.StatusUnprocessableEntity:

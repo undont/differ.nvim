@@ -24,7 +24,7 @@ type postCommentParams struct {
 
 // postComment creates a review comment: a reply when in_reply_to is set, else a new
 // thread (a draft with review_id, immediate without). anchor validation runs here so
-// GitHub's opaque 422s never reach the user.
+// GitHub's opaque rejections never reach the user.
 func (d Deps) postComment(ctx context.Context, params json.RawMessage) (any, error) {
 	var p postCommentParams
 	if err := decode(params, &p); err != nil {
@@ -82,7 +82,8 @@ func (d Deps) deleteComment(ctx context.Context, params json.RawMessage) (any, e
 // validateAnchor checks a new thread's diff anchor before any API call. only what
 // GitHub guarantees is enforced: a known side, a positive end line, and a range that
 // starts strictly before it ends. cross-side ranges (start LEFT → end RIGHT) are
-// valid and not rejected; diff-membership is left to GitHub (its 422 → bad_request).
+// valid and not rejected; diff-membership is left to GitHub (its UNPROCESSABLE, and the
+// null thread it returns on the draft path, both map to bad_request).
 func validateAnchor(p postCommentParams) error {
 	if p.Path == "" {
 		return protocol.NewError(protocol.CodeBadRequest, "path is required")

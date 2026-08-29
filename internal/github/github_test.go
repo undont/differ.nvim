@@ -279,9 +279,8 @@ func TestGetPRGraphQLFilesPagination(t *testing.T) {
 
 // ── error mapping ───────────────────────────────────────────────────────────
 
-// the message half matters as much as the code: "403 Forbidden" sends the user
-// looking for a missing scope, where GitHub's own body says which secondary limit
-// they hit or which line of the diff a 422 rejected
+// the message half matters as much as the code: "403 Forbidden" sends the user looking
+// for a missing scope, where GitHub's own body says which secondary limit they hit.
 func TestErrorMappingTable(t *testing.T) {
 	cases := []struct {
 		name    string
