@@ -422,6 +422,7 @@ func TestGraphQLErrorMapping(t *testing.T) {
 		{"FORBIDDEN", protocol.CodeAuth},
 		{"INSUFFICIENT_SCOPES", protocol.CodeAuth},
 		{"RATE_LIMITED", protocol.CodeRateLimited},
+		{"UNPROCESSABLE", protocol.CodeBadRequest},
 		{"SOMETHING_ELSE", protocol.CodeInternal},
 	}
 	for _, tc := range cases {

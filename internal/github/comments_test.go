@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/undont/differ.nvim/internal/protocol"
 )
 
 // commentOp routes the post_comment graphql ops. AddThreadReply must be checked
@@ -163,5 +165,31 @@ func TestPostCommentReply(t *testing.T) {
 	}
 	if pc.ID != 9099 || pc.ThreadID != "PRT_5" {
 		t.Errorf("reply result: %+v", pc)
+	}
+}
+
+// the envelope below is what GitHub actually returned for an anchor outside the diff
+// (captured against a live PR): a 200 carrying a top-level type of UNPROCESSABLE. it is
+// the user's line to fix, so it must not read as an internal fault.
+func TestPublishCommentOutOfDiffIsBadRequest(t *testing.T) {
+	c := newClient(func(r *http.Request) (*http.Response, error) {
+		switch op := commentOp(t, readBody(t, r)); op {
+		case "StartReviewLookup":
+			return resp(200, `{"data":{"repository":{"pullRequest":{"id":"PR_NODE","reviews":{"nodes":[]}}}}}`, nil), nil
+		case "PublishComment":
+			return resp(200, `{"data":{"addPullRequestReview":null},"errors":[{"type":"UNPROCESSABLE","path":["addPullRequestReview"],"locations":[{"line":1,"column":82}],"message":"Line could not be resolved"}]}`, nil), nil
+		default:
+			t.Fatalf("unexpected op %s", op)
+			return nil, nil
+		}
+	})
+	_, err := c.PostComment(context.Background(), "o", "r", 3, PostCommentInput{
+		Path: "a.go", Side: "RIGHT", Line: 999999, Body: "nit",
+	})
+	if got := codeOf(t, err); got != protocol.CodeBadRequest {
+		t.Fatalf("out-of-diff anchor → %q, want %q", got, protocol.CodeBadRequest)
+	}
+	if perrOf(t, err).Message != "Line could not be resolved" {
+		t.Errorf("github's own message must survive: %v", err)
 	}
 }

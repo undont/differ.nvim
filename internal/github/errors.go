@@ -118,6 +118,8 @@ func mapGraphQL(errs []gqlError) *protocol.Error {
 		return protocol.NewError(protocol.CodeAuth, msg)
 	case "RATE_LIMITED":
 		return protocol.RateLimited(msg, 0)
+	case "UNPROCESSABLE": // rejected input == BadRequest
+		return protocol.NewError(protocol.CodeBadRequest, msg)
 	default:
 		return protocol.NewError(protocol.CodeInternal, msg)
 	}
