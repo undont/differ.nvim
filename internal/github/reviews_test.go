@@ -128,3 +128,21 @@ func TestDiscardReviewMapsGraphQLError(t *testing.T) {
 		t.Fatalf("want not_found, got %v", err)
 	}
 }
+
+// a null review payload must not read as a started review: lua would store the empty id,
+// promise the user drafts, and publish every later comment straight to the PR.
+func TestStartReviewRejectsEmptyID(t *testing.T) {
+	c := newClient(func(r *http.Request) (*http.Response, error) {
+		if strings.Contains(string(readBody(t, r)), "StartReviewLookup") {
+			return resp(200, `{"data":{"repository":{"pullRequest":{"id":"PR_NODE","reviews":{"nodes":[]}}}}}`, nil), nil
+		}
+		return resp(200, `{"data":{"addPullRequestReview":{"pullRequestReview":null}}}`, nil), nil
+	})
+	sr, err := c.StartReview(context.Background(), "o", "r", 3)
+	if sr != nil {
+		t.Errorf("no review id must not yield a review: %+v", sr)
+	}
+	if got := codeOf(t, err); got != protocol.CodeInternal {
+		t.Fatalf("empty review id → %q, want %q", got, protocol.CodeInternal)
+	}
+}

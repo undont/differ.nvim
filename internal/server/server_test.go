@@ -277,3 +277,17 @@ func TestDefaultLevelTracesNothing(t *testing.T) {
 		t.Errorf("info level should not trace requests:\n%s", buf.String())
 	}
 }
+
+func TestRateLimitCarriesRetryAfter(t *testing.T) {
+	reg := handlers.NewRegistry(handlers.Deps{Log: discardLog()})
+	reg["limited"] = func(context.Context, json.RawMessage) (any, error) {
+		return nil, protocol.RateLimited("API rate limit exceeded", 45)
+	}
+	last := drive(t, reg, helloLine, `{"id":4,"method":"limited","params":{}}`)[1]
+	if last.Error == nil || last.Error.Code != protocol.CodeRateLimited {
+		t.Fatalf("want rate_limited, got %+v", last)
+	}
+	if last.Error.RetryAfter != 45 {
+		t.Errorf("retry_after lost on the wire: %+v", last.Error)
+	}
+}

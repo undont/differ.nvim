@@ -20,12 +20,9 @@ type restErrorBody struct {
 	Message string `json:"message"`
 }
 
-// mapHTTP turns a REST response (or a transport error) into a protocol.Error, or
-// nil when the status is 2xx. body is the already-read response body for messages.
-func mapHTTP(resp *http.Response, body []byte, transportErr error) *protocol.Error {
-	if transportErr != nil {
-		return protocol.NewError(protocol.CodeNetwork, "network error: "+transportErr.Error())
-	}
+// mapHTTP turns a REST response into a protocol.Error, or nil when the status is 2xx.
+// a transport error never reaches here, it's handled by the caller
+func mapHTTP(resp *http.Response, body []byte) *protocol.Error {
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		return nil
 	}
@@ -43,10 +40,13 @@ func mapHTTP(resp *http.Response, body []byte, transportErr error) *protocol.Err
 		}
 		return protocol.NewError(protocol.CodeAuth, msg)
 	case http.StatusTooManyRequests:
+		// a 429 is a rate limit by definition, so only the hint is of interest
 		ra, _ := rateLimited(resp)
 		return protocol.RateLimited(msg, ra)
 	case http.StatusNotFound:
 		return protocol.NewError(protocol.CodeNotFound, msg)
+	// every write goes through graphql, so REST is GETs only
+	// kept here defensively in case any writes via REST get added in the future
 	case http.StatusConflict:
 		return protocol.NewError(protocol.CodeConflict, msg)
 	case http.StatusUnprocessableEntity:
@@ -57,8 +57,8 @@ func mapHTTP(resp *http.Response, body []byte, transportErr error) *protocol.Err
 	}
 }
 
-// rateLimited reports whether a 403/429 is a rate-limit (not a permissions denial)
-// and the retry-after hint in seconds.
+// rateLimited returns the retry-after hint in seconds (0 when there is none) and
+// whether the response is a rate limit or permissions denial.
 func rateLimited(resp *http.Response) (int, bool) {
 	if v := resp.Header.Get("Retry-After"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil {
@@ -118,6 +118,8 @@ func mapGraphQL(errs []gqlError) *protocol.Error {
 		return protocol.NewError(protocol.CodeAuth, msg)
 	case "RATE_LIMITED":
 		return protocol.RateLimited(msg, 0)
+	case "UNPROCESSABLE": // rejected input == BadRequest
+		return protocol.NewError(protocol.CodeBadRequest, msg)
 	default:
 		return protocol.NewError(protocol.CodeInternal, msg)
 	}

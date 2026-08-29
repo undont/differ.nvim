@@ -41,7 +41,12 @@ func (c *Client) StartReview(ctx context.Context, owner, repo string, number int
 	if err := c.graphql(ctx, addReviewMutation, map[string]any{"prId": prID}, &created); err != nil {
 		return nil, err
 	}
-	return &StartReview{ReviewID: created.AddPullRequestReview.PullRequestReview.ID}, nil
+	// an empty id would read as a started review otherwise, check it here before continuing
+	id := created.AddPullRequestReview.PullRequestReview.ID
+	if id == "" {
+		return nil, protocol.NewError(protocol.CodeInternal, "github returned no review id")
+	}
+	return &StartReview{ReviewID: id}, nil
 }
 
 // SubmitReview finalizes a pending review with the given event, returning the
