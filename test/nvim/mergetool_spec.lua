@@ -26,8 +26,11 @@ local function write(path, content)
     fd:close()
 end
 
--- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2)
-local function conflict_repo()
+-- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
+-- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
+-- ||||||| base marker as well
+---@param style string|nil
+local function conflict_repo(style)
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -40,7 +43,11 @@ local function conflict_repo()
     git_ok(root, "checkout", "-q", "main")
     write(root .. "/f.txt", "a\nOURS\nc\n")
     git_ok(root, "commit", "-q", "-am", "ours")
-    git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    if style then
+        git(root, "-c", "merge.conflictStyle=" .. style, "merge", "feature")
+    else
+        git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    end
     return root
 end
 
@@ -474,6 +481,44 @@ describe(":Differ mergetool navigation", function()
         if merge.current() then
             merge.close()
         end
+    end)
+
+    it("steps marker to marker with ]n and wraps, leaving ]x alone", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local function cur()
+            return vim.api.nvim_win_get_cursor(s.result_win)[1]
+        end
+        -- default conflictStyle: no ||||||| line, so three markers per conflict
+        local first = s.regions[1]
+        assert.is_nil(first.mark_base)
+        assert.are.equal(first.result_start, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.mark_sep, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.result_end, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(s.regions[2].result_start, cur()) -- straight into the next block
+
+        fire(s.result_buf, "differ: previous conflict marker")
+        assert.are.equal(first.result_end, cur())
+
+        vim.api.nvim_win_set_cursor(s.result_win, { s.regions[3].result_end, 0 })
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.result_start, cur()) -- wrapped to the first marker
+    end)
+
+    it("includes the base marker under diff3", function()
+        local root = conflict_repo("diff3")
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local r = s.regions[1]
+        assert.is_not_nil(r.mark_base) -- diff3 adds the ||||||| line
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(r.mark_base, vim.api.nvim_win_get_cursor(s.result_win)[1])
     end)
 
     it("walks every conflict with ]x and wraps at the end", function()

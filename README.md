@@ -183,6 +183,7 @@ require("differ").setup({
     review_discard = "gD",       -- pr: discard the pending review and its drafts
     -- merge tool, bound on the result buffer
     next_conflict = "]x", prev_conflict = "[x",
+    next_marker = "]n", prev_marker = "[n",  -- step marker line to marker line
     choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
     choose_all = "<leader>ca",   -- take both (ours then theirs)
     choose_none = "<leader>cx",  -- drop the conflict region
