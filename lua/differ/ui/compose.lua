@@ -9,11 +9,11 @@
 
 local M = {}
 
--- window-local keys: <CR> submits in normal mode (insert keeps <CR> for newlines),
--- <C-s> submits from insert, q / <Esc> cancel in normal mode
+-- window-local keys: <CR> submits normal mode, default behaviour in insert mode
+-- <C-s> submits from insert, q cancels (:q too, via the autocmd below).
 local SUBMIT_N = "<CR>"
 local SUBMIT_I = "<C-s>"
-local CANCEL = { "q", "<Esc>" }
+local CANCEL = "q"
 
 -- open the compose split and put `buf` in it. stacked -> a horizontal split below the
 -- anchor (diff) window; split -> a vertical split on the far left
@@ -109,9 +109,7 @@ function M.open(opts)
 
     vim.keymap.set("n", SUBMIT_N, submit, { buffer = buf, nowait = true, desc = "differ: submit" })
     vim.keymap.set("i", SUBMIT_I, submit, { buffer = buf, desc = "differ: submit" })
-    for _, lhs in ipairs(CANCEL) do
-        vim.keymap.set("n", lhs, cancel, { buffer = buf, nowait = true, desc = "differ: cancel" })
-    end
+    vim.keymap.set("n", CANCEL, cancel, { buffer = buf, nowait = true, desc = "differ: cancel" })
     -- a wipe from any other path (e.g. :q) counts as a cancel, so the caller's state
     -- doesn't get stranded waiting on a submit that never comes. if instead a picker /
     -- :edit swapped another buffer into the compose window (the window survives holding
