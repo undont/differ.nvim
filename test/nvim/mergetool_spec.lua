@@ -1227,3 +1227,67 @@ describe(":Differ mergetool teardown", function()
         assert.is_nil(merge.current()) -- and takes the session down with it
     end)
 end)
+
+-- the merge result column and the `df` edit window load the same real file, so on a
+-- conflicted path they share a bufnr and the second g? bind replaces the first
+describe("g? over a buffer the merge tool shares", function()
+    local git_src = require("differ.git")
+    local Panel = require("differ.panel")
+
+    ---@return table view, integer buf
+    local function edit_window_over(root)
+        vim.cmd.edit(root .. "/f.txt")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = assert(Panel.current())
+        local view = require("differ.view").for_buf(vim.api.nvim_win_get_buf(p.origin_win))
+        view:edit_file() -- the df key: the real file in a transient split
+        return view, vim.api.nvim_get_current_buf()
+    end
+
+    -- the desc of whatever holds g? on `buf`, so a failure names the owner
+    ---@return string
+    local function help_desc(buf)
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+            if m.lhs == "g?" then
+                return m.desc or "<no desc>"
+            end
+        end
+        return "<unmapped>"
+    end
+
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+        local p = Panel.current()
+        if p then
+            p:close()
+        end
+    end)
+
+    it("restores the diff session's g? once the merge tool closes", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over(root)
+        assert.are.equal("differ: keymap help", help_desc(edit_buf))
+        local edit_win = vim.api.nvim_get_current_win()
+
+        merge.open({})
+        assert.are.equal(edit_buf, assert(merge.current()).result_buf) -- the shared bufnr
+        merge.close()
+
+        vim.api.nvim_set_current_win(edit_win) -- focus fires the re-arm
+        assert.are.equal("differ: keymap help", help_desc(edit_buf))
+    end)
+
+    it("leaves g? to the merge tool while its session is live", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over(root)
+        local edit_win = vim.api.nvim_get_current_win()
+
+        merge.open({})
+        local merge_desc = help_desc(edit_buf)
+        vim.api.nvim_set_current_win(edit_win)
+
+        assert.are.equal(merge_desc, help_desc(edit_buf)) -- not stolen back mid-merge
+    end)
+end)
