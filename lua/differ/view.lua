@@ -1453,11 +1453,7 @@ end
 -- sources (rev↔rev, history, PR) never do
 ---@return boolean
 function View:_editable_source()
-    local old, new = self.model.old_rev, self.model.new_rev
-    if new == "WORKTREE" then
-        return old == "HEAD" or old == "INDEX"
-    end
-    return new == "INDEX" and old == "HEAD"
+    return require("differ.git.rev").editable(self.model.old_rev, self.model.new_rev)
 end
 
 -- edit-in-review: pop the real working-tree file into a transient editable

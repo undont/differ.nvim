@@ -37,6 +37,29 @@ end
 -- how long a network git call may block the editor; `wait()` has no budget of its own
 M.fetch_timeout_ms = 20000
 
+-- roots we've already reported conflicts for, cleared once a tree is clean
+local notified = {} ---@type table<string, true>
+
+-- report conflicts and point at the merge tool
+---@param root string
+---@param paths string[]
+---@param rerouted boolean|nil
+function M.notify_conflicts(root, paths, rerouted)
+    if #paths == 0 then
+        notified[root] = nil
+        return
+    end
+    local files = #paths == 1 and "1 file" or (#paths .. " files")
+    if rerouted then
+        return notify(files .. " conflicted, opening the merge tool")
+    end
+    if notified[root] then
+        return
+    end
+    notified[root] = true
+    notify(files .. " conflicted; :Differ mergetool to resolve")
+end
+
 -- what a network call runs under. git prompts for credentials on the controlling
 -- terminal, which under nvim is one nothing can be typed into, so prompting off turns
 -- a hang into an error. read per call: the budget is settable
@@ -1454,6 +1477,9 @@ function M.panel(opts)
         if not panel:is_alive() then
             return -- the change set emptied and on_empty ended the session
         end
+        -- a merge started under a live session runs no command, so the dispatch gate
+        -- never sees it
+        M.notify_conflicts(root, M.conflicted(root))
         if view and view:is_open() and active_entry then
             -- the content shifted underneath the user; hold the cursor near where it was
             -- (the nearest hunk to its new-side line) rather than snapping to the top

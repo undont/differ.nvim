@@ -314,27 +314,50 @@ local SUB = {
     cache = M.cache,
 }
 
--- whether the working tree the current buffer (or cwd) sits in has conflicted files
----@return boolean
-local function has_conflicts()
+-- the conflicted files in the tree the current buffer (or cwd) sits in, with its root
+---@return string|nil root, string[] paths
+local function conflicts()
     local git = require("differ.git")
     local file = vim.api.nvim_buf_get_name(0)
     local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
     local root = git.root(anchor)
-    return root ~= nil and #git.conflicted(root) > 0
+    if not root then
+        return nil, {}
+    end
+    return root, git.conflicted(root)
+end
+
+-- whether `:Differ <fargs>` resolves to an uncommitted pairing (HEAD/index vs worktree)
+---@param fargs string[]
+---@return boolean
+local function current_state(fargs)
+    local rev = require("differ.git.rev")
+    local source = rev.source(fargs)
+    return rev.editable(source.old.label, source.new.label)
 end
 
 -- route `:Differ ...`. a recognised subcommand (layout/context/panel) takes its
 -- arg; `base` is the trunk shortcut → the whole branch vs base (`<base>...`, incl.
 -- uncommitted); anything else, including no args, is a local-diff rev spec,
 -- so `:Differ`, `:Differ main...`, `:Differ a..b` open the file panel over that
--- change set and show the first file's diff (DiffviewOpen-style). the exception: bare
--- `:Differ` mid-conflict opens the merge tool instead
+-- change set and show the first file's diff (DiffviewOpen-style). the exception: a
+-- worktree-backed source mid-conflict opens the merge tool instead
 ---@param fargs string[]
 function M.dispatch(fargs)
     local handler = fargs[1] and SUB[fargs[1]]
     if handler then
         return handler(fargs[2], fargs[3])
+    end
+    -- mid-conflict the uncommitted sources go to the merge tool, which picks its own
+    -- target (current/sole/picker); everything else opens with a hint. above the `base`
+    -- branch so `base` is hinted too, matching the `<base>...` it expands to
+    local root, conflicted = conflicts()
+    local reroute = root ~= nil and #conflicted > 0 and current_state(fargs)
+    if root then
+        require("differ.git").notify_conflicts(root, conflicted, reroute)
+    end
+    if reroute then
+        return require("differ.merge").open({})
     end
     if fargs[1] == "base" then
         local base = require("differ.git").resolve_base()
@@ -346,12 +369,6 @@ function M.dispatch(fargs)
             open_first = true,
             supersede = true,
         })
-    end
-    -- bare `:Differ` during a conflicted merge routes to the merge tool — that's
-    -- the "help me resolve this" moment. only the no-arg form reroutes; `:Differ <rev>`
-    -- still opens that diff. the merge tool picks the target (current/sole/picker)
-    if not fargs[1] and has_conflicts() then
-        return require("differ.merge").open({})
     end
     -- `:Differ <rev>` is idempotent: re-running it over a live session opens the new diff
     -- and closes the previous one (supersede). a bare `:Differ` over a live session just
