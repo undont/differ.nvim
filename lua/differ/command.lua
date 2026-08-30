@@ -391,6 +391,7 @@ local VALUES = {
 -- nothing here, which is correct
 ---@type table<string, string[]>
 local PR_SUB = {
+    list = { "open", "mine", "review_requested" },
     review = { "start", "submit", "discard", "resume" },
     merge = { "squash", "merge", "rebase" },
 }

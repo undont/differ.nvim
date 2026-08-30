@@ -229,6 +229,7 @@ Set `command_alias` in `setup()` to register a shorter name for the same command
 
 | Command | Effect |
 |---|---|
+| `:Differ pr list [filter]` | List the repo's open pull requests. The filter is `open` (the default), `mine` for the ones you opened, or `review_requested` for the ones waiting on your review |
 | `:Differ mergetool [path]` | Open the merge tool on a conflicted file; no argument takes the current file, else the only conflicted one, else a picker |
 | `:Differ edit` | Edit the real file in a transient split at the cursor's mapped line, keeping the session; `:w` re-sources the diff. The `df` key |
 | `:Differ gofile` | Open the real file at the cursor's mapped line and end the session. The `de` key |

@@ -202,6 +202,12 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
   -----------------------------------------------------------------------
   Command                             Effect
   ----------------------------------- -----------------------------------
+  :Differ pr list [filter]            List the repo’s open pull requests.
+                                      The filter is open (the default),
+                                      mine for the ones you opened, or
+                                      review_requested for the ones
+                                      waiting on your review
+
   :Differ mergetool [path]            Open the merge tool on a conflicted
                                       file; no argument takes the current
                                       file, else the only conflicted one,
