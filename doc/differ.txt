@@ -62,8 +62,11 @@ Table of Contents                                   *differ-table-of-contents*
         similarity_threshold = 0.5,  -- line-pairing cutoff for word-level diffing
       },
       comments = {                   -- pr review threads
-        inline = true,
-        collapsed = false,
+        display = "peek",            -- "expanded" | "peek" | "markers"
+                                     -- "expanded" doesn't collapse any, all stay open
+                                     -- "peek" has boxes below the line, opening on the cursor's row
+                                     -- "markers" gives eol markers with a float, which split
+                                     -- always does anyway
       },
       panel = {                      -- file panel default placement/size; `:Differ panel`
                                      -- and the runtime Panel.current() setters override per-session
@@ -71,6 +74,8 @@ Table of Contents                                   *differ-table-of-contents*
         height = 9,                  -- top/bottom
         width = 35,                  -- left/right
         listing = "tree",            -- "tree" | "name"
+        icons = true,                -- filetype devicons in the file list, when
+                                     -- nvim-web-devicons is installed
         progress = true,             -- "file K/N" position meter in the panel winbar
       },
       history = {                    -- log/history sidebar default placement/size

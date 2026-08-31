@@ -89,19 +89,43 @@ end
 
 -- ── state ───────────────────────────────────────────────────────────────────────
 
--- a thread's effective collapsed state: an explicit per-thread toggle wins (gc, slice
--- 3); otherwise threads collapse by default and only expand while their anchor row is
--- under the cursor (peek), so the file stays scannable
----@param session table
----@param t table
+-- resolve a thread's collapsed state: an explicit per-thread toggle (gc) wins outright,
+-- then `expanded` never collapses and the other two open on the cursor's row alone
+---@param override boolean|nil  -- the gc toggle for this thread
+---@param display string  -- `comments.display`
 ---@param group_active boolean  -- the cursor is on this thread's anchor row
 ---@return boolean
-local function thread_collapsed(session, t, group_active)
-    local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
+function M.collapsed_state(override, display, group_active)
     if override ~= nil then
         return override
     end
+    if display == "expanded" then
+        return false
+    end
     return not group_active
+end
+
+-- `collapsed_state` over the live session and config
+---@param session table
+---@param t table
+---@param group_active boolean
+---@return boolean
+local function thread_collapsed(session, t, group_active)
+    local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
+    local display = require("differ").get_config().comments.display
+    return M.collapsed_state(override, display, group_active)
+end
+
+-- whether threads read as an eol marker plus the peek float rather than inline boxes.
+-- split has no choice: virt_lines would desync the side-by-side columns and clip the
+-- text. stacked opts in with `comments.display = "markers"`
+---@param view table
+---@return boolean
+function M.marker_mode(view)
+    if view.layout == "split" then
+        return true
+    end
+    return require("differ").get_config().comments.display == "markers"
 end
 
 -- extend every row of a stacked block to the block's max display width with a
@@ -200,15 +224,12 @@ function M.apply(session)
         end
     end
 
-    -- split would desync the side-by-side alignment and clip the text, so it gets a
-    -- compact end-of-line marker instead of the inline box (option A); the full
-    -- thread reads in stacked. stacked renders the boxes inline
-    local split = view.layout == "split"
+    local marker = M.marker_mode(view)
     local reltime = time_formatter()
     local anchors = {}
     for _, g in pairs(groups) do
         M.stack_sort(g.threads)
-        if split then
+        if marker then
             M.apply_marker(g)
         else
             M.apply_box(session, view, g, reltime)
@@ -219,10 +240,10 @@ function M.apply(session)
         return a.row < b.row
     end)
     session.thread_anchors = anchors
-    -- split shows the thread under the cursor in a float, not inline; keep it in sync
-    -- with the fresh anchors (state changes, file switch) or close it when the layout
-    -- has no float
-    if split then
+    -- marker mode shows the thread under the cursor in a float; keep it in sync with
+    -- the fresh anchors (state changes, file switch), or close it when the boxes are
+    -- carrying the threads instead
+    if marker then
         M.sync_peek(session)
     else
         M.close_peek()
@@ -266,17 +287,14 @@ function M.next_anchor(anchors, bufnr, row, direction)
     return best
 end
 
--- flip the explicit collapse override for every thread in `anchor`'s group, to the
--- opposite of the group's current effective state, so one gc toggles a group together
---. the default expanded baseline differs by layout: stacked expands the row the
--- cursor peeks; split shows the float by default while the cursor is on the row. so gc
--- collapses the inline box (stacked) or hides the float (split), and back. re-applying
--- the overlay is the caller's job
+-- flip the explicit collapse override across `anchor`'s whole group, so one gc moves
+-- them together. the float only ever shows the cursor's group, so marker mode always
+-- counts as active. re-applying the overlay is the caller's job
 ---@param session table
 ---@param anchor table  -- { key, threads }
 function M.toggle_group(session, anchor)
-    local split = session.view and session.view.layout == "split"
-    local group_active = split or session.thread_active == anchor.key
+    local marker = session.view ~= nil and M.marker_mode(session.view)
+    local group_active = marker or session.thread_active == anchor.key
     local target = not thread_collapsed(session, anchor.threads[1], group_active)
     session.thread_collapsed = session.thread_collapsed or {}
     for _, t in ipairs(anchor.threads) do
@@ -486,11 +504,11 @@ function M.refresh(session)
     end)
 end
 
--- ── split peek float ──────────────────────────────────────────────────────────────
--- split can't carry inline boxes without desyncing the columns, so the thread under
--- the cursor reads in a floating popover instead. one reusable float per session,
--- re-pointed as the cursor moves and closed when it leaves a thread row. it reuses the
--- ui.thread builder and the differThread* groups, so it matches the stacked overlay
+-- ── peek float ────────────────────────────────────────────────────────────────────
+-- marker mode's stand-in for the inline box: the thread under the cursor reads in a
+-- floating popover. one reusable float per session, re-pointed as the cursor moves and
+-- closed when it leaves a thread row. it reuses the ui.thread builder and the
+-- differThread* groups, so it matches the inline overlay
 
 local peek = { win = nil, buf = nil, key = nil }
 local PEEK_AUGROUP = "differ.pr.peek"
@@ -653,9 +671,9 @@ function M.sync_peek(session)
     M.close_peek()
 end
 
--- cursor-driven peek. stacked: expand the thread under the cursor inline and collapse
--- the rest (re-apply only when the active anchor changes, so plain motion stays cheap).
--- split: open the float over the thread under the cursor, closing it off a thread row
+-- cursor-driven peek. inline boxes: expand the thread under the cursor and collapse the
+-- rest (re-apply only when the active anchor changes, so plain motion stays cheap).
+-- marker mode: open the float over that thread, closing it off a thread row
 ---@param session table
 function M.on_cursor(session)
     if not (session and session.view and session.view.columns) then
@@ -668,7 +686,7 @@ function M.on_cursor(session)
         in_diff = in_diff or col.bufnr == buf
     end
 
-    if session.view.layout == "split" then
+    if M.marker_mode(session.view) then
         if not in_diff then
             return M.close_peek() -- focus left the diff; drop the float
         end

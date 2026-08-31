@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `panel.icons = false` turns off filetype devicons in the file panel
+
+### Changed
+
+- `comments.inline` and `comments.collapsed` were documented but unread, and as two booleans they could be set to a combination that meant nothing. they are replaced by `comments.display`, one of `expanded`, `peek` (the default, and what the plugin has always done) or `markers` for eol markers with a float, as split layout always does
+
+## [0.1.37] — 2026-08-31
+
+### Added
+
 - `]n` and `[n` step from one conflict marker to the next in the merge tool. `]x` and `[x` still step conflict to conflict
 - `:Differ pr list` completes the filters it has always accepted: `open`, `mine`, `review_requested`
 

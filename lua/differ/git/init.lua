@@ -1543,6 +1543,7 @@ function M.panel(opts)
         position = opts.position or panel_cfg.position,
         height = opts.height or panel_cfg.height,
         width = opts.width or panel_cfg.width,
+        icons = panel_cfg.icons,
         progress = panel_cfg.progress,
         on_select = function(entry)
             if show_entry(entry) then

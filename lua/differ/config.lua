@@ -5,6 +5,7 @@
 ---@field height integer  -- used for top/bottom
 ---@field width integer   -- used for left/right
 ---@field listing "tree"|"name"
+---@field icons boolean  -- filetype devicons in the file list
 ---@field progress boolean  -- file-position meter in the panel winbar
 
 ---@class differ.Config.History
@@ -26,7 +27,7 @@
 ---@field diff_counter boolean
 ---@field cursorline_tint boolean
 ---@field deep_diff { enabled: boolean, granularity: "word"|"char", similarity_threshold: number }
----@field comments { inline: boolean, collapsed: boolean }
+---@field comments { display: "expanded"|"peek"|"markers" }
 ---@field panel differ.Config.Panel
 ---@field history differ.Config.History
 ---@field merge differ.Config.Merge
@@ -51,6 +52,7 @@ local LISTING = { "tree", "name" }
 local LAYOUT = { "stacked", "split" }
 local PANES = { "default", "diff4" }
 local GRAIN = { "word", "char" }
+local COMMENTS = { "expanded", "peek", "markers" }
 
 ---@type differ.Config
 M.defaults = {
@@ -68,8 +70,10 @@ M.defaults = {
         similarity_threshold = 0.5,
     },
     comments = {
-        inline = true,
-        collapsed = false,
+        -- how pr review threads render: `expanded` boxes below the anchor line, `peek`
+        -- boxes that open on the cursor's row, or `markers` at end of line with a float
+        -- on the cursor's thread. split is always `markers` (virt_lines desync it)
+        display = "peek",
     },
     -- the file panel's default placement and size; `:Differ panel` opts (and the
     -- runtime Panel.current() setters) still override these per-session
@@ -78,6 +82,7 @@ M.defaults = {
         height = 9, -- top/bottom
         width = 35, -- left/right
         listing = "tree",
+        icons = true, -- filetype devicons in the file list, when nvim-web-devicons is installed
         progress = true, -- "file K/N" position meter in the panel winbar
     },
     -- the log/history sidebar's default placement and size. a commit row is wide
@@ -194,6 +199,7 @@ M.closed = {
     ["history.position"] = POSITION,
     ["merge.layout"] = PANES,
     ["deep_diff.granularity"] = GRAIN,
+    ["comments.display"] = COMMENTS,
 }
 
 -- options that default to nil, so the defaults table carries no key for them and

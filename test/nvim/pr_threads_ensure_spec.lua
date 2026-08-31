@@ -232,3 +232,23 @@ describe("pr.threads.ensure (coalescing + freshness)", function()
         assert.is_nil(session.threads) -- stays nil so a later ensure retries
     end)
 end)
+
+describe("pr.threads.marker_mode", function()
+    after_each(function()
+        require("differ").setup({})
+    end)
+
+    it("markers in split whatever comments.display says", function()
+        require("differ").setup({ comments = { display = "expanded" } })
+        assert.is_true(threads.marker_mode({ layout = "split" }))
+    end)
+
+    it("keeps the inline boxes in stacked by default", function()
+        assert.is_false(threads.marker_mode({ layout = "stacked" }))
+    end)
+
+    it("markers in stacked when comments.display asks for them", function()
+        require("differ").setup({ comments = { display = "markers" } })
+        assert.is_true(threads.marker_mode({ layout = "stacked" }))
+    end)
+end)
