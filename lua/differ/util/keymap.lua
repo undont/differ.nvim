@@ -38,4 +38,27 @@ function M.unbind(bufnr, spec, mode)
     end
 end
 
+-- true when every lhs in `spec` is mapped buffer-locally on `bufnr`
+---@param bufnr integer
+---@param spec string|string[]|false|nil
+---@param mode? string
+---@return boolean
+function M.mapped(bufnr, spec, mode)
+    if not spec or not vim.api.nvim_buf_is_valid(bufnr) then
+        return true
+    end
+    local list = type(spec) == "table" and spec or { spec }
+    local all = true
+    -- maparg, not get_keymap: it normalises <leader> / termcodes as keymap.set did
+    vim.api.nvim_buf_call(bufnr, function()
+        for _, lhs in ipairs(list) do
+            local m = vim.fn.maparg(lhs, mode or "n", false, true)
+            if vim.tbl_isempty(m) or m.buffer ~= 1 then
+                all = false
+            end
+        end
+    end)
+    return all
+end
+
 return M

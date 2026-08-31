@@ -163,6 +163,8 @@ M.defaults = {
         -- rather than shadowing live operators
         next_conflict = "]x", -- merge: jump to the next/prev conflict
         prev_conflict = "[x",
+        next_marker = "]n", -- merge: jump to the next/prev conflict marker line
+        prev_marker = "[n",
         choose_ours = "<leader>co", -- merge: take ours / theirs / base for the conflict
         choose_theirs = "<leader>ct",
         choose_base = "<leader>cb",

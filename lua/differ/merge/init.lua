@@ -525,6 +525,52 @@ local function goto_conflict(dir)
     on_cursor_moved()
 end
 
+-- every marker line in the file, in order. mark_base is nil under the default
+-- conflictStyle, set under diff3/zdiff3
+---@return integer[]
+local function marker_lines()
+    local lines = {}
+    for _, r in ipairs(session.regions) do
+        lines[#lines + 1] = r.result_start
+        if r.mark_base then
+            lines[#lines + 1] = r.mark_base
+        end
+        lines[#lines + 1] = r.mark_sep
+        lines[#lines + 1] = r.result_end
+    end
+    table.sort(lines)
+    return lines
+end
+
+-- step the result cursor marker to marker, wrapping at the ends like goto_conflict
+---@param dir "next"|"prev"
+local function goto_marker(dir)
+    if not live_session() then
+        return
+    end
+    local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
+    local lines = marker_lines()
+    if #lines == 0 then
+        return notify("no conflicts remain")
+    end
+    local target
+    for _, lnum in ipairs(lines) do
+        if dir == "next" and lnum > cur then
+            target = target or lnum
+        elseif dir == "prev" and lnum < cur then
+            target = lnum
+        end
+    end
+    if not target then -- wrap
+        target = dir == "next" and lines[1] or lines[#lines]
+    end
+    vim.api.nvim_win_set_cursor(session.result_win, { target, 0 })
+    vim.api.nvim_win_call(session.result_win, function()
+        vim.cmd("normal! zz")
+    end)
+    on_cursor_moved()
+end
+
 -- the conflict at the cursor, else the first one at or below it (so a take-this from just
 -- above a block still resolves it)
 ---@param regions differ.merge.Region[]
@@ -750,6 +796,7 @@ local function show_help()
     local fmt, pair = help.fmt, help.pair
     local rows = {
         { pair(km.next_conflict, km.prev_conflict), "next / previous conflict" },
+        { pair(km.next_marker, km.prev_marker), "next / previous marker line" },
         { fmt(km.choose_ours), "take ours" },
         { fmt(km.choose_theirs), "take theirs" },
         { fmt(km.choose_base), "take base" },
@@ -930,6 +977,12 @@ function lay_out(root, relpath, model, layout)
     rb("prev_conflict", function()
         goto_conflict("prev")
     end, "differ: previous conflict")
+    rb("next_marker", function()
+        goto_marker("next")
+    end, "differ: next conflict marker")
+    rb("prev_marker", function()
+        goto_marker("prev")
+    end, "differ: previous conflict marker")
     rb("choose_ours", function()
         resolve_choice("ours")
     end, "differ: take ours")

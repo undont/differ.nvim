@@ -26,8 +26,11 @@ local function write(path, content)
     fd:close()
 end
 
--- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2)
-local function conflict_repo()
+-- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
+-- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
+-- ||||||| base marker as well
+---@param style string|nil
+local function conflict_repo(style)
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -40,7 +43,11 @@ local function conflict_repo()
     git_ok(root, "checkout", "-q", "main")
     write(root .. "/f.txt", "a\nOURS\nc\n")
     git_ok(root, "commit", "-q", "-am", "ours")
-    git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    if style then
+        git(root, "-c", "merge.conflictStyle=" .. style, "merge", "feature")
+    else
+        git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    end
     return root
 end
 
@@ -474,6 +481,44 @@ describe(":Differ mergetool navigation", function()
         if merge.current() then
             merge.close()
         end
+    end)
+
+    it("steps marker to marker with ]n and wraps, leaving ]x alone", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local function cur()
+            return vim.api.nvim_win_get_cursor(s.result_win)[1]
+        end
+        -- default conflictStyle: no ||||||| line, so three markers per conflict
+        local first = s.regions[1]
+        assert.is_nil(first.mark_base)
+        assert.are.equal(first.result_start, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.mark_sep, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.result_end, cur())
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(s.regions[2].result_start, cur()) -- straight into the next block
+
+        fire(s.result_buf, "differ: previous conflict marker")
+        assert.are.equal(first.result_end, cur())
+
+        vim.api.nvim_win_set_cursor(s.result_win, { s.regions[3].result_end, 0 })
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(first.result_start, cur()) -- wrapped to the first marker
+    end)
+
+    it("includes the base marker under diff3", function()
+        local root = conflict_repo("diff3")
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local r = s.regions[1]
+        assert.is_not_nil(r.mark_base) -- diff3 adds the ||||||| line
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(r.mark_base, vim.api.nvim_win_get_cursor(s.result_win)[1])
     end)
 
     it("walks every conflict with ]x and wraps at the end", function()
@@ -1225,5 +1270,69 @@ describe(":Differ mergetool teardown", function()
         vim.api.nvim_win_close(s.result_win, true)
         assert.is_true(pcall(take_ours)) -- used to raise E5108 on the dead window
         assert.is_nil(merge.current()) -- and takes the session down with it
+    end)
+end)
+
+-- the merge result column and the `df` edit window load the same real file, so on a
+-- conflicted path they share a bufnr and the second g? bind replaces the first
+describe("g? over a buffer the merge tool shares", function()
+    local git_src = require("differ.git")
+    local Panel = require("differ.panel")
+
+    ---@return table view, integer buf
+    local function edit_window_over(root)
+        vim.cmd.edit(root .. "/f.txt")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = assert(Panel.current())
+        local view = require("differ.view").for_buf(vim.api.nvim_win_get_buf(p.origin_win))
+        view:edit_file() -- the df key: the real file in a transient split
+        return view, vim.api.nvim_get_current_buf()
+    end
+
+    -- the desc of whatever holds g? on `buf`, so a failure names the owner
+    ---@return string
+    local function help_desc(buf)
+        for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+            if m.lhs == "g?" then
+                return m.desc or "<no desc>"
+            end
+        end
+        return "<unmapped>"
+    end
+
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+        local p = Panel.current()
+        if p then
+            p:close()
+        end
+    end)
+
+    it("restores the diff session's g? once the merge tool closes", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over(root)
+        assert.are.equal("differ: keymap help", help_desc(edit_buf))
+        local edit_win = vim.api.nvim_get_current_win()
+
+        merge.open({})
+        assert.are.equal(edit_buf, assert(merge.current()).result_buf) -- the shared bufnr
+        merge.close()
+
+        vim.api.nvim_set_current_win(edit_win) -- focus fires the re-arm
+        assert.are.equal("differ: keymap help", help_desc(edit_buf))
+    end)
+
+    it("leaves g? to the merge tool while its session is live", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over(root)
+        local edit_win = vim.api.nvim_get_current_win()
+
+        merge.open({})
+        local merge_desc = help_desc(edit_buf)
+        vim.api.nvim_set_current_win(edit_win)
+
+        assert.are.equal(merge_desc, help_desc(edit_buf)) -- not stolen back mid-merge
     end)
 end)

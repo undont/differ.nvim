@@ -94,6 +94,18 @@ function M.source(args)
     return { old = rev_ref(first), new = WORKTREE }
 end
 
+-- whether a (old, new) label pairing puts the file on disk on the new side, editable in
+-- place: HEAD/index vs worktree, and HEAD vs index
+---@param old string
+---@param new string
+---@return boolean
+function M.editable(old, new)
+    if new == "WORKTREE" then
+        return old == "HEAD" or old == "INDEX"
+    end
+    return new == "INDEX" and old == "HEAD"
+end
+
 -- the arguments to append after `git diff --name-status -z` to list this source's
 -- changed files. expects a *resolved* source (merge_base already turned into a
 -- rev by git/init.lua), so old is always a rev:

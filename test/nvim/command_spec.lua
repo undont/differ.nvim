@@ -109,18 +109,27 @@ describe("command base shortcut", function()
 end)
 
 describe("command bare dispatch reroute", function()
+    -- the hint fires once per conflict episode, and that flag outlives a test
+    before_each(function()
+        require("differ.git").notify_conflicts("/repo", {})
+    end)
+
     -- stub root + conflicted so the routing is checked without a repo; record which
     -- surface dispatch reaches
     local function run(args, conflicted)
         local git = require("differ.git")
         local merge = require("differ.merge")
         local sr, sc, sp, so = git.root, git.conflicted, git.panel, merge.open
+        local sb = git.resolve_base
         local routed = {}
         git.root = function()
             return "/repo"
         end
         git.conflicted = function()
             return conflicted
+        end
+        git.resolve_base = function() -- `base` needs a trunk to expand against
+            return "origin/HEAD"
         end
         git.panel = function()
             routed.panel = true
@@ -130,6 +139,7 @@ describe("command bare dispatch reroute", function()
         end
         command.dispatch(args)
         git.root, git.conflicted, git.panel, merge.open = sr, sc, sp, so
+        git.resolve_base = sb
         return routed
     end
 
@@ -145,10 +155,70 @@ describe("command bare dispatch reroute", function()
         assert.is_nil(routed.merge)
     end)
 
-    it("never reroutes :Differ <rev>, even mid-conflict", function()
-        local routed = run({ "main..." }, { "f.txt" })
+    -- the reroute follows the question, not the arg count: `:Differ HEAD` asks the same
+    -- thing the bare form does, so it gets the same answer
+    it("routes :Differ HEAD to the merge tool", function()
+        local routed = run({ "HEAD" }, { "f.txt" })
+        assert.is_true(routed.merge)
+        assert.is_nil(routed.panel)
+    end)
+
+    -- a named rev or range asked something else; it opens, with a hint. `base` included:
+    -- it stands for `<base>...`, and the two spellings must not diverge
+    for _, args in ipairs({ { "HEAD~1" }, { "main..." }, { "base" }, { "a..b" }, { "a", "b" } }) do
+        it("keeps :Differ " .. table.concat(args, " ") .. " on the diff", function()
+            local routed = run(args, { "f.txt" })
+            assert.is_true(routed.panel)
+            assert.is_nil(routed.merge)
+        end)
+    end
+
+    it("keeps :Differ HEAD on the diff when nothing is conflicted", function()
+        local routed = run({ "HEAD" }, {})
         assert.is_true(routed.panel)
         assert.is_nil(routed.merge)
+    end)
+
+    it("says why it rerouted", function()
+        _G.notifs = {}
+        run({ "HEAD" }, { "f.txt", "g.txt" })
+        assert.are.equal("differ: 2 files conflicted, opening the merge tool", _G.notifs[1].msg)
+    end)
+
+    it("points a committed range at the merge tool without blocking it", function()
+        _G.notifs = {}
+        local routed = run({ "a..b" }, { "f.txt" })
+        assert.is_true(routed.panel)
+        assert.are.equal(
+            "differ: 1 file conflicted; :Differ mergetool to resolve",
+            _G.notifs[1].msg
+        )
+    end)
+
+    it("tracks the hint per repo, so alternating trees don't re-nag", function()
+        local git = require("differ.git")
+        _G.notifs = {}
+        git.notify_conflicts("/a", { "f.txt" })
+        git.notify_conflicts("/b", { "f.txt" })
+        git.notify_conflicts("/a", { "f.txt" }) -- back to a: already spoken for
+        assert.are.equal(2, #_G.notifs)
+        git.notify_conflicts("/b", {}) -- b resolved; a's hint is untouched
+        git.notify_conflicts("/a", { "f.txt" })
+        assert.are.equal(2, #_G.notifs)
+        git.notify_conflicts("/b", { "f.txt" }) -- a fresh merge in b speaks again
+        assert.are.equal(3, #_G.notifs)
+        git.notify_conflicts("/a", {})
+        git.notify_conflicts("/b", {})
+    end)
+
+    it("hints once per conflict episode, not once per command", function()
+        _G.notifs = {}
+        run({ "a..b" }, { "f.txt" })
+        run({ "a..b" }, { "f.txt" })
+        assert.are.equal(1, #_G.notifs)
+        run({ "a..b" }, {}) -- resolved: the next merge speaks again
+        run({ "a..b" }, { "f.txt" })
+        assert.are.equal(2, #_G.notifs)
     end)
 end)
 

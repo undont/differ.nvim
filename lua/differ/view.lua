@@ -1453,11 +1453,7 @@ end
 -- sources (rev↔rev, history, PR) never do
 ---@return boolean
 function View:_editable_source()
-    local old, new = self.model.old_rev, self.model.new_rev
-    if new == "WORKTREE" then
-        return old == "HEAD" or old == "INDEX"
-    end
-    return new == "INDEX" and old == "HEAD"
+    return require("differ.git.rev").editable(self.model.old_rev, self.model.new_rev)
 end
 
 -- edit-in-review: pop the real working-tree file into a transient editable
@@ -1630,6 +1626,12 @@ function View:_open_edit_window(abs, target, tcol, anchor_win)
                 end
             end,
         })
+        vim.api.nvim_create_autocmd("WinEnter", {
+            group = self._edit_group,
+            callback = function()
+                self:_rearm_edit_map()
+            end,
+        })
     end
     vim.cmd.edit(vim.fn.fnameescape(abs))
     if target then
@@ -1639,11 +1641,34 @@ function View:_open_edit_window(abs, target, tcol, anchor_win)
     -- edit window (shadows native g?/rot13, inert in this review flow). recorded
     -- because that buffer is the user's: teardown has to take the map off by hand
     self:_drop_edit_map() -- a reused edit window may hold an earlier file's map
-    local buf = vim.api.nvim_get_current_buf()
+    self:_bind_edit_map(vim.api.nvim_get_current_buf())
+end
+
+-- bind g? on `buf` and record it: teardown has to unbind by hand on a buffer we don't own
+---@param buf integer
+function View:_bind_edit_map(buf)
     bind(buf, self.keymaps.help, function()
         self:show_help()
     end, "differ: keymap help")
     self._edit_map = { buf = buf, spec = self.keymaps.help }
+end
+
+-- the merge tool loads the same real file, so on a conflicted path it shares this bufnr
+-- and its teardown takes g? off. re-arm on focus, leaving a live merge tool's own bind
+function View:_rearm_edit_map()
+    local m = self._edit_map
+    if not m or not self.edit_win or vim.api.nvim_get_current_win() ~= self.edit_win then
+        return
+    end
+    -- only the buffer we bound; a file swapped into the window isn't ours to map
+    if
+        not vim.api.nvim_buf_is_valid(m.buf)
+        or vim.api.nvim_win_get_buf(self.edit_win) ~= m.buf
+        or keymap.mapped(m.buf, m.spec)
+    then
+        return
+    end
+    self:_bind_edit_map(m.buf)
 end
 
 -- take our g? back off the real file buffer. it isn't ours to delete, so nothing

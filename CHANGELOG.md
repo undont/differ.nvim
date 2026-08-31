@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `]n` and `[n` step from one conflict marker to the next in the merge tool. `]x` and `[x` still step conflict to conflict
+- `:Differ pr list` completes the filters it has always accepted: `open`, `mine`, `review_requested`
+
+### Changed
+
+- With conflicts in the tree, `:Differ` and `:Differ HEAD` open the merge tool instead of a diff of files with conflict markers in them. Every other source still opens its diff, and says once that there is a merge waiting
+
+### Fixed
+
+- `<Esc>` no longer cancels the compose window, where double-tapping out of insert mode discarded a half-written comment or review summary. `q` and `:q` still cancel
+- Opening the merge tool over a live diff session took `g?` off the file you had open with `df`, leaving that window without its cheatsheet. It comes back when you return to the window
+
+## [0.1.36] — 2026-08-29
+
 ### Fixed
 
 - A comment anchored to a line outside the diff was dropped without a word when it went into a review draft, and reported as an internal error otherwise. Both now tell you the line could not be resolved

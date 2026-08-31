@@ -183,6 +183,7 @@ require("differ").setup({
     review_discard = "gD",       -- pr: discard the pending review and its drafts
     -- merge tool, bound on the result buffer
     next_conflict = "]x", prev_conflict = "[x",
+    next_marker = "]n", prev_marker = "[n",  -- step marker line to marker line
     choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
     choose_all = "<leader>ca",   -- take both (ours then theirs)
     choose_none = "<leader>cx",  -- drop the conflict region
@@ -229,6 +230,7 @@ Set `command_alias` in `setup()` to register a shorter name for the same command
 
 | Command | Effect |
 |---|---|
+| `:Differ pr list [filter]` | List the repo's open pull requests. The filter is `open` (the default), `mine` for the ones you opened, or `review_requested` for the ones waiting on your review |
 | `:Differ mergetool [path]` | Open the merge tool on a conflicted file; no argument takes the current file, else the only conflicted one, else a picker |
 | `:Differ edit` | Edit the real file in a transient split at the cursor's mapped line, keeping the session; `:w` re-sources the diff. The `df` key |
 | `:Differ gofile` | Open the real file at the cursor's mapped line and end the session. The `de` key |

@@ -1,5 +1,35 @@
 local rev = require("differ.git.rev")
 
+describe("git.rev.editable", function()
+    -- the daily staging sources put the file on disk on the new side; that pairing is
+    -- what binds df, and what reroutes to the merge tool mid-conflict
+    it("accepts the staging pairings", function()
+        assert.is_true(rev.editable("HEAD", "WORKTREE"))
+        assert.is_true(rev.editable("INDEX", "WORKTREE"))
+        assert.is_true(rev.editable("HEAD", "INDEX"))
+    end)
+
+    it("rejects a committed rev on either side", function()
+        assert.is_false(rev.editable("HEAD~1", "WORKTREE"))
+        assert.is_false(rev.editable("main...", "WORKTREE"))
+        assert.is_false(rev.editable("abc", "def"))
+        assert.is_false(rev.editable("INDEX", "HEAD"))
+    end)
+
+    it("agrees with what source() resolves the arg forms to", function()
+        local function editable(args)
+            local s = rev.source(args)
+            return rev.editable(s.old.label, s.new.label)
+        end
+        assert.is_true(editable({}))
+        assert.is_true(editable({ "HEAD" }))
+        assert.is_false(editable({ "HEAD~1" }))
+        assert.is_false(editable({ "main..." }))
+        assert.is_false(editable({ "abc..def" }))
+        assert.is_false(editable({ "abc", "def" }))
+    end)
+end)
+
 describe("git.rev.source", function()
     it("defaults to HEAD vs worktree (uncommitted changes)", function()
         local s = rev.source({})

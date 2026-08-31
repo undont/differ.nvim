@@ -126,6 +126,7 @@ Table of Contents                                   *differ-table-of-contents*
         review_discard = "gD",       -- pr: discard the pending review and its drafts
         -- merge tool, bound on the result buffer
         next_conflict = "]x", prev_conflict = "[x",
+        next_marker = "]n", prev_marker = "[n",  -- step marker line to marker line
         choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
         choose_all = "<leader>ca",   -- take both (ours then theirs)
         choose_none = "<leader>cx",  -- drop the conflict region
@@ -202,6 +203,12 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
   -----------------------------------------------------------------------
   Command                             Effect
   ----------------------------------- -----------------------------------
+  :Differ pr list [filter]            List the repo’s open pull requests.
+                                      The filter is open (the default),
+                                      mine for the ones you opened, or
+                                      review_requested for the ones
+                                      waiting on your review
+
   :Differ mergetool [path]            Open the merge tool on a conflicted
                                       file; no argument takes the current
                                       file, else the only conflicted one,
