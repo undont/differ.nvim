@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `panel.icons = false` turns off filetype devicons in the file panel
+
+### Fixed
+
+- both `comments.collapsed` and `comments.inline` were documented but unread. `collapsed=false` now renders every thread expanded by default, rather than just the one the cursor is currently on and `inline=false` renders pr review threads as eol marker with a float (like how it does in split layout)
+
+## [0.1.37] — 2026-08-31
+
+### Added
+
 - `]n` and `[n` step from one conflict marker to the next in the merge tool. `]x` and `[x` still step conflict to conflict
 - `:Differ pr list` completes the filters it has always accepted: `open`, `mine`, `review_requested`
 

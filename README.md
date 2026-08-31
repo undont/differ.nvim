@@ -119,7 +119,8 @@ require("differ").setup({
     similarity_threshold = 0.5,  -- line-pairing cutoff for word-level diffing
   },
   comments = {                   -- pr review threads
-    inline = true,
+    inline = true,               -- render comments inline; alternative gives eol
+                                 -- markers with floats (what you get in split layout)
     collapsed = true,            -- threads expand while the cursor is on their row
                                  -- false renders all expanded
   },
@@ -129,6 +130,8 @@ require("differ").setup({
     height = 9,                  -- top/bottom
     width = 35,                  -- left/right
     listing = "tree",            -- "tree" | "name"
+    icons = true,                -- filetype devicons in the file list, when
+                                 -- nvim-web-devicons is installed
     progress = true,             -- "file K/N" position meter in the panel winbar
   },
   history = {                    -- log/history sidebar default placement/size

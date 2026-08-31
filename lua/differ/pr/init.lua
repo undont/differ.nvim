@@ -366,7 +366,7 @@ function M.toggle_thread()
     local threads = require("differ.pr.threads")
     threads.toggle_group(s, anchor)
     threads.apply(s)
-    threads.on_cursor(s) -- reopen/close the split float to match the new state
+    threads.on_cursor(s) -- reopen/close the peek float to match the new state
 end
 
 -- ]t/[t: move the cursor to the next/prev thread anchor in the current diff column,
@@ -817,12 +817,13 @@ local function open_session(pr, detail, opts)
             position = panel_cfg.position,
             height = panel_cfg.height,
             width = panel_cfg.width,
+            icons = panel_cfg.icons,
             progress = panel_cfg.progress,
             on_select = function(entry)
                 show_file(entry)
             end,
             on_close = function()
-                require("differ.pr.threads").close_peek() -- drop the split peek float, if open
+                require("differ.pr.threads").close_peek() -- drop the peek float, if open
                 if session and session.view and session.view:is_open() then
                     session.view:close()
                 end

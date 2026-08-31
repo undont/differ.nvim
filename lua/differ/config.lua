@@ -5,6 +5,7 @@
 ---@field height integer  -- used for top/bottom
 ---@field width integer   -- used for left/right
 ---@field listing "tree"|"name"
+---@field icons boolean  -- filetype devicons in the file list
 ---@field progress boolean  -- file-position meter in the panel winbar
 
 ---@class differ.Config.History
@@ -68,6 +69,8 @@ M.defaults = {
         similarity_threshold = 0.5,
     },
     comments = {
+        -- boxes below the anchor line, false swaps them for an eol marker plus a float
+        -- on the cursor's thread. split is always the marker (virt_lines desync it)
         inline = true,
         -- collapsed by default with expand whilst cursor is hovering, false renders
         -- always expanded
@@ -80,6 +83,7 @@ M.defaults = {
         height = 9, -- top/bottom
         width = 35, -- left/right
         listing = "tree",
+        icons = true, -- filetype devicons in the file list, when nvim-web-devicons is installed
         progress = true, -- "file K/N" position meter in the panel winbar
     },
     -- the log/history sidebar's default placement and size. a commit row is wide

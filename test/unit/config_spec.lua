@@ -53,7 +53,7 @@ describe("config.validate", function()
             {},
             config.validate({
                 layout = "split",
-                panel = { position = "left", width = 40 },
+                panel = { position = "left", width = 40, icons = false },
                 history = { position = "top" },
                 merge = { layout = "diff4" },
                 deep_diff = { granularity = "char" },
