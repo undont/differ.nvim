@@ -89,18 +89,17 @@ end
 
 -- ── state ───────────────────────────────────────────────────────────────────────
 
--- resolve a thread's collapsed state from its three inputs: an explicit per-thread
--- toggle (gc) wins outright; a resting-collapsed thread still expands while its anchor
--- row is under the cursor (peek)
+-- resolve a thread's collapsed state: an explicit per-thread toggle (gc) wins outright,
+-- then `expanded` never collapses and the other two open on the cursor's row alone
 ---@param override boolean|nil  -- the gc toggle for this thread
----@param resting boolean  -- `comments.collapsed`
+---@param display string  -- `comments.display`
 ---@param group_active boolean  -- the cursor is on this thread's anchor row
 ---@return boolean
-function M.collapsed_state(override, resting, group_active)
+function M.collapsed_state(override, display, group_active)
     if override ~= nil then
         return override
     end
-    if not resting then
+    if display == "expanded" then
         return false
     end
     return not group_active
@@ -113,20 +112,20 @@ end
 ---@return boolean
 local function thread_collapsed(session, t, group_active)
     local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
-    local resting = require("differ").get_config().comments.collapsed
-    return M.collapsed_state(override, resting, group_active)
+    local display = require("differ").get_config().comments.display
+    return M.collapsed_state(override, display, group_active)
 end
 
 -- whether threads read as an eol marker plus the peek float rather than inline boxes.
 -- split has no choice: virt_lines would desync the side-by-side columns and clip the
--- text. stacked opts in with `comments.inline = false`
+-- text. stacked opts in with `comments.display = "markers"`
 ---@param view table
 ---@return boolean
 function M.marker_mode(view)
     if view.layout == "split" then
         return true
     end
-    return require("differ").get_config().comments.inline == false
+    return require("differ").get_config().comments.display == "markers"
 end
 
 -- extend every row of a stacked block to the block's max display width with a

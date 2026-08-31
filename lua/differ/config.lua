@@ -27,7 +27,7 @@
 ---@field diff_counter boolean
 ---@field cursorline_tint boolean
 ---@field deep_diff { enabled: boolean, granularity: "word"|"char", similarity_threshold: number }
----@field comments { inline: boolean, collapsed: boolean }
+---@field comments { display: "expanded"|"peek"|"markers" }
 ---@field panel differ.Config.Panel
 ---@field history differ.Config.History
 ---@field merge differ.Config.Merge
@@ -52,6 +52,7 @@ local LISTING = { "tree", "name" }
 local LAYOUT = { "stacked", "split" }
 local PANES = { "default", "diff4" }
 local GRAIN = { "word", "char" }
+local COMMENTS = { "expanded", "peek", "markers" }
 
 ---@type differ.Config
 M.defaults = {
@@ -69,12 +70,10 @@ M.defaults = {
         similarity_threshold = 0.5,
     },
     comments = {
-        -- boxes below the anchor line, false swaps them for an eol marker plus a float
-        -- on the cursor's thread. split is always the marker (virt_lines desync it)
-        inline = true,
-        -- collapsed by default with expand whilst cursor is hovering, false renders
-        -- always expanded
-        collapsed = true,
+        -- how pr review threads render: `expanded` boxes below the anchor line, `peek`
+        -- boxes that open on the cursor's row, or `markers` at end of line with a float
+        -- on the cursor's thread. split is always `markers` (virt_lines desync it)
+        display = "peek",
     },
     -- the file panel's default placement and size; `:Differ panel` opts (and the
     -- runtime Panel.current() setters) still override these per-session
@@ -200,6 +199,7 @@ M.closed = {
     ["history.position"] = POSITION,
     ["merge.layout"] = PANES,
     ["deep_diff.granularity"] = GRAIN,
+    ["comments.display"] = COMMENTS,
 }
 
 -- options that default to nil, so the defaults table carries no key for them and

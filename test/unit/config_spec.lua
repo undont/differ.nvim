@@ -57,7 +57,7 @@ describe("config.validate", function()
                 history = { position = "top" },
                 merge = { layout = "diff4" },
                 deep_diff = { granularity = "char" },
-                comments = { inline = false },
+                comments = { display = "markers" },
                 keymaps = { next_hunk = "gh", panel = { stage = "ga" } },
             })
         )
@@ -94,6 +94,9 @@ describe("config.validate", function()
             { 'deep_diff.granularity must be one of "word", "char" (got true)' },
             config.validate({ deep_diff = { granularity = true } })
         )
+        assert.are.same({
+            'comments.display must be one of "expanded", "peek", "markers" (got "inline")',
+        }, config.validate({ comments = { display = "inline" } }))
     end)
 
     it("flags a misspelled keymap action, top-level and per-surface", function()

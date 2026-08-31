@@ -10,9 +10,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `panel.icons = false` turns off filetype devicons in the file panel
 
-### Fixed
+### Changed
 
-- both `comments.collapsed` and `comments.inline` were documented but unread. `collapsed=false` now renders every thread expanded by default, rather than just the one the cursor is currently on and `inline=false` renders pr review threads as eol marker with a float (like how it does in split layout)
+- `comments.inline` and `comments.collapsed` were documented but unread, and as two booleans they could be set to a combination that meant nothing. they are replaced by `comments.display`, one of `expanded`, `peek` (the default, and what the plugin has always done) or `markers` for eol markers with a float, as split layout always does
 
 ## [0.1.37] — 2026-08-31
 

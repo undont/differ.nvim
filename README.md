@@ -119,10 +119,11 @@ require("differ").setup({
     similarity_threshold = 0.5,  -- line-pairing cutoff for word-level diffing
   },
   comments = {                   -- pr review threads
-    inline = true,               -- render comments inline; alternative gives eol
-                                 -- markers with floats (what you get in split layout)
-    collapsed = true,            -- threads expand while the cursor is on their row
-                                 -- false renders all expanded
+    display = "peek",            -- "expanded" | "peek" | "markers"
+                                 -- "expanded" doesn't collapse any, all stay open
+                                 -- "peek" has boxes below the line, opening on the cursor's row
+                                 -- "markers" gives eol markers with a float, which split
+                                 -- always does anyway
   },
   panel = {                      -- file panel default placement/size; `:Differ panel`
                                  -- and the runtime Panel.current() setters override per-session
