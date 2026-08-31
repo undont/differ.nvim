@@ -69,7 +69,9 @@ M.defaults = {
     },
     comments = {
         inline = true,
-        collapsed = false,
+        -- collapsed by default with expand whilst cursor is hovering, false renders
+        -- always expanded
+        collapsed = true,
     },
     -- the file panel's default placement and size; `:Differ panel` opts (and the
     -- runtime Panel.current() setters) still override these per-session

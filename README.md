@@ -120,7 +120,8 @@ require("differ").setup({
   },
   comments = {                   -- pr review threads
     inline = true,
-    collapsed = false,
+    collapsed = true,            -- threads expand while the cursor is on their row
+                                 -- false renders all expanded
   },
   panel = {                      -- file panel default placement/size; `:Differ panel`
                                  -- and the runtime Panel.current() setters override per-session

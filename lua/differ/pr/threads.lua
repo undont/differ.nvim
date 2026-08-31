@@ -89,19 +89,32 @@ end
 
 -- ── state ───────────────────────────────────────────────────────────────────────
 
--- a thread's effective collapsed state: an explicit per-thread toggle wins (gc, slice
--- 3); otherwise threads collapse by default and only expand while their anchor row is
--- under the cursor (peek), so the file stays scannable
----@param session table
----@param t table
+-- resolve a thread's collapsed state from its three inputs: an explicit per-thread
+-- toggle (gc) wins outright; a resting-collapsed thread still expands while its anchor
+-- row is under the cursor (peek)
+---@param override boolean|nil  -- the gc toggle for this thread
+---@param resting boolean  -- `comments.collapsed`
 ---@param group_active boolean  -- the cursor is on this thread's anchor row
 ---@return boolean
-local function thread_collapsed(session, t, group_active)
-    local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
+function M.collapsed_state(override, resting, group_active)
     if override ~= nil then
         return override
     end
+    if not resting then
+        return false
+    end
     return not group_active
+end
+
+-- `collapsed_state` over the live session and config
+---@param session table
+---@param t table
+---@param group_active boolean
+---@return boolean
+local function thread_collapsed(session, t, group_active)
+    local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
+    local resting = require("differ").get_config().comments.collapsed
+    return M.collapsed_state(override, resting, group_active)
 end
 
 -- extend every row of a stacked block to the block's max display width with a
@@ -266,12 +279,9 @@ function M.next_anchor(anchors, bufnr, row, direction)
     return best
 end
 
--- flip the explicit collapse override for every thread in `anchor`'s group, to the
--- opposite of the group's current effective state, so one gc toggles a group together
---. the default expanded baseline differs by layout: stacked expands the row the
--- cursor peeks; split shows the float by default while the cursor is on the row. so gc
--- collapses the inline box (stacked) or hides the float (split), and back. re-applying
--- the overlay is the caller's job
+-- flip the explicit collapse override across `anchor`'s whole group, so one gc moves
+-- them together. the float only ever shows the cursor's group, so split always counts
+-- as active. re-applying the overlay is the caller's job
 ---@param session table
 ---@param anchor table  -- { key, threads }
 function M.toggle_group(session, anchor)
