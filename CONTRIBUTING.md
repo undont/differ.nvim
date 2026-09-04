@@ -36,17 +36,17 @@ Its stderr is piped to the client, never to your terminal. `:checkhealth differ`
 
 ## Docs
 
-`doc/differ.txt` is generated from `README.md`, so a change to the readme has to carry the regenerated vimdoc with it:
+Each `doc/*.txt` is generated from a markdown source: `differ.txt` from `README.md`, `differ-recipes.txt` from `RECIPES.md`, `differ-troubleshooting.txt` from `TROUBLESHOOTING.md`. A change to any of them has to carry the regenerated vimdoc with it:
 
 ```sh
-make vimdoc   # rewrites doc/differ.txt (needs pandoc 3.10.1 on PATH)
+make vimdoc   # rewrites every doc/*.txt (needs pandoc 3.10.1 on PATH)
 ```
 
-Commit both files together. CI regenerates and fails if what's committed doesn't match, so a readme change on its own turns the Vimdoc job red.
+Commit the source and its generated doc together. CI regenerates and fails if what's committed doesn't match, so a readme change on its own turns the Vimdoc job red.
 
 pandoc is pinned because its output shifts between releases, and `make vimdoc` refuses to run against any other version rather than producing a doc CI will reject. panvimdoc is pinned too, fetched into gitignored `.tools/` on first use like lua_ls. The recipe forces `LC_ALL=C`: the panvimdoc writer wraps with Lua patterns, whose `%s` class is locale-dependent, and a UTF-8 locale on BSD libc counts `0xa0` as whitespace and splits the no-break space pandoc emits after "e.g." into U+FFFD.
 
-Regions fenced with `<!-- panvimdoc-ignore-start -->` / `<!-- panvimdoc-ignore-end -->` in the readme (badges, installation, architecture, licence) are left out of the vimdoc, which keeps `:h differ` a usage reference.
+Regions fenced with `<!-- panvimdoc-ignore-start -->` / `<!-- panvimdoc-ignore-end -->` are left out of the vimdoc. In the readme that's the badges, the nav line and the demo, so `:h differ` opens on why it exists.
 
 ## UI changes
 

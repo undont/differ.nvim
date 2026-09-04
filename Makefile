@@ -185,8 +185,8 @@ go-fmt-check: ## Verify Go formatting without writing
 ##@ Docs
 # ──────────────────────────────────────────────────────────────────────────────
 
-vimdoc: $(PANVIMDOC_BIN) $(PANDOC_BIN) ## Regenerate doc/differ.txt from README.md
-	@$(INFO) "Generating doc/differ.txt (panvimdoc $(PANVIMDOC_VERSION), pandoc $(PANDOC_VERSION))"
+vimdoc: $(PANVIMDOC_BIN) $(PANDOC_BIN) ## Regenerate doc/*.txt from the markdown sources
+	@$(INFO) "Generating doc/*.txt (panvimdoc $(PANVIMDOC_VERSION), pandoc $(PANDOC_VERSION))"
 	@# LC_ALL=C keeps the nbsp pandoc puts after "e.g." intact: the writer wraps with
 	@# lua patterns, and %s is locale-dependent, so bsd libc in a utf-8 locale counts
 	@# 0xa0 as space and splits it into u+fffd. --description replaces the header's
@@ -194,16 +194,19 @@ vimdoc: $(PANVIMDOC_BIN) $(PANDOC_BIN) ## Regenerate doc/differ.txt from README.
 	@# hardcodes /scripts when it's set, over --scripts-dir. output prints on failure.
 	@# panvimdoc.sh calls `pandoc` by name, so the pinned one leads on PATH: pandoc's
 	@# output differs between releases, and a brew upgrade would otherwise decide it
-	@out=$$(PATH="$(CURDIR)/$(PANDOC_DIR)/bin:$$PATH" LC_ALL=C GITHUB_ACTIONS=false bash $(PANVIMDOC_BIN) \
-		--scripts-dir "$(PANVIMDOC_DIR)/scripts" \
-		--project-name differ \
-		--input-file README.md \
-		--description "For Neovim >= 0.12" \
-		--toc true \
-		--demojify true \
-		--dedup-subheadings true \
-		--shift-heading-level-by -1 2>&1) || { printf '%s\n' "$$out"; exit 1; }
-	@$(OK) "doc/differ.txt regenerated"
+	@set -e; for pair in "differ:README.md" "differ-recipes:RECIPES.md" "differ-troubleshooting:TROUBLESHOOTING.md"; do \
+		name=$${pair%%:*}; input=$${pair#*:}; \
+		out=$$(PATH="$(CURDIR)/$(PANDOC_DIR)/bin:$$PATH" LC_ALL=C GITHUB_ACTIONS=false bash $(PANVIMDOC_BIN) \
+			--scripts-dir "$(PANVIMDOC_DIR)/scripts" \
+			--project-name "$$name" \
+			--input-file "$$input" \
+			--description "For Neovim >= 0.12" \
+			--toc true \
+			--demojify true \
+			--dedup-subheadings true \
+			--shift-heading-level-by -1 2>&1) || { printf '%s\n' "$$out"; exit 1; }; \
+		$(OK) "doc/$$name.txt regenerated"; \
+	done
 	@# doc/tags is gitignored and lazy only generates helptags for plugins it installed,
 	@# never for a `dir` dev checkout, so :help differ breaks in-tree without this. skipped
 	@# where there's no nvim (ci runs pandoc only), and invisible to ci's differ.txt diff
