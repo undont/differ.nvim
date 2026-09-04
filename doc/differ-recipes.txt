@@ -1,0 +1,250 @@
+*differ-recipes.txt*                                        For Neovim >= 0.12
+
+==============================================================================
+Table of Contents                           *differ-recipes-table-of-contents*
+
+1. Launchers                                        |differ-recipes-launchers|
+2. Statusline                                      |differ-recipes-statusline|
+3. Highlight groups                          |differ-recipes-highlight-groups|
+  - Diff lines and words|differ-recipes-highlight-groups-diff-lines-and-words|
+  - Staging                          |differ-recipes-highlight-groups-staging|
+  - File panel                    |differ-recipes-highlight-groups-file-panel|
+  - File history                |differ-recipes-highlight-groups-file-history|
+  - Review threads            |differ-recipes-highlight-groups-review-threads|
+  - PR overview                  |differ-recipes-highlight-groups-pr-overview|
+  - Merge tool                    |differ-recipes-highlight-groups-merge-tool|
+Snippets to copy and paste: launchers for the entry points (these are what I
+use in my setup), a statusline integration, and the highlight groups listed out
+in case you want to override.
+
+
+==============================================================================
+1. Launchers                                        *differ-recipes-launchers*
+
+>lua
+    {
+      "undont/differ.nvim",
+      build = "make go-build",
+      cmd = { "Differ", "D" }, -- "D" matches command_alias below
+      keys = {
+        { '<leader>do', '<cmd>Differ<CR>',                        desc = "Diff: open (vs index)" },
+        { "<leader>dt", "<cmd>Differ base<CR>",                   desc = "Diff: branch total (vs base)" },
+        { "<leader>dh", "<cmd>Differ log<CR>",                    desc = "Diff: file history" },
+        { "<leader>dp", "<cmd>Differ log origin/HEAD...HEAD<CR>", desc = "Diff: PR range (local, no API)" },
+        { "<leader>pl", "<cmd>Differ pr list<CR>",                desc = "PR: list" },
+        {
+          "<leader>po",
+          function()
+            vim.ui.input({ prompt = "PR number: " }, function(input)
+              if input and input ~= "" then vim.cmd("Differ pr " .. input) end
+            end)
+          end,
+          desc = "PR: open by number",
+        },
+      },
+      config = function()
+        require("differ").setup({ command_alias = "D" })
+      end,
+    }
+<
+
+Once a session is open, `dc` / `dd` / `dl` close it and toggle the panel and
+layout, and `gS` / `gD` submit or discard a review without leaving the files.
+The rest of the PR verbs (`checks`, `checkout`, `ready`, `draft`, `close`,
+`reopen`, `merge`, `browser`, `url`) stay as `:Differ pr <verb>`.
+
+If which-key’s `<leader>` popup doesn’t open over differ’s buffers,
+that’s a trigger-registration quirk on scratch buffers; check in
+troubleshooting <TROUBLESHOOTING.md#which-key-popups-over-differ-buffers>
+(|differ-troubleshooting-which-key-popups-over-differ-buffers|) for a solution.
+
+
+==============================================================================
+2. Statusline                                      *differ-recipes-statusline*
+
+The diff buffers use a private `differdiff` filetype rather than the source
+file’s, so any other `FileType <lang>` autocmds (LSP, linters, semantic
+tokens) in your setup don’t attach to a throwaway `differ://` buffer. The
+source filetype is still read and stored in `b:differ_filetype`, so a
+statusline can still show the language.
+
+For lualine, differ ships a drop-in for the stock `filetype` component, which
+shows the source filetype (with its devicon) on differ buffers and the native
+filetype everywhere else:
+
+>lua
+    sections = { lualine_x = { require("differ.lualine").filetype } }
+<
+
+Any custom statusline can read the buffer var directly, lualine or not:
+
+>lua
+    local function diff_filetype()
+      local ft = vim.b.differ_filetype
+      return (type(ft) == "string" and ft ~= "") and ft or vim.bo.filetype
+    end
+<
+
+Under a `cmd` lazy-load, prefer that over `require("differ.lualine")`; see
+troubleshooting <TROUBLESHOOTING.md#statusline-requires-under-lazy-loading>
+(|differ-troubleshooting-statusline-requires-under-lazy-loading|).
+
+
+==============================================================================
+3. Highlight groups                          *differ-recipes-highlight-groups*
+
+Every group is defined with `default = true`, so a `:highlight` of your own
+wins and survives a colorscheme change. The palette is re-resolved on
+`ColorScheme`, so the defaults track your theme without a reload. Typing `:hi
+differ` and pressing `<Tab>` completes all highlights with their current
+values.
+
+
+DIFF LINES AND WORDS    *differ-recipes-highlight-groups-diff-lines-and-words*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differLineAdd / differLineDelete    the quiet per-line tint on a
+                                      changed line
+
+  differWordAdd / differWordDelete    the deeper same-hue patch on the
+                                      changed words
+
+  differCursorLine                    the cursor line over unchanged text
+                                      (links CursorLine)
+
+  differCursorLineAdd /               the cursor line over an added or
+  differCursorLineDelete              deleted line
+
+  differFiller                        split’s padding row opposite an
+                                      inserted or deleted block (links
+                                      NonText)
+  -----------------------------------------------------------------------
+
+STAGING                              *differ-recipes-highlight-groups-staging*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differStagedLineAdd /               a staged line, dimmer than the live
+  differStagedLineDelete              tint
+
+  differStagedWordAdd /               the word patch inside a staged line
+  differStagedWordDelete              
+
+  differStagedLine                    a staged line with no add/delete
+                                      kind (links CursorLine)
+
+  differStagedSign                    the staged-hunk gutter glyph
+  -----------------------------------------------------------------------
+
+FILE PANEL                        *differ-recipes-highlight-groups-file-panel*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differPanelHeader / differPanelRoot panel chrome (link Title /
+  / differPanelHelp                   Directory / Comment)
+
+  differPanelDir / differPanelContext a tree directory row, and the
+                                      dimmed ·parent/ trailer in the name
+                                      listing
+
+  differPanelAdd / differPanelModify  the status glyph, by kind
+  / differPanelDelete                 
+
+  differPanelRename /                 the status glyph, by kind
+  differPanelUnmerged /               
+  differPanelUntracked                
+
+  differPanelCountAdd /               the per-file +/- counts
+  differPanelCountDelete              
+  -----------------------------------------------------------------------
+
+FILE HISTORY                    *differ-recipes-highlight-groups-file-history*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differHistoryAuthor                 the author column on a commit row
+                                      (links Identifier)
+
+  differHistoryRef                    the ref decoration in branch-range
+                                      mode (links Special)
+  -----------------------------------------------------------------------
+
+REVIEW THREADS                *differ-recipes-highlight-groups-review-threads*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differThread                        an open thread’s spine, rules and
+                                      author
+
+  differThreadResolved /              a resolved thread, and its footer
+  differThreadResolvedTag             tag
+
+  differThreadPending                 a thread carrying an unsubmitted
+                                      draft
+
+  differThreadMeta / differThreadBody the dim header line, and the
+                                      comment text
+
+  differThreadRange                   the diff lines a range comment
+                                      covers
+
+  differReviewDraft                   the pending-review badge in the
+                                      diff winbar
+  -----------------------------------------------------------------------
+
+PR OVERVIEW                      *differ-recipes-highlight-groups-pr-overview*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differOverviewTitle /               the page’s title, dim chrome and
+  differOverviewMeta /                body (title links Title)
+  differOverviewBody                  
+
+  differOverviewApproved /            a review verdict, approved or
+  differOverviewChanges               changes-requested
+
+  differOverviewAuthor                the author’s handle
+
+  differOverviewDiffContext           the unchanged rows of a code
+                                      thread’s inline hunk
+  -----------------------------------------------------------------------
+
+MERGE TOOL                        *differ-recipes-highlight-groups-merge-tool*
+
+  -----------------------------------------------------------------------
+  Group                               Applies to
+  ----------------------------------- -----------------------------------
+  differMergeOurs / differMergeTheirs one conflict slab per side, in the
+  / differMergeBase                   result pane
+
+  differMergeOursActive /             the same, for the conflict under
+  differMergeTheirsActive /           the cursor
+  differMergeBaseActive               
+
+  differMergeOursStrong /             the conflicting lines in an input
+  differMergeTheirsStrong /           pane, over the rest of the file
+  differMergeBaseStrong               
+
+  differMergeSignOurs /               the input-slab gutter sign
+  differMergeSignTheirs /             
+  differMergeSignBase                 
+
+  differMergeConflict                 an unresolved block in the result
+
+  differMergeMarker                   a raw conflict marker left in the
+                                      buffer
+
+  differMergeFlash                    the transient flash on lines a
+                                      take-this produced
+  -----------------------------------------------------------------------
+
+Generated by panvimdoc <https://github.com/kdheepak/panvimdoc>
+
+vim:tw=78:ts=8:noet:ft=help:norl:

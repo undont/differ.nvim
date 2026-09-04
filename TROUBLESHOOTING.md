@@ -1,6 +1,26 @@
 # Troubleshooting
 
-Edge cases in how differ interacts with lazy-loading and other plugins. None of these are needed for a default install; they're here so the README stays a reference rather than a FAQ.
+Working out what's wrong, and the edge cases in how differ interacts with lazy-loading and other plugins. It lives here rather than in the README so that stays a reference rather than a FAQ.
+
+## PR review fails
+
+`:checkhealth differ` is the first thing to run. It reports the Neovim floor and `termguicolors`, git, the options you passed to `setup()`, the resolved sidecar binary and whether it completes a handshake, and whether a GitHub token is available. A sidecar that died during the session is reported there too, with the last thing it wrote.
+
+`:Differ sidecar` is the narrower diagnostic. It tells a sidecar that was never built (`make go-build`) apart from a protocol mismatch or a `gh` auth failure, and it's the only thing that reports which binary is actually running. A binary left stale by a missing update hook is the case it earns its keep on: the handshake only rejects one whose wire protocol has moved, so an otherwise-current sidecar fails later, as `unknown method` on the first call into something it doesn't have.
+
+`:Differ sidecar stop` ends the supervised process; the next PR command starts a fresh one.
+
+## Review threads look stale
+
+The sidecar memoises review threads for the life of the process and flushes them only on your own mutations, so a comment posted while you have the PR open won't appear until `:Differ cache clear`. File blobs are keyed by commit sha and can't go stale, so clearing those only costs a refetch.
+
+## An option is ignored
+
+An option that doesn't name a real key, or that carries a value outside a closed set (`panel.position = "middle"`), is reported once at startup and again by `:checkhealth differ`. differ still starts, and the value it can't honour falls back to its default.
+
+## Reading the sidecar log
+
+The sidecar logs to its stderr, which differ keeps rather than lets through to your terminal, so `:checkhealth differ` is where it surfaces: what a process said before it died, and what a running one has said since. The tail also comes with the error when a request fails on a sidecar that has just died. Nothing there carries your token.
 
 ## `command_alias` and lazy-loading
 

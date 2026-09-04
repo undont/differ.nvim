@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:h differ-recipes` and `:h differ-troubleshooting`: launchers, the statusline drop-in and the highlight groups in one, diagnosis and the plugin-interaction edge cases in the other
+- `:h differ` carries the installation section, including the two hooks mini.deps needs to rebuild the sidecar on update
+
+## [0.1.38] — 2026-09-01
+
+### Added
+
 - `panel.icons = false` turns off filetype devicons in the file panel
 
 ### Changed

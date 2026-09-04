@@ -1,9 +1,10 @@
 name: Vimdoc
 
-# doc/differ.txt is generated from README.md, so a PR touching the readme has to carry
-# the regenerated vimdoc with it. this only checks that, it never commits: a commit
-# pushed here with GITHUB_TOKEN triggers no workflows, which leaves every required
-# check parked at action_required on the new head and the pr unmergeable.
+# every doc/*.txt is generated from its markdown source (README, RECIPES, TROUBLESHOOTING),
+# so a PR touching one has to carry the regenerated vimdoc with it. this only checks
+# that, it never commits: a commit pushed here with GITHUB_TOKEN triggers no workflows,
+# which leaves every required check parked at action_required on the new head and the
+# pr unmergeable.
 #
 # `make vimdoc` fetches its own pinned panvimdoc and pandoc into .tools and pins the
 # locale, and the header carries no datestamp, so the output is reproducible and a
@@ -33,12 +34,15 @@ jobs:
           path: .tools
           key: vimdoc-tools-${{ runner.os }}-${{ hashFiles('Makefile') }}
 
-      - name: Regenerate doc/differ.txt
+      - name: Regenerate the vimdocs
         run: make vimdoc
 
       - name: Check it matches what's committed
         run: |
-          if ! git diff --exit-code -- doc/differ.txt; then
-            echo "::error::doc/differ.txt is stale; run 'make vimdoc' and commit the result"
+          # --porcelain, not `git diff`: an added source doc leaves its generated
+          # .txt untracked, which a diff of tracked paths alone would pass
+          if [ -n "$(git status --porcelain doc/)" ]; then
+            git status --short doc/
+            echo "::error::the vimdoc is stale; run 'make vimdoc' and commit the result"
             exit 1
           fi
