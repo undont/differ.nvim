@@ -141,6 +141,15 @@ local function reltime(ts)
     return date.relative(epoch)
 end
 
+-- handle_conflict moves the pins on the live session rather than replacing it, so a blob
+-- issued before a head move still passes `guard.owns`
+---@param s table
+---@param refs { base: string|nil, head: string|nil }
+---@return boolean
+local function pins_hold(s, refs)
+    return s.pr_meta.base_sha == refs.base and s.pr_meta.head_sha == refs.head
+end
+
 -- predictive prefetch (phase 6, minimal slice): warm the immediate neighbours of
 -- the shown file into the per-path memo so sequential ]f/[f / ]u/[u don't wait on a
 -- round-trip. best-effort and silent: a speculative read, not a user-initiated one, so
@@ -170,7 +179,7 @@ local function prefetch_around(entry)
                         return -- session torn down (or replaced) while it was in flight
                     end
                     s.prefetching[path] = nil
-                    if not err and vers then
+                    if not err and vers and pins_hold(s, refs) then
                         s.versions[path] = vers
                     end
                 end)
@@ -260,6 +269,9 @@ local function show_file(entry, focus_line)
         end
         if err then
             return notify_err(err)
+        end
+        if not pins_hold(s, refs) then
+            return -- the head moved in flight; handle_conflict's re-source owns the refetch
         end
         -- the memo is keyed on pinned shas, so it stands whether or not the panel is
         -- showing; only the render waits on a visible sidebar (the overview hop hides it)

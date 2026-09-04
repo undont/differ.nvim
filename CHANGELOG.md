@@ -11,6 +11,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `:h differ-recipes` and `:h differ-troubleshooting`: launchers, the statusline drop-in and the highlight groups in one, diagnosis and the plugin-interaction edge cases in the other
 - `:h differ` carries the installation section, including the two hooks mini.deps needs to rebuild the sidecar on update
 
+### Fixed
+
+- After the PR head moved mid-review, a file could keep showing its pre-push contents for the rest of the session. It now refetches at the refreshed head
+
 ## [0.1.38] — 2026-09-01
 
 ### Added
