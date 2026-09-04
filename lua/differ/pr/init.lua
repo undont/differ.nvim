@@ -273,10 +273,13 @@ local function show_file(entry, focus_line)
         if not pins_hold(s, refs) then
             return -- the head moved in flight; handle_conflict's re-source owns the refetch
         end
-        -- the memo is keyed on pinned shas, so it stands whether or not the panel is
-        -- showing; only the render waits on a visible sidebar (the overview hop hides it)
+        -- the memo is keyed on pinned shas, so it stands whether or not the panel is showing
         s.versions[entry.path] = vers
-        if s.panel and s.panel:is_open() then
+        -- the render additionally waits on a visible sidebar (the overview hop hides it)
+        -- and on `entry` still being the shown file: a blob for a file stepped away from
+        -- mid-flight would otherwise land over the one stepped to
+        local cur = s.panel and s.panel:is_open() and s.panel:current_entry()
+        if cur and cur.path == entry.path then
             render(vers)
         end
     end)

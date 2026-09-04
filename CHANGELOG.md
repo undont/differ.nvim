@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - After the PR head moved mid-review, a file could keep showing its pre-push contents for the rest of the session. It now refetches at the refreshed head
+- Stepping to another file while a slow one was still loading could snap the diff back to the file you left. The late file now loads quietly in the background
 
 ## [0.1.38] — 2026-09-01
 
