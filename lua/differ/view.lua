@@ -391,6 +391,11 @@ function View:_paint_cursorline()
     if not (win and vim.api.nvim_win_is_valid(win)) then
         return
     end
+    -- read the window's effective value, so a :setlocal cursorline inside the diff
+    -- still paints while a global nocursorline leaves the rows clean
+    if not vim.api.nvim_get_option_value("cursorline", { scope = "local", win = win }) then
+        return
+    end
     local row = vim.api.nvim_win_get_cursor(win)[1] - 1
     local line = col.map.lines[row + 1]
     -- tint the cursor line by the row's change kind so the add/remove colour survives
@@ -619,6 +624,18 @@ function View:_setup_window(winid, bufnr)
             self:_paint_cursorline()
             if self.on_cursor then
                 self.on_cursor() -- session cursor hook (the pr thread cursor-expand)
+            end
+        end,
+    })
+    -- toggling cursorline mid-session repaints straight away instead of waiting for
+    -- the next cursor move. OptionSet takes the option name as its pattern, so it
+    -- can't also be buffer-scoped: skip the fire unless this view holds focus
+    vim.api.nvim_create_autocmd("OptionSet", {
+        group = group,
+        pattern = "cursorline",
+        callback = function()
+            if vim.api.nvim_get_current_buf() == bufnr then
+                self:_paint_cursorline()
             end
         end,
     })

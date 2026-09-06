@@ -1031,6 +1031,16 @@ end)
 describe("view cursor-line overlay", function()
     local cursor_ns = vim.api.nvim_create_namespace("differ.cursorline")
 
+    -- the overlay follows the window's cursorline, and nvim ships it off
+    local had_cursorline
+    before_each(function()
+        had_cursorline = vim.o.cursorline
+        vim.o.cursorline = true
+    end)
+    after_each(function()
+        vim.o.cursorline = had_cursorline
+    end)
+
     local CURSORLINE = {
         differCursorLine = true,
         differCursorLineAdd = true,
@@ -1148,6 +1158,47 @@ describe("view cursor-line overlay", function()
         vim.api.nvim_win_set_cursor(win, { chg_row + 1, 0 })
         vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
         assert.are.equal("differCursorLine", overlay_hl(buf, chg_row)) -- no tint
+        v:close()
+    end)
+
+    it("paints no overlay when cursorline is off", function()
+        vim.cmd("silent! only")
+        vim.o.cursorline = false
+        local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local buf, win = v.columns[1].bufnr, v.columns[1].winid
+        assert.are.same({}, overlay_rows(buf))
+
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
+        assert.are.same({}, overlay_rows(buf)) -- and stays clean as the cursor moves
+        v:close()
+    end)
+
+    it("repaints when cursorline is toggled on the diff window mid-session", function()
+        vim.cmd("silent! only")
+        vim.o.cursorline = false
+        local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local buf, win = v.columns[1].bufnr, v.columns[1].winid
+        assert.are.same({}, overlay_rows(buf))
+
+        -- a :setlocal cursorline inside the diff paints without a cursor move
+        vim.api.nvim_set_option_value("cursorline", true, { scope = "local", win = win })
+        local cur = vim.api.nvim_win_get_cursor(win)[1] - 1
+        assert.are.same({ cur }, overlay_rows(buf))
+
+        -- and turning it back off wipes the overlay already painted
+        vim.api.nvim_set_option_value("cursorline", false, { scope = "local", win = win })
+        assert.are.same({}, overlay_rows(buf))
         v:close()
     end)
 end)
