@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- The diff drew a cursor line even with `cursorline` off and the PR overview drew none with it on; both now respect the user's config. Opening the PR checks float used to switch `cursorline` on for the rest of the session, it now doesn't
+
+## [0.1.41] — 2026-09-06
+
+### Fixed
+
 - A renamed file in a PR review showed every line as new, which wasn't very useful. It now diffs against the file's old path, showing only what actually changed
 
 ## [0.1.40] — 2026-09-06

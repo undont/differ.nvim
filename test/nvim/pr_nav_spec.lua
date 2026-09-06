@@ -198,6 +198,25 @@ describe("pr overview <-> review navigation loop", function()
         restore()
     end)
 
+    it("the overview page follows the cursorline setting", function()
+        local had_cursorline = vim.go.cursorline
+
+        vim.o.cursorline = true
+        local restore = open_overview(default_responses())
+        local win = pr.current_session().overview_win
+        assert.is_true(vim.api.nvim_get_option_value("cursorline", { scope = "local", win = win }))
+        pr.end_session()
+        restore()
+
+        vim.o.cursorline = false
+        restore = open_overview(default_responses())
+        win = pr.current_session().overview_win
+        assert.is_false(vim.api.nvim_get_option_value("cursorline", { scope = "local", win = win }))
+        restore()
+
+        vim.o.cursorline = had_cursorline
+    end)
+
     it("<CR> on a thread row enters the review with the cursor on the anchored diff row", function()
         local restore = open_overview(default_responses())
 

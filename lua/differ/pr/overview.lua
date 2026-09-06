@@ -252,7 +252,9 @@ local function setup_window(win)
     set_wo(win, "relativenumber", false)
     set_wo(win, "signcolumn", "no")
     set_wo(win, "foldcolumn", "0")
-    set_wo(win, "cursorline", false)
+    -- the window is taken over from another surface, so mirror the global rather
+    -- than inherit whatever local cursorline it was left with
+    set_wo(win, "cursorline", vim.go.cursorline)
     set_wo(win, "wrap", true)
     set_wo(win, "conceallevel", 2)
     set_wo(win, "list", false)
