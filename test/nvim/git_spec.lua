@@ -988,13 +988,34 @@ describe(":Differ panel", function()
 
         git_src.panel({ open_first = true })
         local p = Panel.current()
-        -- the rename is the first listed file (Staged section), but it diffs to nothing;
-        -- the landing skips it for z.lua, the first entry with real content
+        -- the rename is the first listed file, but it's staged and z.lua isn't: the
+        -- landing wants the first thing left to review, whatever the rename diffs to
         assert.are.equal(file_line(p, "z.lua"), p.selected_row)
         vim.api.nvim_set_current_win(p.origin_win)
         local v = require("differ.view").current()
         assert.is_not_nil(v)
         assert.are.equal("z.lua", v.model.path)
+        require("differ.git").close()
+    end)
+
+    -- with nothing unstaged the landing falls back to the first file, and a rename is
+    -- one: it diffs to nothing but still stages, unstages and discards, so opening past
+    -- it would start the session with work already out of sight
+    it("open_first lands on a content-less rename when nothing is unstaged", function()
+        local root = fresh_repo()
+        write(root .. "/keep.lua", "keep\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "keep.lua", "z.lua")
+        git(root, "commit", "-q", "-am", "more files")
+        git(root, "mv", "a.lua", "renamed.lua") -- staged pure rename, sorts first
+        write(root .. "/z.lua", "z1x\nz2\n")
+        git(root, "add", "z.lua") -- staged too, so nothing is left unstaged
+        vim.cmd.edit(root .. "/keep.lua")
+
+        git_src.panel({ open_first = true })
+        local p = Panel.current()
+
+        assert.are.equal(file_line(p, "renamed.lua"), p.selected_row)
         require("differ.git").close()
     end)
 
@@ -1508,6 +1529,105 @@ describe(":Differ diff hunk staging", function()
         end)
 
         assert.are.equal("local x = 99\nreturn x\n", v.model.new_text) -- diff re-sourced
+        p:close()
+    end)
+
+    -- unstaging a whole-file change splits it off the pair the review was on, and the
+    -- re-source then has only the other pair to land on. `s` there acts on that entry
+    -- instead, so the swap can't be silent
+    it("says when an external change re-sources the diff onto the other pair", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n")
+        git(root, "add", "new.lua") -- a staged add: the only pair this file has
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new.lua"))
+        p:select(true)
+        local v = view_in_origin(p)
+        assert.are.equal("INDEX", v.model.new_rev) -- HEAD↔index, the staged pair
+        v:unstage_hunk() -- the staged pair is gone; the file is untracked now
+
+        _G.notifs = {}
+        write(root .. "/other.lua", "unrelated\n") -- something else moves the signature
+        git(root, "add", "other.lua")
+        p:reload()
+
+        local msg
+        for _, n in ipairs(_G.notifs) do
+            if tostring(n.msg):find("changed outside differ", 1, true) then
+                msg = tostring(n.msg)
+            end
+        end
+        assert.is_truthy(msg)
+        assert.is_truthy(msg:find("new.lua", 1, true))
+        p:close()
+    end)
+
+    it("stays quiet when the re-source lands on the same pair", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+
+        _G.notifs = {}
+        write(root .. "/a.lua", "local x = 99\nreturn x\n") -- same file, same pair
+        write(root .. "/b.lua", "new\n")
+        git(root, "add", "b.lua")
+        p:reload()
+
+        for _, n in ipairs(_G.notifs) do
+            assert.is_nil(tostring(n.msg):find("changed outside differ", 1, true))
+        end
+        p:close()
+    end)
+
+    -- the panel's own staging keys move the pair the diff was built from, so the window
+    -- has to follow. the diff window's own s/u keep their frozen model instead, which is
+    -- what lets the staged marks survive a stage
+    it("re-sources the open diff when the panel's own keys stage the file", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.are.equal("WORKTREE", view_in_origin(p).model.new_rev) -- the unstaged pair
+
+        _G.notifs = {}
+        p:stage_op("stage_all") -- S on the panel row, not in the diff
+
+        assert.are.equal("INDEX", view_in_origin(p).model.new_rev) -- followed to HEAD↔index
+        -- differ's own doing, so it isn't reported the way an outside change is
+        for _, n in ipairs(_G.notifs) do
+            assert.is_nil(tostring(n.msg):find("changed outside differ", 1, true))
+        end
+        p:close()
+    end)
+
+    it("follows a delete-plus-add pair to the rename the panel then lists", function()
+        local root = fresh_repo()
+        write(root .. "/old.lua", string.rep("a line\n", 20))
+        git(root, "add", "old.lua")
+        git(root, "commit", "-q", "-m", "add old.lua")
+        git(root, "mv", "old.lua", "new.lua")
+        git(root, "reset", "-q", "HEAD") -- unstaged: a deletion plus an untracked file
+        vim.cmd.edit(root .. "/new.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("old.lua"))
+        p:select(true)
+        assert.are.equal("old.lua", view_in_origin(p).model.path)
+
+        p:stage_op("stage_all") -- both halves reach the index, and git pairs them
+
+        -- old.lua has no entry left at all, so the window moves to the rename rather
+        -- than sitting on a deletion the change set no longer holds
+        assert.are.equal("new.lua", view_in_origin(p).model.path)
         p:close()
     end)
 
@@ -3628,6 +3748,333 @@ describe(":Differ diff whole-file staging", function()
         assert.is_truthy(text:find("stage / unstage file", 1, true))
         assert.is_nil(text:find("stage / unstage hunk", 1, true))
         vim.api.nvim_win_close(0, true)
+        p:close()
+    end)
+
+    -- a file with both a staged and an unstaged row: the staged row's diff is HEAD↔index
+    -- and shows nothing of what the unstaged row holds, but staging reads the file off
+    -- disk. `u` then `s` on the staged row is what reaches it, since `s` on a row already
+    -- staged steps to the next file rather than staging
+    local function round_trip_staged(root, path)
+        vim.cmd.edit(root .. "/" .. path)
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file(path)) -- the staged row: it comes first
+        p:select(true)
+        local v = view_in_origin(p)
+        assert.is_true(v.staging.whole_file)
+        assert.are.equal("staged", v.staging.initial)
+        _G.notifs = {}
+        v:unstage_hunk()
+        view_in_origin(p):stage_hunk()
+        return p
+    end
+
+    local function absorb_warning()
+        for _, n in ipairs(_G.notifs) do
+            if tostring(n.msg):find("including the edits you had left unstaged", 1, true) then
+                return n
+            end
+        end
+        return nil
+    end
+
+    it("warns when staging a whole file sweeps in the unstaged row too", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n")
+        git(root, "add", "new.lua") -- a staged add
+        write(root .. "/new.lua", "one\ntwo\nthree WIP\n") -- edited after, left unstaged
+
+        local p = round_trip_staged(root, "new.lua")
+
+        -- the staged diff never showed the WIP line, and it is in the index now
+        assert.are.equal("one\ntwo\nthree WIP\n", git(root, "show", ":new.lua"))
+        assert.are.equal(vim.log.levels.WARN, assert(absorb_warning()).level)
+        p:close()
+    end)
+
+    it("stays quiet when the file on disk is what the diff staged", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n")
+        git(root, "add", "new.lua") -- staged, and the worktree matches the index
+
+        local p = round_trip_staged(root, "new.lua")
+
+        assert.are.equal("one\ntwo\n", git(root, "show", ":new.lua"))
+        assert.is_nil(absorb_warning())
+        p:close()
+    end)
+end)
+
+-- a rename is the one whole-file status that can show several hunks, and the one that
+-- owns two paths. git pairs renames only in the index, so every R entry is staged
+describe(":Differ diff rename staging", function()
+    local Panel = require("differ.panel")
+
+    local function view_in_origin(p)
+        vim.api.nvim_set_current_win(p.origin_win)
+        return require("differ.view").current()
+    end
+
+    -- a 60-line file committed at old/big.lua, then staged-renamed to new/big.lua with
+    -- `edits` (a list of line numbers) changed on the way, so the rename carries that
+    -- many hunks. 60 lines keeps a few edits well above git's 50% similarity threshold,
+    -- below which git reports an add and a delete instead of a rename
+    local function renamed_repo(edits)
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root .. "/old", "p")
+        git(root, "init", "-q")
+        local lines = {}
+        for n = 1, 60 do
+            lines[n] = "line " .. n
+        end
+        write(root .. "/old/big.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "add", "-A")
+        git(root, "commit", "-q", "-m", "init")
+        vim.fn.mkdir(root .. "/new", "p")
+        git(root, "mv", "old/big.lua", "new/big.lua")
+        for _, n in ipairs(edits or {}) do
+            lines[n] = lines[n] .. " edited"
+        end
+        write(root .. "/new/big.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "add", "new/big.lua")
+        return root
+    end
+
+    local function open_staged(p, path)
+        assert.is_true(p:focus_file(path))
+        p:select(true)
+        return view_in_origin(p)
+    end
+
+    -- the paths git holds a staged change for (a non-blank X column)
+    local function staged_paths(root)
+        local out = {}
+        for line in git(root, "status", "--porcelain=v1"):gmatch("[^\n]+") do
+            if line:sub(1, 1) ~= " " and line:sub(1, 1) ~= "?" then
+                out[#out + 1] = line
+            end
+        end
+        return out
+    end
+
+    -- the hunks the staged-mark overlay paints, read back from the extmarks: a mark
+    -- left behind on a hunk git no longer has staged is what the reviewer sees
+    local function painted_hunks(v)
+        local ns = vim.api.nvim_get_namespaces()["differ.staging"]
+        local col = v.columns[1]
+        local seen, out = {}, {}
+        for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(col.bufnr, ns, 0, -1, {})) do
+            local line = col.map.lines[mark[2] + 1]
+            if line and line.hunk then
+                seen[line.hunk] = true
+            end
+        end
+        for i = 1, #v.model.hunks do
+            out[i] = seen[i] or false
+        end
+        return out
+    end
+
+    it("moves both of a rename's paths together on u, and back on s", function()
+        local root = renamed_repo()
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        local v = open_staged(p, "new/big.lua")
+        assert.is_true(v.staging.whole_file)
+        assert.are.same({ "R  old/big.lua -> new/big.lua" }, staged_paths(root))
+
+        v:unstage_hunk()
+
+        -- resetting only the new path would leave "D  old/big.lua" staged behind
+        assert.are.same({}, staged_paths(root))
+
+        view_in_origin(p):stage_hunk()
+
+        assert.are.same({ "R  old/big.lua -> new/big.lua" }, staged_paths(root))
+        p:close()
+    end)
+
+    it("opens a staged rename with all of its hunks marked staged", function()
+        local root = renamed_repo({ 5, 30, 55 })
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        local v = open_staged(p, "new/big.lua")
+
+        assert.are.equal(3, #v.model.hunks)
+        assert.are.equal("staged", v.staging.initial)
+        assert.are.same({ true, true, true }, painted_hunks(v))
+        p:close()
+    end)
+
+    it("clears every hunk's mark when one u unstages the whole rename", function()
+        local root = renamed_repo({ 5, 30, 55 })
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        local v = open_staged(p, "new/big.lua")
+        assert.are.equal(3, #v.model.hunks)
+
+        v:unstage_hunk() -- one press: a whole-file source has one slot, not three
+
+        assert.are.same({}, staged_paths(root))
+        -- a mark surviving here is a hunk painted staged that git no longer holds
+        assert.are.same({ false, false, false }, painted_hunks(view_in_origin(p)))
+        p:close()
+    end)
+
+    it("leaves the file on the next u rather than cycling its own hunks", function()
+        local root = renamed_repo({ 5, 30, 55 })
+        write(root .. "/other.lua", "one\ntwo\n")
+        git(root, "add", "other.lua")
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        local v = open_staged(p, "new/big.lua")
+        v:unstage_hunk() -- unstages the rename outright
+
+        view_in_origin(p):unstage_hunk() -- nothing left here: step to the other file
+
+        assert.are.equal("other.lua", view_in_origin(p).model.path)
+        p:close()
+    end)
+
+    it("unstages both of a rename's paths from the panel row, as the diff keys do", function()
+        local root = renamed_repo({ 5 })
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+
+        p:stage_op("unstage") -- u on the file row, not in the diff window
+
+        -- resetting the new path alone leaves "D  old/big.lua" staged: the rename undone
+        -- on one side only, and the panel disagreeing with what u in the diff does
+        assert.are.same({}, staged_paths(root))
+        p:close()
+    end)
+
+    -- run `fn` with confirm answering `answer`, returning the prompt it was shown
+    local function under_confirm(answer, fn)
+        local orig, prompt = vim.fn.confirm, nil
+        vim.fn.confirm = function(msg)
+            prompt = msg
+            return answer
+        end
+        local okay, err = pcall(fn)
+        vim.fn.confirm = orig
+        assert(okay, err)
+        return prompt
+    end
+
+    it("undoes a rename with X, restoring the old path and dropping the new", function()
+        local root = renamed_repo({ 5, 30 })
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+
+        under_confirm(1, function()
+            p:discard()
+        end)
+
+        -- `checkout HEAD -- new/big.lua` would have failed here: HEAD has no such path
+        assert.are.same({}, staged_paths(root))
+        assert.are.equal(1, vim.fn.filereadable(root .. "/old/big.lua"))
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new/big.lua"))
+        p:close()
+    end)
+
+    it("names the path X will restore in its confirm", function()
+        local root = renamed_repo()
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+
+        local prompt = under_confirm(2, function() -- answer No: nothing is discarded
+            p:discard()
+        end)
+
+        assert.is_truthy(prompt:find("new/big.lua (restoring old/big.lua)", 1, true))
+        assert.are.same({ "R  old/big.lua -> new/big.lua" }, staged_paths(root))
+        p:close()
+    end)
+
+    it("refuses a rename whose status moved under the prompt", function()
+        local root = renamed_repo()
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+
+        _G.notifs = {}
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            -- unstaged from outside while the prompt blocks, leaving an untracked new
+            -- path and an unstaged deletion: no longer a rename to undo
+            git(root, "reset", "-q", "HEAD", "--", "new/big.lua", "old/big.lua")
+            return 1
+        end
+        p:discard()
+        vim.fn.confirm = orig
+
+        assert.are.equal(1, vim.fn.filereadable(root .. "/new/big.lua"))
+        assert.are.equal(0, vim.fn.filereadable(root .. "/old/big.lua"))
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("discard skipped: new/big.lua", 1, true))
+        p:close()
+    end)
+
+    -- a pure rename shows no lines, so the landing heuristics (gg/G, the initial open)
+    -- skip it. the review walk can't: it stages and unstages as a file, and skipping it
+    -- would announce the review done with that rename still staged
+    it("stops the u review on a rename with no lines to show", function()
+        local root = renamed_repo() -- no edits: a rename with an empty diff
+        write(root .. "/other.lua", "one\ntwo\n")
+        git(root, "add", "other.lua")
+        vim.cmd.edit(root .. "/other.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        open_staged(p, "other.lua")
+
+        for _ = 1, 4 do
+            view_in_origin(p):unstage_hunk()
+        end
+
+        assert.are.equal("new/big.lua", view_in_origin(p).model.path) -- the walk reached it
+        assert.are.same({}, staged_paths(root))
+        p:close()
+    end)
+
+    it("walks the u review past a staged rename to the files beyond it", function()
+        local root = renamed_repo({ 5, 30, 55 })
+        write(root .. "/aaa.lua", "a1\na2\n")
+        write(root .. "/zzz.lua", "z1\nz2\n")
+        git(root, "add", "aaa.lua", "zzz.lua")
+        vim.cmd.edit(root .. "/zzz.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        open_staged(p, "zzz.lua")
+
+        -- two presses per file (unstage, then step on); the rename used to swallow the
+        -- walk, leaving everything past it staged for good
+        for _ = 1, 12 do
+            view_in_origin(p):unstage_hunk()
+        end
+
+        assert.are.same({}, staged_paths(root))
         p:close()
     end)
 end)

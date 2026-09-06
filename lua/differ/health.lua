@@ -30,6 +30,51 @@ local function check_nvim()
     end
 end
 
+-- a boolean git config key, or nil when it isn't set. `--type=bool` collapses the
+-- spellings git accepts (`0`, `no`, `off`); it refuses `copies`, which is rename
+-- detection plus copy detection and so reads as on
+---@param key string
+---@return boolean|nil
+local function git_bool(key)
+    local res = vim.system({ "git", "config", "--get", "--type=bool", key }, { text = true }):wait()
+    if res.code == 0 then
+        return vim.trim(res.stdout or "") == "true"
+    end
+    if res.code == 1 then
+        return nil -- not set
+    end
+    return true
+end
+
+-- git pairs renames off two keys, and `status.renames` defaults to `diff.renames`, so
+-- the two only disagree when it was set on its own. the file panel lists through `git
+-- status` and a rev-pair diff through `git diff`, so that split shows one change set
+-- two ways, with different file counts
+local function check_renames()
+    local status_renames = git_bool("status.renames")
+    if status_renames == nil then
+        return
+    end
+    local diff_renames = git_bool("diff.renames")
+    if diff_renames == nil then
+        diff_renames = true -- git's own default
+    end
+    if status_renames == diff_renames then
+        return
+    end
+    local panel, pair = "an add and a delete", "a rename"
+    if status_renames then
+        panel, pair = pair, panel
+    end
+    health.warn(
+        ("status.renames is `%s` but diff.renames is `%s`"):format(status_renames, diff_renames),
+        {
+            ("the file panel lists a rename as %s, a rev-pair diff as %s"):format(panel, pair),
+            "set diff.renames to cover both, or unset status.renames",
+        }
+    )
+end
+
 local function check_git()
     health.start("git")
     if vim.fn.executable("git") ~= 1 then
@@ -42,6 +87,7 @@ local function check_git()
         return health.error("git is on PATH but `git --version` failed: " .. (res.stderr or ""))
     end
     health.ok(vim.trim(res.stdout or "git found"))
+    check_renames()
 end
 
 local function check_config()

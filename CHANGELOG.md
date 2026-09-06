@@ -8,6 +8,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:checkhealth differ` warns when `status.renames` and `diff.renames` disagree, which is what leaves the file panel listing a rename as an add and a delete where a rev-pair diff lists it as a rename
+
+### Fixed
+
+- `s` and `u` refused to act on a renamed or copied file, so the review walk stopped dead at the first one and a staged rename showed its hunks unmarked. Both now stage and unstage the rename as a unit, moving its old and new path together
+- `u` on a renamed file's panel row unstaged only its new path, leaving the old path's deletion staged behind. The panel row and the diff window now cover the same paths
+- Staging a whole-file change back after unstaging it also staged the file's unstaged changes, which its diff never showed, without saying so. It now warns when that happens
+- A git change made outside differ could swap the open diff onto the file's other pair without a word, leaving the staging keys acting on something other than what was being reviewed. The swap is now reported
+- The `s` and `u` review walk stepped over a rename with no lines to show, so it announced the review finished with that rename still staged. The walk now stops on one; `gg`, `G` and the initial open still skip past them
+- `X` on a renamed file always refused with "changed since the prompt". It now undoes the rename, restoring the old path and dropping the new one, and says which path it will restore before you confirm
+
+## [0.1.39] — 2026-09-05
+
+### Added
+
 - `:h differ-recipes` and `:h differ-troubleshooting`: launchers, the statusline drop-in and the highlight groups in one, diagnosis and the plugin-interaction edge cases in the other
 - `:h differ` carries the installation section, including the two hooks mini.deps needs to rebuild the sidecar on update
 

@@ -128,6 +128,19 @@ describe("git.rev.parse_status", function()
         }, rev.parse_status(out))
     end)
 
+    it("consumes each old-path field in a run of renames", function()
+        local out = "R  new/a.txt\0old/a.txt\0"
+            .. "R  new/b.txt\0old/b.txt\0"
+            .. "RM new/c.txt\0old/c.txt\0"
+            .. " M src/tail.txt\0"
+        assert.are.same({
+            { x = "R", y = " ", path = "new/a.txt", previous_path = "old/a.txt" },
+            { x = "R", y = " ", path = "new/b.txt", previous_path = "old/b.txt" },
+            { x = "R", y = "M", path = "new/c.txt", previous_path = "old/c.txt" },
+            { x = " ", y = "M", path = "src/tail.txt" },
+        }, rev.parse_status(out))
+    end)
+
     it("returns nothing for empty output", function()
         assert.are.same({}, rev.parse_status(""))
     end)
@@ -146,6 +159,17 @@ describe("git.rev.parse_numstat", function()
         local out = "0\t0\t\0deep/old.txt\0deep/new.txt\0"
         assert.are.same({
             ["deep/new.txt"] = { additions = 0, deletions = 0 },
+        }, rev.parse_numstat(out))
+    end)
+
+    it("consumes both path fields of a rename before the next record", function()
+        local out = "1\t1\t\0old/a.txt\0new/a.txt\0"
+            .. "0\t0\t\0old/b.txt\0new/b.txt\0"
+            .. "5\t2\ttail.txt\0"
+        assert.are.same({
+            ["new/a.txt"] = { additions = 1, deletions = 1 },
+            ["new/b.txt"] = { additions = 0, deletions = 0 },
+            ["tail.txt"] = { additions = 5, deletions = 2 },
         }, rev.parse_numstat(out))
     end)
 

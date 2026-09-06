@@ -92,9 +92,9 @@ describe("panel navigation", function()
         p:close()
     end)
 
-    it("gg / G skip content-less pure renames at the edges", function()
-        -- a.lua and d.lua are pure renames (no hunks); the edge jumps step past them
-        -- to the first/last file that actually has a diff, mirroring the initial open
+    -- a.lua and d.lua are pure renames (no hunks). the edge jumps move the cursor and
+    -- open nothing, so there is no blank view for them to avoid;
+    it("gg / G land on a content-less pure rename at the edges", function()
         local p = panel({
             fe("a.lua", "R", 0, 0),
             fe("b.lua", "M", 1, 0),
@@ -103,15 +103,28 @@ describe("panel navigation", function()
         })
         p:open()
         p:cursor_to_edge("first")
-        assert.are.equal("b.lua", cursor_path(p))
+        assert.are.equal("a.lua", cursor_path(p))
         p:cursor_to_edge("last")
-        assert.are.equal("c.lua", cursor_path(p))
+        assert.are.equal("d.lua", cursor_path(p))
         p:close()
     end)
 
-    it("gg / G still visit untracked files (zero numstat, but real content)", function()
-        -- untracked '?' files report 0/0 counts like a pure rename, but they render
-        -- their whole content, so the edge jumps must not skip them
+    -- the initial open lands on one too. it shows no lines, but it is a file that still
+    -- stages, unstages and discards
+    it("the initial open lands on a pure rename rather than starting past it", function()
+        local p = panel({
+            fe("a.lua", "R", 0, 0),
+            fe("b.lua", "M", 1, 0),
+        })
+        p:open()
+        p:focus_first_changed()
+        assert.are.equal("a.lua", cursor_path(p))
+        p:close()
+    end)
+
+    it("gg / G visit untracked files, which also report zero counts", function()
+        -- '?' files report 0/0 like a pure rename, so they used to need excluding by
+        -- hand from the skip the edge jumps ran; nothing is excluded now
         local p = panel({ fe("a.lua", "R", 0, 0), fe("z.lua", "?", 0, 0) })
         p:open()
         p:cursor_to_edge("last")
@@ -119,7 +132,7 @@ describe("panel navigation", function()
         p:close()
     end)
 
-    it("gg / G fall back to the absolute edge when every file is content-less", function()
+    it("gg / G land on the edges when every file is content-less", function()
         local p = panel({ fe("a.lua", "R", 0, 0), fe("b.lua", "R", 0, 0) })
         p:open()
         p:cursor_to_edge("first")
