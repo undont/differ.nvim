@@ -27,6 +27,7 @@ Output .demo/demo.mp4
 
 Set Shell "zsh"
 Set FontFamily "JetBrainsMono Nerd Font Mono"
+Set Padding 0
 Set FontSize 13
 Set Width 1280
 Set Height 760

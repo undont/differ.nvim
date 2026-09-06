@@ -174,7 +174,7 @@ local function prefetch_around(entry)
                 local path = nb.path
                 s.prefetching[path] = true
                 local refs = { base = s.pr_meta.base_sha, head = s.pr_meta.head_sha }
-                client.get_file_versions(s.pr, path, refs, function(err, vers)
+                client.get_file_versions(s.pr, nb, refs, function(err, vers)
                     if not guard.owns(s) then
                         return -- session torn down (or replaced) while it was in flight
                     end
@@ -258,12 +258,10 @@ local function show_file(entry, focus_line)
     if cached then
         return render(cached)
     end
-    -- pass entry.path, not previous_path: the sidecar fetches one path at both refs,
-    -- so a rename shows its head content as an add (true rename diffing is a later
-    -- sidecar concern; this keeps open-and-navigate correct for the common cases).
-    -- the pinned shas skip the sidecar's prRefs round-trip (latency discipline)
+    -- the pinned shas skip the sidecar's prRefs round-trip (latency discipline); the
+    -- entry rides along whole so a rename's base side is read from its previous_path
     local refs = { base = session.pr_meta.base_sha, head = session.pr_meta.head_sha }
-    client.get_file_versions(session.pr, entry.path, refs, function(err, vers)
+    client.get_file_versions(session.pr, entry, refs, function(err, vers)
         if not guard.owns(s) then
             return -- session torn down (or replaced) while the blob was in flight
         end

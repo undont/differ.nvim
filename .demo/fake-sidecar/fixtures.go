@@ -21,22 +21,21 @@ const (
 	other   = "octocat"  // the third user with a pre-existing comment
 )
 
-// the two changed files, base and head. theme.lua flips monokai -> dracula, widens
-// context, and defaults the theme in setup() (a second, separate hunk to land a fresh
-// review comment on); palette.lua gains the accent colour the theme references.
-var fileVersions = map[string][2]string{
-	"lua/theme.lua": {
-		// base
-		"local M = {}\n\nM.theme = \"monokai\"\nM.context = 10\n\nfunction M.setup()\n  return M.theme\nend\n\nreturn M\n",
-		// head
-		"local M = {}\n\nM.theme = \"dracula\"\nM.context = 20\nM.accent = \"#bd93f9\"\n\nfunction M.setup()\n  M.theme = M.theme or \"dracula\"\n  return M.theme\nend\n\nreturn M\n",
-	},
-	"lua/palette.lua": {
-		// base
-		"local M = {}\n\nM.colours = {\n  red = \"#ff5555\",\n  green = \"#50fa7b\",\n}\n\nreturn M\n",
-		// head
-		"local M = {}\n\nM.colours = {\n  red = \"#ff5555\",\n  green = \"#50fa7b\",\n  purple = \"#bd93f9\",\n}\n\nreturn M\n",
-	},
+// the changed files as they exist at each ref, keyed by their path at that ref. theme.lua
+// flips monokai -> dracula, widens context, and defaults the theme in setup() (a second,
+// separate hunk to land a fresh review comment on); palette.lua gains the accent colour
+// the theme references. monokai.lua -> dracula.lua is the rename: it exists under one
+// name at the base and the other at the head, which is all github records of a move.
+var baseBlobs = map[string]string{
+	"lua/theme.lua":   "local M = {}\n\nM.theme = \"monokai\"\nM.context = 10\n\nfunction M.setup()\n  return M.theme\nend\n\nreturn M\n",
+	"lua/palette.lua": "local M = {}\n\nM.colours = {\n  red = \"#ff5555\",\n  green = \"#50fa7b\",\n}\n\nreturn M\n",
+	"lua/monokai.lua": "local M = {}\n\nM.name = \"monokai\"\nM.bg = \"#272822\"\nM.fg = \"#f8f8f2\"\nM.comment = \"#75715e\"\n\nreturn M\n",
+}
+
+var headBlobs = map[string]string{
+	"lua/theme.lua":   "local M = {}\n\nM.theme = \"dracula\"\nM.context = 20\nM.accent = \"#bd93f9\"\n\nfunction M.setup()\n  M.theme = M.theme or \"dracula\"\n  return M.theme\nend\n\nreturn M\n",
+	"lua/palette.lua": "local M = {}\n\nM.colours = {\n  red = \"#ff5555\",\n  green = \"#50fa7b\",\n  purple = \"#bd93f9\",\n}\n\nreturn M\n",
+	"lua/dracula.lua": "local M = {}\n\nM.name = \"dracula\"\nM.bg = \"#282a36\"\nM.fg = \"#f8f8f2\"\nM.comment = \"#6272a4\"\n\nreturn M\n",
 }
 
 // fixture is the in-memory github stand-in. it satisfies handlers.API and keeps the
@@ -108,6 +107,7 @@ func (f *fixture) GetPR(_ context.Context, _, _ string, _ int) (*github.PRDetail
 		Files: []github.PRFile{
 			{Path: "lua/theme.lua", Status: "modified", Additions: 4, Deletions: 2, ViewedState: f.viewedState("lua/theme.lua")},
 			{Path: "lua/palette.lua", Status: "modified", Additions: 1, Deletions: 0, ViewedState: f.viewedState("lua/palette.lua")},
+			{Path: "lua/dracula.lua", Status: "renamed", PreviousPath: "lua/monokai.lua", Additions: 3, Deletions: 3, ViewedState: f.viewedState("lua/dracula.lua")},
 		},
 	}, nil
 }
@@ -120,15 +120,24 @@ func (f *fixture) viewedState(path string) string {
 	return "UNVIEWED"
 }
 
-func (f *fixture) GetFileVersions(_ context.Context, _, _ string, _ int, path, _, _ string) (*github.FileVersions, error) {
-	v, ok := fileVersions[path]
-	if !ok {
-		return &github.FileVersions{Base: github.FileBlob{Missing: true}, Head: github.FileBlob{Missing: true}}, nil
+func (f *fixture) GetFileVersions(_ context.Context, _, _ string, _ int, path, basePath, _, _ string) (*github.FileVersions, error) {
+	if basePath == "" {
+		basePath = path
 	}
 	return &github.FileVersions{
-		Base: github.FileBlob{Content: v[0]},
-		Head: github.FileBlob{Content: v[1]},
+		Base: blobAt(baseBlobs, basePath),
+		Head: blobAt(headBlobs, path),
 	}, nil
+}
+
+// blobAt stands in for the Contents API: a path absent at that ref reads as missing,
+// which is how an add, a delete and a rename's two half-present paths all render.
+func blobAt(blobs map[string]string, path string) github.FileBlob {
+	content, ok := blobs[path]
+	if !ok {
+		return github.FileBlob{Missing: true}
+	}
+	return github.FileBlob{Content: content}
 }
 
 func (f *fixture) HeadSHA(_ context.Context, _, _ string, _ int) (string, error) {

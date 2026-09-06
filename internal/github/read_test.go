@@ -28,7 +28,7 @@ func TestGetFileVersions(t *testing.T) {
 		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		return nil, nil
 	})
-	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "dir/a.go", "", "")
+	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "dir/a.go", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestGetFileVersionsPinnedRefsSkipPrRefs(t *testing.T) {
 		t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
 		return nil, nil
 	})
-	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "pinbase", "pinhead")
+	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", "pinbase", "pinhead")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,7 +94,7 @@ func TestGetFileVersionsAddedFileMissingBase(t *testing.T) {
 		t.Fatalf("unexpected request %s", r.URL.Path)
 		return nil, nil
 	})
-	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "new.go", "", "")
+	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "new.go", "", "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,6 +106,41 @@ func TestGetFileVersionsAddedFileMissingBase(t *testing.T) {
 	}
 }
 
+// a rename's two sides live at different paths: the base blob is fetched at basePath
+// (the REST file list's previous_path), the head blob at path. asking for either path
+// at the other side's ref is the bug this guards.
+func TestGetFileVersionsRenameFetchesBothPaths(t *testing.T) {
+	c := newClient(func(r *http.Request) (*http.Response, error) {
+		ref := r.URL.Query().Get("ref")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/pulls/3"):
+			return resp(200, prRefsREST, nil), nil
+		case strings.Contains(r.URL.Path, "/contents/old/a.go"):
+			if ref != "basesha" {
+				t.Errorf("old path should only be asked for at the base, got ref %q", ref)
+			}
+			return resp(200, "old content", nil), nil
+		case strings.Contains(r.URL.Path, "/contents/new/b.go"):
+			if ref != "headsha" {
+				t.Errorf("new path should only be asked for at the head, got ref %q", ref)
+			}
+			return resp(200, "new content", nil), nil
+		}
+		t.Fatalf("unexpected request %s", r.URL.Path)
+		return nil, nil
+	})
+	fv, err := c.GetFileVersions(context.Background(), "o", "r", 3, "new/b.go", "old/a.go", "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fv.Base.Missing || fv.Base.Content != "old content" {
+		t.Errorf("base should come from the previous path, not be missing: %+v", fv.Base)
+	}
+	if fv.Head.Missing || fv.Head.Content != "new content" {
+		t.Errorf("head should come from the new path: %+v", fv.Head)
+	}
+}
+
 func TestGetFileVersionsPropagatesError(t *testing.T) {
 	c := newClient(func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, "/pulls/3") {
@@ -113,7 +148,7 @@ func TestGetFileVersionsPropagatesError(t *testing.T) {
 		}
 		return resp(401, `{"message":"Bad credentials"}`, nil), nil
 	})
-	_, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", "")
+	_, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", "", "")
 	if codeOf(t, err) != protocol.CodeAuth {
 		t.Fatalf("want auth, got %v", err)
 	}

@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A renamed file in a PR review showed every line as new, which wasn't very useful. It now diffs against the file's old path, showing only what actually changed
+
+## [0.1.40] — 2026-09-06
+
 ### Added
 
 - `:checkhealth differ` warns when `status.renames` and `diff.renames` disagree, which is what leaves the file panel listing a rename as an add and a delete where a rev-pair diff lists it as a rename
