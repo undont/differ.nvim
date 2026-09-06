@@ -27,7 +27,7 @@ func TestBlobCacheServesContents(t *testing.T) {
 		return nil, nil
 	})
 	for range 2 {
-		if _, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", ""); err != nil {
+		if _, err := c.GetFileVersions(context.Background(), "o", "r", 3, "a.go", "", "", ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -49,11 +49,11 @@ func TestClearCacheFlushesBlobs(t *testing.T) {
 		return resp(200, `{"base":{"sha":"BASE"},"head":{"sha":"HEAD"}}`, nil), nil
 	})
 	ctx := context.Background()
-	if _, err := c.GetFileVersions(ctx, "o", "r", 3, "a.go", "", ""); err != nil {
+	if _, err := c.GetFileVersions(ctx, "o", "r", 3, "a.go", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	c.ClearCache()
-	if _, err := c.GetFileVersions(ctx, "o", "r", 3, "a.go", "", ""); err != nil {
+	if _, err := c.GetFileVersions(ctx, "o", "r", 3, "a.go", "", "", ""); err != nil {
 		t.Fatal(err)
 	}
 	if contentCalls.Load() != 4 {

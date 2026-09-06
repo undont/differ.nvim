@@ -10,13 +10,14 @@ import (
 	"github.com/undont/differ.nvim/internal/protocol"
 )
 
-// GetFileVersions returns the full base and head blobs for one path in a PR. the
-// caller passes the pinned base/head shas (from get_pr) so the prRefs round-trip is
-// skipped and the exact session blobs are fetched; an empty sha falls back to
-// resolving it. the two sides are fetched concurrently (independent immutable blobs,
-// cache is mutex-guarded for fan-out). a 404 on a side marks it missing (an added
-// file has no base, a deleted file has no head) rather than failing the call.
-func (c *Client) GetFileVersions(ctx context.Context, owner, repo string, number int, path, base, head string) (*FileVersions, error) {
+// GetFileVersions returns the full base and head blobs for one file in a PR. basePath is
+// the file's path at the base sha: a rename's previous_path from the REST file list, else
+// path. base and head are the caller's pinned shas (from get_pr), which skip the prRefs
+// round-trip and pin the exact session blobs; empty resolves them.
+func (c *Client) GetFileVersions(ctx context.Context, owner, repo string, number int, path, basePath, base, head string) (*FileVersions, error) {
+	if basePath == "" {
+		basePath = path
+	}
 	if base == "" || head == "" {
 		rbase, rhead, err := c.prRefs(ctx, owner, repo, number)
 		if err != nil {
@@ -31,7 +32,7 @@ func (c *Client) GetFileVersions(ctx context.Context, owner, repo string, number
 	}
 	baseCh := make(chan blobResult, 1)
 	go func() {
-		b, err := c.rawBlob(ctx, owner, repo, path, base)
+		b, err := c.rawBlob(ctx, owner, repo, basePath, base)
 		baseCh <- blobResult{b, err}
 	}()
 	headBlob, headErr := c.rawBlob(ctx, owner, repo, path, head)
