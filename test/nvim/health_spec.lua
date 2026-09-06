@@ -109,6 +109,55 @@ describe("differ.health", function()
         assert.is_nil(find(calls, "github auth", "does not report auth state"))
     end)
 
+    -- a repo carrying the two rename keys. check_renames reads git config from wherever
+    -- nvim is, so the test has to run from inside one
+    local function repo_with(status_renames, diff_renames)
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        vim.system({ "git", "init", "-q", root }, { text = true }):wait()
+        for key, value in pairs({
+            ["status.renames"] = status_renames,
+            ["diff.renames"] = diff_renames,
+        }) do
+            vim.system({ "git", "-C", root, "config", key, value }, { text = true }):wait()
+        end
+        return root
+    end
+
+    -- capture() from inside `dir`, putting the cwd back even when check() raises.
+    -- busted resolves `differ.*` off a cwd-relative lpath and capture() reloads the
+    -- module, so the source dir goes on the path absolutely while we sit elsewhere
+    local function capture_in(dir)
+        local cwd = vim.fn.getcwd()
+        local saved_path = package.path
+        package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s"):format(cwd, cwd, package.path)
+        vim.cmd.cd(dir)
+        local ok, calls = pcall(capture)
+        vim.cmd.cd(cwd)
+        package.path = saved_path
+        assert.is_true(ok, tostring(calls))
+        return calls
+    end
+
+    -- git takes status.renames from diff.renames unless it is set on its own, so this
+    -- pairing is the only way the panel's listing and a rev-pair's can disagree
+    it("warns when the two rename config keys disagree", function()
+        require("differ").setup({})
+
+        local calls = capture_in(repo_with("false", "true"))
+
+        local warn = find(calls, "git", "status.renames is `false` but diff.renames is `true`")
+        assert.are.equal("warn", warn.kind)
+    end)
+
+    it("stays quiet when they agree, however each is spelled", function()
+        require("differ").setup({})
+
+        local calls = capture_in(repo_with("0", "no")) -- both false
+
+        assert.is_nil(find(calls, "git", "status.renames"))
+    end)
+
     it("surfaces config warnings in the configuration section", function()
         require("differ").setup({ pannel = {}, panel = { position = "middle" } })
         local calls = capture()

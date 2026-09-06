@@ -81,7 +81,9 @@ local armed_view = nil
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
----@field whole_file? boolean  -- stages as a unit: the keys act on the file, not the hunk under the cursor
+-- `whole_file` stages as a unit: the keys act on the file, and its diff shares one
+-- staged-state slot
+---@field whole_file? boolean
 -- `apply` takes a nil hunk on a whole-file source, which ignores it
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, offset: integer, reverse: boolean): boolean
 ---@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
@@ -174,16 +176,14 @@ function View.new(model, opts)
     return self
 end
 
--- seed per-hunk staged state for the current source: a staged diff (HEAD↔index)
--- opens with every hunk staged, an unstaged diff (index↔worktree) with none. a
--- whole-file source seeds its single slot whether or not a hunk backs it, so a
--- staged mode change (which has none) still opens knowing it's staged
+-- seed staged state for the current source: a staged diff (HEAD↔index) opens with
+-- everything staged, an unstaged diff (index↔worktree) with nothing
 function View:_init_staged()
     self.staged_hunks = {}
     if not (self.staging and self.staging.initial == "staged") then
         return
     end
-    for i = 1, math.max(#self.model.hunks, self:_whole_file() and 1 or 0) do
+    for i = 1, self:_slot_count() do
         self.staged_hunks[i] = true
     end
 end
@@ -340,7 +340,7 @@ function View:_paint_staged()
         vim.api.nvim_buf_clear_namespace(col.bufnr, staged_ns, 0, -1)
         local staged_lines = {}
         for i, line in ipairs(col.map.lines) do
-            if line.hunk and self.staged_hunks[line.hunk] then
+            if line.hunk and self.staged_hunks[self:_slot(line.hunk)] then
                 local row = i - 1
                 -- char-level fill with hl_eol, not line_hl_group: a line_hl_group covers
                 -- the text but loses the past-EOL tail to the diff bg's own hl_eol (it
@@ -407,7 +407,10 @@ function View:_paint_cursorline()
     -- a staged line is recoloured above the live word spans (210/215); lift the cursor
     -- tint over that so the focused line still lights up in its kind. on a normal line
     -- stay under the word spans (200) so changed words show through under the cursor
-    local staged = self.can_stage and line and line.hunk and self.staged_hunks[line.hunk]
+    local staged = self.can_stage
+        and line
+        and line.hunk
+        and self.staged_hunks[self:_slot(line.hunk)]
     vim.api.nvim_buf_set_extmark(col.bufnr, cursor_ns, row, 0, {
         end_row = row + 1,
         end_col = 0,
@@ -776,8 +779,7 @@ function View:show_help()
     if self:_editable_source() then
         rows[#rows + 1] = { fmt(km.edit_file), "edit the real file (in review)" }
     end
-    -- per-file, not session-wide: a pure rename carries no staging capability at all, so
-    -- listing s/u there would advertise keys that refuse
+    -- per-file, not session-wide: a source without `apply` would advertise keys that refuse
     if self:_can_stage_hunk() then
         local unit = self:_whole_file() and "file" or "hunk"
         rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage " .. unit }
@@ -866,7 +868,7 @@ end
 ---@return fun(hunk: integer): boolean
 function View:_review_filter(staged)
     return function(hunk)
-        return (self.staged_hunks[hunk] or false) == staged
+        return (self.staged_hunks[self:_slot(hunk)] or false) == staged
     end
 end
 
@@ -1014,9 +1016,28 @@ function View:_whole_file()
     return (self.staging and self.staging.whole_file) == true
 end
 
--- the slot the staging keys act on: a whole-file source always uses slot 1, which is
--- its one hunk where it has one and a virtual slot where it doesn't. anything else
--- takes the hunk under the cursor
+-- how many staged-state slots this source has. a whole-file source has one, whatever
+-- its diff shows
+---@return integer
+function View:_slot_count()
+    if self:_whole_file() then
+        return 1
+    end
+    return #self.model.hunks
+end
+
+-- the slot holding hunk `h`'s staged state
+---@param h integer
+---@return integer
+function View:_slot(h)
+    if self:_whole_file() then
+        return 1
+    end
+    return h
+end
+
+-- the slot the staging keys act on: slot 1 for a whole-file source, backed by a hunk
+-- or not; anything else takes the hunk under the cursor
 ---@return integer|nil
 function View:_target_index()
     if self:_whole_file() then
@@ -1204,8 +1225,7 @@ function View:_toggle_all(want_staged)
         return false
     end
     local changed = false
-    -- a whole-file source has one slot to act on, backed by a hunk or not
-    for i = 1, math.max(#self.model.hunks, self:_whole_file() and 1 or 0) do
+    for i = 1, self:_slot_count() do
         if self:_apply_hunk(i, want_staged) then
             changed = true
         end

@@ -84,6 +84,7 @@ local STATUS_HL = {
 ---@field on_external_change fun()|nil
 ---@field on_empty fun()|nil
 ---@field on_refresh fun()|nil
+---@field on_staged fun(paths: table<string, boolean>|nil)|nil
 ---@field root string|nil
 ---@field footer string|nil
 ---@field actions differ.panel.Actions|nil
@@ -124,6 +125,10 @@ Panel.__index = Panel
 -- change signature here, so the panel's own staging keys are recorded as differ's doing
 -- and the watcher doesn't read them back as an outside change
 ---@field on_refresh? fun()
+-- fired after the panel's own staging keys, so the session can re-source the diff it
+-- drives. separate from on_refresh, which every reload fires: the diff window's own
+-- s / u keep their frozen marks
+---@field on_staged? fun(paths: table<string, boolean>|nil)
 ---@field root? string  -- repo/worktree path shown in the panel header
 ---@field footer? string -- rev spec shown under "Showing changes for:"
 ---@field actions? differ.panel.Actions -- file-level staging hooks (slice C)
@@ -169,6 +174,7 @@ function Panel.new(opts)
         on_external_change = opts.on_external_change,
         on_empty = opts.on_empty,
         on_refresh = opts.on_refresh,
+        on_staged = opts.on_staged,
         root = opts.root,
         footer = opts.footer,
         actions = opts.actions,
@@ -202,10 +208,7 @@ function Panel:_first_file_line()
     return 1
 end
 
--- move the cursor to the first visitable file row, skipping pure renames (which diff
--- to a blank view) but landing on untracked files (zero numstat counts, yet real
--- content). falls back to the first file when every entry is a blank rename. shares
--- the edge-jump logic so the initial open and [[/]] agree on what's visitable
+-- move the cursor to the first file row
 function Panel:focus_first_changed()
     local row = self:_edge_file_row("first")
     if row then
@@ -765,6 +768,7 @@ function Panel:stage_op(op)
     if not self.actions then
         return
     end
+    local paths ---@type table<string, boolean>|nil -- nil: the op moved every file
     if op == "stage_all" or op == "unstage_all" then
         self.actions[op]()
     else
@@ -772,11 +776,33 @@ function Panel:stage_op(op)
         if #entries == 0 then
             return
         end
+        paths = {}
         for _, e in ipairs(entries) do
             self.actions[op](e)
+            paths[e.path] = true
         end
     end
+    self:_after_stage_op(paths)
+end
+
+-- reload the list after one of the panel's own staging ops, then let the session
+-- re-source the diff it drives. `paths` is what the op moved, nil meaning every file
+---@param paths table<string, boolean>|nil
+function Panel:_after_stage_op(paths)
     self:refresh()
+    if self.on_staged and self:is_alive() then
+        self.on_staged(paths)
+    end
+end
+
+-- what X names in its confirm: undoing a rename puts the old path back on disk too
+---@param e differ.FileEntry
+---@return string
+local function discard_label(e)
+    if e.status == "R" and e.previous_path then
+        return ("%s (restoring %s)"):format(e.path, e.previous_path)
+    end
+    return e.path
 end
 
 -- X: discard the cursor's target after a confirm (destructive), then refresh. on a
@@ -789,13 +815,16 @@ function Panel:discard()
     if #entries == 0 then
         return
     end
-    local what = #entries == 1 and entries[1].path or ("%s (%d files)"):format(label, #entries)
+    local what = #entries == 1 and discard_label(entries[1])
+        or ("%s (%d files)"):format(label, #entries)
     local choice = vim.fn.confirm(("Discard changes to %s?"):format(what), "&Yes\n&No", 2)
     if choice == 1 then
+        local paths = {}
         for _, e in ipairs(entries) do
             self.actions.discard(e)
+            paths[e.path] = true
         end
-        self:refresh()
+        self:_after_stage_op(paths)
     end
 end
 
@@ -902,47 +931,27 @@ function Panel:goto_file(direction, keep_focus, wrap)
     return true
 end
 
--- a pure rename/copy (status R/C with no added/deleted lines) diffs to nothing, so
--- landing on it shows a blank view. untracked/added files report zero numstat counts
--- too (git doesn't diff them) but render their whole content, so they're not blank
----@param e differ.FileEntry
----@return boolean
-local function is_blank_rename(e)
-    return (e.status == "R" or e.status == "C") and (e.additions or 0) + (e.deletions or 0) == 0
-end
-
--- the first/last visitable file row, skipping pure renames (blank diffs) and falling
--- back to the absolute first/last file row when every entry is a blank rename. the
--- edge jumps skip those the way the initial open does (focus_first_changed)
+-- the first/last file row. a pure rename lands like any other: it diffs to nothing but
+-- still stages, unstages and discards as a file
 ---@param edge "first"|"last"
 ---@return integer|nil
 function Panel:_edge_file_row(edge)
-    local fallback, visitable
     local from = edge == "first" and 0 or #self.meta + 1
-    local direction = edge == "first" and "next" or "prev"
-    local i = self:_file_row(from, direction, false)
-    while i do
-        fallback = fallback or i
-        if not is_blank_rename(self.meta[i].entry) then
-            visitable = i
-            break
-        end
-        i = self:_file_row(i, direction, false)
-    end
-    return visitable or fallback
+    -- bound, not tail-returned: _file_row also reports whether it wrapped
+    local row = self:_file_row(from, edge == "first" and "next" or "prev", false)
+    return row
 end
 
 -- move the cursor to the first unstaged file row, skipping the Staged section so
 -- :Differ lands on the first thing left to review, falling back to the first
--- visitable file when everything is staged. mirrors the per-file _first_review_line,
--- which already prefers an unstaged hunk. pure renames are skipped as in
--- focus_first_changed; for sources without staging (rev-pair, pr) entries carry no
--- staged flag, so this degenerates to the first file
+-- first file when everything is staged. mirrors the per-file _first_review_line, which
+-- already prefers an unstaged hunk. for sources without staging (rev-pair, pr) entries
+-- carry no staged flag, so this degenerates to the first file
 function Panel:focus_first_unstaged()
     local i = self:_file_row(0, "next", false)
     while i do
         local e = self.meta[i].entry
-        if e and not e.staged and not is_blank_rename(e) then
+        if e and not e.staged then
             pcall(vim.api.nvim_win_set_cursor, self.winid, { i, 0 })
             return
         end
@@ -951,12 +960,9 @@ function Panel:focus_first_unstaged()
     self:focus_first_changed()
 end
 
--- the staging review flow's file step: the nearest file row in `direction` holding
--- something to do on the `staged` pair, cycling past the list ends so the files above a
--- bottom-of-list entry stay reachable. the open file is skipped whichever row it sits
--- on, since re-opening it would re-source the frozen diff and drop the marks the
--- in-session staging put there; what's left inside it is the caller's last resort,
--- tried only once this returns false. blank renames are skipped as everywhere else
+-- the review flow's file step: the nearest row in `direction` with something left to do,
+-- wrapping past the list ends. the open file is skipped, since re-opening it would
+-- re-source its frozen diff and drop the staging marks
 ---@param direction "next"|"prev"
 ---@param staged boolean  -- the pair hunted: false for a file with hunks left to stage
 ---@param keep_focus boolean|nil
@@ -973,12 +979,7 @@ function Panel:step_review(direction, staged, keep_focus)
         end
         wrapped = wrapped or crossed
         local e = self.meta[next_row].entry
-        if
-            e
-            and (e.staged or false) == staged
-            and not is_blank_rename(e)
-            and entry_key(e) ~= self.selected_key
-        then
+        if e and (e.staged or false) == staged and entry_key(e) ~= self.selected_key then
             self.selected_row = next_row
             if self:is_open() then
                 vim.api.nvim_win_set_cursor(self.winid, { next_row, 0 })
@@ -1008,9 +1009,8 @@ function Panel:step_review(direction, staged, keep_focus)
     return false
 end
 
--- gg / G: move the cursor to the first/last visitable file row without opening it,
--- skipping pure renames (blank diffs). plain list navigation; <CR>/o opens the row
--- under the cursor
+-- gg / G: move the cursor to the first/last file row without opening it. plain list
+-- navigation; <CR>/o opens the row under the cursor
 ---@param edge "first"|"last"
 function Panel:cursor_to_edge(edge)
     if not self:is_open() then
@@ -1037,33 +1037,24 @@ function Panel:_header_rows()
     return rows
 end
 
--- the first visitable file row inside the section beginning at `header_row` (down to
--- the next header or the list end), skipping pure renames; falls back to the section's
--- first file row, or nil when the section has no visible file rows (all folded away)
+-- the first file row inside the section beginning at `header_row`, or nil when the
+-- section has no visible file rows (all folded away)
 ---@param header_row integer
 ---@return integer|nil
 function Panel:_section_first_file(header_row)
-    local stop = #self.meta
     for i = header_row + 1, #self.meta do
-        if self.meta[i].kind == "header" then
-            stop = i - 1
-            break
-        end
-    end
-    local fallback
-    for i = header_row + 1, stop do
         local m = self.meta[i]
+        if m.kind == "header" then
+            return nil -- the section holds no file rows
+        end
         if m.kind == "file" then
-            fallback = fallback or i
-            if not is_blank_rename(m.entry) then
-                return i
-            end
+            return i
         end
     end
-    return fallback
+    return nil
 end
 
--- ]] / [[: jump to the next/prev section and open its first (visitable) file. with a
+-- ]] / [[: jump to the next/prev section and open its first file. with a
 -- section fully folded away its header still gets the cursor, so the motion never
 -- stalls. inert in single-section panels. `keep_focus` is threaded to `_open`
 ---@param direction "next"|"prev"
