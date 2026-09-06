@@ -30,9 +30,8 @@ local function check_nvim()
     end
 end
 
--- a boolean git config key, or nil when it isn't set. `--type=bool` collapses the
--- spellings git accepts (`0`, `no`, `off`); it refuses `copies`, which is rename
--- detection plus copy detection and so reads as on
+-- a boolean git config key, or nil when unset. `--type=bool` collapses git's spellings
+-- (`0`, `no`, `off`) and refuses `copies`, which is renames plus copies, so reads as on
 ---@param key string
 ---@return boolean|nil
 local function git_bool(key)
@@ -46,10 +45,9 @@ local function git_bool(key)
     return true
 end
 
--- git pairs renames off two keys, and `status.renames` defaults to `diff.renames`, so
--- the two only disagree when it was set on its own. the file panel lists through `git
--- status` and a rev-pair diff through `git diff`, so that split shows one change set
--- two ways, with different file counts
+-- `status.renames` defaults to `diff.renames`, so the two only disagree when it was set
+-- on its own. the file panel lists through `git status` and a rev-pair diff through
+-- `git diff`, so that split shows one change set two ways
 local function check_renames()
     local status_renames = git_bool("status.renames")
     if status_renames == nil then

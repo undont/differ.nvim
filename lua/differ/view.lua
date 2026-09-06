@@ -81,8 +81,8 @@ local armed_view = nil
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
 ---@field initial "staged"|"unstaged"
--- `whole_file` stages as a unit: the keys act on the file, and its hunks share one
--- staged-state slot however many the diff shows (a rename can show several)
+-- `whole_file` stages as a unit: the keys act on the file, and its diff shares one
+-- staged-state slot
 ---@field whole_file? boolean
 -- `apply` takes a nil hunk on a whole-file source, which ignores it
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, offset: integer, reverse: boolean): boolean
@@ -1016,8 +1016,8 @@ function View:_whole_file()
     return (self.staging and self.staging.whole_file) == true
 end
 
--- how many staged-state slots this source has. a whole-file source has one however
--- many hunks it shows, so a rename's several hunks mark and clear together
+-- how many staged-state slots this source has. a whole-file source has one, whatever
+-- its diff shows
 ---@return integer
 function View:_slot_count()
     if self:_whole_file() then

@@ -3841,6 +3841,18 @@ describe(":Differ diff rename staging", function()
         return root
     end
 
+    -- put the cursor on hunk `n` in the view's primary column
+    local function goto_hunk(v, n)
+        local col = v.columns[1]
+        for i, line in ipairs(col.map.lines) do
+            if line.hunk == n then
+                vim.api.nvim_win_set_cursor(col.winid, { i, 0 })
+                return
+            end
+        end
+        error("no hunk " .. n)
+    end
+
     local function open_staged(p, path)
         assert.is_true(p:focus_file(path))
         p:select(true)
@@ -3911,7 +3923,10 @@ describe(":Differ diff rename staging", function()
         p:close()
     end)
 
-    it("clears every hunk's mark when one u unstages the whole rename", function()
+    -- git records no rename: a staged one is the old path absent from the index and the
+    -- new path present, and `R` is a similarity reading over that. so a hunk patches the
+    -- same blob it would on a modification, and the move rides along untouched
+    it("unstages one hunk of a rename, leaving the move and the other hunks staged", function()
         local root = renamed_repo({ 5, 30, 55 })
         vim.cmd.edit(root .. "/new/big.lua")
 
@@ -3919,16 +3934,18 @@ describe(":Differ diff rename staging", function()
         local p = Panel.current()
         local v = open_staged(p, "new/big.lua")
         assert.are.equal(3, #v.model.hunks)
+        assert.is_falsy(v.staging.whole_file) -- hunk-level, like a modification
 
-        v:unstage_hunk() -- one press: a whole-file source has one slot, not three
+        goto_hunk(v, 2)
+        v:unstage_hunk()
 
-        assert.are.same({}, staged_paths(root))
-        -- a mark surviving here is a hunk painted staged that git no longer holds
-        assert.are.same({ false, false, false }, painted_hunks(view_in_origin(p)))
+        assert.are.same({ true, false, true }, painted_hunks(view_in_origin(p)))
+        -- the move survives: still one rename entry, now with content left unstaged
+        assert.are.same({ "RM old/big.lua -> new/big.lua" }, staged_paths(root))
         p:close()
     end)
 
-    it("leaves the file on the next u rather than cycling its own hunks", function()
+    it("leaves the file once every hunk of the rename is unstaged", function()
         local root = renamed_repo({ 5, 30, 55 })
         write(root .. "/other.lua", "one\ntwo\n")
         git(root, "add", "other.lua")
@@ -3937,8 +3954,9 @@ describe(":Differ diff rename staging", function()
         git_src.panel({ rev = {} })
         local p = Panel.current()
         local v = open_staged(p, "new/big.lua")
-        v:unstage_hunk() -- unstages the rename outright
+        v:unstage_all() -- U: every hunk at once, the move left alone
 
+        assert.are.same({ false, false, false }, painted_hunks(view_in_origin(p)))
         view_in_origin(p):unstage_hunk() -- nothing left here: step to the other file
 
         assert.are.equal("other.lua", view_in_origin(p).model.path)
@@ -4070,11 +4088,13 @@ describe(":Differ diff rename staging", function()
 
         -- two presses per file (unstage, then step on); the rename used to swallow the
         -- walk, leaving everything past it staged for good
-        for _ = 1, 12 do
+        for _ = 1, 20 do
             view_in_origin(p):unstage_hunk()
         end
 
-        assert.are.same({}, staged_paths(root))
+        -- every hunk is unstaged, the rename's included. the move itself is not a hunk
+        -- and stays: unstaging that is the panel row's job, as it is for any whole file
+        assert.are.same({ "RM old/big.lua -> new/big.lua" }, staged_paths(root))
         p:close()
     end)
 end)

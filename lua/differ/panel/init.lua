@@ -126,8 +126,8 @@ Panel.__index = Panel
 -- and the watcher doesn't read them back as an outside change
 ---@field on_refresh? fun()
 -- fired after the panel's own staging keys, so the session can re-source the diff it
--- drives. not on_refresh, which every reload fires: the diff window's own s/u keep their
--- frozen model and repaint in place, and re-sourcing there would drop the staged marks
+-- drives. separate from on_refresh, which every reload fires: the diff window's own
+-- s / u keep their frozen marks
 ---@field on_staged? fun(paths: table<string, boolean>|nil)
 ---@field root? string  -- repo/worktree path shown in the panel header
 ---@field footer? string -- rev spec shown under "Showing changes for:"
@@ -785,10 +785,8 @@ function Panel:stage_op(op)
     self:_after_stage_op(paths)
 end
 
--- reload the list after one of the panel's own staging ops, then hand the session its
--- chance to re-source the driven diff. `paths` names what the op moved, nil meaning
--- every file, so the session can leave a diff of some other file alone. a reload that
--- empties the change set can end the session, so the hook only runs while it's alive
+-- reload the list after one of the panel's own staging ops, then let the session
+-- re-source the diff it drives. `paths` is what the op moved, nil meaning every file
 ---@param paths table<string, boolean>|nil
 function Panel:_after_stage_op(paths)
     self:refresh()
@@ -797,8 +795,7 @@ function Panel:_after_stage_op(paths)
     end
 end
 
--- what X names in its confirm for one entry: undoing a rename puts the old path back
--- on disk, which the path being discarded doesn't say on its own
+-- what X names in its confirm: undoing a rename puts the old path back on disk too
 ---@param e differ.FileEntry
 ---@return string
 local function discard_label(e)
@@ -934,15 +931,13 @@ function Panel:goto_file(direction, keep_focus, wrap)
     return true
 end
 
--- the first/last file row. a pure rename lands like any other: it diffs to nothing, but
--- it stages, unstages and discards as a file, so passing over it would put a row that
--- needs acting on out of reach of the motion that names it
+-- the first/last file row. a pure rename lands like any other: it diffs to nothing but
+-- still stages, unstages and discards as a file
 ---@param edge "first"|"last"
 ---@return integer|nil
 function Panel:_edge_file_row(edge)
     local from = edge == "first" and 0 or #self.meta + 1
-    -- bound, not tail-returned: _file_row also reports whether it wrapped, which is
-    -- no part of this answer
+    -- bound, not tail-returned: _file_row also reports whether it wrapped
     local row = self:_file_row(from, edge == "first" and "next" or "prev", false)
     return row
 end
@@ -965,13 +960,9 @@ function Panel:focus_first_unstaged()
     self:focus_first_changed()
 end
 
--- the staging review flow's file step: the nearest file row in `direction` holding
--- something to do on the `staged` pair, cycling past the list ends so the files above a
--- bottom-of-list entry stay reachable. the open file is skipped whichever row it sits
--- on, since re-opening it would re-source the frozen diff and drop the marks the
--- in-session staging put there; what's left inside it is the caller's last resort,
--- tried only once this returns false. a blank rename is a stop like any other: it shows
--- no lines but still stages and unstages as a file
+-- the review flow's file step: the nearest row in `direction` with something left to do,
+-- wrapping past the list ends. the open file is skipped, since re-opening it would
+-- re-source its frozen diff and drop the staging marks
 ---@param direction "next"|"prev"
 ---@param staged boolean  -- the pair hunted: false for a file with hunks left to stage
 ---@param keep_focus boolean|nil

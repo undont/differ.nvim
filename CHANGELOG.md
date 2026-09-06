@@ -12,11 +12,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `s` and `u` refused to act on a renamed or copied file, so the review walk stopped dead at the first one and a staged rename showed its hunks unmarked. Both now stage and unstage the rename as a unit, moving its old and new path together
+- `s` and `u` refused to act on a renamed or copied file, so the review walk stopped dead at the first one and a staged rename showed its hunks unmarked. A rename now stages like anything else: hunk by hunk where it carries content edits, and as a whole where it does not, moving its old and new path together
 - `u` on a renamed file's panel row unstaged only its new path, leaving the old path's deletion staged behind. The panel row and the diff window now cover the same paths
 - Staging a whole-file change back after unstaging it also staged the file's unstaged changes, which its diff never showed, without saying so. It now warns when that happens
 - A git change made outside differ could swap the open diff onto the file's other pair without a word, leaving the staging keys acting on something other than what was being reviewed. The swap is now reported
-- The `s` and `u` review walk stepped over a rename with no lines to show, so it announced the review finished with that rename still staged. The walk now stops on one; `gg`, `G` and the initial open still skip past them
+- The `s` and `u` review walk stepped over a rename with no lines to show, so it announced the review finished with that rename still staged, and `gg`, `G`, `]]`, `[[` and the initial open all started past one. Nothing skips them now
 - `X` on a renamed file always refused with "changed since the prompt". It now undoes the rename, restoring the old path and dropping the new one, and says which path it will restore before you confirm
 
 ## [0.1.39] — 2026-09-05
