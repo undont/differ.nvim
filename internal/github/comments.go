@@ -119,6 +119,21 @@ func (c *Client) postNewThread(ctx context.Context, owner, repo string, number i
 	return pc, nil
 }
 
+// PostIssueComment posts a PR-level conversation comment. github does not thread
+// these, so a reply to one is just another comment; the caller supplies the quoting.
+func (c *Client) PostIssueComment(ctx context.Context, owner, repo string, number int, body string) (*PostIssueComment, error) {
+	prID, err := c.prNodeID(ctx, owner, repo, number)
+	if err != nil {
+		return nil, err
+	}
+	var out addIssueCommentGQL
+	vars := map[string]any{"subjectId": prID, "body": body}
+	if err := c.graphql(ctx, addIssueCommentMutation, vars, &out); err != nil {
+		return nil, err
+	}
+	return &PostIssueComment{ID: parseID(out.AddComment.CommentEdge.Node.FullDatabaseID)}, nil
+}
+
 // DeleteComment removes a single review comment by its node id (draft or published).
 func (c *Client) DeleteComment(ctx context.Context, commentID string) error {
 	if err := c.graphql(ctx, deleteCommentMutation, map[string]any{"id": commentID}, nil); err != nil {

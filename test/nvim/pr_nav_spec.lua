@@ -987,3 +987,181 @@ describe("stacked-row thread gestures pick a thread rather than assuming the fir
         assert.are.equal("gid1", deleted.node_id)
     end)
 end)
+
+-- the page's own comment gestures: ga opens a PR-level conversation comment, gp
+-- replies into the thread box under the cursor. both compose in the shared split and
+-- re-open the page on success, so the new comment renders from github
+describe("pr overview commenting", function()
+    local restore_all = {}
+    local function track(restore)
+        restore_all[#restore_all + 1] = restore
+    end
+
+    after_each(function()
+        for i = #restore_all, 1, -1 do
+            restore_all[i]()
+        end
+        restore_all = {}
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- like stub_sidecar, but records every (method, params) so a test can assert what
+    -- the gesture put on the wire
+    ---@param responses table
+    ---@return table sent
+    local function record_sidecar(responses)
+        local sent = {}
+        local real = sidecar.request
+        ---@diagnostic disable-next-line: duplicate-set-field
+        sidecar.request = function(method, params, cb)
+            sent[#sent + 1] = { method = method, params = params }
+            local r = responses[method]
+            vim.schedule(function()
+                cb(r and r.err or nil, r and r.result or {})
+            end)
+        end
+        track(function()
+            sidecar.request = real
+        end)
+        return sent
+    end
+
+    -- the first request for `method`, or nil
+    ---@param sent table[]
+    ---@param method string
+    ---@return table|nil
+    local function sent_params(sent, method)
+        for _, req in ipairs(sent) do
+            if req.method == method then
+                return req.params
+            end
+        end
+        return nil
+    end
+
+    -- the compose split's scratch buffer, which open() leaves current
+    ---@return integer
+    local function compose_buf()
+        local buf = vim.api.nvim_get_current_buf()
+        -- the page is markdown/nofile too, so identity is what separates them
+        assert.are_not.equal(overview_buf(), buf)
+        assert.are.equal("markdown", vim.bo[buf].filetype)
+        return buf
+    end
+
+    -- type `body` into the open compose split and submit it
+    ---@param body string
+    local function submit(body)
+        local buf = compose_buf()
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(body, "\n", { plain = true }))
+        assert.is_true(fire(buf, "differ: submit"))
+    end
+
+    -- a live page with the default one-thread fixture, recording what the gestures send
+    ---@return integer bufnr, table sent
+    local function page()
+        track(open_overview(default_responses()))
+        return overview_buf(), record_sidecar(default_responses())
+    end
+
+    it("ga posts a conversation comment on the PR", function()
+        local buf, sent = page()
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("ship it")
+
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        local params = sent_params(sent, "post_issue_comment")
+        assert.are.equal("ship it", params.body)
+        assert.are.equal(7, params.number)
+        -- a conversation comment has no diff anchor, so nothing pins the head
+        assert.is_nil(params.expected_head)
+    end)
+
+    it("ga re-opens the page so the posted comment renders from github", function()
+        local buf = page()
+        local before = vim.api.nvim_buf_get_changedtick(buf)
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("ship it")
+
+        wait_overview(before)
+    end)
+
+    it("an empty body posts nothing", function()
+        local buf, sent = page()
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("")
+
+        assert.is_true(vim.wait(200, function()
+            return #_G.notifs > 0 and _G.notifs[#_G.notifs].msg == "differ: empty comment discarded"
+        end))
+        assert.is_nil(sent_params(sent, "post_issue_comment"))
+    end)
+
+    it("gp on a thread row replies into that thread", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        submit("done")
+
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        local params = sent_params(sent, "post_comment")
+        assert.are.equal("th_1", params.in_reply_to)
+        assert.are.equal("done", params.body)
+        -- a reply targets a thread node id, so no anchor and no head guard
+        assert.is_nil(params.path)
+        assert.is_nil(params.expected_head)
+    end)
+
+    it("gp off a thread row says so and composes nothing", function()
+        local buf, sent = page()
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+
+        assert.are.equal(
+            "differ: no thread here to reply to; ga comments on the PR",
+            _G.notifs[#_G.notifs].msg
+        )
+        assert.are.equal(buf, vim.api.nvim_get_current_buf()) -- no compose split opened
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    it("a reply drops the cached thread list so the refreshed page carries it", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        submit("done")
+
+        -- the list is memoised per TTL window, so without the invalidation the
+        -- re-opened page would serve the pre-reply threads
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "get_threads") ~= nil
+        end))
+    end)
+
+    it("the page word-wraps rather than breaking mid-token", function()
+        page()
+        local win = pr.current_session().overview_win
+
+        assert.is_true(vim.wo[win].wrap)
+        assert.is_true(vim.wo[win].linebreak)
+        -- the continuation hangs past the thread box's "│ " spine
+        assert.is_true(vim.wo[win].breakindent)
+        assert.are.equal("shift:2", vim.wo[win].breakindentopt)
+        assert.is_false(vim.wo[win].list) -- linebreak wants list off
+    end)
+end)

@@ -97,6 +97,16 @@ mutation AddThreadReply($threadId: ID!, $reviewId: ID, $body: String!) {
   }
 }`
 
+// addIssueCommentMutation posts a PR-level conversation comment. the subject is the PR
+// node id; github has no threading on these, so a "reply" is another comment like any
+// other.
+const addIssueCommentMutation = `
+mutation AddIssueComment($subjectId: ID!, $body: String!) {
+  addComment(input: {subjectId: $subjectId, body: $body}) {
+    commentEdge { node { fullDatabaseId } }
+  }
+}`
+
 // resolveThreadMutation / unresolveThreadMutation toggle a thread's resolved state.
 // the mutation field is aliased to result so both decode into one shape.
 const resolveThreadMutation = `

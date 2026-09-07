@@ -1,9 +1,9 @@
--- the PR overview home: a read-only pre-review page with the PR summary + a
--- minimal timeline (conversation comments, submitted review verdicts, and code
--- threads). it is a step *before* the review proper — no file panel, just a dedicated
--- page filling the session tab. e enters the review (builds the panel + diff), r enters
--- and also starts a github draft review, <CR> on a thread row enters at that thread's
--- file/line, q backs into an in-progress review. the pure layout lives in
+-- the PR overview home: a pre-review page with the PR summary + a minimal timeline
+-- (conversation comments, submitted review verdicts, and code threads) that ga and gp
+-- write back to. it is a step *before* the review proper — no file panel, just a
+-- dedicated page filling the session tab. e enters the review (builds the panel +
+-- diff), r enters and also starts a github draft review, <CR> on a thread row enters at
+-- that thread's file/line, q backs into an in-progress review. the pure layout lives in
 -- ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
 -- fetches). get_timeline is a round-trip and threads are ensured (shared, PR-wide,
 -- also feeding the header count) — the meta comes from session.pr_meta (enriched in
@@ -127,7 +127,8 @@ end
 -- acts on a stale session. e enters the review (panel + diff), r enters and also starts
 -- a github draft review, q backs into the review when one is open, gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it opens
--- the url. ]t/[t hop between thread boxes; g? floats the keymap cheatsheet
+-- the url. ga comments on the PR and gp replies into the thread under the cursor, both
+-- mirroring the diff's keys. ]t/[t hop between thread boxes; g? floats the cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -210,14 +211,91 @@ local function set_keymaps(b)
         require("differ.ui.help").show({
             " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
+            " ga / gp    comment on the PR / reply to the thread under the cursor",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
             " q          back into the review (when one is in progress)",
             " g?         this help",
         }, { title = " Differ: overview " })
     end
+    -- compose a body and hand it to `send`, then re-open the page so the new comment
+    -- renders from github rather than being patched in locally. the stashed cursor keeps
+    -- the reading position across the rebuild (render consumes it as a one-shot)
+    ---@param s table
+    ---@param spec { title: string, done: string, send: fun(body: string, cb: fun(err: table|nil)) }
+    local function compose(s, spec)
+        stash_cursor(s)
+        require("differ.ui.compose").open({
+            title = spec.title,
+            anchor_win = s.overview_win,
+            on_submit = function(body)
+                if body == "" then
+                    return require("differ.pr").notify("empty comment discarded")
+                end
+                spec.send(body, function(err)
+                    if not require("differ.pr.guard").owns(s) then
+                        return -- session torn down (or replaced) while the post was in flight
+                    end
+                    if err then
+                        return require("differ.pr").notify_err(err)
+                    end
+                    require("differ.pr").notify(spec.done)
+                    M.open(s)
+                end)
+            end,
+        })
+    end
+    -- ga: a PR-level conversation comment. github has no draft for these, so it posts
+    -- immediately even mid-review, and there is no diff anchor for the head to shift under
+    local function comment()
+        local s = live()
+        if not s then
+            return
+        end
+        compose(s, {
+            title = "Comment on the PR (posts immediately)",
+            done = "comment posted",
+            send = function(body, cb)
+                client.post_issue_comment(s.pr, body, cb)
+            end,
+        })
+    end
+    -- gp: reply into the thread under the cursor, joining the draft when a review is in
+    -- progress (like the diff's gp). github doesn't thread conversation comments, so off
+    -- a thread row there is nothing to reply to and ga is the way to answer
+    local function reply()
+        local s = live()
+        if not s then
+            return
+        end
+        local a = anchor_at_cursor()
+        if not (a and a.thread_id) then
+            return require("differ.pr").notify("no thread here to reply to; ga comments on the PR")
+        end
+        local draft = s.review_id and s.review_id ~= ""
+        compose(s, {
+            title = draft and "Reply (draft)" or "Reply (posts immediately)",
+            done = draft and "reply added to your review draft" or "reply posted",
+            send = function(body, cb)
+                local args = { in_reply_to = a.thread_id, body = body }
+                if draft then
+                    args.review_id = s.review_id
+                end
+                client.post_comment(s.pr, args, function(err, res)
+                    if not err then
+                        -- the page re-reads threads on open, and the list is cached per
+                        -- TTL window, so without this the reply lands invisibly
+                        require("differ.pr.threads").invalidate(s)
+                    end
+                    cb(err, res)
+                end)
+            end,
+        })
+    end
     local opts = { buffer = b, nowait = true, silent = true }
     vim.keymap.set("n", "gx", open_url, opts)
+    vim.keymap.set("n", "ga", comment, opts)
+    vim.keymap.set("n", "gp", reply, opts)
     vim.keymap.set("n", "<CR>", select_or_url, opts)
     vim.keymap.set("n", "e", function()
         enter(false)
@@ -245,7 +323,7 @@ local function set_keymaps(b)
 end
 
 -- the page's window-local chrome: a clean reading surface (no diff gutter), markdown
--- conceal on, wrapping for long body lines
+-- conceal on, word-wrapping for long body lines
 ---@param win integer
 local function setup_window(win)
     local set_wo = require("differ.util.win").set_local
@@ -257,6 +335,11 @@ local function setup_window(win)
     -- than inherit whatever local cursorline it was left with
     set_wo(win, "cursorline", vim.go.cursorline)
     set_wo(win, "wrap", true)
+    -- break at a word rather than mid-token, and hang the continuation past the thread
+    -- box's "│ " spine so a wrapped comment body stays inside its box
+    set_wo(win, "linebreak", true)
+    set_wo(win, "breakindent", true)
+    set_wo(win, "breakindentopt", "shift:2")
     set_wo(win, "conceallevel", 2)
     set_wo(win, "list", false)
 end

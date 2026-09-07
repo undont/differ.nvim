@@ -213,6 +213,7 @@ end)
 describe("ui.overview.build (thread sections + anchors)", function()
     local function thread_data(over)
         local t = extend({
+            thread_id = "PRRT_1",
             path = "lua/differ/init.lua",
             side = "RIGHT",
             line = 12,
@@ -266,6 +267,7 @@ describe("ui.overview.build (thread sections + anchors)", function()
         local built = build(thread_data())
         assert.are.equal(1, #built.anchors)
         local a = built.anchors[1]
+        assert.are.equal("PRRT_1", a.thread_id) -- the reply target gp posts into
         assert.are.equal("lua/differ/init.lua", a.path)
         assert.are.equal("RIGHT", a.side)
         assert.are.equal(12, a.line)

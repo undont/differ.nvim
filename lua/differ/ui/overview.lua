@@ -2,9 +2,10 @@
 -- out, no vim state, so it's unit-tested like ui/thread.lua. the timeline merges
 -- comments, review verdicts and code threads and sorts by created_at; relative time is
 -- injected (opts.reltime) to keep the builder deterministic. a thread item carries its
--- code anchor (path/side/line) and `anchors` records the row span of each, so the vim
--- layer can jump from a timeline row into the review. scope guard: comments, verdicts
--- and threads only — no reactions, labels, assignees, or events
+-- code anchor (path/side/line) plus its node id, and `anchors` records the row span of
+-- each, so the vim layer can jump from a timeline row into the review, or reply into the
+-- thread. scope guard: comments, verdicts and threads only — no reactions, labels,
+-- assignees, or events
 
 local M = {}
 
@@ -127,6 +128,7 @@ local function timeline(tl)
             local first = (t.comments or {})[1] or {}
             items[#items + 1] = {
                 kind = "thread",
+                thread_id = t.thread_id,
                 author = first.author,
                 body = first.body,
                 ts = first.created_at,
@@ -161,8 +163,9 @@ local function verdict_of(item)
 end
 
 -- build the overview buffer content. `anchors` maps each thread item to its 1-based
--- row span ({ row_start, row_end, path, side, line }), so <CR> anywhere in the section
--- can jump to the code anchor. a highlight is { row, col_start, col_end, hl }, 0-based
+-- row span ({ row_start, row_end, thread_id, path, side, line }), so <CR> anywhere in
+-- the section can jump to the code anchor, and reply into the thread. a highlight is
+-- { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
 ---@param opts { reltime?: fun(ts: string): string }|nil
 ---@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
@@ -316,6 +319,7 @@ function M.build(data, opts)
         anchors[#anchors + 1] = {
             row_start = row_start,
             row_end = #lines,
+            thread_id = item.thread_id,
             path = item.path,
             side = item.side,
             line = item.line,

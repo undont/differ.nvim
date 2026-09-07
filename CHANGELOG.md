@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The PR overview can now be commented on without leaving it: `ga` posts a comment on the pull request, and `gp` on a thread box replies to that thread
+
 ### Changed
 
 - The PR overview's `g?` cheatsheet now correctly says that `r` starts a draft review, whilst `e` only enters the review
@@ -13,6 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 
 - The diff drew a cursor line even with `cursorline` off and the PR overview drew none with it on; both now respect the user's config. Opening the PR checks float used to switch `cursorline` on for the rest of the session, it now doesn't
+- Long lines on the PR overview broke mid-word. They now wrap at a word, and a wrapped comment body stays inside its thread box
 
 ## [0.1.41] — 2026-09-06
 

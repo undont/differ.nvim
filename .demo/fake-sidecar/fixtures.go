@@ -44,10 +44,11 @@ var headBlobs = map[string]string{
 type fixture struct {
 	mu       sync.Mutex
 	threads  []github.Thread
-	reviewID string            // the active pending-review node id; "" = none
-	viewed   map[string]string // path -> VIEWED/UNVIEWED
-	seq      int               // monotonic id source
-	now      time.Time         // process-start clock: timestamps are stamped relative to it
+	comments []github.TimelineComment // the pr-level conversation, appended to by PostIssueComment
+	reviewID string                   // the active pending-review node id; "" = none
+	viewed   map[string]string        // path -> VIEWED/UNVIEWED
+	seq      int                      // monotonic id source
+	now      time.Time                // process-start clock: timestamps are stamped relative to it
 }
 
 func newFixture() *fixture {
@@ -68,6 +69,11 @@ func newFixture() *fixture {
 			Body:      "could we pull this accent from the palette instead of hard-coding it here?",
 			CreatedAt: f.ago(3 * time.Hour),
 		}},
+	}}
+	f.comments = []github.TimelineComment{{
+		Author:    other,
+		Body:      "thanks for tackling this, dracula's been on the wishlist for a while.",
+		CreatedAt: f.ago(5 * time.Hour),
 	}}
 	return f
 }
@@ -161,10 +167,10 @@ func (f *fixture) GetThreads(_ context.Context, _, _ string, _ int) ([]github.Th
 }
 
 func (f *fixture) GetTimeline(_ context.Context, _, _ string, _ int) (*github.Timeline, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	return &github.Timeline{
-		Comments: []github.TimelineComment{
-			{Author: other, Body: "thanks for tackling this, dracula's been on the wishlist for a while.", CreatedAt: f.ago(5 * time.Hour)},
-		},
+		Comments: append([]github.TimelineComment(nil), f.comments...),
 		Reviews: []github.ReviewSummary{
 			{Author: other, State: "COMMENTED", Body: "looks close. one inline question on the accent.", CreatedAt: f.ago(3 * time.Hour)},
 		},
@@ -266,6 +272,14 @@ func (f *fixture) PostComment(_ context.Context, _, _ string, _ int, in github.P
 		Comments:  []github.ThreadComment{comment},
 	})
 	return &github.PostComment{ID: commentID, ThreadID: threadID, ReviewID: f.reviewID}, nil
+}
+
+func (f *fixture) PostIssueComment(_ context.Context, _, _ string, _ int, body string) (*github.PostIssueComment, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	id := int64(9000 + f.nextID())
+	f.comments = append(f.comments, github.TimelineComment{Author: viewer, Body: body, CreatedAt: f.ago(0)})
+	return &github.PostIssueComment{ID: id}, nil
 }
 
 func (f *fixture) DeleteComment(_ context.Context, commentID string) error {

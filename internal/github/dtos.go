@@ -293,6 +293,18 @@ type addReplyGQL struct {
 	} `json:"addPullRequestReviewThreadReply"`
 }
 
+// addIssueCommentGQL is the addComment response: the new conversation comment's
+// numeric id.
+type addIssueCommentGQL struct {
+	AddComment struct {
+		CommentEdge struct {
+			Node struct {
+				FullDatabaseID string `json:"fullDatabaseId"`
+			} `json:"node"`
+		} `json:"commentEdge"`
+	} `json:"addComment"`
+}
+
 // resolveThreadGQL is the (un)resolveReviewThread response; the mutation field is
 // aliased to result so resolve and unresolve share one shape.
 type resolveThreadGQL struct {

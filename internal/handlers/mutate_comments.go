@@ -56,6 +56,27 @@ func (d Deps) postComment(ctx context.Context, params json.RawMessage) (any, err
 	})
 }
 
+type postIssueCommentParams struct {
+	prParams
+	Body string `json:"body"`
+}
+
+// postIssueComment posts a PR-level conversation comment. it carries no diff anchor, so
+// neither the anchor validation nor the head guard applies.
+func (d Deps) postIssueComment(ctx context.Context, params json.RawMessage) (any, error) {
+	var p postIssueCommentParams
+	if err := decode(params, &p); err != nil {
+		return nil, err
+	}
+	if err := requirePR(p.Owner, p.Repo, p.Number); err != nil {
+		return nil, err
+	}
+	if p.Body == "" {
+		return nil, protocol.NewError(protocol.CodeBadRequest, "body is required")
+	}
+	return d.GH.PostIssueComment(ctx, p.Owner, p.Repo, p.Number, p.Body)
+}
+
 type deleteCommentParams struct {
 	prParams
 	CommentID string `json:"comment_id"` // the comment's graphql node id
