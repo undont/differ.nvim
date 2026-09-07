@@ -324,10 +324,11 @@ PR REVIEW                                             *differ-usage-pr-review*
 page; no argument lists the repo’s PRs and picks from them. `owner/repo#<n>`
 targets another repo, which is how you reach a fork. From the overview, `e`
 enters the files and `r` enters and starts a review; `<CR>` on a thread jumps
-straight to that comment’s file and line. `ga` comments on the PR itself and
-`gp` replies to the thread under the cursor, without leaving the page. The
-review keymaps (`ga` comment, `gp` reply, `gr` resolve, `<Tab>` viewed) are
-live once you’re in the diff.
+straight to that comment’s file and line. `ga` comments on the PR itself,
+`gp` replies to the thread under the cursor and `gc` shows or hides that
+thread’s replies, all without leaving the page. The review keymaps (`ga`
+comment, `gp` reply, `gr` resolve, `<Tab>` viewed) are live once you’re in
+the diff.
 
   -----------------------------------------------------------------------
   Command                             Effect

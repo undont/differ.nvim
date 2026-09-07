@@ -51,6 +51,10 @@ local SPINE = "│ "
 local BOT = "└─ "
 local HUNK_INDENT = "   "
 
+-- exported so the page can build the wrap-indent pattern that keeps a wrapped body row
+-- clear of the spine rather than printing over it
+M.SPINE = SPINE
+
 -- a thread's diff-hunk items: the tail of the hunk (it ends at the commented line),
 -- capped to MAX_HUNK and keeping the @@ header + a ⋯ elision marker when truncated, so
 -- a code comment reads with its diff like github's. a code item carries its line tint
@@ -138,7 +142,9 @@ local function timeline(tl)
                 outdated = t.outdated == true, -- vim.NIL-safe
                 diff_hunk = first.diff_hunk, -- the root comment's, rendered under the header
                 resolved = t.resolved == true, -- vim.NIL-safe
+                comments = t.comments or {}, -- the whole list; only rendered when expanded
                 replies = math.max(0, #(t.comments or {}) - 1),
+                comments_truncated = t.comments_truncated == true, -- vim.NIL-safe
             }
         end
     end
@@ -167,13 +173,14 @@ end
 -- the section can jump to the code anchor, and reply into the thread. a highlight is
 -- { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
----@param opts { reltime?: fun(ts: string): string }|nil
+---@param opts { expanded?: table<string, boolean>, reltime?: fun(ts: string): string }|nil
 ---@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
         return ts or ""
     end
+    local expanded_ids = opts.expanded or {}
     local meta = data.meta or {}
 
     local lines, highlights = {}, {}
@@ -255,6 +262,7 @@ function M.build(data, opts)
     ---@param item table
     local function render_thread(item)
         local row_start = #lines + 1
+        local expanded = item.thread_id ~= nil and expanded_ids[item.thread_id] == true
         local header = {
             { TOP, "differOverviewMeta" },
             { "@" .. (item.author or "?"), "differOverviewAuthor" },
@@ -300,16 +308,41 @@ function M.build(data, opts)
         if #hunk.lines > 0 and item.path then
             hunks[#hunks + 1] = hunk
         end
+        -- the root comment's body on spine rows
+        local function push_body(body)
+            for _, line in ipairs(split_lines(body)) do
+                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            end
+        end
         if item.body and item.body ~= "" then
             if #items > 0 then
                 push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
             end
-            for _, line in ipairs(split_lines(item.body)) do
-                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            push_body(item.body)
+        end
+        -- expanded: each reply under its own spine sub-header, mirroring the diff
+        -- overlay's shape, so the same thread reads the same way in both places
+        if expanded then
+            for i = 2, #(item.comments or {}) do
+                local c = item.comments[i]
+                push({ { "│", "differOverviewMeta" } })
+                push({
+                    { SPINE, "differOverviewMeta" },
+                    { "@" .. (c.author or "?"), "differOverviewAuthor" },
+                    { " · " .. reltime(c.created_at or ""), "differOverviewMeta" },
+                })
+                push_body(c.body or "")
             end
         end
+        -- the footer's reply count means one thing only: replies you can't see. once
+        -- they're on screen it says nothing, since they speak for themselves
         local footer = { { BOT, "differOverviewMeta" } }
-        if item.replies and item.replies > 0 then
+        if expanded then
+            if item.comments_truncated then
+                footer[#footer + 1] =
+                    { "↳ showing the first " .. #item.comments, "differOverviewMeta" }
+            end
+        elseif item.replies and item.replies > 0 then
             footer[#footer + 1] = {
                 ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
                 "differOverviewMeta",

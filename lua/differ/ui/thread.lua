@@ -126,14 +126,11 @@ function M.build(thread, opts)
         append_body(comments[i], hl, rows)
     end
 
-    -- footer rule: reply count then the open/resolved state, in their own chunks so the
-    -- resolved tag rides its own green group while the rest stays meta-grey
+    -- footer rule: the open/resolved state, in its own chunk so the resolved tag rides
+    -- its own green group while the rest stays meta-grey. no reply count here: the
+    -- replies are rendered right above, and a count beside them reads as a there-is-more
+    -- affordance. the collapsed line is where the total belongs
     local footer = { { BOT, hl } }
-    local replies = math.max(0, #comments - 1)
-    if replies > 0 then
-        local n = replies == 1 and "1 reply" or replies .. " replies"
-        footer[#footer + 1] = { "↳ " .. n .. " · ", "differThreadMeta" }
-    end
     if thread.resolved then
         footer[#footer + 1] = { "✓ resolved", "differThreadResolvedTag" }
     else

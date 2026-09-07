@@ -1153,15 +1153,85 @@ describe("pr overview commenting", function()
         end))
     end)
 
+    it("gc shows and hides the replies of the thread under the cursor", function()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[1].comments[#threads[1].comments + 1] = {
+            id = "c2",
+            node_id = "gid2",
+            author = "author",
+            body = "fixed in the next push",
+            created_at = "2026-01-02T00:00:00Z",
+        }
+        responses.get_threads = { result = threads }
+        track(open_overview(responses))
+        local buf = overview_buf()
+
+        -- collapsed: only the root comment, with the count standing in for the rest
+        assert.is_truthy(row_containing(buf, "please fix"))
+        assert.is_nil(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "↳ 1 reply"))
+
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.is_truthy(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "@author · "))
+        -- the count only ever means replies you can't see
+        assert.is_nil(row_containing(buf, "↳ 1 reply"))
+
+        assert.is_true(fire_lhs(buf, "gc"))
+        assert.is_nil(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "↳ 1 reply"))
+    end)
+
+    it("gc repaints from what the page holds, without refetching", function()
+        track(open_overview(default_responses()))
+        local buf = overview_buf()
+        local sent = record_sidecar(default_responses())
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.are.equal(0, #sent)
+    end)
+
+    it("gc off a thread row says so", function()
+        track(open_overview(default_responses()))
+        local buf = overview_buf()
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
+
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.are.equal("differ: no thread here to expand", _G.notifs[#_G.notifs].msg)
+    end)
+
     it("the page word-wraps rather than breaking mid-token", function()
         page()
         local win = pr.current_session().overview_win
 
         assert.is_true(vim.wo[win].wrap)
         assert.is_true(vim.wo[win].linebreak)
-        -- the continuation hangs past the thread box's "│ " spine
-        assert.is_true(vim.wo[win].breakindent)
-        assert.are.equal("shift:2", vim.wo[win].breakindentopt)
         assert.is_false(vim.wo[win].list) -- linebreak wants list off
+        -- list:-1 indents a continuation per line, by whatever formatlistpat matches
+        assert.is_true(vim.wo[win].breakindent)
+        assert.are.equal("list:-1", vim.wo[win].breakindentopt)
+    end)
+
+    it("a wrapped body clears the thread box spine, and plain prose doesn't indent", function()
+        page()
+        local buf = overview_buf()
+        local pat = vim.bo[buf].formatlistpat
+        local spine = require("differ.ui.overview").SPINE
+
+        -- the wrap indent is measured off the spine the builder actually emits, so a
+        -- body row hangs clear of it while a flat comment stays flush left
+        assert.is_truthy(vim.fn.match(spine .. "a wrapped body", pat) == 0)
+        assert.are.equal(#spine, vim.fn.matchend(spine .. "a wrapped body", pat))
+        assert.are.equal(-1, vim.fn.match("Section aggregate. Each header", pat))
+        -- a markdown bullet still hangs under its own text
+        assert.are.equal(2, vim.fn.matchend("- renamed.txt is a list item", pat))
     end)
 end)

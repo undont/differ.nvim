@@ -20,6 +20,13 @@ local function namespace()
     return ns
 end
 
+-- what a wrapped row indents past, under breakindentopt=list:-1: a thread box's spine,
+-- so a wrapped body stays inside its box, then a markdown list marker, so a wrapped
+-- bullet hangs under its own text. plain prose matches neither and wraps flush left
+local WRAP_INDENT_PAT = "^"
+    .. vim.trim(ui.SPINE)
+    .. "\\s*\\|^\\s*[-*+]\\s\\+\\|^\\s*\\d\\+[\\]:.)}\\t ]\\s*"
+
 local GUARD = "differ.pr.overview.guard"
 
 -- the page's scratch-buffer name, owned here; the review's on_repurpose asks
@@ -31,6 +38,14 @@ local BUFNAME = "differ://overview"
 -- built row->thread-anchor index (<CR> reads it at press time)
 local buf = nil
 local anchors = nil
+
+-- thread node id -> true for each box showing its replies. lives with the page buffer
+-- (teardown clears it), since it's a reading state, not something the session owns
+local expanded = {}
+
+-- the data the page last rendered, so a change to how it reads (gc) rebuilds without
+-- re-fetching. cleared with the buffer
+local last = nil
 
 -- a timestamp -> the display string, honouring the configured relative/absolute mode
 ---@return fun(ts: string): string
@@ -97,7 +112,7 @@ function M.teardown()
     if buf and vim.api.nvim_buf_is_valid(buf) then
         pcall(vim.api.nvim_buf_delete, buf, { force = true })
     end
-    buf, anchors = nil, nil
+    buf, anchors, expanded, last = nil, nil, {}, nil
 end
 
 -- end the session when the page window is closed: pre-review that's the only exit (q
@@ -212,6 +227,7 @@ local function set_keymaps(b)
             " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
             " ga / gp    comment on the PR / reply to the thread under the cursor",
+            " gc         show / hide the replies of the thread under the cursor",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
             " q          back into the review (when one is in progress)",
@@ -292,7 +308,20 @@ local function set_keymaps(b)
             end,
         })
     end
+    -- gc: show or hide the replies of the thread box under the cursor, matching the
+    -- diff's collapse key. the page is rebuilt from what it already holds, so no fetch
+    local function toggle_replies()
+        local s = live()
+        local a = anchor_at_cursor()
+        if not (s and a and a.thread_id) then
+            return require("differ.pr").notify("no thread here to expand")
+        end
+        expanded[a.thread_id] = not expanded[a.thread_id] or nil
+        stash_cursor(s)
+        M.repaint(s)
+    end
     local opts = { buffer = b, nowait = true, silent = true }
+    vim.keymap.set("n", "gc", toggle_replies, opts)
     vim.keymap.set("n", "gx", open_url, opts)
     vim.keymap.set("n", "ga", comment, opts)
     vim.keymap.set("n", "gp", reply, opts)
@@ -335,11 +364,12 @@ local function setup_window(win)
     -- than inherit whatever local cursorline it was left with
     set_wo(win, "cursorline", vim.go.cursorline)
     set_wo(win, "wrap", true)
-    -- break at a word rather than mid-token, and hang the continuation past the thread
-    -- box's "│ " spine so a wrapped comment body stays inside its box
+    -- break at a word rather than mid-token, and indent a continuation per line rather
+    -- than per window (WRAP_INDENT_PAT), so a box body clears its spine while plain
+    -- prose still wraps flush left
     set_wo(win, "linebreak", true)
     set_wo(win, "breakindent", true)
-    set_wo(win, "breakindentopt", "shift:2")
+    set_wo(win, "breakindentopt", "list:-1")
     set_wo(win, "conceallevel", 2)
     set_wo(win, "list", false)
 end
@@ -353,6 +383,7 @@ local function paint(built)
         vim.bo[buf].buftype = "nofile"
         vim.bo[buf].bufhidden = "hide"
         vim.bo[buf].filetype = "markdown"
+        vim.bo[buf].formatlistpat = WRAP_INDENT_PAT
         pcall(vim.api.nvim_buf_set_name, buf, BUFNAME)
         set_keymaps(buf)
     end
@@ -409,6 +440,7 @@ end
 ---@param timeline table  -- get_timeline result { comments, reviews }
 ---@param checks table|nil
 local function render(session, timeline, checks)
+    last = { timeline = timeline, checks = checks }
     local meta = session.pr_meta or {}
     local unresolved, total = thread_counts(session.threads)
     local built = ui.build({
@@ -429,7 +461,7 @@ local function render(session, timeline, checks)
             reviews = timeline.reviews,
             threads = session.threads, -- ensured by open; nil degrades to none
         },
-    }, { reltime = time_formatter() })
+    }, { reltime = time_formatter(), expanded = expanded })
 
     local win = target_window(session)
     if not (win and vim.api.nvim_win_is_valid(win)) then
@@ -449,6 +481,15 @@ local function render(session, timeline, checks)
         vim.api.nvim_win_set_cursor(win, { row, 0 })
     end
     arm_guard(session, win)
+end
+
+-- rebuild and repaint from the data the page last rendered, for a change that is only
+-- how it reads (gc). a page that has never rendered has nothing to redraw
+---@param session table
+function M.repaint(session)
+    if last then
+        render(session, last.timeline, last.checks)
+    end
 end
 
 -- M.open(session): fetch the timeline and the checks, ensure threads (shared with the

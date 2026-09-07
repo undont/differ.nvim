@@ -1,11 +1,15 @@
 local overview = require("differ.ui.overview")
 
 -- inject a deterministic reltime so the golden lines don't depend on the clock
-local function build(data)
+---@param data table
+---@param opts table|nil  -- the build opts the caller varies, over the fixed reltime
+local function build(data, opts)
+    opts = opts or {}
     return overview.build(data, {
         reltime = function(ts)
             return ts
         end,
+        expanded = opts.expanded,
     })
 end
 
@@ -277,6 +281,38 @@ describe("ui.overview.build (thread sections + anchors)", function()
         )
         assert.are.equal(header, a.row_start)
         assert.are.equal(row_of(built, "└─ ↳ 1 reply"), a.row_end)
+    end)
+
+    it("hides the replies until the thread is expanded", function()
+        local built = build(thread_data())
+        assert.is_truthy(row_of(built, "│ first line"))
+        assert.is_nil(row_of(built, "│ ack"))
+        assert.is_truthy(row_of(built, "└─ ↳ 1 reply"))
+    end)
+
+    it("expanded, each reply gets its own spine sub-header and body", function()
+        local built = build(thread_data(), { expanded = { PRRT_1 = true } })
+        assert.is_truthy(row_of(built, "│ first line"))
+        assert.is_truthy(row_of(built, "│ @a · 2026-01-02T00:00:00Z"))
+        assert.is_truthy(row_of(built, "│ ack"))
+    end)
+
+    -- the count only ever means "replies you can't see", so it goes once they're shown
+    it("expanded, the footer drops the reply count", function()
+        local built = build(thread_data(), { expanded = { PRRT_1 = true } })
+        assert.is_nil(row_of(built, "└─ ↳ 1 reply"))
+        assert.is_truthy(row_of(built, "└─ ")) -- the bare rule, count gone
+    end)
+
+    it("expanded, a capped comment list says how many it is showing", function()
+        local built =
+            build(thread_data({ comments_truncated = true }), { expanded = { PRRT_1 = true } })
+        assert.is_truthy(row_of(built, "└─ ↳ showing the first 2"))
+    end)
+
+    it("the expanded set keys on the thread node id, not its position", function()
+        local built = build(thread_data(), { expanded = { PRRT_other = true } })
+        assert.is_nil(row_of(built, "│ ack"))
     end)
 
     it("returns an empty anchor list without threads", function()

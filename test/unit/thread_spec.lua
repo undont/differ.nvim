@@ -36,7 +36,7 @@ describe("ui.thread.build (expanded)", function()
         assert.are.equal("│", text(rows[3]))
         assert.are.equal("│  @bob · 2d ago", text(rows[4]))
         assert.are.equal("│  good catch, fixing it", text(rows[5]))
-        assert.are.equal("└─ ↳ 1 reply · open", text(rows[6]))
+        assert.are.equal("└─ open", text(rows[6]))
     end)
 
     it("colours the chrome with the open state group and meta separately", function()
@@ -49,7 +49,9 @@ describe("ui.thread.build (expanded)", function()
         assert.are.same({ "needs a null check here", "differThreadBody" }, body[2])
     end)
 
-    it("pluralises replies and shows the open tag", function()
+    -- the replies are rendered right above the footer, so a count beside them would
+    -- read as a there-is-more affordance. the collapsed line carries the total instead
+    it("the footer is the state alone, however many replies are on show", function()
         local t = {
             comments = {
                 { author = "a", body = "x", created_at = "t" },
@@ -58,10 +60,12 @@ describe("ui.thread.build (expanded)", function()
             },
         }
         local rows = build(t)
-        assert.are.equal("└─ ↳ 2 replies · open", text(rows[#rows]))
+        assert.are.equal("│  @c · t", text(rows[#rows - 2]))
+        assert.are.equal("│  z", text(rows[#rows - 1]))
+        assert.are.equal("└─ open", text(rows[#rows]))
     end)
 
-    it("a single comment has no reply count, just the open tag", function()
+    it("a single comment reads the same, just the open tag", function()
         local t = { comments = { { author = "a", body = "x", created_at = "t" } } }
         local rows = build(t)
         assert.are.equal("┌─ @a · t", text(rows[1]))
@@ -83,7 +87,7 @@ describe("ui.thread.build (resolved + pending state)", function()
         local rows = build(t)
         assert.are.equal("┌─ @alice · 3d ago", text(rows[1])) -- state moved off the header
         assert.are.same({ "┌─ ", "differThreadResolved" }, rows[1][1])
-        assert.are.equal("└─ ↳ 1 reply · ✓ resolved", text(rows[#rows]))
+        assert.are.equal("└─ ✓ resolved", text(rows[#rows]))
         -- the resolved tag rides its own green group, separate from the meta chrome
         assert.are.same({ "✓ resolved", "differThreadResolvedTag" }, rows[#rows][#rows[#rows]])
     end)
