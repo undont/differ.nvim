@@ -90,7 +90,9 @@ end
 -- ── state ───────────────────────────────────────────────────────────────────────
 
 -- resolve a thread's collapsed state: an explicit per-thread toggle (gc) wins outright,
--- then `expanded` never collapses and the other two open on the cursor's row alone
+-- then `expanded` never collapses and the other two open on the cursor's row alone. in
+-- the cursor-driven modes the override is released when the cursor leaves the anchor
+-- (track_anchor), so gc dismisses a peek for the visit rather than for the session
 ---@param override boolean|nil  -- the gc toggle for this thread
 ---@param display string  -- `comments.display`
 ---@param group_active boolean  -- the cursor is on this thread's anchor row
@@ -103,6 +105,34 @@ function M.collapsed_state(override, display, group_active)
         return false
     end
     return not group_active
+end
+
+-- whether the cursor is what decides a thread's state, which is what makes a gc
+-- override transient. derived from collapsed_state rather than naming the display modes,
+-- so a new mode can't drift out of step with this
+---@param display string  -- `comments.display`
+---@return boolean
+function M.cursor_driven(display)
+    return M.collapsed_state(nil, display, true) ~= M.collapsed_state(nil, display, false)
+end
+
+-- track the anchor the cursor sits on, releasing any gc override when it moves. an
+-- override only outranks the cursor while the cursor is still on that anchor, and at
+-- most one group is active, so moving anywhere else drops the lot: clearing the whole
+-- table (rather than the group being left) also survives a file switch, where the old
+-- group's key is gone and a lookup would strand its override for the session
+---@param session table
+---@param key string|nil  -- the anchor key under the cursor, nil off a thread row
+---@return boolean moved
+local function track_anchor(session, key)
+    if key == session.thread_active then
+        return false
+    end
+    session.thread_active = key
+    if M.cursor_driven(require("differ").get_config().comments.display) then
+        session.thread_collapsed = {}
+    end
+    return true
 end
 
 -- `collapsed_state` over the live session and config
@@ -692,6 +722,7 @@ function M.on_cursor(session)
         end
         local row = vim.api.nvim_win_get_cursor(win)[1]
         local group = M.anchor_at(session, buf, row)
+        track_anchor(session, group and group.key) -- before the state is read below
         if not group or peek_collapsed(session, group) then
             return M.close_peek() -- off a thread row, or gc hid this one
         end
@@ -712,8 +743,7 @@ function M.on_cursor(session)
             break
         end
     end
-    if active ~= session.thread_active then
-        session.thread_active = active
+    if track_anchor(session, active) then
         M.apply(session)
     end
 end

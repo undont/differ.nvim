@@ -367,9 +367,10 @@ local function cursor_anchor()
     return require("differ.pr.threads").anchor_at(session, buf, row)
 end
 
--- gc: collapse/expand the thread group under the cursor. an explicit toggle
--- overrides the cursor-peek default until toggled back; re-apply swaps the boxes in
--- place (stacked) or shows/hides the float (split), and a no-op off a thread row
+-- gc: collapse/expand the thread group under the cursor. the toggle overrides the
+-- default until toggled back, or until the cursor leaves the anchor where the default
+-- is the cursor's to make; re-apply swaps the boxes in place (stacked) or shows/hides
+-- the float (split), and a no-op off a thread row
 function M.toggle_thread()
     local s = session
     local anchor = cursor_anchor()

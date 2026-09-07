@@ -1235,3 +1235,82 @@ describe("pr overview commenting", function()
         assert.are.equal(2, vim.fn.matchend("- renamed.txt is a list item", pat))
     end)
 end)
+
+-- gc's override outranks the cursor, so it has to stop outranking it once the cursor
+-- has gone: otherwise dismissing one peek opts that thread out of peeking for the
+-- session, and there is no third press that gets the cursor-driven default back
+describe("pr diff gc override lifetime", function()
+    local threads = require("differ.pr.threads")
+
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- a live review sitting on the thread anchor, with the peek already open
+    ---@return table session, integer bufnr, integer win
+    local function peeking()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            return (pr.current_session().thread_anchors or {})[1] ~= nil
+        end))
+        local buf = focus_thread_anchor(s)
+        threads.on_cursor(s)
+        assert.is_false(threads.collapsed_state(nil, "peek", s.thread_active ~= nil))
+        return s, buf, restore
+    end
+
+    it("gc dismisses the peek for the visit, not for the session", function()
+        local s, buf, restore = peeking()
+        local anchor = s.thread_anchors[1]
+
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        -- step off the anchor: the override has nothing left to outrank
+        vim.api.nvim_win_set_cursor(0, { anchor.row + 1, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        -- and back on: it peeks again rather than staying dismissed
+        vim.api.nvim_win_set_cursor(0, { anchor.row, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        restore()
+    end)
+
+    it("the override stands while the cursor stays on the anchor", function()
+        local s, buf, restore = peeking()
+        local id = threads_result()[1].thread_id
+
+        assert.is_true(fire(buf, "toggle thread"))
+        threads.on_cursor(s) -- same row, so nothing is released
+        assert.is_true(s.thread_collapsed[id])
+
+        assert.is_true(fire(buf, "toggle thread")) -- toggles back within the visit
+        assert.is_false(s.thread_collapsed[id])
+
+        restore()
+    end)
+
+    it("an expanded-mode override stays put, having no cursor default to return to", function()
+        local cfg = require("differ").get_config()
+        local had = cfg.comments.display
+        cfg.comments.display = "expanded"
+        local s, buf, restore = peeking()
+        local anchor = s.thread_anchors[1]
+
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        vim.api.nvim_win_set_cursor(0, { anchor.row + 1, 0 })
+        threads.on_cursor(s)
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        cfg.comments.display = had
+        restore()
+    end)
+end)
