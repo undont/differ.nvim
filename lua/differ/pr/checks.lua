@@ -3,6 +3,7 @@
 -- vim.ui.open. no rerun/dispatch (reserved); the sidecar fetch is the only I/O
 
 local client = require("differ.pr.client")
+local set_wo = require("differ.util.win").set_local
 
 local M = {}
 
@@ -122,7 +123,7 @@ local function render(checks)
         title = title,
         title_pos = "center",
     })
-    vim.wo[win].cursorline = true
+    set_wo(win, "cursorline", true)
 
     local function close()
         if vim.api.nvim_win_is_valid(win) then

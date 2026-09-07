@@ -201,6 +201,44 @@ describe("pr session notifies", function()
         restore()
     end)
 
+    it("leaves the global cursorline untouched when the checks float opens", function()
+        local restore = stub_sidecar({
+            get_pr = { result = get_pr_result() },
+            get_file_versions = {
+                result = { base = { content = "a\n" }, head = { content = "b\n" } },
+            },
+            get_checks = {
+                result = {
+                    rollup = "SUCCESS",
+                    checks = { { name = "build", status = "COMPLETED", conclusion = "SUCCESS" } },
+                },
+            },
+        })
+
+        local had_cursorline = vim.go.cursorline
+        vim.o.cursorline = false -- :set, so the global default goes off too
+
+        pr.show(PR)
+        assert.is_true(vim.wait(1000, function()
+            return pr.current_session() ~= nil
+        end))
+
+        pr.checks()
+        assert.is_true(vim.wait(1000, function()
+            return vim.api.nvim_win_get_config(0).relative ~= ""
+        end))
+
+        local float = vim.api.nvim_get_current_win()
+        -- the float still carries its own cursor line, set :setlocal
+        assert.is_true(
+            vim.api.nvim_get_option_value("cursorline", { scope = "local", win = float })
+        )
+        assert.is_false(vim.go.cursorline) -- but the global default is left alone
+
+        vim.o.cursorline = had_cursorline
+        restore()
+    end)
+
     it("notifies 'no thread on this line' toggling a thread off a plain diff line", function()
         local restore = stub_sidecar({
             get_pr = { result = get_pr_result() },

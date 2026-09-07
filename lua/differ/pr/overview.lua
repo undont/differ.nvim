@@ -1,10 +1,10 @@
 -- the PR overview home: a read-only pre-review page with the PR summary + a
 -- minimal timeline (conversation comments, submitted review verdicts, and code
 -- threads). it is a step *before* the review proper — no file panel, just a dedicated
--- page filling the session tab. e/r enter the review (build the panel + diff), <CR> on
--- a thread row enters it at that thread's file/line, q backs into an in-progress
--- review. the pure layout
--- lives in ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
+-- page filling the session tab. e enters the review (builds the panel + diff), r enters
+-- and also starts a github draft review, <CR> on a thread row enters at that thread's
+-- file/line, q backs into an in-progress review. the pure layout lives in
+-- ui/overview.lua; this owns the vim surface (buffer, window, extmarks,
 -- fetches). get_timeline is a round-trip and threads are ensured (shared, PR-wide,
 -- also feeding the header count) — the meta comes from session.pr_meta (enriched in
 -- pr/init), checks reuse slice 5
@@ -124,10 +124,10 @@ local function arm_guard(session, win)
 end
 
 -- buffer-local keymaps; they read the live session each time so the reused buffer never
--- acts on a stale session. e enters the review (files), r enters + starts a review, q
--- backs into the review when one is open, gx opens the PR url. <CR> on a thread row
--- enters the review at that thread's file/line; elsewhere it opens the url. ]t/[t hop
--- between thread boxes; g? floats the keymap cheatsheet
+-- acts on a stale session. e enters the review (panel + diff), r enters and also starts
+-- a github draft review, q backs into the review when one is open, gx opens the PR url.
+-- <CR> on a thread row enters the review at that thread's file/line; elsewhere it opens
+-- the url. ]t/[t hop between thread boxes; g? floats the keymap cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -166,9 +166,10 @@ local function set_keymaps(b)
         end
         open_url()
     end
-    -- e/r: enter the review. on a thread row, jump into that thread's file/line (like
-    -- <CR>) so the comment's diff opens directly; elsewhere enter at the panel's file. r
-    -- also starts a review either way
+    -- e/r: enter the review (panel + diff). on a thread row, jump into that thread's
+    -- file/line (like <CR>) so the comment's diff opens directly; elsewhere enter at the
+    -- panel's file. r also starts a github draft review either way, so comments become
+    -- drafts submitted as one batch rather than posting on the spot
     local function enter(review)
         local s = live()
         if not s then
@@ -207,7 +208,7 @@ local function set_keymaps(b)
     -- g?: a floating keymap cheatsheet, dismissed with <Esc> / q / g?
     local function show_help()
         require("differ.ui.help").show({
-            " e / r      enter review / enter + start a review (thread row: at its file)",
+            " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
@@ -252,7 +253,9 @@ local function setup_window(win)
     set_wo(win, "relativenumber", false)
     set_wo(win, "signcolumn", "no")
     set_wo(win, "foldcolumn", "0")
-    set_wo(win, "cursorline", false)
+    -- the window is taken over from another surface, so mirror the global rather
+    -- than inherit whatever local cursorline it was left with
+    set_wo(win, "cursorline", vim.go.cursorline)
     set_wo(win, "wrap", true)
     set_wo(win, "conceallevel", 2)
     set_wo(win, "list", false)

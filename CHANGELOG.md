@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The PR overview's `g?` cheatsheet now correctly says that `r` starts a draft review, whilst `e` only enters the review
+
+### Fixed
+
+- The diff drew a cursor line even with `cursorline` off and the PR overview drew none with it on; both now respect the user's config. Opening the PR checks float used to switch `cursorline` on for the rest of the session, it now doesn't
+
+## [0.1.41] — 2026-09-06
+
 ### Fixed
 
 - A renamed file in a PR review showed every line as new, which wasn't very useful. It now diffs against the file's old path, showing only what actually changed

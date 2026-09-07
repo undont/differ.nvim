@@ -121,7 +121,7 @@ require("differ").setup({
   context = math.huge,           -- fold threshold; math.huge = whole file, no folds
   wrap = true,                   -- soft-wrap long lines in the diff view
   diff_counter = true,           -- hunk counter in the diff window's winbar
-  cursorline_tint = true,        -- allow the cursorline to inherit the add/delete highlights
+  cursorline_tint = true,        -- add/delete tint on the cursor line; only drawn when 'cursorline' is on
   deep_diff = {                  -- word-level diffing
     enabled = true,
     granularity = "word",        -- "word" | "char"
