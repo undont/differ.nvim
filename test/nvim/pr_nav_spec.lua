@@ -1314,3 +1314,42 @@ describe("pr diff gc override lifetime", function()
         restore()
     end)
 end)
+
+-- split has no choice but the marker + float surface, whatever `comments.display` says,
+-- so a config of `expanded` there is still a cursor-driven float and its gc override has
+-- to lapse like any other float's
+describe("pr diff gc override lifetime under a forced marker layout", function()
+    local threads = require("differ.pr.threads")
+
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("releases the override in split, even with display = expanded", function()
+        local cfg = require("differ").get_config()
+        local had = cfg.comments.display
+        cfg.comments.display = "expanded"
+
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            return (pr.current_session().thread_anchors or {})[1] ~= nil
+        end))
+        s.view.layout = "split" -- what forces marker mode regardless of the config
+        assert.is_true(threads.marker_mode(s.view))
+
+        local buf = focus_thread_anchor(s)
+        threads.on_cursor(s)
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        vim.api.nvim_win_set_cursor(0, { s.thread_anchors[1].row + 1, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        cfg.comments.display = had
+        restore()
+    end)
+end)

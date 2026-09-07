@@ -20,7 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The diff drew a cursor line even with `cursorline` off and the PR overview drew none with it on; both now respect the user's config. Opening the PR checks float used to switch `cursorline` on for the rest of the session, it now doesn't
 - Long lines on the PR overview broke mid-word. They now wrap at a word, and a wrapped comment body stays inside its thread box
 - A thread's footer counted replies that were already on screen, reading as though more were hidden. The count now appears only when the replies are collapsed
-- `gc` in the PR diff opted a thread out of peeking for the rest of the session, with no way back to the cursor-driven default. It now dismisses or shows the thread for as long as the cursor stays on it; `comments.display = "expanded"` keeps its toggle, having no peek to return to
+- `gc` in the PR diff opted a thread out of peeking for the rest of the session, with no way back to the cursor-driven default. It now dismisses or shows the thread for as long as the cursor stays on it, in the split layout too; `comments.display = "expanded"` keeps its toggle, having no peek to return to
 
 ## [0.1.41] — 2026-09-06
 

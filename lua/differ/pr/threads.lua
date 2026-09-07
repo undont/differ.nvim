@@ -107,6 +107,18 @@ function M.collapsed_state(override, display, group_active)
     return not group_active
 end
 
+-- the display mode actually in effect. split has no choice but the marker + float
+-- surface (virt_lines desync the columns), so a config of `expanded` still reads there
+-- as a cursor-driven float, and everything keyed off the mode has to agree
+---@param session table
+---@return string
+local function effective_display(session)
+    if session.view and M.marker_mode(session.view) then
+        return "markers"
+    end
+    return require("differ").get_config().comments.display
+end
+
 -- whether the cursor is what decides a thread's state, which is what makes a gc
 -- override transient. derived from collapsed_state rather than naming the display modes,
 -- so a new mode can't drift out of step with this
@@ -129,7 +141,7 @@ local function track_anchor(session, key)
         return false
     end
     session.thread_active = key
-    if M.cursor_driven(require("differ").get_config().comments.display) then
+    if M.cursor_driven(effective_display(session)) then
         session.thread_collapsed = {}
     end
     return true
@@ -142,8 +154,7 @@ end
 ---@return boolean
 local function thread_collapsed(session, t, group_active)
     local override = session.thread_collapsed and session.thread_collapsed[t.thread_id]
-    local display = require("differ").get_config().comments.display
-    return M.collapsed_state(override, display, group_active)
+    return M.collapsed_state(override, effective_display(session), group_active)
 end
 
 -- whether threads read as an eol marker plus the peek float rather than inline boxes.
