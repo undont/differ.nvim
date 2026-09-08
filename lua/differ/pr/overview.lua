@@ -27,6 +27,21 @@ local WRAP_INDENT_PAT = "^"
     .. vim.trim(ui.SPINE)
     .. "\\s*\\|^\\s*[-*+]\\s\\+\\|^\\s*\\d\\+[\\]:.)}\\t ]\\s*"
 
+-- a body string as its lines, for quoting it back
+---@param body string|nil
+---@return string[]
+local function split_body(body)
+    return vim.split(body or "", "\n", { plain = true })
+end
+
+-- drop a thread box's left spine from a picked line, so a selection inside a box quotes
+-- as the comment text it is rather than as the drawing around it
+---@param line string
+---@return string
+local function strip_chrome(line)
+    return (line:gsub("^" .. vim.trim(ui.SPINE) .. "%s*", ""))
+end
+
 local GUARD = "differ.pr.overview.guard"
 
 -- the page's scratch-buffer name, owned here; the review's on_repurpose asks
@@ -38,6 +53,7 @@ local BUFNAME = "differ://overview"
 -- built row->thread-anchor index (<CR> reads it at press time)
 local buf = nil
 local anchors = nil
+local quotes = nil
 
 -- thread node id -> true for each box showing its replies. lives with the page buffer
 -- (teardown clears it), since it's a reading state, not something the session owns
@@ -112,7 +128,7 @@ function M.teardown()
     if buf and vim.api.nvim_buf_is_valid(buf) then
         pcall(vim.api.nvim_buf_delete, buf, { force = true })
     end
-    buf, anchors, expanded, last = nil, nil, {}, nil
+    buf, anchors, quotes, expanded, last = nil, nil, nil, {}, nil
 end
 
 -- end the session when the page window is closed: pre-review that's the only exit (q
@@ -142,7 +158,8 @@ end
 -- acts on a stale session. e enters the review (panel + diff), r enters and also starts
 -- a github draft review, q backs into the review when one is open, gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it opens
--- the url. ga comments on the PR and gp replies into the thread under the cursor, both
+-- the url. ga comments on the PR and gp answers whatever is under the cursor, quoting
+-- it when there is no thread to reply into (visual gp quotes the selection alone), both
 -- mirroring the diff's keys. ]t/[t hop between thread boxes; g? floats the cheatsheet
 ---@param b integer
 local function set_keymaps(b)
@@ -164,14 +181,18 @@ local function set_keymaps(b)
             require("differ.pr").notify("no PR url", vim.log.levels.WARN)
         end
     end
-    -- the thread anchor whose row span covers the cursor, or nil off a thread section
-    local function anchor_at_cursor()
-        local row = vim.api.nvim_win_get_cursor(0)[1]
+    -- the thread anchor whose row span covers `row`, or nil off a thread section
+    ---@param row integer
+    ---@return table|nil
+    local function anchor_at_row(row)
         for _, a in ipairs(anchors or {}) do
             if row >= a.row_start and row <= a.row_end then
                 return a
             end
         end
+    end
+    local function anchor_at_cursor()
+        return anchor_at_row(vim.api.nvim_win_get_cursor(0)[1])
     end
     local function select_or_url()
         local a = anchor_at_cursor()
@@ -226,7 +247,9 @@ local function set_keymaps(b)
         require("differ.ui.help").show({
             " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
-            " ga / gp    comment on the PR / reply to the thread under the cursor",
+            " ga         comment on the PR",
+            " gp         reply here: into the thread, or quoting a plain comment",
+            " {Visual}gp quote just the selection instead of the whole comment",
             " gc         show / hide the replies of the thread under the cursor",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
@@ -238,11 +261,12 @@ local function set_keymaps(b)
     -- renders from github rather than being patched in locally. the stashed cursor keeps
     -- the reading position across the rebuild (render consumes it as a one-shot)
     ---@param s table
-    ---@param spec { title: string, done: string, send: fun(body: string, cb: fun(err: table|nil)) }
+    ---@param spec { title: string, done: string, initial?: string, send: fun(body: string, cb: fun(err: table|nil)) }
     local function compose(s, spec)
         stash_cursor(s)
         require("differ.ui.compose").open({
             title = spec.title,
+            initial = spec.initial,
             anchor_win = s.overview_win,
             on_submit = function(body)
                 if body == "" then
@@ -276,24 +300,46 @@ local function set_keymaps(b)
             end,
         })
     end
-    -- gp: reply into the thread under the cursor, joining the draft when a review is in
-    -- progress (like the diff's gp). github doesn't thread conversation comments, so off
-    -- a thread row there is nothing to reply to and ga is the way to answer
-    local function reply()
-        local s = live()
-        if not s then
-            return
+    -- the flat timeline section whose row span covers `row`, or nil. these are the
+    -- quote targets: github doesn't thread conversation comments or review verdicts, so
+    -- an answer is a new comment that says what it is answering
+    ---@param row integer
+    ---@return table|nil
+    local function quote_at(row)
+        for _, q in ipairs(quotes or {}) do
+            if row >= q.row_start and row <= q.row_end then
+                return q
+            end
         end
-        local a = anchor_at_cursor()
-        if not (a and a.thread_id) then
-            return require("differ.pr").notify("no thread here to reply to; ga comments on the PR")
+    end
+    -- `lines` as a markdown blockquote attributed to @author, ready to type under. the
+    -- page is chronological, so a reply lands at the bottom and the attribution is the
+    -- only thing saying what it answers
+    ---@param author string|nil
+    ---@param lines string[]
+    ---@return string
+    local function quoted(author, lines)
+        local out = { ("> @%s wrote:"):format(author or "?") }
+        for _, l in ipairs(lines) do
+            out[#out + 1] = vim.trim(l) == "" and ">" or ("> " .. l)
         end
+        out[#out + 1] = ""
+        out[#out + 1] = ""
+        return table.concat(out, "\n")
+    end
+    -- reply into `thread_id`, prefilled with `initial` when quoting. joins the draft
+    -- when a review is in progress, like the diff's gp
+    ---@param s table
+    ---@param thread_id string
+    ---@param initial string|nil
+    local function reply_to_thread(s, thread_id, initial)
         local draft = s.review_id and s.review_id ~= ""
         compose(s, {
             title = draft and "Reply (draft)" or "Reply (posts immediately)",
             done = draft and "reply added to your review draft" or "reply posted",
+            initial = initial,
             send = function(body, cb)
-                local args = { in_reply_to = a.thread_id, body = body }
+                local args = { in_reply_to = thread_id, body = body }
                 if draft then
                     args.review_id = s.review_id
                 end
@@ -307,6 +353,66 @@ local function set_keymaps(b)
                 end)
             end,
         })
+    end
+    -- answer a flat section: a new conversation comment opening with the quote
+    ---@param s table
+    ---@param initial string
+    local function quote_reply(s, initial)
+        compose(s, {
+            title = "Quote reply (posts immediately)",
+            done = "comment posted",
+            initial = initial,
+            send = function(body, cb)
+                client.post_issue_comment(s.pr, body, cb)
+            end,
+        })
+    end
+    -- gp: answer whatever the cursor is on. a thread box replies into the thread; a
+    -- conversation comment or review verdict has no thread to reply into, so it quotes
+    -- into a new comment instead
+    local function reply()
+        local s = live()
+        if not s then
+            return
+        end
+        local a = anchor_at_cursor()
+        if a and a.thread_id then
+            return reply_to_thread(s, a.thread_id)
+        end
+        local q = quote_at(vim.api.nvim_win_get_cursor(0)[1])
+        if not q then
+            return require("differ.pr").notify("nothing here to reply to; ga comments on the PR")
+        end
+        quote_reply(s, quoted(q.author, split_body(q.body)))
+    end
+    -- gp (visual): quote just the selected lines rather than the whole comment, then
+    -- route as above. the box chrome is stripped so a selection inside a thread reads as
+    -- the comment text it is
+    local function reply_selection()
+        local s = live()
+        if not s then
+            return
+        end
+        local r1, r2 = vim.fn.line("v"), vim.fn.line(".")
+        vim.api.nvim_feedkeys(
+            vim.api.nvim_replace_termcodes("<Esc>", true, false, true),
+            "n",
+            false
+        )
+        local lo, hi = math.min(r1, r2), math.max(r1, r2)
+        local picked = {}
+        for _, l in ipairs(vim.api.nvim_buf_get_lines(b, lo - 1, hi, false)) do
+            picked[#picked + 1] = strip_chrome(l)
+        end
+        local a = anchor_at_row(lo)
+        if a and a.thread_id then
+            return reply_to_thread(s, a.thread_id, quoted(a.author, picked))
+        end
+        local q = quote_at(lo)
+        if not q then
+            return require("differ.pr").notify("nothing here to reply to; ga comments on the PR")
+        end
+        quote_reply(s, quoted(q.author, picked))
     end
     -- gc: show or hide the replies of the thread box under the cursor, matching the
     -- diff's collapse key. the page is rebuilt from what it already holds, so no fetch
@@ -325,6 +431,7 @@ local function set_keymaps(b)
     vim.keymap.set("n", "gx", open_url, opts)
     vim.keymap.set("n", "ga", comment, opts)
     vim.keymap.set("n", "gp", reply, opts)
+    vim.keymap.set("x", "gp", reply_selection, opts)
     vim.keymap.set("n", "<CR>", select_or_url, opts)
     vim.keymap.set("n", "e", function()
         enter(false)
@@ -376,7 +483,7 @@ end
 
 -- (re)build the scratch buffer, paint the built lines + highlight spans + the
 -- treesitter pass over the hunk snippets, keep the fresh thread-anchor index for <CR>
----@param built { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
+---@param built { lines: string[], highlights: table[], anchors: table[], quotes: table[], hunks: table[] }
 local function paint(built)
     if not (buf and vim.api.nvim_buf_is_valid(buf)) then
         buf = vim.api.nvim_create_buf(false, true)
@@ -387,7 +494,7 @@ local function paint(built)
         pcall(vim.api.nvim_buf_set_name, buf, BUFNAME)
         set_keymaps(buf)
     end
-    anchors = built.anchors
+    anchors, quotes = built.anchors, built.quotes
     vim.bo[buf].modifiable = true
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, built.lines)
     vim.bo[buf].modifiable = false

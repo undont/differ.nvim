@@ -87,7 +87,18 @@ local function default_responses()
             result = { base = { content = "a\nb\nc\n" }, head = { content = "a\nB\nc\n" } },
         },
         get_threads = { result = threads_result() },
-        get_timeline = { result = { comments = {}, reviews = {} } },
+        get_timeline = {
+            result = {
+                comments = {
+                    {
+                        author = "kim",
+                        body = "one\ntwo",
+                        created_at = "2026-01-01T00:00:00Z",
+                    },
+                },
+                reviews = {},
+            },
+        },
         get_checks = { result = { rollup = "SUCCESS", checks = {} } },
     }
 end
@@ -103,9 +114,13 @@ local function fire(buf, desc)
     return false
 end
 
--- fire a buffer-local keymap by its lhs (the overview's <CR>/e/q carry no desc)
-local function fire_lhs(buf, lhs)
-    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+-- fire a buffer-local keymap by its lhs, in `mode` (default normal). the overview's
+-- <CR>/e/q carry no desc, and its gp is bound in visual mode as well
+---@param buf integer
+---@param lhs string
+---@param mode string|nil
+local function fire_lhs(buf, lhs, mode)
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, mode or "n")) do
         if m.lhs == lhs and m.callback then
             m.callback()
             return true
@@ -1124,18 +1139,81 @@ describe("pr overview commenting", function()
         assert.is_nil(params.expected_head)
     end)
 
-    it("gp off a thread row says so and composes nothing", function()
+    it("gp off any section says so and composes nothing", function()
         local buf, sent = page()
         vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
 
         assert.is_true(fire_lhs(buf, "gp"))
 
         assert.are.equal(
-            "differ: no thread here to reply to; ga comments on the PR",
+            "differ: nothing here to reply to; ga comments on the PR",
             _G.notifs[#_G.notifs].msg
         )
         assert.are.equal(buf, vim.api.nvim_get_current_buf()) -- no compose split opened
         assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    -- github doesn't thread conversation comments, so answering one is a new comment
+    -- that quotes what it is answering
+    it("gp on a conversation comment quotes it into a new comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "@kim commented")
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        local composed = vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        assert.are.same({ "> @kim wrote:", "> one", "> two", "", "" }, composed)
+
+        submit(table.concat(composed, "\n") .. "sounds right")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        -- a quote is a plain comment, never a thread reply
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    it("visual gp quotes the selection alone, not the whole comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "two") -- the comment's second body line
+        assert.is_truthy(row)
+        vim.api.nvim_set_current_win(pr.current_session().overview_win)
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        vim.cmd("normal! V")
+        assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
+
+        assert.is_true(fire_lhs(buf, "gp", "x"))
+        assert.are.same(
+            { "> @kim wrote:", "> two", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @kim wrote:\n> two\n\nagreed")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+    end)
+
+    it("visual gp inside a thread box quotes into a reply, spine stripped", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "please fix")
+        assert.is_truthy(row)
+        vim.api.nvim_set_current_win(pr.current_session().overview_win)
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        vim.cmd("normal! V")
+        assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
+
+        assert.is_true(fire_lhs(buf, "gp", "x"))
+        assert.are.same(
+            { "> @reviewer wrote:", "> please fix", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @reviewer wrote:\n> please fix\n\ndone")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        assert.are.equal("th_1", sent_params(sent, "post_comment").in_reply_to)
     end)
 
     it("a reply drops the cached thread list so the refreshed page carries it", function()

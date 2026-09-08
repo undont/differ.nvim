@@ -169,12 +169,13 @@ local function verdict_of(item)
 end
 
 -- build the overview buffer content. `anchors` maps each thread item to its 1-based
--- row span ({ row_start, row_end, thread_id, path, side, line }), so <CR> anywhere in
--- the section can jump to the code anchor, and reply into the thread. a highlight is
--- { row, col_start, col_end, hl }, 0-based
+-- row span ({ row_start, row_end, thread_id, author, path, side, line }), so <CR> in
+-- the section can jump to the code anchor, and reply into the thread. `quotes` does the
+-- same for the flat sections ({ row_start, row_end, author, body }), which have no
+-- thread to reply into. a highlight is { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
 ---@param opts { expanded?: table<string, boolean>, reltime?: fun(ts: string): string }|nil
----@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
+---@return { lines: string[], highlights: table[], anchors: table[], quotes: table[], hunks: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
@@ -254,6 +255,7 @@ function M.build(data, opts)
     -- plain comments and verdicts keep the flat ── header ── style
     local anchors = {}
     local hunks = {}
+    local quotes = {}
 
     -- a code thread as a left-spine box: a top-rule header, the root comment's diff hunk
     -- on inset spine rows, the body, a footer rule with the reply count. records the row
@@ -353,15 +355,19 @@ function M.build(data, opts)
             row_start = row_start,
             row_end = #lines,
             thread_id = item.thread_id,
+            author = item.author,
             path = item.path,
             side = item.side,
             line = item.line,
         }
     end
 
-    -- a plain comment / review verdict as a flat ── header ── with its body below
+    -- a plain comment / review verdict as a flat ── header ── with its body below.
+    -- records its row span in `quotes`: github doesn't thread these, so the only way to
+    -- answer one is a new comment, and the vim layer quotes it to say which
     ---@param item table
     local function render_flat(item)
+        local row_start = #lines + 1
         local v = verdict_of(item)
         push({
             { "── ", "differOverviewMeta" },
@@ -375,6 +381,12 @@ function M.build(data, opts)
                 push({ { line, "differOverviewBody" } })
             end
         end
+        quotes[#quotes + 1] = {
+            row_start = row_start,
+            row_end = #lines,
+            author = item.author,
+            body = item.body,
+        }
     end
 
     for i, item in ipairs(timeline(data.timeline or {})) do
@@ -388,7 +400,13 @@ function M.build(data, opts)
         end
     end
 
-    return { lines = lines, highlights = highlights, anchors = anchors, hunks = hunks }
+    return {
+        lines = lines,
+        highlights = highlights,
+        anchors = anchors,
+        quotes = quotes,
+        hunks = hunks,
+    }
 end
 
 return M
