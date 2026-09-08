@@ -1139,6 +1139,78 @@ describe("pr overview commenting", function()
         assert.is_nil(params.expected_head)
     end)
 
+    it("gq on a thread quotes its comment into the reply", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gq"))
+        assert.are.same(
+            { "> @reviewer wrote:", "> please fix", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @reviewer wrote:\n> please fix\n\ndone")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        assert.are.equal("th_1", sent_params(sent, "post_comment").in_reply_to)
+    end)
+
+    -- the destination is the cursor's to decide and the quote the key's, so gq off a
+    -- thread lands where gp does: a new comment, since github threads nothing there
+    it("gq on a conversation comment quotes it into a new comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "@kim commented")
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gq"))
+        assert.are.same(
+            { "> @kim wrote:", "> one", "> two", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @kim wrote:\n> one\n> two\n\nsounds right")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    -- once gc has expanded a thread, the quote follows the cursor rather than always
+    -- taking the root comment
+    it("gq on an expanded reply quotes that reply, not the thread's root", function()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[1].comments[#threads[1].comments + 1] = {
+            id = "c2",
+            node_id = "gid2",
+            author = "author",
+            body = "fixed in the next push",
+            created_at = "2026-01-02T00:00:00Z",
+        }
+        responses.get_threads = { result = threads }
+        track(open_overview(responses))
+        local buf = overview_buf()
+        local win = pr.current_session().overview_win
+
+        vim.api.nvim_win_set_cursor(win, {
+            row_containing(buf, "commented on a.txt:" .. THREAD_LINE),
+            0,
+        })
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        local reply_row = row_containing(buf, "fixed in the next push")
+        assert.is_truthy(reply_row)
+        vim.api.nvim_win_set_cursor(win, { reply_row, 0 })
+        assert.is_true(fire_lhs(buf, "gq"))
+
+        assert.are.same(
+            { "> @author wrote:", "> fixed in the next push", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+    end)
+
     it("gp off any section says so and composes nothing", function()
         local buf, sent = page()
         vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
@@ -1146,34 +1218,32 @@ describe("pr overview commenting", function()
         assert.is_true(fire_lhs(buf, "gp"))
 
         assert.are.equal(
-            "differ: nothing here to reply to; ga comments on the PR",
+            "differ: nothing here to answer; ga comments on the PR",
             _G.notifs[#_G.notifs].msg
         )
         assert.are.equal(buf, vim.api.nvim_get_current_buf()) -- no compose split opened
         assert.is_nil(sent_params(sent, "post_comment"))
     end)
 
-    -- github doesn't thread conversation comments, so answering one is a new comment
-    -- that quotes what it is answering
-    it("gp on a conversation comment quotes it into a new comment", function()
+    -- github threads nothing off a code thread, so gp there is a new PR comment; the
+    -- key never quotes, so it opens empty
+    it("gp on a conversation comment posts an unquoted new comment", function()
         local buf, sent = page()
         local row = row_containing(buf, "@kim commented")
         assert.is_truthy(row)
         vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
 
         assert.is_true(fire_lhs(buf, "gp"))
-        local composed = vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
-        assert.are.same({ "> @kim wrote:", "> one", "> two", "", "" }, composed)
+        assert.are.same({ "" }, vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false))
 
-        submit(table.concat(composed, "\n") .. "sounds right")
+        submit("agreed")
         assert.is_true(vim.wait(1000, function()
             return sent_params(sent, "post_issue_comment") ~= nil
         end))
-        -- a quote is a plain comment, never a thread reply
         assert.is_nil(sent_params(sent, "post_comment"))
     end)
 
-    it("visual gp quotes the selection alone, not the whole comment", function()
+    it("visual gq quotes the selection alone, not the whole comment", function()
         local buf, sent = page()
         local row = row_containing(buf, "two") -- the comment's second body line
         assert.is_truthy(row)
@@ -1182,7 +1252,7 @@ describe("pr overview commenting", function()
         vim.cmd("normal! V")
         assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
 
-        assert.is_true(fire_lhs(buf, "gp", "x"))
+        assert.is_true(fire_lhs(buf, "gq", "x"))
         assert.are.same(
             { "> @kim wrote:", "> two", "", "" },
             vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
@@ -1194,7 +1264,7 @@ describe("pr overview commenting", function()
         end))
     end)
 
-    it("visual gp inside a thread box quotes into a reply, spine stripped", function()
+    it("visual gq inside a thread box quotes into a reply, spine stripped", function()
         local buf, sent = page()
         local row = row_containing(buf, "please fix")
         assert.is_truthy(row)
@@ -1203,7 +1273,7 @@ describe("pr overview commenting", function()
         vim.cmd("normal! V")
         assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
 
-        assert.is_true(fire_lhs(buf, "gp", "x"))
+        assert.is_true(fire_lhs(buf, "gq", "x"))
         assert.are.same(
             { "> @reviewer wrote:", "> please fix", "", "" },
             vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)

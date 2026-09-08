@@ -169,7 +169,8 @@ local function verdict_of(item)
 end
 
 -- build the overview buffer content. `anchors` maps each thread item to its 1-based
--- row span ({ row_start, row_end, thread_id, author, path, side, line }), so <CR> in
+-- row span ({ row_start, row_end, thread_id, author, comments, path, side, line }),
+-- `comments` being a span per rendered comment for quoting, so <CR> in
 -- the section can jump to the code anchor, and reply into the thread. `quotes` does the
 -- same for the flat sections ({ row_start, row_end, author, body }), which have no
 -- thread to reply into. a highlight is { row, col_start, col_end, hl }, 0-based
@@ -265,6 +266,9 @@ function M.build(data, opts)
     local function render_thread(item)
         local row_start = #lines + 1
         local expanded = item.thread_id ~= nil and expanded_ids[item.thread_id] == true
+        -- one row span per rendered comment, so the vim layer can quote the one under
+        -- the cursor rather than always the root once gc has expanded the replies
+        local comments = {}
         local header = {
             { TOP, "differOverviewMeta" },
             { "@" .. (item.author or "?"), "differOverviewAuthor" },
@@ -322,11 +326,19 @@ function M.build(data, opts)
             end
             push_body(item.body)
         end
+        -- the root owns everything from the top rule down: its header, hunk and body
+        comments[1] = {
+            row_start = row_start,
+            row_end = #lines,
+            author = item.author,
+            body = item.body,
+        }
         -- expanded: each reply under its own spine sub-header, mirroring the diff
         -- overlay's shape, so the same thread reads the same way in both places
         if expanded then
             for i = 2, #(item.comments or {}) do
                 local c = item.comments[i]
+                local reply_start = #lines + 1
                 push({ { "│", "differOverviewMeta" } })
                 push({
                     { SPINE, "differOverviewMeta" },
@@ -334,6 +346,12 @@ function M.build(data, opts)
                     { " · " .. reltime(c.created_at or ""), "differOverviewMeta" },
                 })
                 push_body(c.body or "")
+                comments[#comments + 1] = {
+                    row_start = reply_start,
+                    row_end = #lines,
+                    author = c.author,
+                    body = c.body,
+                }
             end
         end
         -- the footer's reply count means one thing only: replies you can't see. once
@@ -356,6 +374,7 @@ function M.build(data, opts)
             row_end = #lines,
             thread_id = item.thread_id,
             author = item.author,
+            comments = comments,
             path = item.path,
             side = item.side,
             line = item.line,

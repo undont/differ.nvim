@@ -158,10 +158,11 @@ end
 -- acts on a stale session. e enters the review (panel + diff), r enters and also starts
 -- a github draft review, q backs into the review when one is open, gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it opens
--- the url. ga comments on the PR and gp answers whatever is under the cursor: a plain
--- reply into a thread, which needs no quote to say what it answers, and a quoting one
--- where there is no thread (visual gp quotes the selection either way). ]t/[t hop
--- between thread boxes; g? floats the cheatsheet
+-- the url. ga comments on the PR; gp and gq answer what the cursor is on, the cursor
+-- deciding where it goes (into the thread box it sits in, else a new PR comment, which
+-- is all github offers off a thread) and the key deciding whether it opens with a quote
+-- (v_gq quoting the selection alone). ]t/[t hop between thread boxes; g? floats the
+-- cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -249,8 +250,8 @@ local function set_keymaps(b)
             " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
             " ga         comment on the PR",
-            " gp         reply into the thread here, or quote a plain comment into a new one",
-            " v_gp       the same, quoting the selection rather than the whole comment",
+            " gp / gq    answer what's under the cursor, gq opening with a quote of it",
+            " v_gq       the same, quoting the selection rather than the whole comment",
             " gc         show / hide the replies of the thread under the cursor",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
@@ -301,21 +302,32 @@ local function set_keymaps(b)
             end,
         })
     end
-    -- the flat timeline section whose row span covers `row`, or nil. these are the
-    -- quote targets: github doesn't thread conversation comments or review verdicts, so
-    -- an answer is a new comment that says what it is answering
+    -- where an answer to `row` goes, and what quoting it would quote. a thread box
+    -- answers into the thread, and carries the comment the row sits in (the root, or a
+    -- reply once gc has expanded them); anything else has no thread, so github can only
+    -- take a new PR comment. nil off every section
     ---@param row integer
-    ---@return table|nil
-    local function quote_at(row)
+    ---@return { thread_id?: string, author?: string, body?: string }|nil
+    local function target_at(row)
+        local a = anchor_at_row(row)
+        if a and a.thread_id then
+            local c = nil
+            for _, span in ipairs(a.comments or {}) do
+                if row >= span.row_start and row <= span.row_end then
+                    c = span
+                    break
+                end
+            end
+            c = c or (a.comments or {})[1] or {}
+            return { thread_id = a.thread_id, author = c.author, body = c.body }
+        end
         for _, q in ipairs(quotes or {}) do
             if row >= q.row_start and row <= q.row_end then
-                return q
+                return { author = q.author, body = q.body }
             end
         end
     end
-    -- `lines` as a markdown blockquote attributed to @author, ready to type under. the
-    -- page is chronological, so a reply lands at the bottom and the attribution is the
-    -- only thing saying what it answers
+    -- `lines` as a markdown blockquote attributed to @author, ready to type under
     ---@param author string|nil
     ---@param lines string[]
     ---@return string
@@ -328,19 +340,30 @@ local function set_keymaps(b)
         out[#out + 1] = ""
         return table.concat(out, "\n")
     end
-    -- reply into `thread_id`, prefilled with `initial` when quoting. joins the draft
-    -- when a review is in progress, like the diff's gp
+    -- answer `target`, prefilled with `initial`. a thread target replies into the thread,
+    -- joining the draft when a review is in progress (like the diff's gp); everything
+    -- else becomes a new PR comment, which is all github offers there
     ---@param s table
-    ---@param thread_id string
+    ---@param target table
     ---@param initial string|nil
-    local function reply_to_thread(s, thread_id, initial)
+    local function answer(s, target, initial)
+        if not target.thread_id then
+            return compose(s, {
+                title = "Comment on the PR (posts immediately)",
+                done = "comment posted",
+                initial = initial,
+                send = function(body, cb)
+                    client.post_issue_comment(s.pr, body, cb)
+                end,
+            })
+        end
         local draft = s.review_id and s.review_id ~= ""
         compose(s, {
             title = draft and "Reply (draft)" or "Reply (posts immediately)",
             done = draft and "reply added to your review draft" or "reply posted",
             initial = initial,
             send = function(body, cb)
-                local args = { in_reply_to = thread_id, body = body }
+                local args = { in_reply_to = target.thread_id, body = body }
                 if draft then
                     args.review_id = s.review_id
                 end
@@ -355,41 +378,23 @@ local function set_keymaps(b)
             end,
         })
     end
-    -- answer a flat section: a new conversation comment opening with the quote
-    ---@param s table
-    ---@param initial string
-    local function quote_reply(s, initial)
-        compose(s, {
-            title = "Quote reply (posts immediately)",
-            done = "comment posted",
-            initial = initial,
-            send = function(body, cb)
-                client.post_issue_comment(s.pr, body, cb)
-            end,
-        })
-    end
-    -- gp: answer whatever the cursor is on. a thread box replies into the thread; a
-    -- conversation comment or review verdict has no thread to reply into, so it quotes
-    -- into a new comment instead
-    local function reply()
+    -- gp / gq: answer what the cursor is on, gq opening with a quote of it. the
+    -- destination is the cursor's to decide, the quote the key's
+    ---@param quote boolean
+    local function respond(quote)
         local s = live()
         if not s then
             return
         end
-        local a = anchor_at_cursor()
-        if a and a.thread_id then
-            return reply_to_thread(s, a.thread_id)
+        local target = target_at(vim.api.nvim_win_get_cursor(0)[1])
+        if not target then
+            return require("differ.pr").notify("nothing here to answer; ga comments on the PR")
         end
-        local q = quote_at(vim.api.nvim_win_get_cursor(0)[1])
-        if not q then
-            return require("differ.pr").notify("nothing here to reply to; ga comments on the PR")
-        end
-        quote_reply(s, quoted(q.author, split_body(q.body)))
+        answer(s, target, quote and quoted(target.author, split_body(target.body)) or nil)
     end
-    -- gp (visual): quote just the selected lines rather than the whole comment, then
-    -- route as above. the box chrome is stripped so a selection inside a thread reads as
-    -- the comment text it is
-    local function reply_selection()
+    -- gq (visual): quote the selected lines alone. the box chrome is stripped so a
+    -- selection inside a thread reads as the comment text it is
+    local function respond_selection()
         local s = live()
         if not s then
             return
@@ -401,19 +406,15 @@ local function set_keymaps(b)
             false
         )
         local lo, hi = math.min(r1, r2), math.max(r1, r2)
+        local target = target_at(lo)
+        if not target then
+            return require("differ.pr").notify("nothing here to answer; ga comments on the PR")
+        end
         local picked = {}
         for _, l in ipairs(vim.api.nvim_buf_get_lines(b, lo - 1, hi, false)) do
             picked[#picked + 1] = strip_chrome(l)
         end
-        local a = anchor_at_row(lo)
-        if a and a.thread_id then
-            return reply_to_thread(s, a.thread_id, quoted(a.author, picked))
-        end
-        local q = quote_at(lo)
-        if not q then
-            return require("differ.pr").notify("nothing here to reply to; ga comments on the PR")
-        end
-        quote_reply(s, quoted(q.author, picked))
+        answer(s, target, quoted(target.author, picked))
     end
     -- gc: show or hide the replies of the thread box under the cursor, matching the
     -- diff's collapse key. the page is rebuilt from what it already holds, so no fetch
@@ -431,8 +432,13 @@ local function set_keymaps(b)
     vim.keymap.set("n", "gc", toggle_replies, opts)
     vim.keymap.set("n", "gx", open_url, opts)
     vim.keymap.set("n", "ga", comment, opts)
-    vim.keymap.set("n", "gp", reply, opts)
-    vim.keymap.set("x", "gp", reply_selection, opts)
+    vim.keymap.set("n", "gp", function()
+        respond(false)
+    end, opts)
+    vim.keymap.set("n", "gq", function()
+        respond(true)
+    end, opts)
+    vim.keymap.set("x", "gq", respond_selection, opts)
     vim.keymap.set("n", "<CR>", select_or_url, opts)
     vim.keymap.set("n", "e", function()
         enter(false)

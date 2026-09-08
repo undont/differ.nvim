@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- The PR overview can now be commented on without leaving it: `ga` posts a comment on the pull request, and `gp` answers whatever is under the cursor, replying into a code thread or quoting a conversation comment into a new one. In visual mode `gp` quotes just the selection either way
+- The PR overview can now be commented on without leaving it. `ga` posts a comment on the pull request, and `gp`/`gq` answer what's under the cursor: into that code thread, or as a new PR comment where GitHub offers no threading. `gq` opens with the comment quoted, and in visual mode quotes just the selection
 - `gc` on the PR overview shows or hides a thread's replies, which were previously only reachable by entering the review
 
 ### Changed
