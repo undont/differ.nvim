@@ -1,11 +1,15 @@
 local overview = require("differ.ui.overview")
 
 -- inject a deterministic reltime so the golden lines don't depend on the clock
-local function build(data)
+---@param data table
+---@param opts table|nil  -- the build opts the caller varies, over the fixed reltime
+local function build(data, opts)
+    opts = opts or {}
     return overview.build(data, {
         reltime = function(ts)
             return ts
         end,
+        expanded = opts.expanded,
     })
 end
 
@@ -213,6 +217,7 @@ end)
 describe("ui.overview.build (thread sections + anchors)", function()
     local function thread_data(over)
         local t = extend({
+            thread_id = "PRRT_1",
             path = "lua/differ/init.lua",
             side = "RIGHT",
             line = 12,
@@ -266,6 +271,7 @@ describe("ui.overview.build (thread sections + anchors)", function()
         local built = build(thread_data())
         assert.are.equal(1, #built.anchors)
         local a = built.anchors[1]
+        assert.are.equal("PRRT_1", a.thread_id) -- the reply target gp posts into
         assert.are.equal("lua/differ/init.lua", a.path)
         assert.are.equal("RIGHT", a.side)
         assert.are.equal(12, a.line)
@@ -277,6 +283,45 @@ describe("ui.overview.build (thread sections + anchors)", function()
         assert.are.equal(row_of(built, "└─ ↳ 1 reply"), a.row_end)
     end)
 
+    it("hides the replies until the thread is expanded", function()
+        local built = build(thread_data())
+        assert.is_truthy(row_of(built, "│ first line"))
+        assert.is_nil(row_of(built, "│ ack"))
+        assert.is_truthy(row_of(built, "└─ ↳ 1 reply"))
+    end)
+
+    it("expanded, each reply gets its own spine sub-header and body", function()
+        local built = build(thread_data(), { expanded = { PRRT_1 = true } })
+        assert.is_truthy(row_of(built, "│ first line"))
+        assert.is_truthy(row_of(built, "│ @a · 2026-01-02T00:00:00Z"))
+        assert.is_truthy(row_of(built, "│ ack"))
+    end)
+
+    -- the count only ever means "replies you can't see", so it goes once they're shown
+    it("expanded, the footer drops the reply count", function()
+        local built = build(thread_data(), { expanded = { PRRT_1 = true } })
+        assert.is_nil(row_of(built, "└─ ↳ 1 reply"))
+        assert.is_truthy(row_of(built, "└─ ")) -- the bare rule, count gone
+    end)
+
+    it("expanded, a capped comment list says how many it is showing", function()
+        local built =
+            build(thread_data({ comments_truncated = true }), { expanded = { PRRT_1 = true } })
+        assert.is_truthy(row_of(built, "└─ ↳ showing the first 2"))
+    end)
+
+    it("the expanded set keys on the thread node id, not its position", function()
+        local built = build(thread_data(), { expanded = { PRRT_other = true } })
+        assert.is_nil(row_of(built, "│ ack"))
+    end)
+
+    -- gp quotes a flat section, so the builder has to say where each one sits and what
+    -- it holds; a thread section is answered by replying, so it is not a quote target
+    it("records no quote span for a thread section", function()
+        local built = build(thread_data())
+        assert.are.same({}, built.quotes)
+    end)
+
     it("returns an empty anchor list without threads", function()
         local built = build({
             meta = BASE_META,
@@ -285,6 +330,71 @@ describe("ui.overview.build (thread sections + anchors)", function()
             timeline = { comments = {}, reviews = {} },
         })
         assert.are.same({}, built.anchors)
+    end)
+end)
+
+describe("ui.overview.build (quote spans)", function()
+    local function flat_data()
+        return {
+            meta = BASE_META,
+            unresolved = 0,
+            total_threads = 0,
+            timeline = {
+                comments = {
+                    { author = "kim", body = "one\ntwo", created_at = "2026-01-01T00:00:00Z" },
+                },
+                reviews = {
+                    {
+                        author = "sam",
+                        state = "APPROVED",
+                        body = "lgtm",
+                        created_at = "2026-01-02T00:00:00Z",
+                    },
+                },
+            },
+        }
+    end
+
+    it("spans each flat section from its header to its last body row", function()
+        local built = build(flat_data())
+        assert.are.equal(2, #built.quotes)
+        local q = built.quotes[1]
+        assert.are.equal("kim", q.author)
+        assert.are.equal("one\ntwo", q.body)
+        assert.are.equal(
+            row_of(built, "── @kim commented · 2026-01-01T00:00:00Z ──"),
+            q.row_start
+        )
+        assert.are.equal(row_of(built, "two"), q.row_end)
+    end)
+
+    it("makes a review verdict quotable too, body and all", function()
+        local built = build(flat_data())
+        local q = built.quotes[2]
+        assert.are.equal("sam", q.author)
+        assert.are.equal("lgtm", q.body)
+        assert.are.equal(row_of(built, "lgtm"), q.row_end)
+    end)
+
+    it("spans a bodyless section over its header alone", function()
+        local built = build({
+            meta = BASE_META,
+            unresolved = 0,
+            total_threads = 0,
+            timeline = {
+                comments = {},
+                reviews = {
+                    {
+                        author = "sam",
+                        state = "APPROVED",
+                        body = "",
+                        created_at = "2026-01-02T00:00:00Z",
+                    },
+                },
+            },
+        })
+        assert.are.equal(1, #built.quotes)
+        assert.are.equal(built.quotes[1].row_start, built.quotes[1].row_end)
     end)
 end)
 

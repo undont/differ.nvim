@@ -32,6 +32,7 @@ var mutationConstants = []struct {
 	{"addThreadMutation", addThreadMutation},
 	{"deleteCommentMutation", deleteCommentMutation},
 	{"addThreadReplyMutation", addThreadReplyMutation},
+	{"addIssueCommentMutation", addIssueCommentMutation},
 	{"resolveThreadMutation", resolveThreadMutation},
 	{"unresolveThreadMutation", unresolveThreadMutation},
 	{"markFileViewedMutation", markFileViewedMutation},

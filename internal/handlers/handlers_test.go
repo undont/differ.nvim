@@ -28,6 +28,7 @@ type mockAPI struct {
 	gotReviewID  string
 	gotEvent     string
 	gotComment   github.PostCommentInput
+	gotBody      string
 	gotThreadID  string
 	gotCommentID string
 	gotResolved  bool
@@ -119,6 +120,13 @@ func (m *mockAPI) PostComment(_ context.Context, _, _ string, number int, in git
 	m.gotNumber = number
 	m.gotComment = in
 	return &github.PostComment{ID: 555, ThreadID: "PRT_1"}, nil
+}
+
+func (m *mockAPI) PostIssueComment(_ context.Context, _, _ string, number int, body string) (*github.PostIssueComment, error) {
+	m.called = true
+	m.gotNumber = number
+	m.gotBody = body
+	return &github.PostIssueComment{ID: 777}, nil
 }
 
 func (m *mockAPI) DeleteComment(_ context.Context, commentID string) error {
@@ -384,6 +392,48 @@ func TestPostCommentReplyRoutes(t *testing.T) {
 	}
 	if m.gotComment.InReplyTo != "PRT_5" {
 		t.Errorf("reply not forwarded: %+v", m.gotComment)
+	}
+}
+
+func TestPostIssueCommentRoutes(t *testing.T) {
+	m := &mockAPI{headSHA: "abc123"}
+	res, err := deps(m).postIssueComment(context.Background(), json.RawMessage(
+		`{"owner":"o","repo":"r","number":3,"body":"ship it"}`,
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.gotNumber != 3 || m.gotBody != "ship it" {
+		t.Errorf("params not forwarded: number=%d body=%q", m.gotNumber, m.gotBody)
+	}
+	if pc := res.(*github.PostIssueComment); pc.ID != 777 {
+		t.Errorf("result not forwarded: %+v", pc)
+	}
+	// no diff anchor, so nothing for a moved head to invalidate
+	if m.headCalled {
+		t.Error("a conversation comment must not pay for the head round-trip")
+	}
+}
+
+func TestPostIssueCommentRequiresBody(t *testing.T) {
+	m := &mockAPI{}
+	_, err := deps(m).postIssueComment(context.Background(), json.RawMessage(
+		`{"owner":"o","repo":"r","number":3}`,
+	))
+	wantBadRequest(t, err)
+	if m.called {
+		t.Error("GH must not be called without a body")
+	}
+}
+
+func TestPostIssueCommentRequiresPR(t *testing.T) {
+	m := &mockAPI{}
+	_, err := deps(m).postIssueComment(context.Background(), json.RawMessage(
+		`{"owner":"o","repo":"r","body":"ship it"}`,
+	))
+	wantBadRequest(t, err)
+	if m.called {
+		t.Error("GH must not be called without pr coords")
 	}
 }
 

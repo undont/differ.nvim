@@ -87,7 +87,18 @@ local function default_responses()
             result = { base = { content = "a\nb\nc\n" }, head = { content = "a\nB\nc\n" } },
         },
         get_threads = { result = threads_result() },
-        get_timeline = { result = { comments = {}, reviews = {} } },
+        get_timeline = {
+            result = {
+                comments = {
+                    {
+                        author = "kim",
+                        body = "one\ntwo",
+                        created_at = "2026-01-01T00:00:00Z",
+                    },
+                },
+                reviews = {},
+            },
+        },
         get_checks = { result = { rollup = "SUCCESS", checks = {} } },
     }
 end
@@ -103,9 +114,13 @@ local function fire(buf, desc)
     return false
 end
 
--- fire a buffer-local keymap by its lhs (the overview's <CR>/e/q carry no desc)
-local function fire_lhs(buf, lhs)
-    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+-- fire a buffer-local keymap by its lhs, in `mode` (default normal). the overview's
+-- <CR>/e/q carry no desc, and its gp is bound in visual mode as well
+---@param buf integer
+---@param lhs string
+---@param mode string|nil
+local function fire_lhs(buf, lhs, mode)
+    for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, mode or "n")) do
         if m.lhs == lhs and m.callback then
             m.callback()
             return true
@@ -985,5 +1000,504 @@ describe("stacked-row thread gestures pick a thread rather than assuming the fir
 
         assert.are.equal(0, picked.calls)
         assert.are.equal("gid1", deleted.node_id)
+    end)
+end)
+
+-- the page's own comment gestures: ga opens a PR-level conversation comment, gp
+-- replies into the thread box under the cursor. both compose in the shared split and
+-- re-open the page on success, so the new comment renders from github
+describe("pr overview commenting", function()
+    local restore_all = {}
+    local function track(restore)
+        restore_all[#restore_all + 1] = restore
+    end
+
+    after_each(function()
+        for i = #restore_all, 1, -1 do
+            restore_all[i]()
+        end
+        restore_all = {}
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- like stub_sidecar, but records every (method, params) so a test can assert what
+    -- the gesture put on the wire
+    ---@param responses table
+    ---@return table sent
+    local function record_sidecar(responses)
+        local sent = {}
+        local real = sidecar.request
+        ---@diagnostic disable-next-line: duplicate-set-field
+        sidecar.request = function(method, params, cb)
+            sent[#sent + 1] = { method = method, params = params }
+            local r = responses[method]
+            vim.schedule(function()
+                cb(r and r.err or nil, r and r.result or {})
+            end)
+        end
+        track(function()
+            sidecar.request = real
+        end)
+        return sent
+    end
+
+    -- the first request for `method`, or nil
+    ---@param sent table[]
+    ---@param method string
+    ---@return table|nil
+    local function sent_params(sent, method)
+        for _, req in ipairs(sent) do
+            if req.method == method then
+                return req.params
+            end
+        end
+        return nil
+    end
+
+    -- the compose split's scratch buffer, which open() leaves current
+    ---@return integer
+    local function compose_buf()
+        local buf = vim.api.nvim_get_current_buf()
+        -- the page is markdown/nofile too, so identity is what separates them
+        assert.are_not.equal(overview_buf(), buf)
+        assert.are.equal("markdown", vim.bo[buf].filetype)
+        return buf
+    end
+
+    -- type `body` into the open compose split and submit it
+    ---@param body string
+    local function submit(body)
+        local buf = compose_buf()
+        vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(body, "\n", { plain = true }))
+        assert.is_true(fire(buf, "differ: submit"))
+    end
+
+    -- a live page with the default one-thread fixture, recording what the gestures send
+    ---@return integer bufnr, table sent
+    local function page()
+        track(open_overview(default_responses()))
+        return overview_buf(), record_sidecar(default_responses())
+    end
+
+    it("ga posts a conversation comment on the PR", function()
+        local buf, sent = page()
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("ship it")
+
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        local params = sent_params(sent, "post_issue_comment")
+        assert.are.equal("ship it", params.body)
+        assert.are.equal(7, params.number)
+        -- a conversation comment has no diff anchor, so nothing pins the head
+        assert.is_nil(params.expected_head)
+    end)
+
+    it("ga re-opens the page so the posted comment renders from github", function()
+        local buf = page()
+        local before = vim.api.nvim_buf_get_changedtick(buf)
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("ship it")
+
+        wait_overview(before)
+    end)
+
+    it("an empty body posts nothing", function()
+        local buf, sent = page()
+
+        assert.is_true(fire_lhs(buf, "ga"))
+        submit("")
+
+        assert.is_true(vim.wait(200, function()
+            return #_G.notifs > 0 and _G.notifs[#_G.notifs].msg == "differ: empty comment discarded"
+        end))
+        assert.is_nil(sent_params(sent, "post_issue_comment"))
+    end)
+
+    it("gp on a thread row replies into that thread", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        submit("done")
+
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        local params = sent_params(sent, "post_comment")
+        assert.are.equal("th_1", params.in_reply_to)
+        assert.are.equal("done", params.body)
+        -- a reply targets a thread node id, so no anchor and no head guard
+        assert.is_nil(params.path)
+        assert.is_nil(params.expected_head)
+    end)
+
+    it("gq on a thread quotes its comment into the reply", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gq"))
+        assert.are.same(
+            { "> @reviewer wrote:", "> please fix", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @reviewer wrote:\n> please fix\n\ndone")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        assert.are.equal("th_1", sent_params(sent, "post_comment").in_reply_to)
+    end)
+
+    -- the destination is the cursor's to decide and the quote the key's, so gq off a
+    -- thread lands where gp does: a new comment, since github threads nothing there
+    it("gq on a conversation comment quotes it into a new comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "@kim commented")
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gq"))
+        assert.are.same(
+            { "> @kim wrote:", "> one", "> two", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @kim wrote:\n> one\n> two\n\nsounds right")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    -- once gc has expanded a thread, the quote follows the cursor rather than always
+    -- taking the root comment
+    it("gq on an expanded reply quotes that reply, not the thread's root", function()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[1].comments[#threads[1].comments + 1] = {
+            id = "c2",
+            node_id = "gid2",
+            author = "author",
+            body = "fixed in the next push",
+            created_at = "2026-01-02T00:00:00Z",
+        }
+        responses.get_threads = { result = threads }
+        track(open_overview(responses))
+        local buf = overview_buf()
+        local win = pr.current_session().overview_win
+
+        vim.api.nvim_win_set_cursor(win, {
+            row_containing(buf, "commented on a.txt:" .. THREAD_LINE),
+            0,
+        })
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        local reply_row = row_containing(buf, "fixed in the next push")
+        assert.is_truthy(reply_row)
+        vim.api.nvim_win_set_cursor(win, { reply_row, 0 })
+        assert.is_true(fire_lhs(buf, "gq"))
+
+        assert.are.same(
+            { "> @author wrote:", "> fixed in the next push", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+    end)
+
+    it("gp off any section says so and composes nothing", function()
+        local buf, sent = page()
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+
+        assert.are.equal(
+            "differ: nothing here to answer; ga comments on the PR",
+            _G.notifs[#_G.notifs].msg
+        )
+        assert.are.equal(buf, vim.api.nvim_get_current_buf()) -- no compose split opened
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    -- github threads nothing off a code thread, so gp there is a new PR comment; the
+    -- key never quotes, so it opens empty
+    it("gp on a conversation comment posts an unquoted new comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "@kim commented")
+        assert.is_truthy(row)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        assert.are.same({ "" }, vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false))
+
+        submit("agreed")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+        assert.is_nil(sent_params(sent, "post_comment"))
+    end)
+
+    it("visual gq quotes the selection alone, not the whole comment", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "two") -- the comment's second body line
+        assert.is_truthy(row)
+        vim.api.nvim_set_current_win(pr.current_session().overview_win)
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        vim.cmd("normal! V")
+        assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
+
+        assert.is_true(fire_lhs(buf, "gq", "x"))
+        assert.are.same(
+            { "> @kim wrote:", "> two", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @kim wrote:\n> two\n\nagreed")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_issue_comment") ~= nil
+        end))
+    end)
+
+    it("visual gq inside a thread box quotes into a reply, spine stripped", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "please fix")
+        assert.is_truthy(row)
+        vim.api.nvim_set_current_win(pr.current_session().overview_win)
+        vim.api.nvim_win_set_cursor(0, { row, 0 })
+        vim.cmd("normal! V")
+        assert.are.equal("V", vim.fn.mode()) -- the callback reads the live selection
+
+        assert.is_true(fire_lhs(buf, "gq", "x"))
+        assert.are.same(
+            { "> @reviewer wrote:", "> please fix", "", "" },
+            vim.api.nvim_buf_get_lines(compose_buf(), 0, -1, false)
+        )
+
+        submit("> @reviewer wrote:\n> please fix\n\ndone")
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "post_comment") ~= nil
+        end))
+        assert.are.equal("th_1", sent_params(sent, "post_comment").in_reply_to)
+    end)
+
+    it("a reply drops the cached thread list so the refreshed page carries it", function()
+        local buf, sent = page()
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gp"))
+        submit("done")
+
+        -- the list is memoised per TTL window, so without the invalidation the
+        -- re-opened page would serve the pre-reply threads
+        assert.is_true(vim.wait(1000, function()
+            return sent_params(sent, "get_threads") ~= nil
+        end))
+    end)
+
+    it("gc shows and hides the replies of the thread under the cursor", function()
+        local responses = default_responses()
+        local threads = threads_result()
+        threads[1].comments[#threads[1].comments + 1] = {
+            id = "c2",
+            node_id = "gid2",
+            author = "author",
+            body = "fixed in the next push",
+            created_at = "2026-01-02T00:00:00Z",
+        }
+        responses.get_threads = { result = threads }
+        track(open_overview(responses))
+        local buf = overview_buf()
+
+        -- collapsed: only the root comment, with the count standing in for the rest
+        assert.is_truthy(row_containing(buf, "please fix"))
+        assert.is_nil(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "↳ 1 reply"))
+
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.is_truthy(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "@author · "))
+        -- the count only ever means replies you can't see
+        assert.is_nil(row_containing(buf, "↳ 1 reply"))
+
+        assert.is_true(fire_lhs(buf, "gc"))
+        assert.is_nil(row_containing(buf, "fixed in the next push"))
+        assert.is_truthy(row_containing(buf, "↳ 1 reply"))
+    end)
+
+    it("gc repaints from what the page holds, without refetching", function()
+        track(open_overview(default_responses()))
+        local buf = overview_buf()
+        local sent = record_sidecar(default_responses())
+        local row = row_containing(buf, "commented on a.txt:" .. THREAD_LINE)
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { row, 0 })
+
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.are.equal(0, #sent)
+    end)
+
+    it("gc off a thread row says so", function()
+        track(open_overview(default_responses()))
+        local buf = overview_buf()
+        vim.api.nvim_win_set_cursor(pr.current_session().overview_win, { 1, 0 })
+
+        assert.is_true(fire_lhs(buf, "gc"))
+
+        assert.are.equal("differ: no thread here to expand", _G.notifs[#_G.notifs].msg)
+    end)
+
+    it("the page word-wraps rather than breaking mid-token", function()
+        page()
+        local win = pr.current_session().overview_win
+
+        assert.is_true(vim.wo[win].wrap)
+        assert.is_true(vim.wo[win].linebreak)
+        assert.is_false(vim.wo[win].list) -- linebreak wants list off
+        -- list:-1 indents a continuation per line, by whatever formatlistpat matches
+        assert.is_true(vim.wo[win].breakindent)
+        assert.are.equal("list:-1", vim.wo[win].breakindentopt)
+    end)
+
+    it("a wrapped body clears the thread box spine, and plain prose doesn't indent", function()
+        page()
+        local buf = overview_buf()
+        local pat = vim.bo[buf].formatlistpat
+        local spine = require("differ.ui.overview").SPINE
+
+        -- the wrap indent is measured off the spine the builder actually emits, so a
+        -- body row hangs clear of it while a flat comment stays flush left
+        assert.is_truthy(vim.fn.match(spine .. "a wrapped body", pat) == 0)
+        assert.are.equal(#spine, vim.fn.matchend(spine .. "a wrapped body", pat))
+        assert.are.equal(-1, vim.fn.match("Section aggregate. Each header", pat))
+        -- a markdown bullet still hangs under its own text
+        assert.are.equal(2, vim.fn.matchend("- renamed.txt is a list item", pat))
+    end)
+end)
+
+-- gc's override outranks the cursor, so it has to stop outranking it once the cursor
+-- has gone: otherwise dismissing one peek opts that thread out of peeking for the
+-- session, and there is no third press that gets the cursor-driven default back
+describe("pr diff gc override lifetime", function()
+    local threads = require("differ.pr.threads")
+
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    -- a live review sitting on the thread anchor, with the peek already open
+    ---@return table session, integer bufnr, integer win
+    local function peeking()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            return (pr.current_session().thread_anchors or {})[1] ~= nil
+        end))
+        local buf = focus_thread_anchor(s)
+        threads.on_cursor(s)
+        assert.is_false(threads.collapsed_state(nil, "peek", s.thread_active ~= nil))
+        return s, buf, restore
+    end
+
+    it("gc dismisses the peek for the visit, not for the session", function()
+        local s, buf, restore = peeking()
+        local anchor = s.thread_anchors[1]
+
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        -- step off the anchor: the override has nothing left to outrank
+        vim.api.nvim_win_set_cursor(0, { anchor.row + 1, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        -- and back on: it peeks again rather than staying dismissed
+        vim.api.nvim_win_set_cursor(0, { anchor.row, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        restore()
+    end)
+
+    it("the override stands while the cursor stays on the anchor", function()
+        local s, buf, restore = peeking()
+        local id = threads_result()[1].thread_id
+
+        assert.is_true(fire(buf, "toggle thread"))
+        threads.on_cursor(s) -- same row, so nothing is released
+        assert.is_true(s.thread_collapsed[id])
+
+        assert.is_true(fire(buf, "toggle thread")) -- toggles back within the visit
+        assert.is_false(s.thread_collapsed[id])
+
+        restore()
+    end)
+
+    it("an expanded-mode override stays put, having no cursor default to return to", function()
+        local cfg = require("differ").get_config()
+        local had = cfg.comments.display
+        cfg.comments.display = "expanded"
+        local s, buf, restore = peeking()
+        local anchor = s.thread_anchors[1]
+
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        vim.api.nvim_win_set_cursor(0, { anchor.row + 1, 0 })
+        threads.on_cursor(s)
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        cfg.comments.display = had
+        restore()
+    end)
+end)
+
+-- split has no choice but the marker + float surface, whatever `comments.display` says,
+-- so a config of `expanded` there is still a cursor-driven float and its gc override has
+-- to lapse like any other float's
+describe("pr diff gc override lifetime under a forced marker layout", function()
+    local threads = require("differ.pr.threads")
+
+    after_each(function()
+        if pr.current_session() then
+            pr.end_session()
+        end
+    end)
+
+    it("releases the override in split, even with display = expanded", function()
+        local cfg = require("differ").get_config()
+        local had = cfg.comments.display
+        cfg.comments.display = "expanded"
+
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        assert.is_true(vim.wait(1000, function()
+            return (pr.current_session().thread_anchors or {})[1] ~= nil
+        end))
+        s.view.layout = "split" -- what forces marker mode regardless of the config
+        assert.is_true(threads.marker_mode(s.view))
+
+        local buf = focus_thread_anchor(s)
+        threads.on_cursor(s)
+        assert.is_true(fire(buf, "toggle thread"))
+        assert.is_true(s.thread_collapsed[threads_result()[1].thread_id])
+
+        vim.api.nvim_win_set_cursor(0, { s.thread_anchors[1].row + 1, 0 })
+        threads.on_cursor(s)
+        assert.are.same({}, s.thread_collapsed)
+
+        cfg.comments.display = had
+        restore()
     end)
 end)

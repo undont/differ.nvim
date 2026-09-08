@@ -151,6 +151,16 @@ function M.post_comment(pr, args, cb)
     sidecar.request("post_comment", with_pr(pr, args), cb)
 end
 
+-- post_issue_comment result: {id}. a PR-level conversation comment, posted
+-- immediately: it carries no diff anchor, so it never joins a review draft and there is
+-- no head to guard against
+---@param pr { owner: string, repo: string, number: integer }
+---@param body string
+---@param cb fun(err: table|nil, result: any)
+function M.post_issue_comment(pr, body, cb)
+    sidecar.request("post_issue_comment", with_pr(pr, { body = body }), cb)
+end
+
 -- submit_review result: {id}. finalises the draft as one batch with an event. args:
 -- review_id/event (APPROVE|REQUEST_CHANGES|COMMENT)/body, expected_head?
 ---@param pr { owner: string, repo: string, number: integer }

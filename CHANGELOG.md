@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The PR overview can now be commented on without leaving it. `ga` posts a comment on the pull request, and `gp`/`gq` answer what's under the cursor: into that code thread, or as a new PR comment where GitHub offers no threading. `gq` opens with the comment quoted, and in visual mode quotes just the selection
+- `gc` on the PR overview shows or hides a thread's replies, which were previously only reachable by entering the review
+
+### Fixed
+
+- Long lines on the PR overview broke mid-word. They now wrap at a word, and a wrapped comment body stays inside its thread box
+- A thread's footer counted replies that were already on screen, reading as though more were hidden. The count now appears only when the replies are collapsed
+- `gc` in the PR diff opted a thread out of peeking for the rest of the session, with no way back to the cursor-driven default. It now dismisses or shows the thread for as long as the cursor stays on it, in the split layout too; `comments.display = "expanded"` keeps its toggle, having no peek to return to
+
+## [0.1.42] — 2026-09-07
+
 ### Changed
 
 - The PR overview's `g?` cheatsheet now correctly says that `r` starts a draft review, whilst `e` only enters the review

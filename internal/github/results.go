@@ -180,6 +180,12 @@ type PostComment struct {
 	ReviewID string `json:"review_id,omitempty"`
 }
 
+// PostIssueComment is the post_issue_comment result: the new conversation comment's
+// numeric id. github does not thread these, so there is no thread to report.
+type PostIssueComment struct {
+	ID int64 `json:"id"`
+}
+
 // ResolveThread is the resolve_thread result: the thread's resolved state after the
 // toggle, echoed from GitHub.
 type ResolveThread struct {

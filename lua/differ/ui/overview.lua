@@ -2,9 +2,10 @@
 -- out, no vim state, so it's unit-tested like ui/thread.lua. the timeline merges
 -- comments, review verdicts and code threads and sorts by created_at; relative time is
 -- injected (opts.reltime) to keep the builder deterministic. a thread item carries its
--- code anchor (path/side/line) and `anchors` records the row span of each, so the vim
--- layer can jump from a timeline row into the review. scope guard: comments, verdicts
--- and threads only — no reactions, labels, assignees, or events
+-- code anchor (path/side/line) plus its node id, and `anchors` records the row span of
+-- each, so the vim layer can jump from a timeline row into the review, or reply into the
+-- thread. scope guard: comments, verdicts and threads only — no reactions, labels,
+-- assignees, or events
 
 local M = {}
 
@@ -49,6 +50,10 @@ local TOP = "┌─ "
 local SPINE = "│ "
 local BOT = "└─ "
 local HUNK_INDENT = "   "
+
+-- exported so the page can build the wrap-indent pattern that keeps a wrapped body row
+-- clear of the spine rather than printing over it
+M.SPINE = SPINE
 
 -- a thread's diff-hunk items: the tail of the hunk (it ends at the commented line),
 -- capped to MAX_HUNK and keeping the @@ header + a ⋯ elision marker when truncated, so
@@ -127,6 +132,7 @@ local function timeline(tl)
             local first = (t.comments or {})[1] or {}
             items[#items + 1] = {
                 kind = "thread",
+                thread_id = t.thread_id,
                 author = first.author,
                 body = first.body,
                 ts = first.created_at,
@@ -136,7 +142,9 @@ local function timeline(tl)
                 outdated = t.outdated == true, -- vim.NIL-safe
                 diff_hunk = first.diff_hunk, -- the root comment's, rendered under the header
                 resolved = t.resolved == true, -- vim.NIL-safe
+                comments = t.comments or {}, -- the whole list; only rendered when expanded
                 replies = math.max(0, #(t.comments or {}) - 1),
+                comments_truncated = t.comments_truncated == true, -- vim.NIL-safe
             }
         end
     end
@@ -161,16 +169,20 @@ local function verdict_of(item)
 end
 
 -- build the overview buffer content. `anchors` maps each thread item to its 1-based
--- row span ({ row_start, row_end, path, side, line }), so <CR> anywhere in the section
--- can jump to the code anchor. a highlight is { row, col_start, col_end, hl }, 0-based
+-- row span ({ row_start, row_end, thread_id, author, comments, path, side, line }),
+-- `comments` being a span per rendered comment for quoting, so <CR> in
+-- the section can jump to the code anchor, and reply into the thread. `quotes` does the
+-- same for the flat sections ({ row_start, row_end, author, body }), which have no
+-- thread to reply into. a highlight is { row, col_start, col_end, hl }, 0-based
 ---@param data { meta: table, checks: table|nil, unresolved: integer, total_threads: integer, timeline: table }
----@param opts { reltime?: fun(ts: string): string }|nil
----@return { lines: string[], highlights: table[], anchors: table[], hunks: table[] }
+---@param opts { expanded?: table<string, boolean>, reltime?: fun(ts: string): string }|nil
+---@return { lines: string[], highlights: table[], anchors: table[], quotes: table[], hunks: table[] }
 function M.build(data, opts)
     opts = opts or {}
     local reltime = opts.reltime or function(ts)
         return ts or ""
     end
+    local expanded_ids = opts.expanded or {}
     local meta = data.meta or {}
 
     local lines, highlights = {}, {}
@@ -244,6 +256,7 @@ function M.build(data, opts)
     -- plain comments and verdicts keep the flat ── header ── style
     local anchors = {}
     local hunks = {}
+    local quotes = {}
 
     -- a code thread as a left-spine box: a top-rule header, the root comment's diff hunk
     -- on inset spine rows, the body, a footer rule with the reply count. records the row
@@ -252,6 +265,10 @@ function M.build(data, opts)
     ---@param item table
     local function render_thread(item)
         local row_start = #lines + 1
+        local expanded = item.thread_id ~= nil and expanded_ids[item.thread_id] == true
+        -- one row span per rendered comment, so the vim layer can quote the one under
+        -- the cursor rather than always the root once gc has expanded the replies
+        local comments = {}
         local header = {
             { TOP, "differOverviewMeta" },
             { "@" .. (item.author or "?"), "differOverviewAuthor" },
@@ -297,16 +314,55 @@ function M.build(data, opts)
         if #hunk.lines > 0 and item.path then
             hunks[#hunks + 1] = hunk
         end
+        -- the root comment's body on spine rows
+        local function push_body(body)
+            for _, line in ipairs(split_lines(body)) do
+                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            end
+        end
         if item.body and item.body ~= "" then
             if #items > 0 then
                 push({ { "│", "differOverviewMeta" } }) -- breathing row after the code
             end
-            for _, line in ipairs(split_lines(item.body)) do
-                push({ { SPINE, "differOverviewMeta" }, { line, "differOverviewBody" } })
+            push_body(item.body)
+        end
+        -- the root owns everything from the top rule down: its header, hunk and body
+        comments[1] = {
+            row_start = row_start,
+            row_end = #lines,
+            author = item.author,
+            body = item.body,
+        }
+        -- expanded: each reply under its own spine sub-header, mirroring the diff
+        -- overlay's shape, so the same thread reads the same way in both places
+        if expanded then
+            for i = 2, #(item.comments or {}) do
+                local c = item.comments[i]
+                local reply_start = #lines + 1
+                push({ { "│", "differOverviewMeta" } })
+                push({
+                    { SPINE, "differOverviewMeta" },
+                    { "@" .. (c.author or "?"), "differOverviewAuthor" },
+                    { " · " .. reltime(c.created_at or ""), "differOverviewMeta" },
+                })
+                push_body(c.body or "")
+                comments[#comments + 1] = {
+                    row_start = reply_start,
+                    row_end = #lines,
+                    author = c.author,
+                    body = c.body,
+                }
             end
         end
+        -- the footer's reply count means one thing only: replies you can't see. once
+        -- they're on screen it says nothing, since they speak for themselves
         local footer = { { BOT, "differOverviewMeta" } }
-        if item.replies and item.replies > 0 then
+        if expanded then
+            if item.comments_truncated then
+                footer[#footer + 1] =
+                    { "↳ showing the first " .. #item.comments, "differOverviewMeta" }
+            end
+        elseif item.replies and item.replies > 0 then
             footer[#footer + 1] = {
                 ("↳ %d repl%s"):format(item.replies, item.replies == 1 and "y" or "ies"),
                 "differOverviewMeta",
@@ -316,15 +372,21 @@ function M.build(data, opts)
         anchors[#anchors + 1] = {
             row_start = row_start,
             row_end = #lines,
+            thread_id = item.thread_id,
+            author = item.author,
+            comments = comments,
             path = item.path,
             side = item.side,
             line = item.line,
         }
     end
 
-    -- a plain comment / review verdict as a flat ── header ── with its body below
+    -- a plain comment / review verdict as a flat ── header ── with its body below.
+    -- records its row span in `quotes`: github doesn't thread these, so the only way to
+    -- answer one is a new comment, and the vim layer quotes it to say which
     ---@param item table
     local function render_flat(item)
+        local row_start = #lines + 1
         local v = verdict_of(item)
         push({
             { "── ", "differOverviewMeta" },
@@ -338,6 +400,12 @@ function M.build(data, opts)
                 push({ { line, "differOverviewBody" } })
             end
         end
+        quotes[#quotes + 1] = {
+            row_start = row_start,
+            row_end = #lines,
+            author = item.author,
+            body = item.body,
+        }
     end
 
     for i, item in ipairs(timeline(data.timeline or {})) do
@@ -351,7 +419,13 @@ function M.build(data, opts)
         end
     end
 
-    return { lines = lines, highlights = highlights, anchors = anchors, hunks = hunks }
+    return {
+        lines = lines,
+        highlights = highlights,
+        anchors = anchors,
+        quotes = quotes,
+        hunks = hunks,
+    }
 end
 
 return M

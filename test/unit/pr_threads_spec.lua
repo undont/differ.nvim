@@ -142,3 +142,16 @@ describe("pr.threads.collapsed_state", function()
         assert.is_false(threads.collapsed_state(false, "peek", false))
     end)
 end)
+
+-- what makes a gc override transient: an override outranks the cursor only in the modes
+-- where the cursor is what decides the state in the first place
+describe("pr.threads.cursor_driven", function()
+    it("is true for the modes whose default moves with the cursor", function()
+        assert.is_true(threads.cursor_driven("peek"))
+        assert.is_true(threads.cursor_driven("markers"))
+    end)
+
+    it("is false for expanded, which reads the same either side of the cursor", function()
+        assert.is_false(threads.cursor_driven("expanded"))
+    end)
+end)

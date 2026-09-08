@@ -240,7 +240,7 @@ Set `command_alias` in `setup()` to register a shorter name for the same command
 
 ### PR review
 
-`:Differ pr [<n>]` opens a pull request and lands on the overview, its home page; no argument lists the repo's PRs and picks from them. `owner/repo#<n>` targets another repo, which is how you reach a fork. From the overview, `e` enters the files and `r` enters and starts a review; `<CR>` on a thread jumps straight to that comment's file and line. The review keymaps (`ga` comment, `gp` reply, `gr` resolve, `<Tab>` viewed) are live once you're in the diff.
+`:Differ pr [<n>]` opens a pull request and lands on the overview, its home page; no argument lists the repo's PRs and picks from them. `owner/repo#<n>` targets another repo, which is how you reach a fork. From the overview, `e` enters the files and `r` enters and starts a review; `<CR>` on a thread jumps straight to that comment's file and line. The page writes back too, without leaving it: `ga` comments on the PR, `gc` shows or hides a thread's replies, and `gp`/`gq` answer what's under the cursor. The cursor decides where the answer goes — into the code thread it sits in, or a new PR comment anywhere else, which is all GitHub offers off a thread — and the key decides whether it opens with a quote: `gp` doesn't, `gq` quotes the comment, and visual-mode `gq` quotes just the selection. The review keymaps (`ga` comment, `gp` reply, `gr` resolve, `<Tab>` viewed) are live once you're in the diff.
 
 | Command | Effect |
 |---|---|

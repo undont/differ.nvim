@@ -138,7 +138,10 @@ function M.open(opts)
         end,
     })
 
-    vim.cmd("startinsert")
+    -- land past a prefill (a quote, or the conflict re-prompt's old body) rather than
+    -- above it; startinsert! appends, so an empty buffer still opens at the top
+    pcall(vim.api.nvim_win_set_cursor, win, { vim.api.nvim_buf_line_count(buf), 0 })
+    vim.cmd("startinsert!")
     return { close = shut }
 end
 

@@ -35,6 +35,7 @@ type API interface {
 	SubmitReview(ctx context.Context, reviewID, event, body string) (*github.SubmitReview, error)
 	DiscardReview(ctx context.Context, reviewID string) error
 	PostComment(ctx context.Context, owner, repo string, number int, in github.PostCommentInput) (*github.PostComment, error)
+	PostIssueComment(ctx context.Context, owner, repo string, number int, body string) (*github.PostIssueComment, error)
 	DeleteComment(ctx context.Context, commentID string) error
 	ResolveThread(ctx context.Context, threadID string, resolved bool) (*github.ResolveThread, error)
 	SetFileViewed(ctx context.Context, owner, repo string, number int, path string, viewed bool) (*github.SetFileViewed, error)
@@ -64,6 +65,7 @@ func NewRegistry(d Deps) Registry {
 		"submit_review":      d.submitReview,
 		"discard_review":     d.discardReview,
 		"post_comment":       d.postComment,
+		"post_issue_comment": d.postIssueComment,
 		"delete_comment":     d.deleteComment,
 		"resolve_thread":     d.resolveThread,
 		"set_file_viewed":    d.setFileViewed,
