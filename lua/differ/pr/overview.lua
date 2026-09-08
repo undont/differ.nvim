@@ -158,9 +158,10 @@ end
 -- acts on a stale session. e enters the review (panel + diff), r enters and also starts
 -- a github draft review, q backs into the review when one is open, gx opens the PR url.
 -- <CR> on a thread row enters the review at that thread's file/line; elsewhere it opens
--- the url. ga comments on the PR and gp answers whatever is under the cursor, quoting
--- it when there is no thread to reply into (visual gp quotes the selection alone), both
--- mirroring the diff's keys. ]t/[t hop between thread boxes; g? floats the cheatsheet
+-- the url. ga comments on the PR and gp answers whatever is under the cursor: a plain
+-- reply into a thread, which needs no quote to say what it answers, and a quoting one
+-- where there is no thread (visual gp quotes the selection either way). ]t/[t hop
+-- between thread boxes; g? floats the cheatsheet
 ---@param b integer
 local function set_keymaps(b)
     local function live()
@@ -248,8 +249,8 @@ local function set_keymaps(b)
             " e / r      enter review / enter + start a draft review (thread row: at its file)",
             " <CR>       thread row: jump into the review here, else open the PR url",
             " ga         comment on the PR",
-            " gp         reply here: into the thread, or quoting a plain comment",
-            " {Visual}gp quote just the selection instead of the whole comment",
+            " gp         reply into the thread here, or quote a plain comment into a new one",
+            " v_gp       the same, quoting the selection rather than the whole comment",
             " gc         show / hide the replies of the thread under the cursor",
             " ]t / [t    next / previous thread",
             " gx         open the PR in the browser",
