@@ -268,6 +268,60 @@ describe("panel navigation", function()
         p:close()
     end)
 
+    it("counts an MM file's two rows as one file", function()
+        -- b.lua is staged and edited again, so it lists under both sections. the meter
+        -- counts paths, and both its rows take the same number, so it never steps back
+        local p = panel(nil, {
+            sections = {
+                { title = "Staged", entries = { fe("b.lua") } },
+                { title = "Unstaged", entries = { fe("a.lua"), fe("b.lua") } },
+            },
+        })
+        p:open()
+        assert.are.equal(2, p.file_total)
+        local idx = {}
+        for _, m in ipairs(p.meta) do
+            if m.kind == "file" then
+                idx[#idx + 1] = { m.entry.path, m.file_index }
+            end
+        end
+        assert.are.same({ { "b.lua", 1 }, { "a.lua", 2 }, { "b.lua", 2 } }, idx)
+        p:close()
+    end)
+
+    it("]f / [f step past an MM file's staged row to its unstaged one", function()
+        -- b.lua lists under both sections; a step visits it once, at the Unstaged row,
+        -- so the wrap comes back to a.lua rather than to the staged half of b.lua
+        local function se(path, staged)
+            return { path = path, status = "M", additions = 1, deletions = 0, staged = staged }
+        end
+        local p = panel(nil, {
+            sections = {
+                { title = "Staged", entries = { se("b.lua", true) } },
+                {
+                    title = "Unstaged",
+                    entries = { se("a.lua", false), se("b.lua", false), se("c.lua", false) },
+                },
+            },
+        })
+        p:open()
+        for i, m in ipairs(p.meta) do
+            if m.kind == "file" and m.entry.staged then
+                vim.api.nvim_win_set_cursor(p.winid, { i, 0 })
+            end
+        end
+        local walk = {}
+        for _ = 1, 4 do
+            p:goto_file("next")
+            walk[#walk + 1] = cursor_path(p)
+        end
+        assert.are.same({ "a.lua", "b.lua", "c.lua", "a.lua" }, walk)
+        assert.is_false(p.meta[vim.api.nvim_win_get_cursor(p.winid)[1]].entry.staged)
+        p:goto_file("prev") -- back past b.lua's unstaged row, not into the staged one
+        assert.are.equal("c.lua", cursor_path(p))
+        p:close()
+    end)
+
     it("paints the diff --stat totals as virt_text on the help line", function()
         local p = panel({ fe("a.lua", "M", 31, 1), fe("b.lua", "M", 39, 2) }, { root = "/repo" })
         p:open()

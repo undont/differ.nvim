@@ -100,7 +100,7 @@ local STATUS_HL = {
 ---@field content_width integer|nil  -- column the list + pinned counts occupy; capped under window width for top/bottom
 ---@field lines string[]
 ---@field meta differ.panel.LineMeta[]
----@field file_total integer|nil  -- total files in the change set (fold-independent)
+---@field file_total integer|nil  -- distinct paths in the change set (fold-independent)
 ---@field add_total integer|nil  -- total additions across the change set (diff --stat, on the help line)
 ---@field del_total integer|nil  -- total deletions across the change set
 ---@field augroup integer|nil  -- autocmd group for the external-change refresh
@@ -218,7 +218,7 @@ end
 
 -- move the cursor to `path`'s file row if it's currently rendered, returning whether
 -- it was found; lets :Differ open on the current file rather than the first.
--- a path can hold two rows (an "MM" file lists under Staged and Unstaged), and the
+-- a path can hold two rows (an "RM" file lists under Staged and Unstaged), and the
 -- Staged one comes first; `prefer_unstaged` takes the unstaged row instead, falling
 -- back to the staged one when that's the only pair
 ---@param path string -- repo-relative
@@ -279,15 +279,23 @@ function Panel:render()
     local blocks = {}
     -- absolute file numbering across the whole change set, in display order and
     -- independent of which dirs are folded, so the section counts + winbar meter
-    -- stay accurate when collapsed (entry -> 1-based index)
-    local abs_of, total = {}, 0
-    -- diff --stat totals, summed over every file (fold-independent, like the count)
+    -- stay accurate when collapsed (entry -> 1-based index). a path is counted once
+    -- however many rows carry it: a file changed on both sides (an "RM", renamed in the
+    -- index and edited again) lists under Staged and Unstaged both, and each row takes
+    -- the number of distinct paths at or before it, so the second row repeats the
+    -- first's number rather than adding one and the meter never steps backwards
+    local abs_of, seen, total = {}, {}, 0
+    -- diff --stat totals, summed over every row (fold-independent, like the count):
+    -- a two-row file's pairs change different lines, so both counts stand
     local add_total, del_total = 0, 0
     for bi, sec in ipairs(self.sections) do
         local root, strip = self:_section_root(sec)
         for _, row in ipairs(tree.rows(root, "tree", {})) do -- fully expanded
             if row.kind == "file" then
-                total = total + 1
+                if not seen[row.entry.path] then
+                    seen[row.entry.path] = true
+                    total = total + 1
+                end
                 abs_of[row.entry] = total
                 add_total = add_total + (row.entry.additions or 0)
                 del_total = del_total + (row.entry.deletions or 0)
@@ -344,9 +352,18 @@ function Panel:render()
     end
     self.content_width = width
     self.lines, self.meta = out.lines, out.meta
-    for _, m in ipairs(self.meta) do
+    -- a path listed twice (a two-row file's Staged and Unstaged rows) marks all but its
+    -- last row superseded, so ]f / [f stop once per file and land on the pair with
+    -- work left. the review flow steps by staged state and still sees every row
+    local held = {}
+    for i, m in ipairs(self.meta) do
         if m.kind == "file" then
             m.file_index = abs_of[m.entry]
+            local prev = held[m.entry.path]
+            if prev then
+                self.meta[prev].superseded = true
+            end
+            held[m.entry.path] = i
         end
     end
     -- rows shuffle on every rebuild (a fold toggle, a listing swap, an entry leaving
@@ -831,21 +848,28 @@ end
 -- the next/prev file row from `lnum`. wraps past the ends by default so ]f / [f
 -- stepping is cyclic (you often open mid-list); `wrap == false` bounds it instead,
 -- returning nil at the first/last file so the staging review flow stops at the ends.
--- nil too when there are no file rows at all. the second return reports whether
--- reaching it actually crossed an end, so goto_file can notify on a wrap
+-- `distinct` skips a row whose path is listed again further down, so a step visits a
+-- two-row file once, at its Unstaged row; the review flow leaves it off and walks pairs.
+-- nil when there are no file rows at all. the second return reports whether reaching
+-- it actually crossed an end, so goto_file can notify on a wrap
 ---@param lnum integer
 ---@param direction "next"|"prev"
 ---@param wrap? boolean  -- default true; false stops at the list ends
+---@param distinct? boolean  -- default false; true stops once per path
 ---@return integer|nil row, boolean wrapped
-function Panel:_file_row(lnum, direction, wrap)
+function Panel:_file_row(lnum, direction, wrap, distinct)
     local n = #self.meta
     if n == 0 then
         return nil, false
     end
+    local function lands(i)
+        local m = self.meta[i]
+        return m ~= nil and m.kind == "file" and not (distinct and m.superseded)
+    end
     local step = direction == "prev" and -1 or 1
     local i = lnum + step
     while i >= 1 and i <= n do
-        if self.meta[i] and self.meta[i].kind == "file" then
+        if lands(i) then
             return i, false
         end
         i = i + step
@@ -855,8 +879,7 @@ function Panel:_file_row(lnum, direction, wrap)
     end
     for k = 1, n do
         local j = ((lnum - 1 + step * k) % n) + 1
-        local m = self.meta[j]
-        if m and m.kind == "file" then
+        if lands(j) then
             return j, true
         end
     end
@@ -891,12 +914,12 @@ function Panel:open_nearest(keep_focus)
     return true
 end
 
--- ]f / [f: move to the next/prev file row and open it (lockstep file stepping).
--- wraps at the ends by default (notifying, since it's otherwise not obvious you
--- cycled back rather than simply moved); `wrap == false` (the staging review flow)
--- stops at them instead. `keep_focus` is threaded to `_open` so in-view stepping
--- stays in the diff window. returns whether a file was actually opened (false at a
--- no-wrap list end)
+-- ]f / [f: move to the next/prev file and open it (lockstep file stepping), stopping
+-- once per path rather than once per row. wraps at the ends by default (notifying,
+-- since it's otherwise not obvious you cycled back rather than simply moved);
+-- `wrap == false` (the staging review flow) stops at them instead. `keep_focus` is
+-- threaded to `_open` so in-view stepping stays in the diff window. returns whether a
+-- file was actually opened (false at a no-wrap list end)
 ---@param direction "next"|"prev"
 ---@param keep_focus boolean|nil
 ---@param wrap? boolean  -- default true; false stops at the list ends
@@ -907,7 +930,7 @@ function Panel:goto_file(direction, keep_focus, wrap)
     local from = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1]
         or self.selected_row
         or self:_first_file_line()
-    local i, wrapped = self:_file_row(from, direction, wrap)
+    local i, wrapped = self:_file_row(from, direction, wrap, true)
     if not i then
         return false
     end

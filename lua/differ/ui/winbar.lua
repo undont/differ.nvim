@@ -90,9 +90,10 @@ function M.panel()
     if not (panel and panel.winid == win) then
         return ""
     end
-    -- total = every file in the change set (fold-independent), not just the rows
-    -- currently visible; idx = the fold-independent number of the file at/before the
-    -- cursor, so the meter stays accurate when dirs are collapsed
+    -- total = every distinct path in the change set (fold-independent), not just the
+    -- rows currently visible; idx = the fold-independent number of the file at/before
+    -- the cursor, so the meter stays accurate when dirs are collapsed. a file listed
+    -- under two sections holds two rows and one number, so the total counts it once
     local total = panel.file_total or 0
     if total == 0 then
         return ""
