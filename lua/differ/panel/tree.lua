@@ -11,6 +11,7 @@ local M = {}
 ---@field additions integer
 ---@field deletions integer
 ---@field staged boolean|nil       -- which local section it belongs to
+---@field partial boolean|nil      -- one row for a file half in the index; diffs HEAD↔worktree
 ---@field previous_path string|nil -- renames/copies
 ---@field viewed boolean|nil       -- PR only
 

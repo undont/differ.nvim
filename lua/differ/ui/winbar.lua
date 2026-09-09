@@ -70,9 +70,18 @@ function M.diff()
     -- while reviewing (not just in the compose window)
     local draft = require("differ.pr").review_status(buf)
     local badge = draft and ("%#differReviewDraft#● " .. draft .. "%*   ") or ""
-    return (" %s %%=%s%s hunk %d/%d "):format(
+    -- a union source's hunk can hold lines the index has and lines it doesn't. the dim
+    -- shade already says which lines those are; this says the hunk as a whole is mixed,
+    -- so s and u both still have something to do on it. staged and unstaged say nothing
+    -- here, the shading being the whole story for them
+    local mixed = ""
+    if k > 0 and view.staging and view.staging.marks and view:_hunk_state(k) == "partial" then
+        mixed = "%#differPanelContext#partial%*  "
+    end
+    return (" %s %%=%s%s%s hunk %d/%d "):format(
         esc(vim.fn.fnamemodify(view.model.path, ":t")),
         badge,
+        mixed,
         HUNK_MARK,
         k,
         total

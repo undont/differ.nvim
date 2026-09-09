@@ -90,6 +90,7 @@ local armed_view = nil
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
 ---@field settle? fun(): boolean  -- post-op: re-target the view when this pair emptied
+---@field marks? differ.union.Marks  -- union source: which lines the index already holds
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -179,9 +180,18 @@ function View.new(model, opts)
 end
 
 -- seed staged state for the current source: a staged diff (HEAD↔index) opens with
--- everything staged, an unstaged diff (index↔worktree) with nothing
+-- everything staged, an unstaged diff (index↔worktree) with nothing. a union source
+-- (HEAD↔worktree) carries neither, so its hunks read their state off the marks, where
+-- a hunk counts as staged only when the index already holds every line of it
 function View:_init_staged()
     self.staged_hunks = {}
+    local marks = self.staging and self.staging.marks
+    if marks then
+        for i, state in ipairs(marks.hunks) do
+            self.staged_hunks[i] = state == "staged"
+        end
+        return
+    end
     if not (self.staging and self.staging.initial == "staged") then
         return
     end
@@ -342,7 +352,7 @@ function View:_paint_staged()
         vim.api.nvim_buf_clear_namespace(col.bufnr, staged_ns, 0, -1)
         local staged_lines = {}
         for i, line in ipairs(col.map.lines) do
-            if line.hunk and self.staged_hunks[self:_slot(line.hunk)] then
+            if self:_line_staged(line) then
                 local row = i - 1
                 -- char-level fill with hl_eol, not line_hl_group: a line_hl_group covers
                 -- the text but loses the past-EOL tail to the diff bg's own hl_eol (it
@@ -432,10 +442,7 @@ function View:_paint_cursorline()
     -- a staged line is recoloured above the live word spans (210/215); lift the cursor
     -- tint over that so the focused line still lights up in its kind. on a normal line
     -- stay under the word spans (200) so changed words show through under the cursor
-    local staged = self.can_stage
-        and line
-        and line.hunk
-        and self.staged_hunks[self:_slot(line.hunk)]
+    local staged = self.can_stage and line ~= nil and self:_line_staged(line)
     vim.api.nvim_buf_set_extmark(col.bufnr, cursor_ns, row, 0, {
         end_row = row + 1,
         end_col = 0,
@@ -1134,6 +1141,42 @@ function View:_slot(h)
     return h
 end
 
+-- whether a rail line's content is already in the index. a union source knows this per
+-- line, so a part-staged hunk paints as the lines the index holds rather than all or
+-- nothing; every other source only knows it per hunk
+---@param line differ.RailLine
+---@return boolean
+function View:_line_staged(line)
+    if not line.hunk then
+        return false
+    end
+    local marks = self.staging and self.staging.marks
+    if not marks then
+        return self.staged_hunks[self:_slot(line.hunk)] or false
+    end
+    if line.kind == "old" then
+        return marks.old[line.old] or false
+    end
+    if line.kind == "new" then
+        return marks.new[line.new] or false
+    end
+    return false
+end
+
+-- a hunk's staged state. only a union source has a middle: a hunk git merged out of a
+-- change staged and another made after it holds some lines the index has and some it
+-- doesn't, and s and u both have work to do on it
+---@param idx integer
+---@return "staged"|"partial"|"unstaged"
+function View:_hunk_state(idx)
+    local marks = self.staging and self.staging.marks
+    local state = marks and marks.hunks[idx]
+    if state then
+        return state
+    end
+    return self.staged_hunks[idx] and "staged" or "unstaged"
+end
+
 -- the slot the staging keys act on: slot 1 for a whole-file source, backed by a hunk
 -- or not; anything else takes the hunk under the cursor
 ---@return integer|nil
@@ -1173,7 +1216,7 @@ function View:stage_hunk()
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_target_index()
-    if idx and not (self.staged_hunks[idx] or false) then
+    if idx and self:_hunk_state(idx) ~= "staged" then
         self:_toggle_hunk(true)
     else
         self:_step_review("next")
@@ -1187,7 +1230,7 @@ function View:unstage_hunk()
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_target_index()
-    if idx and (self.staged_hunks[idx] or false) then
+    if idx and self:_hunk_state(idx) ~= "unstaged" then
         self:_toggle_hunk(false)
     else
         self:_step_review("prev")
@@ -1269,13 +1312,19 @@ function View:_toggle_hunk(want_staged)
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
-    if (self.staged_hunks[idx] or false) == want_staged then
+    -- a partial hunk is neither, and both keys have something to do on it: s takes the
+    -- lines the index is missing, u gives back the ones it holds
+    local state = self:_hunk_state(idx)
+    if state == (want_staged and "staged" or "unstaged") then
         return vim.notify(
             "differ: hunk already " .. (want_staged and "staged" or "unstaged"),
             vim.log.levels.INFO
         )
     end
     if self:_apply_hunk(idx, want_staged) then
+        if self.staging.marks then
+            self:_init_staged() -- the op re-read the pairs; take the hunk states off them
+        end
         self.staging.refresh()
         -- that may have taken this pair's last hunk, in which case the session re-sources
         -- the view onto the file's surviving pair and there's nothing here left to paint
@@ -1434,8 +1483,10 @@ function View:revert_hunk()
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
     -- on an unstaged diff a marked hunk is already in the index, so reverting only the
-    -- worktree copy would leave the two differing the opposite way round
-    if self.model.new_rev == "WORKTREE" and self.staged_hunks[idx] then
+    -- worktree copy would leave the two differing the opposite way round. a union source
+    -- reverts both sides in one go, so it has no such half state to fall into
+    local union = self.staging.marks ~= nil
+    if self.model.new_rev == "WORKTREE" and not union and self.staged_hunks[idx] then
         return vim.notify(
             "differ: hunk is staged; unstage it (u) before reverting",
             vim.log.levels.WARN

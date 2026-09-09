@@ -657,12 +657,53 @@ function M.file_entries(source, root)
     return out
 end
 
--- working-tree status as panel sections: Staged / Unstaged / Untracked
+-- the three models a half-staged file needs: HEAD↔worktree to show, and the two real
+-- pairs to derive its marks from. built from blobs rather than `git diff` so all three
+-- come off one read of each side
+---@param root string
+---@param path string
+---@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
+function M.union_models(root, path)
+    local build = require("differ.model.diff").build
+    local head = M.read(HEAD, root, path) or ""
+    local index = M.read(INDEX, root, path) or ""
+    local work = M.read(WORKTREE, root, path) or ""
+    local function pair(old_rev, new_rev, old_text, new_text)
+        return build({
+            path = path,
+            old_rev = old_rev,
+            new_rev = new_rev,
+            old_text = old_text,
+            new_text = new_text,
+            root = root,
+        })
+    end
+    return pair("HEAD", "WORKTREE", head, work),
+        pair("HEAD", "INDEX", head, index),
+        pair("INDEX", "WORKTREE", index, work)
+end
+
+-- whether a file modified in both the index and the worktree can be shown as one
+-- HEAD↔worktree diff. it can't when half-staged content would fall outside that diff
+-- entirely, and then the file keeps its two rows, where nothing is hidden
+---@param root string
+---@param path string
+---@return boolean
+local function unifiable(root, path)
+    local union, cached, unstaged = M.union_models(root, path)
+    if union.binary then
+        return false
+    end
+    return (require("differ.union.marks").complete(union.hunks, cached.hunks, unstaged.hunks))
+end
+
+-- working-tree status as panel sections: Staged / Partial / Unstaged / Untracked
 -- (slice B). git status compares HEAD/index/worktree, so it only models the
 -- default HEAD-vs-worktree source; rev-pair sources use file_entries instead.
--- a file edited in both index and worktree (e.g. "MM") appears in both Staged
--- (X status, HEAD↔index counts) and Unstaged (Y status, index↔worktree counts).
--- empty sections are dropped by the caller
+-- a file modified in both the index and the worktree takes one Partial row diffing
+-- HEAD↔worktree, so the whole change reads at once; any other combination of two
+-- statuses (an "RM", an "AM") keeps a row per pair, as does an "MM" the union diff
+-- cannot show whole. empty sections are dropped by the caller
 ---@param root string
 ---@return differ.panel.Section[] sections, string|nil err
 function M.status_sections(root)
@@ -670,9 +711,22 @@ function M.status_sections(root)
     local entries = rev.parse_status(out or "")
     local staged_counts = numstat({ "--cached" }, root)
     local unstaged_counts = numstat({}, root)
-    local staged, unstaged, untracked = {}, {}, {}
+    local head_counts = numstat({ "HEAD" }, root)
+    local staged, partial, unstaged, untracked = {}, {}, {}, {}
     for _, s in ipairs(entries) do
-        if s.x == "?" then
+        if s.x == "M" and s.y == "M" and unifiable(root, s.path) then
+            -- one row, counted against HEAD: that is the diff the row opens, and the
+            -- section already says the file is only part staged
+            local c = head_counts[s.path] or {}
+            partial[#partial + 1] = {
+                path = s.path,
+                status = "M",
+                additions = c.additions or 0,
+                deletions = c.deletions or 0,
+                staged = false,
+                partial = true,
+            }
+        elseif s.x == "?" then
             untracked[#untracked + 1] = {
                 path = s.path,
                 status = "?",
@@ -709,6 +763,7 @@ function M.status_sections(root)
     end
     local sections = {
         { title = "Staged", entries = staged },
+        { title = "Partial", entries = partial },
         { title = "Unstaged", entries = unstaged },
         { title = "Untracked", entries = untracked },
     }
@@ -733,6 +788,34 @@ local function git_ok(args, cwd, what)
         return false
     end
     return true
+end
+
+-- point `path`'s index entry at `text`, keeping its mode. the caller has already
+-- worked out the exact content the index should hold, so this writes a blob and moves
+-- the entry rather than applying a patch: no header to compute, no offset to carry, and
+-- nothing that can half-apply. `text` must already be in index domain (M.read runs the
+-- worktree side through the clean filter), so the blob is stored verbatim
+---@param root string
+---@param path string
+---@param text string
+---@return boolean ok
+local function write_index(root, path, text)
+    local listed = git({ "ls-files", "-s", "--", path }, root)
+    local mode = listed and listed:match("^(%d+)%s")
+    if not mode then
+        notify(("%s has no index entry to update"):format(path), vim.log.levels.ERROR)
+        return false
+    end
+    local hashed = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
+        cwd = root,
+        stdin = text,
+    }):wait()
+    if hashed.code ~= 0 or not hashed.stdout then
+        notify(("staging %s failed: %s"):format(path, hashed.stderr or ""), vim.log.levels.ERROR)
+        return false
+    end
+    local spec = ("%s,%s,%s"):format(mode, chomp(hashed.stdout), path)
+    return git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path)
 end
 
 ---@param root string
@@ -862,7 +945,15 @@ local function live_status(root, entry)
     local out = git(args, root)
     for _, s in ipairs(rev.parse_status(out or "")) do
         if s.path == entry.path then
-            return s.x == "?" and "?" or (entry.staged and s.x or s.y)
+            if s.x == "?" then
+                return "?"
+            end
+            -- a partial row stands for both halves, so it survives as long as either
+            -- side still has a change; its own status is the modification it shows
+            if entry.partial then
+                return (s.x ~= " " or s.y ~= " ") and "M" or nil
+            end
+            return entry.staged and s.x or s.y
         end
     end
     return nil
@@ -1137,8 +1228,14 @@ function M.panel(opts)
     if is_worktree_status(source) then
         sections, list_err = M.status_sections(root)
         model_for = function(entry)
-            local s = entry.staged and { old = HEAD, new = INDEX }
-                or { old = INDEX, new = WORKTREE }
+            local s
+            if entry.partial then
+                s = { old = HEAD, new = WORKTREE }
+            elseif entry.staged then
+                s = { old = HEAD, new = INDEX }
+            else
+                s = { old = INDEX, new = WORKTREE }
+            end
             -- re-read HEAD per build so a branch switch under an open panel updates
             -- the synthetic buffer's statusline label, not just the diff content
             return M.model(s, root, entry, head_branch(root))
@@ -1146,6 +1243,9 @@ function M.panel(opts)
         -- the entry's own pair as `diff` args: staged is HEAD↔index, unstaged
         -- index↔worktree
         raw_args_for = function(entry)
+            if entry.partial then
+                return { "HEAD" }
+            end
             return entry.staged and { "--cached" } or {}
         end
         actions = {
@@ -1300,12 +1400,126 @@ function M.panel(opts)
         return true
     end
 
+    -- a hunk's extent on one side, widened to a single line where it has none, so a
+    -- pure insertion or deletion still overlaps the region it sits in
+    ---@param h differ.Hunk
+    ---@param side "old"|"new"
+    ---@return integer start, integer stop  -- [start, stop)
+    local function extent(h, side)
+        local at, n = h[side .. "_start"], h[side .. "_count"]
+        if n == 0 then
+            return at, at + 1
+        end
+        return at, at + n
+    end
+
+    -- every line of the hunks in `hunks` that do (or don't) meet `[a, b)` on `side`.
+    -- whole hunks either way, so the partial apply never has to split one: at hunk
+    -- granularity the unit staged is already a hunk of the pair being patched
+    ---@param hunks differ.Hunk[]
+    ---@param side "old"|"new"
+    ---@param a integer
+    ---@param b integer
+    ---@param want boolean  -- true picks the hunks that meet the region, false the rest
+    ---@return differ.model.Selection
+    local function select_hunks(hunks, side, a, b, want)
+        local sel = { old = {}, new = {} }
+        for _, h in ipairs(hunks) do
+            local hs, he = extent(h, side)
+            if (hs < b and he > a) == want then
+                for k = 0, h.old_count - 1 do
+                    sel.old[h.old_start + k] = true
+                end
+                for k = 0, h.new_count - 1 do
+                    sel.new[h.new_start + k] = true
+                end
+            end
+        end
+        return sel
+    end
+
+    -- staging for a file shown as one HEAD↔worktree diff. both directions work out the
+    -- content the index should hold and write it whole, rather than patching: staging a
+    -- union hunk means the index takes the worktree's version of the lines it covers,
+    -- and unstaging means the index keeps every staged change except those. the two real
+    -- pairs are re-read per op, so nothing is frozen and no offset is carried
+    ---@param entry differ.FileEntry
+    ---@return differ.view.Staging
+    local function partial_staging(entry)
+        local marks = require("differ.union.marks")
+        local apply_text = require("differ.model.apply").partial
+        -- the view holds this table, so a re-classify writes through it rather than
+        -- replacing it. it keys on the union hunks read back each time rather than the
+        -- ones this source opened with: staging leaves HEAD and the worktree alone, so
+        -- those agree, but a revert rewrites the worktree and takes a hunk out, and the
+        -- marks have to follow the shape the view is left rendering
+        local live = {}
+        local function reclassify()
+            local union, cached, unstaged = M.union_models(root, entry.path)
+            local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
+            live.old, live.new, live.hunks = fresh.old, fresh.new, fresh.hunks
+            return cached, unstaged
+        end
+        reclassify()
+        return {
+            initial = "unstaged",
+            marks = live,
+            refresh = refresh_panel,
+            apply = function(_, hunk, _, reverse)
+                local cached, unstaged = reclassify()
+                local from, sel
+                if reverse then
+                    local a, b = extent(hunk, "old")
+                    from, sel = cached, select_hunks(cached.hunks, "old", a, b, false)
+                else
+                    local a, b = extent(hunk, "new")
+                    from, sel = unstaged, select_hunks(unstaged.hunks, "new", a, b, true)
+                end
+                local text, why = apply_text(from, sel)
+                if not text then
+                    notify(("this hunk can't be staged: %s"):format(why), vim.log.levels.WARN)
+                    return false
+                end
+                if not write_index(root, entry.path, text) then
+                    return false
+                end
+                reclassify() -- the index moved; the marks describe where it is now
+                return true
+            end,
+            -- X throws the hunk away on both sides at once: the index gives up whatever
+            -- of it it holds and the worktree gives up the rest. index first, so a
+            -- worktree copy that won't take the patch leaves the file merely unstaged
+            -- rather than holding a change the index no longer has. the worktree half
+            -- goes through a patch, not a write: the model's new side was read through
+            -- the clean filter, so writing it back would push that conversion to disk
+            revert = function(model, hunk)
+                local cached = select(2, M.union_models(root, entry.path))
+                local a, b = extent(hunk, "old")
+                local text = apply_text(cached, select_hunks(cached.hunks, "old", a, b, false))
+                if text and not write_index(root, entry.path, text) then
+                    return false
+                end
+                local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+                local ok, err = M.apply_patch(root, p, true, "worktree")
+                if not ok then
+                    notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+                end
+                reload_buffer(root, entry.path)
+                reclassify()
+                return ok
+            end,
+        }
+    end
+
     ---@param entry differ.FileEntry
     ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
     local function stage_for(entry, diff)
         if not stageable then
             return nil
+        end
+        if entry.partial then
+            return partial_staging(entry)
         end
         -- settle_pair is assigned below stage_for, so the lookup has to defer to call time
         local function settle()
@@ -1656,8 +1870,9 @@ function M.panel(opts)
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first unstaged file (skipping the Staged section); leave the
         -- cursor in the diff, not the panel.
-        -- a file changed on both pairs ("MM") takes its unstaged row: origin_line is a
-        -- worktree line, and index↔worktree is the only pair in that coordinate space
+        -- a two-row file takes its unstaged row: origin_line is a worktree line, and
+        -- index↔worktree is the only pair of that one in the same coordinate space (a
+        -- one-row "MM" needs no preference, its union pair already ends at the worktree)
         local on_origin = origin_rel and panel:focus_file(origin_rel, true)
         if not on_origin then
             panel:focus_first_unstaged()
