@@ -1,0 +1,108 @@
+local marks = require("differ.union.marks")
+
+-- classify only reads the four line-range fields, so the hunks here carry just those
+local function h(old_start, old_count, new_start, new_count)
+    return {
+        old_start = old_start,
+        old_count = old_count,
+        new_start = new_start,
+        new_count = new_count,
+    }
+end
+
+describe("union marks", function()
+    it("calls every hunk unstaged when the index holds nothing", function()
+        local m = marks.classify(
+            { h(2, 1, 2, 1), h(9, 1, 9, 1) },
+            {},
+            { h(2, 1, 2, 1), h(9, 1, 9, 1) }
+        )
+        assert.are.same({ "unstaged", "unstaged" }, m.hunks)
+        assert.is_false(m.old[2])
+        assert.is_false(m.new[2])
+    end)
+
+    it("calls every hunk staged when the worktree matches the index", function()
+        local m = marks.classify({ h(2, 1, 2, 1) }, { h(2, 1, 2, 1) }, {})
+        assert.are.same({ "staged" }, m.hunks)
+        assert.is_true(m.old[2])
+        assert.is_true(m.new[2])
+    end)
+
+    -- one file, one hunk staged and another not: each rolls up on its own, so a file
+    -- half in the index still reads hunk by hunk rather than as one blurred state
+    it("rolls each hunk up separately", function()
+        local union = { h(1, 1, 1, 1), h(10, 1, 10, 1) }
+        local m = marks.classify(union, { h(1, 1, 1, 1) }, { h(10, 1, 10, 1) })
+        assert.are.same({ "staged", "unstaged" }, m.hunks)
+    end)
+
+    -- the ticket's repro: a hunk staged, then two more edits inside the region it
+    -- covers, so HEAD↔worktree collapses all three into one hunk. that hunk is partial,
+    -- and the per-line marks still say which line of it the index already has
+    it("marks a hunk partial when later edits land inside a staged one", function()
+        local m = marks.classify({ h(3, 3, 3, 3) }, { h(3, 1, 3, 1) }, { h(4, 2, 4, 2) })
+        assert.are.same({ "partial" }, m.hunks)
+        assert.are.same({ [3] = true, [4] = false, [5] = false }, m.old)
+        assert.are.same({ [3] = true, [4] = false, [5] = false }, m.new)
+    end)
+
+    -- a hunk carrying content, for the checks that compare lines rather than ranges
+    local function hl(old_start, old_lines, new_start, new_lines)
+        return {
+            old_start = old_start,
+            old_count = #old_lines,
+            old_lines = old_lines,
+            new_start = new_start,
+            new_count = #new_lines,
+            new_lines = new_lines,
+        }
+    end
+
+    describe("completeness", function()
+        it("passes a file whose half-staged content is all on screen", function()
+            assert.is_true(marks.complete({ h(3, 3, 3, 3) }, { h(3, 1, 3, 1) }, { h(4, 2, 4, 2) }))
+        end)
+
+        -- stage an edit, then put the worktree back: git still calls the file MM, both
+        -- pairs hold a change, and HEAD↔worktree is empty
+        it("catches an edit staged and then undone in the worktree", function()
+            local ok, why = marks.complete({}, { h(2, 1, 2, 1) }, { h(2, 1, 2, 1) })
+            assert.is_false(ok)
+            assert.are.equal("the index differs from HEAD and the worktree matches it", why)
+        end)
+
+        it("catches unstaged content no hunk covers", function()
+            local ok, why = marks.complete({ h(3, 1, 3, 1) }, {}, { h(9, 1, 9, 1) })
+            assert.is_false(ok)
+            assert.are.equal("unstaged content sits outside every hunk", why)
+        end)
+
+        it("catches staged content no hunk covers", function()
+            local ok, why = marks.complete({ h(3, 1, 3, 1) }, { h(9, 1, 9, 1) }, {})
+            assert.is_false(ok)
+            assert.are.equal("staged content sits outside every hunk", why)
+        end)
+
+        -- a line the index added and the worktree then dropped reaches neither side of a
+        -- HEAD↔worktree diff, and a pure deletion has no worktree range to test
+        it("catches a line only the index holds", function()
+            local union = { hl(3, { "a" }, 3, { "b" }) }
+            local unstaged = { hl(7, { "ghost" }, 7, {}) }
+            local ok, why = marks.complete(union, {}, unstaged)
+            assert.is_false(ok)
+            assert.are.equal("the index holds a line neither HEAD nor the worktree has", why)
+        end)
+
+        it("allows a deletion of a line HEAD held too", function()
+            local union = { hl(7, { "gone" }, 7, {}) }
+            local unstaged = { hl(7, { "gone" }, 7, {}) }
+            assert.is_true(marks.complete(union, {}, unstaged))
+        end)
+    end)
+
+    it("tallies the hunk states", function()
+        local m = { hunks = { "staged", "partial", "unstaged", "unstaged" } }
+        assert.are.same({ staged = 1, partial = 1, unstaged = 2 }, marks.tally(m))
+    end)
+end)
