@@ -18,16 +18,14 @@ local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
 ---@type differ.Panel|nil -- the live panel, for runtime API (Panel.current())
 local current = nil
 
--- a file entry's identity across a list rebuild. the path alone isn't enough: a file
--- changed on both pairs holds a Staged and an Unstaged row at once, so the pair is
--- part of what makes the row that row
+-- a file entry's identity across a list rebuild: every path holds one row
 ---@param entry differ.FileEntry|nil
 ---@return string|nil
 local function entry_key(entry)
     if not entry then
         return nil
     end
-    return (entry.staged and "s\0" or "u\0") .. entry.path
+    return entry.path
 end
 
 -- a `(glyph, hl)` provider backed by nvim-web-devicons, or nil when it's absent
@@ -100,7 +98,7 @@ local STATUS_HL = {
 ---@field content_width integer|nil  -- column the list + pinned counts occupy; capped under window width for top/bottom
 ---@field lines string[]
 ---@field meta differ.panel.LineMeta[]
----@field file_total integer|nil  -- distinct paths in the change set (fold-independent)
+---@field file_total integer|nil  -- total files in the change set (fold-independent)
 ---@field add_total integer|nil  -- total additions across the change set (diff --stat, on the help line)
 ---@field del_total integer|nil  -- total deletions across the change set
 ---@field augroup integer|nil  -- autocmd group for the external-change refresh
@@ -217,25 +215,17 @@ function Panel:focus_first_changed()
 end
 
 -- move the cursor to `path`'s file row if it's currently rendered, returning whether
--- it was found; lets :Differ open on the current file rather than the first.
--- a path can hold two rows (an "RM" file lists under Staged and Unstaged), and the
--- Staged one comes first; `prefer_unstaged` takes the unstaged row instead, falling
--- back to the staged one when that's the only pair
+-- it was found; lets :Differ open on the current file rather than the first
 ---@param path string -- repo-relative
----@param prefer_unstaged? boolean
 ---@return boolean
-function Panel:focus_file(path, prefer_unstaged)
-    local first, pick
+function Panel:focus_file(path)
+    local pick
     for i, m in ipairs(self.meta) do
         if m.kind == "file" and m.entry.path == path then
-            first = first or i
-            if not (prefer_unstaged and m.entry.staged) then
-                pick = i
-                break
-            end
+            pick = i
+            break
         end
     end
-    pick = pick or first
     if not pick then
         return false
     end
@@ -279,23 +269,15 @@ function Panel:render()
     local blocks = {}
     -- absolute file numbering across the whole change set, in display order and
     -- independent of which dirs are folded, so the section counts + winbar meter
-    -- stay accurate when collapsed (entry -> 1-based index). a path is counted once
-    -- however many rows carry it: a file changed on both sides (an "RM", renamed in the
-    -- index and edited again) lists under Staged and Unstaged both, and each row takes
-    -- the number of distinct paths at or before it, so the second row repeats the
-    -- first's number rather than adding one and the meter never steps backwards
-    local abs_of, seen, total = {}, {}, 0
-    -- diff --stat totals, summed over every row (fold-independent, like the count):
-    -- a two-row file's pairs change different lines, so both counts stand
+    -- stay accurate when collapsed (entry -> 1-based index)
+    local abs_of, total = {}, 0
+    -- diff --stat totals, summed over every file (fold-independent, like the count)
     local add_total, del_total = 0, 0
     for bi, sec in ipairs(self.sections) do
         local root, strip = self:_section_root(sec)
         for _, row in ipairs(tree.rows(root, "tree", {})) do -- fully expanded
             if row.kind == "file" then
-                if not seen[row.entry.path] then
-                    seen[row.entry.path] = true
-                    total = total + 1
-                end
+                total = total + 1
                 abs_of[row.entry] = total
                 add_total = add_total + (row.entry.additions or 0)
                 del_total = del_total + (row.entry.deletions or 0)
@@ -352,18 +334,9 @@ function Panel:render()
     end
     self.content_width = width
     self.lines, self.meta = out.lines, out.meta
-    -- a path listed twice (a two-row file's Staged and Unstaged rows) marks all but its
-    -- last row superseded, so ]f / [f stop once per file and land on the pair with
-    -- work left. the review flow steps by staged state and still sees every row
-    local held = {}
-    for i, m in ipairs(self.meta) do
+    for _, m in ipairs(self.meta) do
         if m.kind == "file" then
             m.file_index = abs_of[m.entry]
-            local prev = held[m.entry.path]
-            if prev then
-                self.meta[prev].superseded = true
-            end
-            held[m.entry.path] = i
         end
     end
     -- rows shuffle on every rebuild (a fold toggle, a listing swap, an entry leaving
@@ -848,28 +821,21 @@ end
 -- the next/prev file row from `lnum`. wraps past the ends by default so ]f / [f
 -- stepping is cyclic (you often open mid-list); `wrap == false` bounds it instead,
 -- returning nil at the first/last file so the staging review flow stops at the ends.
--- `distinct` skips a row whose path is listed again further down, so a step visits a
--- two-row file once, at its Unstaged row; the review flow leaves it off and walks pairs.
--- nil when there are no file rows at all. the second return reports whether reaching
--- it actually crossed an end, so goto_file can notify on a wrap
+-- nil too when there are no file rows at all. the second return reports whether
+-- reaching it actually crossed an end, so goto_file can notify on a wrap
 ---@param lnum integer
 ---@param direction "next"|"prev"
 ---@param wrap? boolean  -- default true; false stops at the list ends
----@param distinct? boolean  -- default false; true stops once per path
 ---@return integer|nil row, boolean wrapped
-function Panel:_file_row(lnum, direction, wrap, distinct)
+function Panel:_file_row(lnum, direction, wrap)
     local n = #self.meta
     if n == 0 then
         return nil, false
     end
-    local function lands(i)
-        local m = self.meta[i]
-        return m ~= nil and m.kind == "file" and not (distinct and m.superseded)
-    end
     local step = direction == "prev" and -1 or 1
     local i = lnum + step
     while i >= 1 and i <= n do
-        if lands(i) then
+        if self.meta[i] and self.meta[i].kind == "file" then
             return i, false
         end
         i = i + step
@@ -879,7 +845,8 @@ function Panel:_file_row(lnum, direction, wrap, distinct)
     end
     for k = 1, n do
         local j = ((lnum - 1 + step * k) % n) + 1
-        if lands(j) then
+        local m = self.meta[j]
+        if m and m.kind == "file" then
             return j, true
         end
     end
@@ -914,12 +881,12 @@ function Panel:open_nearest(keep_focus)
     return true
 end
 
--- ]f / [f: move to the next/prev file and open it (lockstep file stepping), stopping
--- once per path rather than once per row. wraps at the ends by default (notifying,
--- since it's otherwise not obvious you cycled back rather than simply moved);
--- `wrap == false` (the staging review flow) stops at them instead. `keep_focus` is
--- threaded to `_open` so in-view stepping stays in the diff window. returns whether a
--- file was actually opened (false at a no-wrap list end)
+-- ]f / [f: move to the next/prev file row and open it (lockstep file stepping).
+-- wraps at the ends by default (notifying, since it's otherwise not obvious you
+-- cycled back rather than simply moved); `wrap == false` (the staging review flow)
+-- stops at them instead. `keep_focus` is threaded to `_open` so in-view stepping
+-- stays in the diff window. returns whether a file was actually opened (false at a
+-- no-wrap list end)
 ---@param direction "next"|"prev"
 ---@param keep_focus boolean|nil
 ---@param wrap? boolean  -- default true; false stops at the list ends
@@ -930,7 +897,7 @@ function Panel:goto_file(direction, keep_focus, wrap)
     local from = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1]
         or self.selected_row
         or self:_first_file_line()
-    local i, wrapped = self:_file_row(from, direction, wrap, true)
+    local i, wrapped = self:_file_row(from, direction, wrap)
     if not i then
         return false
     end
@@ -965,6 +932,14 @@ function Panel:_edge_file_row(edge)
     return row
 end
 
+-- whether a row has something left to stage: anything but a Staged row, and every row
+-- of a source without staging
+---@param e differ.FileEntry
+---@return boolean
+local function has_unstaged(e)
+    return e.y ~= " "
+end
+
 -- move the cursor to the first unstaged file row, skipping the Staged section so
 -- :Differ lands on the first thing left to review, falling back to the first
 -- first file when everything is staged. mirrors the per-file _first_review_line, which
@@ -974,7 +949,7 @@ function Panel:focus_first_unstaged()
     local i = self:_file_row(0, "next", false)
     while i do
         local e = self.meta[i].entry
-        if e and not e.staged then
+        if e and has_unstaged(e) then
             pcall(vim.api.nvim_win_set_cursor, self.winid, { i, 0 })
             return
         end
@@ -984,15 +959,18 @@ function Panel:focus_first_unstaged()
 end
 
 -- whether a row has hunks left to stage (`staged` false) or unstage (true). a Partial
--- row holds both
+-- row holds both; a conflict holds neither, since the merge tool resolves it
 ---@param e differ.FileEntry
 ---@param staged boolean
 ---@return boolean
 local function has_review_work(e, staged)
-    if e.partial then
-        return true
+    if e.status == "U" then
+        return false
     end
-    return (e.staged or false) == staged
+    if staged then
+        return e.x ~= nil and e.x ~= " " and e.x ~= "?"
+    end
+    return has_unstaged(e)
 end
 
 -- the review flow's file step: the nearest row in `direction` with something left to do,

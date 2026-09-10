@@ -20,8 +20,7 @@ local FOLD_OPEN, FOLD_CLOSED = "▾", "▸"
 ---@field collapsed boolean|nil
 ---@field title string|nil        -- header rows: the section title
 ---@field depth integer|nil       -- tree depth (dir + file rows), for parent lookup
----@field file_index integer|nil  -- 1-based position among distinct paths (fold-independent); stamped by the panel
----@field superseded boolean|nil  -- file rows: a later row lists the same path, so ]f / [f skip this one
+---@field file_index integer|nil  -- 1-based position among all files (fold-independent); stamped by the panel
 ---@field status_col integer|nil  -- byte col of the status letter (file rows)
 ---@field name_col integer|nil    -- byte col where the name starts
 ---@field icon_col integer|nil    -- byte range of the devicon glyph (when shown)

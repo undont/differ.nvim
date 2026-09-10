@@ -10,7 +10,7 @@ local M = {}
 ---@class differ.model.Marks
 ---@field old table<integer, boolean>  -- old lnum -> the index already dropped this line
 ---@field new table<integer, boolean>  -- new lnum -> the index already holds this line
----@field whole boolean|nil            -- a whole-file source: the file is staged as one unit
+---@field whole differ.model.HunkState|nil  -- a whole-file source: the file's state as one unit
 
 -- the lines a hunk list covers on one side, as a set
 ---@param hunks differ.Hunk[]
@@ -99,8 +99,8 @@ end
 -- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot
 -- show index content that differs from HEAD and worktree both: stage a change and then
 -- put the worktree back or edit it again, or let the two diffs align a run of repeated
--- lines differently, and the change is real but off-screen. a false sends the file
--- back to the two-pair view, where nothing is hidden
+-- lines differently, and the change is real but off-screen. a false puts a notice on
+-- the view
 ---@param union differ.Hunk[]
 ---@param cached differ.Hunk[]
 ---@param unstaged differ.Hunk[]

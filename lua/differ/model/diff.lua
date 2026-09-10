@@ -20,6 +20,7 @@
 ---@field root string|nil  -- repo root (absolute), so jump-to-file can resolve the real file (set by the frontend)
 ---@field binary boolean|nil  -- either side is binary: no hunks, renderers show a placeholder
 ---@field notice string|nil  -- why a zero-hunk diff has nothing to show; rendered in place of the diff
+---@field banner string|nil  -- a note the winbar carries over the diff
 
 local text_util = require("differ.util.text")
 local to_lines = text_util.to_lines

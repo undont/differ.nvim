@@ -80,17 +80,17 @@ local armed_view = nil
 -- whole content is one hunk, where reverting isn't a partial act: the frontend knows
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
----@field initial "staged"|"unstaged"
+---@field initial? differ.model.HunkState  -- a source without marks: where it starts
 -- `whole_file` stages as a unit: the keys act on the file, and its diff shares one
 -- staged-state slot
 ---@field whole_file? boolean
 -- `apply` takes a nil hunk on a whole-file source, which ignores it
----@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, offset: integer, reverse: boolean): boolean
----@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
+---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean
+---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
----@field settle? fun(): boolean  -- post-op: re-target the view when this pair emptied
----@field marks? differ.model.Marks  -- union source: which lines the index already holds
+---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
+---@field hidden? string  -- union source: why some staged content isn't on screen
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -106,7 +106,6 @@ local armed_view = nil
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
----@field on_edit_unstage fun(path: string)|nil  -- frontend hook: unstage + re-source for edit-in-review
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
 ---@field on_cursor fun()|nil  -- session hook on cursor move in a diff window (pr thread cursor-expand)
@@ -132,7 +131,6 @@ View.__index = View
 ---@field keymaps? table
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
----@field on_edit_unstage? fun(path: string)
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -162,7 +160,6 @@ function View.new(model, opts)
         ),
         can_stage = opts.can_stage or false,
         staging = opts.staging,
-        on_edit_unstage = opts.on_edit_unstage,
         -- session-supplied maps the generic diff surface doesn't own (pr unviewed nav)
         extra_keymaps = opts.extra_keymaps,
         on_rerender = opts.on_rerender,
@@ -180,8 +177,7 @@ function View.new(model, opts)
 end
 
 -- seed staged state for the current source. a union source (HEAD↔worktree) hands over
--- its marks and keeps them current itself; otherwise a staged diff (HEAD↔index) opens
--- with every line staged and an unstaged diff (index↔worktree) with none
+-- its marks and keeps them current itself; any other starts from `initial`
 function View:_init_staged()
     local staging = self.staging
     if staging and staging.marks then
@@ -189,11 +185,14 @@ function View:_init_staged()
         return
     end
     self.marks = { old = {}, new = {} }
-    if not (staging and staging.initial == "staged") then
+    if not staging then
         return
     end
     if self:_whole_file() then
-        self.marks.whole = true
+        self.marks.whole = staging.initial
+        return
+    end
+    if staging.initial ~= "staged" then
         return
     end
     for _, h in ipairs(self.model.hunks) do
@@ -465,22 +464,6 @@ function View:_paint_cursorline()
     })
 end
 
--- the net line-count delta of the staged hunks before `idx`: the frozen view's
--- line numbers are from open time, but git applies against the live index, where
--- each already-staged earlier hunk has shifted positions by its added/removed lines
----@param idx integer
----@return integer
-function View:_stage_offset(idx)
-    local off = 0
-    for j = 1, idx - 1 do
-        if self:_hunk_state(j) == "staged" then
-            local h = self.model.hunks[j]
-            off = off + (h.new_count - h.old_count)
-        end
-    end
-    return off
-end
-
 -- open folds by the rail lines at their ends, with the texts those line numbers refer to
 ---@class differ.view.OpenedFolds
 ---@field old_text? string
@@ -526,7 +509,7 @@ end
 ---@param opened differ.view.OpenedFolds
 function View:_apply_folds(opened)
     local side = anchor_side(opened, self.model)
-    for _, col in ipairs(self.columns) do
+    for ci, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
             set_wo(win, "foldmethod", "manual")
@@ -1164,7 +1147,7 @@ function View:_line_staged(line)
         return false
     end
     if self:_whole_file() then
-        return self.marks.whole or false
+        return self.marks.whole == "staged"
     end
     if line.kind == "old" then
         return self.marks.old[line.old] or false
@@ -1182,7 +1165,7 @@ end
 ---@return differ.model.HunkState
 function View:_hunk_state(idx)
     if self:_whole_file() then
-        return self.marks.whole and "staged" or "unstaged"
+        return self.marks.whole or "unstaged"
     end
     local h = self.model.hunks[idx]
     if not h then
@@ -1201,24 +1184,24 @@ function View:_target_index()
     return self:_hunk_index_under_cursor()
 end
 
--- patch hunk `idx` to `want_staged` in the index from the frozen hunk model (never
--- buffer text), shifted past the hunks staged before it, and mark it. no panel
--- refresh / repaint, so callers can batch. returns whether it changed
+-- move hunk `idx` to `want_staged` in the index from the hunk model (never buffer
+-- text), and mark it. no panel refresh / repaint, so callers can batch. returns
+-- whether it changed
 ---@param idx integer
 ---@param want_staged boolean
 ---@return boolean
 function View:_apply_hunk(idx, want_staged)
     local apply = self.staging and self.staging.apply
-    if not apply or self:_hunk_state(idx) == (want_staged and "staged" or "unstaged") then
+    local want = want_staged and "staged" or "unstaged"
+    if not apply or self:_hunk_state(idx) == want then
         return false
     end
-    local offset = self:_stage_offset(idx)
-    -- reverse unstages: we patch away a change currently in the index
-    if not apply(self.model, self.model.hunks[idx], offset, not want_staged) then
+    -- reverse unstages: the change leaves the index
+    if not apply(self.model, self.model.hunks[idx], not want_staged) then
         return false
     end
     if self:_whole_file() then
-        self.marks.whole = want_staged
+        self.marks.whole = want
     elseif not self.staging.marks then -- a union source has re-read its own
         self:_mark_hunk(self.model.hunks[idx], want_staged)
     end
@@ -1341,11 +1324,6 @@ function View:_toggle_hunk(want_staged)
     end
     if self:_apply_hunk(idx, want_staged) then
         self.staging.refresh()
-        -- that may have taken this pair's last hunk, in which case the session re-sources
-        -- the view onto the file's surviving pair and there's nothing here left to paint
-        if self.staging.settle and self.staging.settle() then
-            return
-        end
         self:_paint_staged()
         self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
     end
@@ -1375,10 +1353,9 @@ function View:unstage_all()
     end
 end
 
--- stage / unstage every hunk. forward order keeps the running offset correct
--- as the index shifts under each apply; the panel refreshes once after the batch.
--- returns whether anything changed (false when already wholly in the target state),
--- so S/U can fall through to file stepping
+-- stage / unstage every hunk; the panel refreshes once after the batch. returns
+-- whether anything changed (false when already wholly in the target state), so S/U
+-- can fall through to file stepping
 ---@param want_staged boolean
 ---@return boolean changed
 function View:_toggle_all(want_staged)
@@ -1394,63 +1371,10 @@ function View:_toggle_all(want_staged)
     end
     if changed then
         self.staging.refresh()
-        -- S/U empty a pair outright, so this is where the follow usually fires
-        if not (self.staging.settle and self.staging.settle()) then
-            self:_paint_staged()
-            self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
-        end
+        self:_paint_staged()
+        self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
     end
     return changed
-end
-
--- the index-side shift for a revert on a staged diff: unstaging a hunk swaps its new
--- lines back for its old ones, so every hunk after it sits that many lines off the
--- frozen model. only the index moves under an unstage, so this never applies to the
--- worktree half of a revert
----@param idx integer
----@return integer
-function View:_unstage_offset(idx)
-    local off = 0
-    for j = 1, idx - 1 do
-        if self:_hunk_state(j) ~= "staged" then
-            local h = self.model.hunks[j]
-            off = off + (h.old_count - h.new_count)
-        end
-    end
-    return off
-end
-
--- carry the marks past a hunk that has just left the model. a revert rebuilds only the
--- new side, so old lines keep their numbers and new lines past the hunk shift by what
--- it took out. the rebuilt list normally loses exactly the reverted hunk; if it didn't,
--- the marks can't be mapped, so reseed them from the source instead of carrying wrong
--- ones. a union source re-reads its own marks, so there is nothing to carry
----@param h differ.Hunk  -- the reverted hunk
----@param before integer  -- hunk count before the revert
-function View:_rekey_staged(h, before)
-    if self.staging.marks then
-        return
-    end
-    if #self.model.hunks ~= before - 1 then
-        return self:_init_staged()
-    end
-    local old, new = {}, {}
-    for l, staged in pairs(self.marks.old) do
-        if l < h.old_start or l >= h.old_start + h.old_count then
-            old[l] = staged
-        end
-    end
-    -- a zero-count hunk sits after new_start rather than covering it
-    local first = h.new_count > 0 and h.new_start or h.new_start + 1
-    local last = first + h.new_count - 1
-    for l, staged in pairs(self.marks.new) do
-        if l < first then
-            new[l] = staged
-        elseif l > last then
-            new[l + h.old_count - h.new_count] = staged
-        end
-    end
-    self.marks = { old = old, new = new, whole = self.marks.whole }
 end
 
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
@@ -1509,17 +1433,6 @@ function View:revert_hunk()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
-    -- on an unstaged diff a marked hunk is already in the index, so reverting only the
-    -- worktree copy would leave the two differing the opposite way round. a union source
-    -- reverts both sides in one go, so it has no such half state to fall into
-    local union = self.staging.marks ~= nil
-    if self.model.new_rev == "WORKTREE" and not union and self:_hunk_state(idx) ~= "unstaged" then
-        return vim.notify(
-            "differ: hunk is staged; unstage it (u) before reverting",
-            vim.log.levels.WARN
-        )
-    end
-
     -- a whole-file revert isn't partial, so it says so rather than counting hunks
     local label = self.staging.revert_label
     local prompt = label and ("Revert all of %s? This %s."):format(self.model.path, label)
@@ -1539,14 +1452,12 @@ function View:revert_hunk()
         )
     end
 
-    local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0
     -- a whole-file revert, or one taking the file's last hunk, leaves no diff at all
     local emptied = label ~= nil or #self.model.hunks == 1
     local hunk = self.model.hunks[idx] -- captured before the model is replaced
-    local before = #self.model.hunks
     local focus = self:cursor_new_line()
 
-    if not revert(self.model, hunk, offset) then
+    if not revert(self.model, idx) then
         return
     end
 
@@ -1566,7 +1477,6 @@ function View:revert_hunk()
 
     local opened = self:_opened_folds() -- before rerender replaces col.folds
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
-    self:_rekey_staged(hunk, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one
@@ -1658,10 +1568,8 @@ end
 -- jump_to_file this never tears down the diff: you edit, `:w`, and the worktree
 -- watcher re-sources the diff in place (cursor held near its hunk). the projection
 -- buffer and line map are untouched (invariant 2); you edit the real file's own
--- buffer, so LSP / treesitter / undo all work natively. a staged diff (index↔ side)
--- can't be edited in place (you can't edit the index), so the file is unstaged first:
--- the staged change returns to the worktree and the watcher re-sources to the now-
--- unstaged diff, where the edit shows. git-correct; re-stage (s) when done
+-- buffer, so LSP / treesitter / undo all work natively. a file not on disk (a
+-- deletion) has nothing to edit, and _edit_target says so
 function View:edit_file()
     if not self:_editable_source() then
         return vim.notify(
@@ -1673,19 +1581,6 @@ function View:edit_file()
     if not t then
         return
     end
-
-    -- staged diff: unstage the file and re-source to its unstaged index↔worktree view
-    -- so the edit lands on a diff that reflects it. driven explicitly (the watcher's
-    -- re-source is suppressed by the staging signature); falls back to an in-place
-    -- unstage if no frontend hook is wired
-    if self.model.new_rev == "INDEX" then
-        if self.on_edit_unstage then
-            self.on_edit_unstage(self.model.path)
-        elseif self:_can_stage_hunk() then
-            self:_toggle_all(false)
-        end
-    end
-
     self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
 end
 
