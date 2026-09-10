@@ -70,31 +70,62 @@ function M.diff()
     -- while reviewing (not just in the compose window)
     local draft = require("differ.pr").review_status(buf)
     local badge = draft and ("%#differReviewDraft#● " .. draft .. "%*   ") or ""
-    -- a union source's hunk can hold lines the index has and lines it doesn't. the dim
-    -- shade already says which lines those are; this says the hunk as a whole is mixed,
-    -- so s and u both still have something to do on it. staged and unstaged say nothing
-    -- here, the shading being the whole story for them
-    local mixed = ""
-    if k > 0 and view:_hunk_state(k) == "partial" then
-        mixed = "%#differPanelContext#partial%*  "
-    end
-    local note = view.model.banner
-    if view.staging and view.staging.hidden then
-        note = "staged content hidden"
-    end
+    local note = M.hidden_note(view) or view.model.banner
     local noted = note and ("%#WarningMsg#" .. esc(note) .. "%*  ") or ""
     local badge_text = view.staging and view.staging.badge
     local tag = badge_text and ("%#differViewBadge# " .. esc(badge_text) .. " %* ") or ""
-    return (" %s%s %%=%s%s%s%s hunk %d/%d "):format(
+    return (" %s%s %%=%s%s%s %shunk %d/%d "):format(
         tag,
         esc(vim.fn.fnamemodify(view.model.path, ":t")),
         badge,
         noted,
-        mixed,
         HUNK_MARK,
+        M.tally(view),
         k,
         total
     )
+end
+
+-- "3 staged · 1 partial · " from the hunks' staged states, zero counts left out.
+-- empty off a hunk-staging view
+---@param view differ.View
+---@return string
+function M.tally(view)
+    if not view:_can_stage_hunk() or view:_whole_file() then
+        return ""
+    end
+    local counts = { staged = 0, partial = 0 }
+    for i = 1, #view.model.hunks do
+        local state = view:_hunk_state(i)
+        if counts[state] then
+            counts[state] = counts[state] + 1
+        end
+    end
+    local out = ""
+    for _, state in ipairs({ "staged", "partial" }) do
+        if counts[state] > 0 then
+            out = out .. ("%d %s · "):format(counts[state], state)
+        end
+    end
+    return out
+end
+
+-- the note on staged content the view can't show: how many hunks it sits in, else that
+-- it sits outside them, plus the key to the local view where there is one
+---@param view differ.View
+---@return string|nil
+function M.hidden_note(view)
+    local staging = view.staging
+    if not (staging and staging.hidden) then
+        return nil
+    end
+    local where = staging.hidden_in or {}
+    local text = #where > 0 and ("%d hidden"):format(#where) or "staged content hidden"
+    local key = staging.toggle_local and require("differ.ui.help").fmt(view.keymaps.toggle_local)
+    if not key then
+        return text
+    end
+    return ("%s: %s shows it"):format(text, key)
 end
 
 -- panel winbar: a bar plus "file K/N" for the cursor's position in the file list

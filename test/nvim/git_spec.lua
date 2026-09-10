@@ -2074,7 +2074,7 @@ describe(":Differ diff hunk staging", function()
         v:toggle_local()
         local local_gutter = gutter_of(v, hunk_line(v, 1))
         p:close()
-        assert.is_truthy(text:find("staged content hidden", 1, true))
+        assert.is_truthy(text:find("1 hidden: dw shows it", 1, true))
         assert.is_truthy(gutter:find("!", 1, true)) -- the hunk it's hidden in
         assert.is_truthy(local_gutter:find("!", 1, true)) -- the local hunk that rewrote it
     end)
@@ -2091,7 +2091,7 @@ describe(":Differ diff hunk staging", function()
         local p = Panel.current()
         local text = winbar_of(view_in_origin(p))
         p:close()
-        assert.is_truthy(text:find("staged content hidden", 1, true))
+        assert.is_truthy(text:find("staged content hidden: dw shows it", 1, true))
     end)
 
     it("names a kept deletion's copy on disk in the winbar", function()
@@ -2251,31 +2251,43 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: only a partly staged file has a local view", msg)
     end)
 
-    -- the shading says which lines the index holds; the winbar says the hunk as a whole
-    -- is mixed, which is what tells you s and u both still have work on it
-    it("names a partial hunk in the diff winbar", function()
-        local winbar = require("differ.ui.winbar")
+    -- the winbar counts the hunks the index holds whole and in part; zero counts drop out
+    it("tallies staged and partial hunks in the diff winbar", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
         git(root, "commit", "-q", "-am", "ten lines")
         write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
         git(root, "add", "a.lua")
         write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10\n")
-
         vim.cmd.edit(root .. "/a.lua")
+
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-
-        vim.g.statusline_winid = col.winid
-        assert.is_truthy(winbar.diff():find("partial", 1, true))
-        v:stage_hunk() -- nothing mixed about it now
-        assert.is_nil(winbar.diff():find("partial", 1, true))
-        vim.g.statusline_winid = nil
+        local mixed = winbar_of(v)
+        v:stage_hunk()
+        local whole = winbar_of(v)
+        v:unstage_hunk()
+        local none = winbar_of(v)
         p:close()
+        assert.is_truthy(mixed:find(" 1 partial · hunk 1/1 ", 1, true))
+        assert.is_truthy(whole:find(" 1 staged · hunk 1/1 ", 1, true))
+        assert.is_truthy(none:find(" hunk 1/1 ", 1, true))
+        assert.is_nil(none:find("staged", 1, true))
+        assert.is_nil(none:find("partial", 1, true))
+    end)
+
+    it("tallies staged hunks beside unstaged ones", function()
+        partly_staged_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local text = winbar_of(view_in_origin(p))
+        p:close()
+        assert.is_truthy(text:find(" 2 staged · hunk %d/3 "))
+        assert.is_nil(text:find("partial", 1, true))
     end)
 
     -- on a two-row file X refuses a staged hunk, since reverting only the worktree copy
