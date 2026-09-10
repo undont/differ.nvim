@@ -1356,10 +1356,17 @@ function View:_toggle_hunk(want_staged)
         )
     end
     if self:_apply_hunk(idx, want_staged) then
-        self.staging.refresh()
-        self:_paint_staged()
-        self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+        self:_after_staging()
     end
+end
+
+-- repaint after a staging op: the panel counts, the staged shade, and the winbar
+-- tally, which a `%!` winbar only redraws on its own when the cursor moves
+function View:_after_staging()
+    self.staging.refresh()
+    self:_paint_staged()
+    self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+    vim.cmd.redrawstatus({ bang = true })
 end
 
 -- S: stage every hunk in the file, or, when they're all staged already (nothing left to
@@ -1403,9 +1410,7 @@ function View:_toggle_all(want_staged)
         end
     end
     if changed then
-        self.staging.refresh()
-        self:_paint_staged()
-        self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+        self:_after_staging()
     end
     return changed
 end

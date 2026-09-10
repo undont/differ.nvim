@@ -2274,10 +2274,39 @@ describe(":Differ diff hunk staging", function()
         local none = winbar_of(v)
         p:close()
         assert.is_truthy(mixed:find(" 1 partial · hunk 1/1 ", 1, true))
-        assert.is_truthy(whole:find(" 1 staged · hunk 1/1 ", 1, true))
+        assert.is_truthy(whole:find(" hunk 1/1 ", 1, true))
+        assert.is_nil(whole:find("staged ·", 1, true)) -- every hunk staged: no tally
         assert.is_truthy(none:find(" hunk 1/1 ", 1, true))
         assert.is_nil(none:find("staged", 1, true))
         assert.is_nil(none:find("partial", 1, true))
+    end)
+
+    -- the winbar as drawn on the screen grid rather than re-evaluated, so a stale one shows
+    local function drawn_winbar(v)
+        local win = v.columns[#v.columns].winid
+        vim.cmd("redraw")
+        local row, col = unpack(vim.api.nvim_win_get_position(win))
+        local chars = {}
+        for c = col + 1, col + vim.api.nvim_win_get_width(win) do
+            chars[#chars + 1] = vim.fn.screenstring(row + 1, c)
+        end
+        return table.concat(chars)
+    end
+
+    it("redraws the winbar tally as soon as a hunk is unstaged", function()
+        partly_staged_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        local before = drawn_winbar(v)
+        v:unstage_hunk()
+        local after = drawn_winbar(v)
+        p:close()
+        assert.is_truthy(before:find("2 staged", 1, true))
+        assert.is_truthy(after:find("1 staged", 1, true))
     end)
 
     it("tallies staged hunks beside unstaged ones", function()

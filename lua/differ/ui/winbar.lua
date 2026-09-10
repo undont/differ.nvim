@@ -87,7 +87,7 @@ function M.diff()
 end
 
 -- "3 staged · 1 partial · " from the hunks' staged states, zero counts left out.
--- empty off a hunk-staging view
+-- empty once every hunk is staged, and off a hunk-staging view
 ---@param view differ.View
 ---@return string
 function M.tally(view)
@@ -100,6 +100,9 @@ function M.tally(view)
         if counts[state] then
             counts[state] = counts[state] + 1
         end
+    end
+    if counts.staged == #view.model.hunks then
+        return ""
     end
     local out = ""
     for _, state in ipairs({ "staged", "partial" }) do
