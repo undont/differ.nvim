@@ -2052,6 +2052,13 @@ describe(":Differ diff hunk staging", function()
         return text
     end
 
+    -- the gutter drawn beside buffer line `lnum` of the diff column of `v`
+    local function gutter_of(v, lnum)
+        local win = v.columns[#v.columns].winid
+        local fmt = vim.wo[win].statuscolumn
+        return vim.api.nvim_eval_statusline(fmt, { winid = win, use_statuscol_lnum = lnum }).str
+    end
+
     -- the staged line edited again: the index's version reaches neither side of the diff
     it("says in the winbar when staged content isn't on screen", function()
         local root = fresh_repo()
@@ -2062,9 +2069,14 @@ describe(":Differ diff hunk staging", function()
 
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
-        local text = winbar_of(view_in_origin(p))
+        local v = view_in_origin(p)
+        local text, gutter = winbar_of(v), gutter_of(v, hunk_line(v, 1))
+        v:toggle_local()
+        local local_gutter = gutter_of(v, hunk_line(v, 1))
         p:close()
         assert.is_truthy(text:find("staged content hidden", 1, true))
+        assert.is_truthy(gutter:find("!", 1, true)) -- the hunk it's hidden in
+        assert.is_truthy(local_gutter:find("!", 1, true)) -- the local hunk that rewrote it
     end)
 
     it("says in the winbar when a staged mode change isn't on screen", function()
@@ -2149,6 +2161,94 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(2, hunks) -- read against HEAD's a.lua, not a whole-file add
         local status = git(root, "status", "--porcelain=v1")
         assert.are.equal("RM a.lua -> b.lua\n", status)
+    end)
+
+    -- two staged edits and a third on top in the worktree, far enough apart to diff as
+    -- three hunks
+    local function partly_staged_repo()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n")
+        git(root, "commit", "-q", "-am", "twelve lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6x\n7\n8\n9\n10\n11\n12\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6x\n7\n8\n9\n10\n11\n12x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+
+    it("dw opens a partly staged file's local view and goes back", function()
+        partly_staged_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local whole = #v.model.hunks
+        v:toggle_local()
+        local old_rev, new_rev = v.model.old_rev, v.model.new_rev
+        local hunks, state, text = #v.model.hunks, v:_hunk_state(1), winbar_of(v)
+        local gutter = gutter_of(v, hunk_line(v, 1))
+        v:toggle_local()
+        local back_rev, back_hunks, back_text = v.model.old_rev, #v.model.hunks, winbar_of(v)
+        p:close()
+        assert.are.equal(3, whole)
+        assert.are.same({ "INDEX", "WORKTREE" }, { old_rev, new_rev })
+        assert.are.equal(1, hunks)
+        assert.are.equal("unstaged", state)
+        assert.is_truthy(text:find(" LOCAL ", 1, true))
+        assert.is_nil(gutter:find("!", 1, true)) -- 12x touches nothing staged
+        assert.are.equal("HEAD", back_rev)
+        assert.are.equal(3, back_hunks)
+        assert.is_nil(back_text:find("LOCAL", 1, true))
+    end)
+
+    -- the view stays frozen and the index is rebuilt from the one it opened on, so a
+    -- hunk staged here stays on screen and u puts it back
+    it("stages and unstages in the local view against the index it opened on", function()
+        local root = partly_staged_repo()
+        local before = indexed(root, "a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        v:toggle_local()
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local staged, state, rev_after = indexed(root, "a.lua"), v:_hunk_state(1), v.model.old_rev
+        v:unstage_hunk()
+        local unstaged = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(worktree(root, "a.lua"), staged)
+        assert.are.equal("staged", state)
+        assert.are.equal("INDEX", rev_after) -- still the local view
+        assert.are.equal(before, unstaged)
+    end)
+
+    it("df from the local view edits the worktree file from the whole change", function()
+        partly_staged_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v:edit_file()
+        local rev_after, win = v.model.old_rev, v.edit_win
+        p:close()
+        assert.are.equal("HEAD", rev_after)
+        assert.is_truthy(win)
+    end)
+
+    it("dw says so on a file with no local view", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        _G.notifs = {}
+        v:toggle_local()
+        local rev_after, msg = v.model.old_rev, _G.notifs[#_G.notifs].msg
+        p:close()
+        assert.are.equal("HEAD", rev_after)
+        assert.are.equal("differ: only a partly staged file has a local view", msg)
     end)
 
     -- the shading says which lines the index holds; the winbar says the hunk as a whole

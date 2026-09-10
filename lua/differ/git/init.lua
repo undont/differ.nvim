@@ -1407,6 +1407,37 @@ function M.panel(opts)
         return sel
     end
 
+    -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
+    -- the index, and a rename only the worktree has made is staged along with its
+    -- content; both change the row's status, so the view re-sources onto it
+    ---@param entry differ.FileEntry
+    ---@param text string
+    ---@return boolean ok
+    local function put_index(entry, text)
+        if entry.x == "A" and text == "" then
+            if not M.unstage(root, entry.path) then
+                return false
+            end
+            vim.schedule(function()
+                retarget_view(false)
+            end)
+            return true
+        end
+        if not write_index(root, entry.path, text) then
+            return false
+        end
+        if entry.y == "R" and entry.previous_path then
+            local drop = { "update-index", "--force-remove", "--", entry.previous_path }
+            if not git_ok(drop, root, "staging " .. entry.path) then
+                return false
+            end
+            vim.schedule(function()
+                retarget_view(false)
+            end)
+        end
+        return true
+    end
+
     -- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
     -- then put back in the worktree
     ---@param entry differ.FileEntry
@@ -1447,43 +1478,16 @@ function M.panel(opts)
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
             staging.marks.old, staging.marks.new = fresh.old, fresh.new
             local complete, why = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
+            staging.hidden_in = nil
             if mode_why then
                 staging.hidden = mode_why
             elseif complete then
                 staging.hidden = nil
             else
                 staging.hidden = why
+                local head = require("differ.util.text").to_lines(union.old_text)
+                staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
             end
-        end
-
-        -- write `text` as the staged content. an add left with nothing staged leaves the
-        -- index, and a rename only the worktree has made is staged along with its
-        -- content; both change the row's status, so the view re-sources onto it
-        ---@param text string
-        ---@return boolean ok
-        local function put_index(text)
-            if entry.x == "A" and text == "" then
-                if not M.unstage(root, entry.path) then
-                    return false
-                end
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
-                return true
-            end
-            if not write_index(root, entry.path, text) then
-                return false
-            end
-            if entry.y == "R" and entry.previous_path then
-                local drop = { "update-index", "--force-remove", "--", entry.previous_path }
-                if not git_ok(drop, root, "staging " .. entry.path) then
-                    return false
-                end
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
-            end
-            return true
         end
 
         remark(M.union_models(root, entry))
@@ -1505,7 +1509,7 @@ function M.panel(opts)
                 notify(("this hunk can't be staged: %s"):format(why), vim.log.levels.WARN)
                 return false
             end
-            if not put_index(text) then
+            if not put_index(entry, text) then
                 return false
             end
             remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
@@ -1522,7 +1526,7 @@ function M.panel(opts)
             local hunk = model.hunks[idx]
             local a, b = extent(hunk, "old")
             local text = apply_text(cached, select_hunks(cached.hunks, "old", a, b, false))
-            if text and text ~= cached.new_text and not put_index(text) then
+            if text and text ~= cached.new_text and not put_index(entry, text) then
                 return false
             end
             local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
@@ -1618,6 +1622,91 @@ function M.panel(opts)
         return nil
     end
 
+    -- a row with a staged change and more on top of it: the one kind with a local view
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function partly_staged(entry)
+        if entry.status == "U" or entry.x == "?" or entry.y == "D" then
+            return false
+        end
+        return entry.x ~= " " and entry.y ~= " "
+    end
+
+    -- staging frozen at the index the view opened on: s and u rewrite the index as the
+    -- model's old side plus the hunks marked staged, so a marked hunk stays on screen
+    -- and the opposite key puts it back
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- read once, with at least one hunk
+    ---@param staged boolean  -- every hunk's opening state
+    ---@return differ.view.Staging
+    local function frozen_staging(entry, model, staged)
+        local apply_text = require("differ.model.apply").partial
+        local marks = { old = {}, new = {} }
+        ---@param h differ.Hunk
+        ---@param on boolean
+        local function mark(h, on)
+            for l = h.old_start, h.old_start + h.old_count - 1 do
+                marks.old[l] = on
+            end
+            for l = h.new_start, h.new_start + h.new_count - 1 do
+                marks.new[l] = on
+            end
+        end
+        for _, h in ipairs(model.hunks) do
+            mark(h, staged)
+        end
+        return {
+            marks = marks,
+            refresh = refresh_panel,
+            apply = function(_, hunk, reverse)
+                if not hunk then
+                    return false
+                end
+                mark(hunk, not reverse)
+                -- whole hunks only, so the rebuild never has to split one
+                local text = apply_text(model, marks)
+                if text and put_index(entry, text) then
+                    return true
+                end
+                mark(hunk, reverse)
+                return false
+            end,
+        }
+    end
+
+    -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
+    -- retarget_view, which re-reads the row, since staging here can move it to another
+    -- section
+    ---@param entry differ.FileEntry
+    local function show_local(entry)
+        if not (view and view:is_open()) then
+            return
+        end
+        local focus_line, focus_col = view:cursor_new_line()
+        -- a rename only the worktree has made leaves the index at the old path
+        local at_index = entry.y == "R" and entry.previous_path or nil
+        local file = { path = entry.path, status = entry.status, previous_path = at_index }
+        local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
+        local staging ---@type differ.view.Staging
+        if #model.hunks > 0 then
+            staging = frozen_staging(entry, model, false)
+            local _, cached = M.union_models(root, entry)
+            staging.hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
+        else
+            if not model.binary then
+                model.notice = empty_notice(root, entry, model, {}) or "No local content change"
+            end
+            staging = { refresh = refresh_panel }
+        end
+        local function back()
+            retarget_view(false)
+        end
+        staging.badge, staging.toggle_local, staging.leave = "LOCAL", back, back
+        local focus = focus_line and { focus_line = focus_line, focus_col = focus_col } or nil
+        view:set_source(model, staging, focus)
+        last_sig = git_signature()
+    end
+
     -- (re)source the diff view from an entry's current git state. false when the
     -- entry has no diff anymore (committed / fully staged / reverted outside differ).
     -- `source_opts` goes to View:set_source when the view is open
@@ -1642,6 +1731,11 @@ function M.panel(opts)
             model.banner = "still on disk, untracked: u tracks it again"
         end
         local staging = stage_for(entry, model)
+        if staging and partly_staged(entry) then
+            staging.toggle_local = function()
+                show_local(entry)
+            end
+        end
         if view and view:is_open() then
             view:set_source(model, staging, source_opts)
         else

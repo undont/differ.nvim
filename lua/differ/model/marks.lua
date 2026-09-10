@@ -80,6 +80,138 @@ function M.state(marks, h)
     return "partial"
 end
 
+-- a hunk's real lines on one side, [start, stop). a zero-count hunk has none
+---@param h differ.Hunk
+---@param side "old"|"new"
+---@return integer start, integer stop
+local function span(h, side)
+    local at, n = h[side .. "_start"], h[side .. "_count"]
+    return at, at + n
+end
+
+-- a hunk's extent on the old side, widened to a line where it has none, so a pure
+-- insertion still meets the change it sits in
+---@param h differ.Hunk
+---@return integer start, integer stop  -- [start, stop)
+local function reach(h)
+    local at, n = h.old_start, h.old_count
+    if n == 0 then
+        return at, at + 1
+    end
+    return at, at + n
+end
+
+-- the HEAD↔index hunks that touch a HEAD↔worktree hunk
+---@param h differ.Hunk        -- HEAD↔worktree
+---@param cached differ.Hunk[] -- HEAD↔index
+---@return differ.Hunk[]
+local function touching(h, cached)
+    local a, b = reach(h)
+    local out = {}
+    for _, c in ipairs(cached) do
+        local ca, cb = reach(c)
+        if ca < b and cb > a then
+            out[#out + 1] = c
+        end
+    end
+    return out
+end
+
+---@param lines string[]
+---@return string
+local function bag(lines)
+    table.sort(lines)
+    return table.concat(lines, "\n")
+end
+
+-- the HEAD↔worktree hunks whose lines, read as the marks say, don't hold what the index
+-- does there, and whether any staged change touches no hunk at all. by content, so a
+-- hunk whose index lines differ only in order isn't counted
+---@param head string[]           -- HEAD's lines
+---@param union differ.Hunk[]     -- HEAD↔worktree
+---@param cached differ.Hunk[]    -- HEAD↔index
+---@param marks differ.model.Marks
+---@return integer[] hunks, boolean outside
+function M.hidden_in(head, union, cached, marks)
+    local out, touched = {}, {}
+    for i, h in ipairs(union) do
+        local in_union, in_cached, region = {}, {}, {}
+        local ua, ub = span(h, "old")
+        for l = ua, ub - 1 do
+            in_union[l], region[l] = true, true
+        end
+        local actual = {}
+        for _, c in ipairs(touching(h, cached)) do
+            touched[c] = true
+            local ca, cb = span(c, "old")
+            for l = ca, cb - 1 do
+                in_cached[l], region[l] = true, true
+            end
+            for _, line in ipairs(c.new_lines or {}) do
+                actual[#actual + 1] = line
+            end
+        end
+        local implied = {}
+        for l in pairs(region) do
+            if not in_cached[l] then
+                actual[#actual + 1] = head[l]
+            end
+            if not in_union[l] or not marks.old[l] then
+                implied[#implied + 1] = head[l]
+            end
+        end
+        local na = h.new_start
+        for k, line in ipairs(h.new_lines or {}) do
+            if marks.new[na + k - 1] then
+                implied[#implied + 1] = line
+            end
+        end
+        if bag(actual) ~= bag(implied) then
+            out[#out + 1] = i
+        end
+    end
+    local outside = false
+    for _, c in ipairs(cached) do
+        outside = outside or not touched[c]
+    end
+    return out, outside
+end
+
+-- whether index↔worktree hunk `h` puts back lines HEAD↔index hunk `c` deleted outright
+---@param h differ.Hunk  -- index↔worktree
+---@param c differ.Hunk  -- HEAD↔index
+---@return boolean
+local function puts_back(h, c)
+    if not (h.old_count == 0 and c.new_count == 0 and h.old_start == c.new_start) then
+        return false
+    end
+    return table.concat(h.new_lines or {}, "\n") == table.concat(c.old_lines or {}, "\n")
+end
+
+-- the index↔worktree hunks that change staged content again: one that rewrites or drops
+-- a line the index added, or puts back lines the index deleted. what they undo is
+-- staged content the HEAD↔worktree diff can't show
+---@param unstaged differ.Hunk[]  -- index↔worktree
+---@param cached differ.Hunk[]    -- HEAD↔index
+---@return integer[]
+function M.restaged(unstaged, cached)
+    local added = covered(cached, "new")
+    local out = {}
+    for i, h in ipairs(unstaged) do
+        local hit = false
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            hit = hit or added[l] == true
+        end
+        for _, c in ipairs(cached) do
+            hit = hit or puts_back(h, c)
+        end
+        if hit then
+            out[#out + 1] = i
+        end
+    end
+    return out
+end
+
 -- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
 ---@param cached differ.Hunk[]  -- HEAD↔index
 ---@param lnum integer          -- index line

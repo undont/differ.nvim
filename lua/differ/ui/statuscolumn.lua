@@ -4,12 +4,16 @@
 local M = {}
 
 local STAGED_GLYPH = "▌"
+local HIDDEN_GLYPH = "!"
 
 ---@type table<integer, string[]> -- bufnr -> pre-formatted rail string per lnum
 local rails = {}
 
 ---@type table<integer, table<integer, boolean>> -- bufnr -> set of staged lnums
 local staged = {}
+
+---@type table<integer, table<integer, boolean>> -- bufnr -> lnums opening a hunk marked `!`
+local hidden = {}
 
 -- pre-format the gutter string for every line of a column from its map. pure, so
 -- the statuscolumn callback only does an O(1) index per redraw. a unified
@@ -64,11 +68,19 @@ function M.set_staged(bufnr, lines)
     staged[bufnr] = lines
 end
 
+-- register the lines that open a hunk marked `!`; they take the staged cell's place
+---@param bufnr integer
+---@param lines table<integer, boolean>|nil
+function M.set_hidden(bufnr, lines)
+    hidden[bufnr] = lines
+end
+
 -- drop a buffer's cached rail strings
 ---@param bufnr integer
 function M.clear(bufnr)
     rails[bufnr] = nil
     staged[bufnr] = nil
+    hidden[bufnr] = nil
 end
 
 -- statuscolumn callback: return the rail string for the current line, prefixed by
@@ -87,10 +99,14 @@ function M.render()
     end
     local s = cache[vim.v.lnum] or ""
     local sset = buf and staged[buf]
-    if sset then
-        return (sset[vim.v.lnum] and ("%#differStagedSign#" .. STAGED_GLYPH .. "%*") or " ") .. s
+    if not sset then
+        return s
     end
-    return s
+    local hset = hidden[buf]
+    if hset and hset[vim.v.lnum] then
+        return "%#differHiddenSign#" .. HIDDEN_GLYPH .. "%*" .. s
+    end
+    return (sset[vim.v.lnum] and ("%#differStagedSign#" .. STAGED_GLYPH .. "%*") or " ") .. s
 end
 
 return M

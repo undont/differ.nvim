@@ -121,6 +121,10 @@ local function status_groups(p)
         differPanelCountDelete = { fg = p.red },
         -- the staged-hunk gutter glyph: green for "in the index"
         differStagedSign = { fg = p.green },
+        -- a hunk touching staged content the whole change can't show, in the staged cell
+        differHiddenSign = { fg = p.orange, bold = true },
+        -- the winbar badge on a view that isn't the whole change
+        differViewBadge = { fg = p.green, bold = true, reverse = true },
     }
 end
 

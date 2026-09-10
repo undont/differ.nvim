@@ -91,6 +91,10 @@ local armed_view = nil
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
 ---@field hidden? string  -- union source: why some staged content isn't on screen
+---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
+---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
+---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
+---@field badge? string  -- winbar tag naming a view that isn't the whole change
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -360,7 +364,19 @@ function View:_paint_staged()
     if not self.can_stage then
         return
     end
+    local hidden = {}
+    for _, h in ipairs(self.staging and self.staging.hidden_in or {}) do
+        hidden[h] = true
+    end
     for _, col in ipairs(self.columns) do
+        local opening, seen = {}, {}
+        for i, line in ipairs(col.map.lines) do
+            local h = line.hunk
+            if h and hidden[h] and not seen[h] then
+                seen[h], opening[i] = true, true
+            end
+        end
+        statuscolumn.set_hidden(col.bufnr, opening)
         vim.api.nvim_buf_clear_namespace(col.bufnr, staged_ns, 0, -1)
         local staged_lines = {}
         for i, line in ipairs(col.map.lines) do
@@ -647,6 +663,16 @@ function View:toggle_layout()
     self:set_layout(self.layout == "stacked" and "split" or "stacked")
 end
 
+-- dw: swap a partly staged file between its whole change (HEAD↔worktree) and what
+-- changed since staging (index↔worktree)
+function View:toggle_local()
+    local toggle = self.staging and self.staging.toggle_local
+    if not toggle then
+        return vim.notify("differ: only a partly staged file has a local view", vim.log.levels.INFO)
+    end
+    toggle()
+end
+
 -- set the per-view context line count (math.huge = whole file). same column
 -- count, so no relayout, content/map/gutter/highlights refresh in place
 ---@param n number
@@ -803,6 +829,9 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.unstage_all, function()
             self:unstage_all()
         end, "differ: unstage all hunks")
+        bind(bufnr, km.toggle_local, function()
+            self:toggle_local()
+        end, "differ: toggle the local view")
         -- hunk-level here vs the panel's file-level discard, and destructive either
         -- way, so it confirms rather than acting straight off the key
         bind(bufnr, km.discard, function()
@@ -888,6 +917,10 @@ function View:show_help()
     end
     if self.staging and self.staging.revert then
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
+    end
+    if self.staging and self.staging.toggle_local then
+        local what = self.staging.badge and "back to the whole change" or "changes since staging"
+        rows[#rows + 1] = { fmt(km.toggle_local), what }
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         rows[#rows + 1] = { fmt(m.spec), m.desc }
@@ -1576,6 +1609,9 @@ function View:edit_file()
             "differ: editing applies to uncommitted (worktree/staged) changes only",
             vim.log.levels.WARN
         )
+    end
+    if self.staging and self.staging.leave then
+        self.staging.leave()
     end
     local t = self:_edit_target()
     if not t then

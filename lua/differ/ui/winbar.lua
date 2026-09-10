@@ -83,7 +83,10 @@ function M.diff()
         note = "staged content hidden"
     end
     local noted = note and ("%#WarningMsg#" .. esc(note) .. "%*  ") or ""
-    return (" %s %%=%s%s%s%s hunk %d/%d "):format(
+    local badge_text = view.staging and view.staging.badge
+    local tag = badge_text and ("%#differViewBadge# " .. esc(badge_text) .. " %* ") or ""
+    return (" %s%s %%=%s%s%s%s hunk %d/%d "):format(
+        tag,
         esc(vim.fn.fnamemodify(view.model.path, ":t")),
         badge,
         noted,

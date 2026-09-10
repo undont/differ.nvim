@@ -165,6 +165,7 @@ require("differ").setup({
 
     -- diffs
     toggle_layout = "dl",        -- flip between stacked / split
+    toggle_local = "dw",         -- a partly staged file: its changes since staging and back
     more_context = "d=", less_context = "d-",
     stage = "s", unstage = "u",  -- stage/unstage[all] work on hunks/files (diff buffer/panel)
     stage_all = "S", unstage_all = "U",

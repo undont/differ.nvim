@@ -142,4 +142,61 @@ describe("union marks", function()
             assert.is_true(marks.complete(union, {}, unstaged))
         end)
     end)
+
+    describe("locating hidden content", function()
+        local head = { "1", "2", "3", "4", "5" }
+
+        it("names the hunk whose staged line was edited again", function()
+            local union = { hl(1, { "foo" }, 1, { "FOOD" }) }
+            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            local m = marks.classify(union, cached, unstaged)
+            local where, outside = marks.hidden_in({ "foo" }, union, cached, m)
+            assert.are.same({ 1 }, where)
+            assert.is_false(outside)
+        end)
+
+        -- HEAD 1..5, line 3 staged as 3x, then 4 edited on top in the worktree
+        it("names nothing when the view holds what the index does", function()
+            local union = { hl(3, { "3", "4" }, 3, { "3x", "4y" }) }
+            local cached = { hl(3, { "3" }, 3, { "3x" }) }
+            local unstaged = { hl(4, { "4" }, 4, { "4y" }) }
+            local m = marks.classify(union, cached, unstaged)
+            local where, outside = marks.hidden_in(head, union, cached, m)
+            assert.are.same({}, where)
+            assert.is_false(outside)
+        end)
+
+        -- line 5 staged as 5x and then put back in the worktree, beside an edit at 1
+        it("reports a staged change that touches no hunk", function()
+            local union = { hl(1, { "1" }, 1, { "1y" }) }
+            local cached = { hl(5, { "5" }, 5, { "5x" }) }
+            local unstaged = { hl(1, { "1" }, 1, { "1y" }), hl(5, { "5x" }, 5, { "5" }) }
+            local m = marks.classify(union, cached, unstaged)
+            local where, outside = marks.hidden_in(head, union, cached, m)
+            assert.are.same({}, where)
+            assert.is_true(outside)
+        end)
+    end)
+
+    describe("local hunks over staged content", function()
+        it("names a local hunk rewriting a line the index added", function()
+            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            assert.are.same({ 1 }, marks.restaged(unstaged, cached))
+        end)
+
+        it("names a local hunk putting back a line the index deleted", function()
+            local cached = { hl(3, { "3" }, 2, {}) }
+            local unstaged = { hl(2, {}, 3, { "3" }) }
+            assert.are.same({ 1 }, marks.restaged(unstaged, cached))
+        end)
+
+        it("leaves out local hunks on lines the index left alone", function()
+            local cached = { hl(3, { "3" }, 3, { "3x" }) }
+            local beside = hl(3, {}, 4, { "new" }) -- an insertion after the staged line
+            local apart = hl(5, { "5" }, 6, { "5y" })
+            assert.are.same({}, marks.restaged({ beside, apart }, cached))
+        end)
+    end)
 end)
