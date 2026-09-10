@@ -84,14 +84,48 @@ describe("union marks", function()
             assert.are.equal("staged content sits outside every hunk", why)
         end)
 
-        -- a line the index added and the worktree then dropped reaches neither side of a
-        -- HEAD↔worktree diff, and a pure deletion has no worktree range to test
+        -- HEAD x,y; index x,ghost,y; worktree X,y. the line the index added and the
+        -- worktree then dropped reaches neither side of a HEAD↔worktree diff
         it("catches a line only the index holds", function()
-            local union = { hl(3, { "a" }, 3, { "b" }) }
-            local unstaged = { hl(7, { "ghost" }, 7, {}) }
-            local ok, why = marks.complete(union, {}, unstaged)
+            local union = { hl(1, { "x" }, 1, { "X" }) }
+            local cached = { hl(1, {}, 2, { "ghost" }) }
+            local unstaged = { hl(1, { "x", "ghost" }, 1, { "X" }) }
+            local ok, why = marks.complete(union, cached, unstaged)
             assert.is_false(ok)
             assert.are.equal("the index holds a line neither HEAD nor the worktree has", why)
+        end)
+
+        -- the pair diffs can align repeated lines differently from the union: here the
+        -- worktree drops a HEAD line the union still shows as context
+        it("catches a replaced line the union shows as context", function()
+            local union = { h(1, 1, 1, 1) }
+            local unstaged = { h(5, 1, 4, 0) }
+            local ok, why = marks.complete(union, {}, unstaged)
+            assert.is_false(ok)
+            assert.are.equal("a line the worktree replaced sits outside every hunk", why)
+        end)
+
+        -- stage an edit, then edit the same line again: the index's version is replaced
+        -- in the worktree, so it reaches neither side of a HEAD↔worktree diff
+        it("catches a staged line edited again in the worktree", function()
+            local union = { hl(1, { "foo" }, 1, { "FOOD" }) }
+            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            local ok, why = marks.complete(union, cached, unstaged)
+            assert.is_false(ok)
+            assert.are.equal("the index holds a line neither HEAD nor the worktree has", why)
+        end)
+
+        -- HEAD a,a,a,b; index a,a,c,b; worktree b,a,c,b. every range check passes, but
+        -- the marks keep two HEAD a's and hold the worktree's a too: five index lines
+        -- where there are four
+        it("catches marks that count a line twice", function()
+            local union = { hl(1, { "a", "a", "a" }, 1, { "b", "a", "c" }) }
+            local cached = { hl(3, { "a" }, 3, { "c" }) }
+            local unstaged = { hl(1, { "a" }, 1, { "b" }) }
+            local ok, why = marks.complete(union, cached, unstaged)
+            assert.is_false(ok)
+            assert.are.equal("the marked lines don't add up to the index", why)
         end)
 
         it("allows a deletion of a line HEAD held too", function()

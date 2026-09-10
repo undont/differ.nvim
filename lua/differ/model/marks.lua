@@ -69,25 +69,27 @@ function M.classify(union, cached, unstaged)
     return marks
 end
 
--- every line the hunks delete on `side`, as a multiset of content
----@param hunks differ.Hunk[]
----@param side "old"|"new"
----@return table<string, integer>
-local function line_bag(hunks, side)
-    local out = {}
-    for _, h in ipairs(hunks) do
-        for _, l in ipairs(h[side .. "_lines"] or {}) do
-            out[l] = (out[l] or 0) + 1
+-- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
+---@param cached differ.Hunk[]  -- HEAD↔index
+---@param lnum integer          -- index line
+---@return integer
+local function head_line(cached, lnum)
+    local shift = 0
+    for _, h in ipairs(cached) do
+        local last = h.new_count == 0 and h.new_start or h.new_start + h.new_count - 1
+        if last >= lnum then
+            break
         end
+        shift = shift + h.new_count - h.old_count
     end
-    return out
+    return lnum - shift
 end
 
 -- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot
 -- show index content that differs from HEAD and worktree both: stage a change and then
--- put the worktree back, or let the two diffs align a run of repeated lines
--- differently, and the change is real but off-screen. three ways that happens, so three
--- checks; a false sends the file back to the two-pair view, where nothing is hidden
+-- put the worktree back or edit it again, or let the two diffs align a run of repeated
+-- lines differently, and the change is real but off-screen. a false sends the file
+-- back to the two-pair view, where nothing is hidden
 ---@param union differ.Hunk[]
 ---@param cached differ.Hunk[]
 ---@param unstaged differ.Hunk[]
@@ -112,20 +114,43 @@ function M.complete(union, cached, unstaged)
             end
         end
     end
-    -- a pure deletion has no worktree line to check a range against, so it goes by
-    -- content: the index dropped these lines, and the union shows them only if HEAD
-    -- held them too. lines the index itself added and the worktree then dropped never
-    -- reach either side of a HEAD↔worktree diff
-    local dropped = line_bag(union, "old")
+    -- an index line the worktree replaces shows only as the HEAD line it still is: one
+    -- the index added (or rewrote) reaches neither side, and one whose HEAD line the
+    -- union leaves as context is shown as committed
+    local added = covered(cached, "new")
     for _, h in ipairs(unstaged) do
-        if h.new_count == 0 then
-            for _, l in ipairs(h.old_lines or {}) do
-                if (dropped[l] or 0) == 0 then
-                    return false, "the index holds a line neither HEAD nor the worktree has"
-                end
-                dropped[l] = dropped[l] - 1
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            if added[l] then
+                return false, "the index holds a line neither HEAD nor the worktree has"
+            end
+            if not shows_old[head_line(cached, l)] then
+                return false, "a line the worktree replaced sits outside every hunk"
             end
         end
+    end
+    -- the view implies an index of HEAD's context plus the marked lines. HEAD's length
+    -- cancels out of comparing that with HEAD↔index's net change, so the counts check
+    -- from hunks alone; a mismatch is a line the two pairs align differently
+    local shown, net = 0, 0
+    local m = M.classify(union, cached, unstaged)
+    for _, h in ipairs(union) do
+        shown = shown - h.old_count
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            if not m.old[l] then
+                shown = shown + 1
+            end
+        end
+        for l = h.new_start, h.new_start + h.new_count - 1 do
+            if m.new[l] then
+                shown = shown + 1
+            end
+        end
+    end
+    for _, h in ipairs(cached) do
+        net = net + h.new_count - h.old_count
+    end
+    if shown ~= net then
+        return false, "the marked lines don't add up to the index"
     end
     return true, nil
 end

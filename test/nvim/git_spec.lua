@@ -1057,7 +1057,7 @@ describe(":Differ panel", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         git(root, "add", "a.lua")
-        write(root .. "/a.lua", "local x = 3\nreturn x\n")
+        write(root .. "/a.lua", "local x = 2\nreturn x + 1\n")
         vim.cmd.edit(root .. "/a.lua")
 
         git_src.panel({})
@@ -1077,7 +1077,7 @@ describe(":Differ panel", function()
         vim.api.nvim_set_current_win(p.origin_win)
         local v = require("differ.view").current()
         assert.are.equal(V1, v.model.old_text) -- HEAD
-        assert.are.equal("local x = 3\nreturn x\n", v.model.new_text) -- worktree
+        assert.are.equal("local x = 2\nreturn x + 1\n", v.model.new_text) -- worktree
         p:close()
     end)
 end)
