@@ -1457,7 +1457,7 @@ function M.panel(opts)
         local function reclassify()
             local union, cached, unstaged = M.union_models(root, entry.path)
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
-            live.old, live.new, live.hunks = fresh.old, fresh.new, fresh.hunks
+            live.old, live.new = fresh.old, fresh.new
             return cached, unstaged
         end
         reclassify()

@@ -1443,8 +1443,8 @@ describe(":Differ diff hunk staging", function()
         -- the diff didn't vanish or re-source: same hunks, same buffer, hunk 1 marked
         assert.are.equal(2, #v.model.hunks)
         assert.are.same(before, vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false))
-        assert.is_true(v.staged_hunks[1])
-        assert.is_nil(v.staged_hunks[2])
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.are.equal("unstaged", v:_hunk_state(2))
         p:close()
     end)
 
@@ -1468,7 +1468,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("a.lua", v.model.path)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk() -- mark hunk 1 in place, leaving hunk 2 unstaged
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
 
         -- stage a *different* file whole, from the sidebar
         vim.api.nvim_set_current_win(p.winid)
@@ -1481,8 +1481,8 @@ describe(":Differ diff hunk staging", function()
         p.on_external_change()
 
         assert.are.equal(2, #v.model.hunks) -- still frozen on the same two hunks
-        assert.is_true(v.staged_hunks[1]) -- and hunk 1 is still marked staged
-        assert.is_nil(v.staged_hunks[2])
+        assert.are.equal("staged", v:_hunk_state(1)) -- and hunk 1 is still marked staged
+        assert.are.equal("unstaged", v:_hunk_state(2))
         p:close()
     end)
 
@@ -1496,17 +1496,17 @@ describe(":Differ diff hunk staging", function()
         local p = Panel.current()
         local v = view_in_origin(p)
         assert.are.equal("staged", v.staging.initial) -- a staged (HEAD↔index) diff
-        assert.is_true(v.staged_hunks[1]) -- opens marked staged
+        assert.are.equal("staged", v:_hunk_state(1)) -- opens marked staged
         assert.are.equal("local x = 2\nreturn x\n", indexed(root, "a.lua"))
 
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:unstage_hunk()
         assert.are.equal(V1, indexed(root, "a.lua")) -- index reverted to HEAD
-        assert.is_false(v.staged_hunks[1]) -- now marked unstaged, still visible
+        assert.are.equal("unstaged", v:_hunk_state(1)) -- now marked unstaged, still visible
 
         v:stage_hunk() -- u then s on the same hunk: the mark toggles back
         assert.are.equal("local x = 2\nreturn x\n", indexed(root, "a.lua"))
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
         p:close()
     end)
 
@@ -1522,7 +1522,7 @@ describe(":Differ diff hunk staging", function()
         local v = view_in_origin(p)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk()
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
 
         -- s/u on a hunk already in the target state re-enter the review flow instead
         -- (stage_hunk/unstage_hunk step past it), so _toggle_hunk itself is called
@@ -1531,15 +1531,15 @@ describe(":Differ diff hunk staging", function()
         v:_toggle_hunk(true)
         assert.are.equal("differ: hunk already staged", _G.notifs[1].msg)
         assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
-        assert.is_true(v.staged_hunks[1]) -- state untouched
+        assert.are.equal("staged", v:_hunk_state(1)) -- state untouched
 
         v:_toggle_hunk(false) -- actually unstage it, so the mirror check below is real
-        assert.is_false(v.staged_hunks[1])
+        assert.are.equal("unstaged", v:_hunk_state(1))
         _G.notifs = {}
         v:_toggle_hunk(false)
         assert.are.equal("differ: hunk already unstaged", _G.notifs[1].msg)
         assert.are.equal(vim.log.levels.INFO, _G.notifs[1].level)
-        assert.is_false(v.staged_hunks[1]) -- state untouched
+        assert.are.equal("unstaged", v:_hunk_state(1)) -- state untouched
         p:close()
     end)
 
@@ -1558,10 +1558,10 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk()
         assert.are.equal("alpha\nbeta\n", indexed(root, "new.lua")) -- whole file staged
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
 
         v:unstage_hunk() -- u back: leaves the index, untracked again
-        assert.is_false(v.staged_hunks[1])
+        assert.are.equal("unstaged", v:_hunk_state(1))
         local porc = vim.system(
             { "git", "status", "--porcelain", "--", "new.lua" },
             { cwd = root, text = true }
@@ -1850,8 +1850,8 @@ describe(":Differ diff hunk staging", function()
         -- the staged pair, carrying both edits, with every hunk marked staged
         assert.are.equal("staged", v.staging.initial)
         assert.are.equal(2, #v.model.hunks) -- the line-1 and line-10 changes together
-        assert.is_true(v.staged_hunks[1])
-        assert.is_true(v.staged_hunks[2])
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.are.equal("staged", v:_hunk_state(2))
 
         -- and the cursor held line 10 rather than snapping to the first hunk
         local col = v.columns[#v.columns]
@@ -1931,6 +1931,76 @@ describe(":Differ diff hunk staging", function()
         v:stage_hunk()
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(worktree(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("unstages a partial hunk with u", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10\n")
+
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("partial", v:_hunk_state(1))
+
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        assert.are.equal("unstaged", v:_hunk_state(1))
+        assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- a partial hunk still holds something to unstage, so the backward walk stops on it
+    it("walks u back onto a partial hunk", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10x\n")
+
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("partial", v:_hunk_state(1))
+        assert.are.equal("unstaged", v:_hunk_state(2))
+
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:unstage_hunk() -- nothing staged here, so it steps back
+        assert.are.equal(hunk_line(v, 1), vim.api.nvim_win_get_cursor(col.winid)[1])
+        p:close()
+    end)
+
+    -- a Partial row holds work in both directions, so the file step backwards (U with
+    -- nothing staged here) lands on it rather than passing it by
+    it("steps the unstage walk onto a Partial row", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-am", "ten lines and b")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
+        write(root .. "/b.lua", "two\n") -- unstaged only
+
+        vim.cmd.edit(root .. "/b.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        assert.are.equal("b.lua", view_in_origin(p).model.path)
+
+        assert.is_true(p:step_review("prev", true, true))
+        assert.are.equal("a.lua", view_in_origin(p).model.path)
         p:close()
     end)
 
@@ -2017,10 +2087,10 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(V1, indexed(root, "a.lua")) -- back to HEAD
         assert.are.equal("staged", v.staging.initial)
         assert.are.equal("a.lua", v.model.path)
-        assert.is_false(v.staged_hunks[1])
+        assert.are.equal("unstaged", v:_hunk_state(1))
 
         v:stage_hunk() -- and s puts it back in place, on the same pair
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(worktree(root, "a.lua"), indexed(root, "a.lua"))
         p:close()
     end)
@@ -2115,8 +2185,8 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
         v:stage_hunk()
-        assert.is_true(v.staged_hunks[2])
-        assert.is_falsy(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(2))
+        assert.are.equal("unstaged", v:_hunk_state(1))
 
         -- B1 after line 6, where the hunk actually is; not after line 8, where the
         -- worktree's own numbering would put it
@@ -2145,14 +2215,14 @@ describe(":Differ diff hunk staging", function()
         for _, n in ipairs({ 1, 2 }) do
             vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, n), 0 })
             v:stage_hunk()
-            assert.is_true(v.staged_hunks[n])
+            assert.are.equal("staged", v:_hunk_state(n))
         end
         assert.are.equal("1\nINS1\nINS2\n2\n3\n4\n7\n8\n9\n10\n", indexed(root, "a.lua"))
 
         -- put the deletion back: lines 5 and 6 belong after 4, not earlier
         vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
         v:unstage_hunk()
-        assert.is_false(v.staged_hunks[2])
+        assert.are.equal("unstaged", v:_hunk_state(2))
         assert.are.equal("1\nINS1\nINS2\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
         p:close()
     end)
@@ -2374,7 +2444,7 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk()
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal("WORKTREE", v.model.new_rev) -- still the unstaged pair
 
         confirming(1, function() -- would say yes, but it never gets asked
@@ -2732,7 +2802,7 @@ describe(":Differ diff hunk staging", function()
         v:stage_hunk()
         os.remove(root .. "/.git/index.lock") -- dropped before the asserts, not after
 
-        assert.is_falsy(v.staged_hunks[1]) -- no mark for something git didn't stage
+        assert.are.equal("unstaged", v:_hunk_state(1)) -- no mark for something git didn't stage
         assert.are.equal("", git(root, "ls-files", "--", "z.lua")) -- and it really didn't
         assert.is_truthy(
             (_G.notifs[1] and _G.notifs[1].msg or ""):find("stage failed", 1, true),
@@ -2796,8 +2866,8 @@ describe(":Differ diff hunk staging", function()
         end)
 
         assert.are.equal(2, #v.model.hunks)
-        assert.is_true(v.staged_hunks[1]) -- still the 1 -> 1x hunk
-        assert.is_nil(v.staged_hunks[2]) -- what was hunk 3, unstaged, renumbered down
+        assert.are.equal("staged", v:_hunk_state(1)) -- still the 1 -> 1x hunk
+        assert.are.equal("unstaged", v:_hunk_state(2)) -- what was hunk 3, unstaged, renumbered down
         assert.are.same({ "9x" }, v.model.hunks[2].new_lines)
         p:close()
     end)
@@ -3009,9 +3079,9 @@ describe(":Differ diff hunk staging", function()
         v:stage_hunk() -- advance to hunk 3
         assert.are.equal(hunk_line(v, 3), vim.api.nvim_win_get_cursor(p.origin_win)[1])
         v:stage_hunk() -- stage hunk 3
-        assert.is_true(v.staged_hunks[2])
-        assert.is_true(v.staged_hunks[3])
-        assert.is_falsy(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(2))
+        assert.are.equal("staged", v:_hunk_state(3))
+        assert.are.equal("unstaged", v:_hunk_state(1))
 
         -- at the bottom of the file: back round to the hunk left behind, not off to
         -- another file, and without re-sourcing the frozen diff
@@ -3068,7 +3138,7 @@ describe(":Differ diff hunk staging", function()
 
         -- and it stages there, finishing the file
         v:stage_hunk()
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(worktree(root, "a.lua"), indexed(root, "a.lua"))
         p:close()
     end)
@@ -3094,13 +3164,13 @@ describe(":Differ diff hunk staging", function()
         v:stage_hunk() -- stage hunk 1
         v:stage_hunk() -- advance to hunk 2
         v:stage_hunk() -- stage hunk 2
-        assert.is_true(v.staged_hunks[1])
-        assert.is_true(v.staged_hunks[2])
-        assert.is_falsy(v.staged_hunks[3])
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.are.equal("staged", v:_hunk_state(2))
+        assert.are.equal("unstaged", v:_hunk_state(3))
 
         vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 1), 0 })
         v:unstage_hunk() -- unstage hunk 1, in place
-        assert.is_false(v.staged_hunks[1])
+        assert.are.equal("unstaged", v:_hunk_state(1))
 
         _G.notifs = {}
         v:unstage_hunk() -- nothing staged behind it: round to hunk 2
@@ -3132,14 +3202,14 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(2, vim.api.nvim_win_get_cursor(p.origin_win)[1]) -- on hunk 1
 
         v:stage_hunk() -- stage hunk 1; cursor stays put, marked
-        assert.is_true(v.staged_hunks[1])
+        assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(2, vim.api.nvim_win_get_cursor(p.origin_win)[1])
 
         v:stage_hunk() -- second s: advance to hunk 2 (buffer line 9)
         assert.are.equal(9, vim.api.nvim_win_get_cursor(p.origin_win)[1])
 
         v:stage_hunk() -- stage hunk 2
-        assert.is_true(v.staged_hunks[2])
+        assert.are.equal("staged", v:_hunk_state(2))
 
         v:stage_hunk() -- second s on the last hunk: step to the next file
         assert.are.equal("z.lua", v.model.path)
@@ -3165,7 +3235,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("z.lua", v.model.path)
 
         v:unstage_hunk() -- unstage z.lua's hunk; cursor stays, now unstaged
-        assert.is_false(v.staged_hunks[1])
+        assert.are.equal("unstaged", v:_hunk_state(1))
 
         v:unstage_hunk() -- second u: no earlier hunk -> step back to a.lua's last hunk
         assert.are.equal("a.lua", v.model.path)
@@ -3188,13 +3258,13 @@ describe(":Differ diff hunk staging", function()
 
         v:stage_all() -- both hunks into the index in one go
         assert.are.equal("a\nINS1\nINS2\nb\nc\nD\n", indexed(root, "a.lua"))
-        assert.is_true(v.staged_hunks[1])
-        assert.is_true(v.staged_hunks[2])
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.are.equal("staged", v:_hunk_state(2))
 
         v:unstage_all() -- back out of the index entirely
         assert.are.equal("a\nb\nc\nd\n", indexed(root, "a.lua")) -- == HEAD
-        assert.is_false(v.staged_hunks[1])
-        assert.is_false(v.staged_hunks[2])
+        assert.are.equal("unstaged", v:_hunk_state(1))
+        assert.are.equal("unstaged", v:_hunk_state(2))
         p:close()
     end)
 
@@ -3936,7 +4006,7 @@ describe(":Differ diff whole-file staging", function()
         local p = Panel.current()
         local v = view_in_origin(p)
         assert.are.equal("staged", v.staging.initial)
-        assert.is_true(v.staged_hunks[1]) -- seeded with no hunk behind it
+        assert.are.equal("staged", v:_hunk_state(1)) -- seeded with no hunk behind it
         assert.are.equal("100755", index_mode(root, "a.lua"))
 
         v:unstage_hunk()

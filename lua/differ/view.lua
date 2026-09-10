@@ -104,8 +104,8 @@ local armed_view = nil
 ---@field keymaps table
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
----@field staged_hunks table<integer, boolean>  -- hunk index -> staged, for marking
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
+---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
 ---@field on_edit_unstage fun(path: string)|nil  -- frontend hook: unstage + re-source for edit-in-review
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
@@ -168,8 +168,8 @@ function View.new(model, opts)
         on_rerender = opts.on_rerender,
         on_cursor = opts.on_cursor,
         on_repurpose = opts.on_repurpose,
-        staged_hunks = {},
         fold_memory = {},
+        marks = { old = {}, new = {} },
         id = next_id(),
         _suppress_close = false,
         _closing = false,
@@ -179,24 +179,37 @@ function View.new(model, opts)
     return self
 end
 
--- seed staged state for the current source: a staged diff (HEAD↔index) opens with
--- everything staged, an unstaged diff (index↔worktree) with nothing. a union source
--- (HEAD↔worktree) carries neither, so its hunks read their state off the marks, where
--- a hunk counts as staged only when the index already holds every line of it
+-- seed staged state for the current source. a union source (HEAD↔worktree) hands over
+-- its marks and keeps them current itself; otherwise a staged diff (HEAD↔index) opens
+-- with every line staged and an unstaged diff (index↔worktree) with none
 function View:_init_staged()
-    self.staged_hunks = {}
-    local marks = self.staging and self.staging.marks
-    if marks then
-        for i, state in ipairs(marks.hunks) do
-            self.staged_hunks[i] = state == "staged"
-        end
+    local staging = self.staging
+    if staging and staging.marks then
+        self.marks = staging.marks
         return
     end
-    if not (self.staging and self.staging.initial == "staged") then
+    self.marks = { old = {}, new = {} }
+    if not (staging and staging.initial == "staged") then
         return
     end
-    for i = 1, self:_slot_count() do
-        self.staged_hunks[i] = true
+    if self:_whole_file() then
+        self.marks.whole = true
+        return
+    end
+    for _, h in ipairs(self.model.hunks) do
+        self:_mark_hunk(h, true)
+    end
+end
+
+-- set every line of `h` staged or not
+---@param h differ.Hunk
+---@param staged boolean
+function View:_mark_hunk(h, staged)
+    for l = h.old_start, h.old_start + h.old_count - 1 do
+        self.marks.old[l] = staged
+    end
+    for l = h.new_start, h.new_start + h.new_count - 1 do
+        self.marks.new[l] = staged
     end
 end
 
@@ -460,7 +473,7 @@ end
 function View:_stage_offset(idx)
     local off = 0
     for j = 1, idx - 1 do
-        if self.staged_hunks[j] then
+        if self:_hunk_state(j) == "staged" then
             local h = self.model.hunks[j]
             off = off + (h.new_count - h.old_count)
         end
@@ -968,12 +981,14 @@ function View:goto_hunk(direction, opts)
 end
 
 -- a hunk filter for the review scans: `staged` picks the side, so false matches every
--- hunk still to stage and true every one still to unstage
+-- hunk with something left to stage and true every one with something left to unstage.
+-- a partial hunk matches both
 ---@param staged boolean
 ---@return fun(hunk: integer): boolean
 function View:_review_filter(staged)
+    local done = staged and "unstaged" or "staged"
     return function(hunk)
-        return (self.staged_hunks[self:_slot(hunk)] or false) == staged
+        return self:_hunk_state(self:_slot(hunk)) ~= done
     end
 end
 
@@ -1141,40 +1156,39 @@ function View:_slot(h)
     return h
 end
 
--- whether a rail line's content is already in the index. a union source knows this per
--- line, so a part-staged hunk paints as the lines the index holds rather than all or
--- nothing; every other source only knows it per hunk
+-- whether a rail line's content is already in the index
 ---@param line differ.RailLine
 ---@return boolean
 function View:_line_staged(line)
     if not line.hunk then
         return false
     end
-    local marks = self.staging and self.staging.marks
-    if not marks then
-        return self.staged_hunks[self:_slot(line.hunk)] or false
+    if self:_whole_file() then
+        return self.marks.whole or false
     end
     if line.kind == "old" then
-        return marks.old[line.old] or false
+        return self.marks.old[line.old] or false
     end
     if line.kind == "new" then
-        return marks.new[line.new] or false
+        return self.marks.new[line.new] or false
     end
     return false
 end
 
--- a hunk's staged state. only a union source has a middle: a hunk git merged out of a
+-- a slot's staged state. only a union source has a middle: a hunk git merged out of a
 -- change staged and another made after it holds some lines the index has and some it
 -- doesn't, and s and u both have work to do on it
 ---@param idx integer
----@return "staged"|"partial"|"unstaged"
+---@return differ.model.HunkState
 function View:_hunk_state(idx)
-    local marks = self.staging and self.staging.marks
-    local state = marks and marks.hunks[idx]
-    if state then
-        return state
+    if self:_whole_file() then
+        return self.marks.whole and "staged" or "unstaged"
     end
-    return self.staged_hunks[idx] and "staged" or "unstaged"
+    local h = self.model.hunks[idx]
+    if not h then
+        return "unstaged"
+    end
+    return require("differ.model.marks").state(self.marks, h)
 end
 
 -- the slot the staging keys act on: slot 1 for a whole-file source, backed by a hunk
@@ -1195,16 +1209,20 @@ end
 ---@return boolean
 function View:_apply_hunk(idx, want_staged)
     local apply = self.staging and self.staging.apply
-    if not apply or (self.staged_hunks[idx] or false) == want_staged then
+    if not apply or self:_hunk_state(idx) == (want_staged and "staged" or "unstaged") then
         return false
     end
     local offset = self:_stage_offset(idx)
     -- reverse unstages: we patch away a change currently in the index
-    if apply(self.model, self.model.hunks[idx], offset, not want_staged) then
-        self.staged_hunks[idx] = want_staged
-        return true
+    if not apply(self.model, self.model.hunks[idx], offset, not want_staged) then
+        return false
     end
-    return false
+    if self:_whole_file() then
+        self.marks.whole = want_staged
+    elseif not self.staging.marks then -- a union source has re-read its own
+        self:_mark_hunk(self.model.hunks[idx], want_staged)
+    end
+    return true
 end
 
 -- s: stage the hunk under the cursor, or advance if there's nothing to stage here.
@@ -1322,9 +1340,6 @@ function View:_toggle_hunk(want_staged)
         )
     end
     if self:_apply_hunk(idx, want_staged) then
-        if self.staging.marks then
-            self:_init_staged() -- the op re-read the pairs; take the hunk states off them
-        end
         self.staging.refresh()
         -- that may have taken this pair's last hunk, in which case the session re-sources
         -- the view onto the file's surviving pair and there's nothing here left to paint
@@ -1397,7 +1412,7 @@ end
 function View:_unstage_offset(idx)
     local off = 0
     for j = 1, idx - 1 do
-        if not self.staged_hunks[j] then
+        if self:_hunk_state(j) ~= "staged" then
             local h = self.model.hunks[j]
             off = off + (h.old_count - h.new_count)
         end
@@ -1405,25 +1420,37 @@ function View:_unstage_offset(idx)
     return off
 end
 
--- shift per-hunk staged marks down past a hunk that has just left the model. the
--- rebuilt list normally loses exactly the reverted hunk and keeps the rest in order;
--- if it didn't, the marks can't be mapped, so reseed them from the source instead of
--- carrying wrong ones
----@param removed integer
+-- carry the marks past a hunk that has just left the model. a revert rebuilds only the
+-- new side, so old lines keep their numbers and new lines past the hunk shift by what
+-- it took out. the rebuilt list normally loses exactly the reverted hunk; if it didn't,
+-- the marks can't be mapped, so reseed them from the source instead of carrying wrong
+-- ones. a union source re-reads its own marks, so there is nothing to carry
+---@param h differ.Hunk  -- the reverted hunk
 ---@param before integer  -- hunk count before the revert
-function View:_rekey_staged(removed, before)
+function View:_rekey_staged(h, before)
+    if self.staging.marks then
+        return
+    end
     if #self.model.hunks ~= before - 1 then
         return self:_init_staged()
     end
-    local out = {}
-    for i, staged in pairs(self.staged_hunks) do
-        if i < removed then
-            out[i] = staged
-        elseif i > removed then
-            out[i - 1] = staged
+    local old, new = {}, {}
+    for l, staged in pairs(self.marks.old) do
+        if l < h.old_start or l >= h.old_start + h.old_count then
+            old[l] = staged
         end
     end
-    self.staged_hunks = out
+    -- a zero-count hunk sits after new_start rather than covering it
+    local first = h.new_count > 0 and h.new_start or h.new_start + 1
+    local last = first + h.new_count - 1
+    for l, staged in pairs(self.marks.new) do
+        if l < first then
+            new[l] = staged
+        elseif l > last then
+            new[l + h.old_count - h.new_count] = staged
+        end
+    end
+    self.marks = { old = old, new = new, whole = self.marks.whole }
 end
 
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
@@ -1486,7 +1513,7 @@ function View:revert_hunk()
     -- worktree copy would leave the two differing the opposite way round. a union source
     -- reverts both sides in one go, so it has no such half state to fall into
     local union = self.staging.marks ~= nil
-    if self.model.new_rev == "WORKTREE" and not union and self.staged_hunks[idx] then
+    if self.model.new_rev == "WORKTREE" and not union and self:_hunk_state(idx) ~= "unstaged" then
         return vim.notify(
             "differ: hunk is staged; unstage it (u) before reverting",
             vim.log.levels.WARN
@@ -1539,7 +1566,7 @@ function View:revert_hunk()
 
     local opened = self:_opened_folds() -- before rerender replaces col.folds
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
-    self:_rekey_staged(idx, before)
+    self:_rekey_staged(hunk, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one

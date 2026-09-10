@@ -8,9 +8,9 @@ local M = {}
 ---@alias differ.model.HunkState "staged"|"unstaged"|"partial"
 
 ---@class differ.model.Marks
----@field old table<integer, boolean>   -- HEAD lnum -> the index already dropped this line
----@field new table<integer, boolean>   -- worktree lnum -> the index already holds this line
----@field hunks differ.model.HunkState[]    -- union hunk index -> rolled-up state
+---@field old table<integer, boolean>  -- old lnum -> the index already dropped this line
+---@field new table<integer, boolean>  -- new lnum -> the index already holds this line
+---@field whole boolean|nil            -- a whole-file source: the file is staged as one unit
 
 -- the lines a hunk list covers on one side, as a set
 ---@param hunks differ.Hunk[]
@@ -27,11 +27,10 @@ local function covered(hunks, side)
     return out
 end
 
--- classify every line of a HEAD↔worktree diff as staged or not, and roll each hunk up
--- to a tri-state. a HEAD line the union deletes is staged when HEAD↔index deletes it
--- too (the index has already dropped it); a worktree line the union adds is staged
--- unless index↔worktree adds it (anything that pair leaves as context is in the index
--- already). pure: no git, no nvim
+-- classify every line of a HEAD↔worktree diff as staged or not. a HEAD line the union
+-- deletes is staged when HEAD↔index deletes it too (the index has already dropped it);
+-- a worktree line the union adds is staged unless index↔worktree adds it (anything
+-- that pair leaves as context is in the index already)
 ---@param union differ.Hunk[]     -- HEAD↔worktree
 ---@param cached differ.Hunk[]    -- HEAD↔index
 ---@param unstaged differ.Hunk[]  -- index↔worktree
@@ -39,34 +38,46 @@ end
 function M.classify(union, cached, unstaged)
     local dropped = covered(cached, "old")
     local fresh = covered(unstaged, "new")
-    local marks = { old = {}, new = {}, hunks = {} }
-    for i, h in ipairs(union) do
-        local staged, live = 0, 0
+    local marks = { old = {}, new = {} }
+    for _, h in ipairs(union) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             marks.old[l] = dropped[l] or false
-            if marks.old[l] then
-                staged = staged + 1
-            else
-                live = live + 1
-            end
         end
         for l = h.new_start, h.new_start + h.new_count - 1 do
             marks.new[l] = not fresh[l]
-            if marks.new[l] then
-                staged = staged + 1
-            else
-                live = live + 1
-            end
-        end
-        if live == 0 then
-            marks.hunks[i] = "staged"
-        elseif staged == 0 then
-            marks.hunks[i] = "unstaged"
-        else
-            marks.hunks[i] = "partial"
         end
     end
     return marks
+end
+
+-- a hunk's state, rolled up from its lines: staged when the index holds all of it,
+-- unstaged when it holds none, partial in between
+---@param marks differ.model.Marks
+---@param h differ.Hunk
+---@return differ.model.HunkState
+function M.state(marks, h)
+    local staged, live = 0, 0
+    for l = h.old_start, h.old_start + h.old_count - 1 do
+        if marks.old[l] then
+            staged = staged + 1
+        else
+            live = live + 1
+        end
+    end
+    for l = h.new_start, h.new_start + h.new_count - 1 do
+        if marks.new[l] then
+            staged = staged + 1
+        else
+            live = live + 1
+        end
+    end
+    if live == 0 then
+        return "staged"
+    end
+    if staged == 0 then
+        return "unstaged"
+    end
+    return "partial"
 end
 
 -- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
@@ -153,17 +164,6 @@ function M.complete(union, cached, unstaged)
         return false, "the marked lines don't add up to the index"
     end
     return true, nil
-end
-
--- how many hunks sit in each state, for the summary line
----@param marks differ.model.Marks
----@return table<differ.model.HunkState, integer>
-function M.tally(marks)
-    local out = { staged = 0, unstaged = 0, partial = 0 }
-    for _, state in ipairs(marks.hunks) do
-        out[state] = out[state] + 1
-    end
-    return out
 end
 
 return M

@@ -10,21 +10,28 @@ local function h(old_start, old_count, new_start, new_count)
     }
 end
 
+-- each union hunk's rolled-up state
+local function states(m, union)
+    local out = {}
+    for i, u in ipairs(union) do
+        out[i] = marks.state(m, u)
+    end
+    return out
+end
+
 describe("union marks", function()
     it("calls every hunk unstaged when the index holds nothing", function()
-        local m = marks.classify(
-            { h(2, 1, 2, 1), h(9, 1, 9, 1) },
-            {},
-            { h(2, 1, 2, 1), h(9, 1, 9, 1) }
-        )
-        assert.are.same({ "unstaged", "unstaged" }, m.hunks)
+        local union = { h(2, 1, 2, 1), h(9, 1, 9, 1) }
+        local m = marks.classify(union, {}, { h(2, 1, 2, 1), h(9, 1, 9, 1) })
+        assert.are.same({ "unstaged", "unstaged" }, states(m, union))
         assert.is_false(m.old[2])
         assert.is_false(m.new[2])
     end)
 
     it("calls every hunk staged when the worktree matches the index", function()
-        local m = marks.classify({ h(2, 1, 2, 1) }, { h(2, 1, 2, 1) }, {})
-        assert.are.same({ "staged" }, m.hunks)
+        local union = { h(2, 1, 2, 1) }
+        local m = marks.classify(union, { h(2, 1, 2, 1) }, {})
+        assert.are.same({ "staged" }, states(m, union))
         assert.is_true(m.old[2])
         assert.is_true(m.new[2])
     end)
@@ -34,15 +41,16 @@ describe("union marks", function()
     it("rolls each hunk up separately", function()
         local union = { h(1, 1, 1, 1), h(10, 1, 10, 1) }
         local m = marks.classify(union, { h(1, 1, 1, 1) }, { h(10, 1, 10, 1) })
-        assert.are.same({ "staged", "unstaged" }, m.hunks)
+        assert.are.same({ "staged", "unstaged" }, states(m, union))
     end)
 
     -- the ticket's repro: a hunk staged, then two more edits inside the region it
     -- covers, so HEAD↔worktree collapses all three into one hunk. that hunk is partial,
     -- and the per-line marks still say which line of it the index already has
     it("marks a hunk partial when later edits land inside a staged one", function()
-        local m = marks.classify({ h(3, 3, 3, 3) }, { h(3, 1, 3, 1) }, { h(4, 2, 4, 2) })
-        assert.are.same({ "partial" }, m.hunks)
+        local union = { h(3, 3, 3, 3) }
+        local m = marks.classify(union, { h(3, 1, 3, 1) }, { h(4, 2, 4, 2) })
+        assert.are.same({ "partial" }, states(m, union))
         assert.are.same({ [3] = true, [4] = false, [5] = false }, m.old)
         assert.are.same({ [3] = true, [4] = false, [5] = false }, m.new)
     end)
@@ -133,10 +141,5 @@ describe("union marks", function()
             local unstaged = { hl(7, { "gone" }, 7, {}) }
             assert.is_true(marks.complete(union, {}, unstaged))
         end)
-    end)
-
-    it("tallies the hunk states", function()
-        local m = { hunks = { "staged", "partial", "unstaged", "unstaged" } }
-        assert.are.same({ staged = 1, partial = 1, unstaged = 2 }, marks.tally(m))
     end)
 end)

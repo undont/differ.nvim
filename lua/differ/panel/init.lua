@@ -983,6 +983,18 @@ function Panel:focus_first_unstaged()
     self:focus_first_changed()
 end
 
+-- whether a row has hunks left to stage (`staged` false) or unstage (true). a Partial
+-- row holds both
+---@param e differ.FileEntry
+---@param staged boolean
+---@return boolean
+local function has_review_work(e, staged)
+    if e.partial then
+        return true
+    end
+    return (e.staged or false) == staged
+end
+
 -- the review flow's file step: the nearest row in `direction` with something left to do,
 -- wrapping past the list ends. the open file is skipped, since re-opening it would
 -- re-source its frozen diff and drop the staging marks
@@ -1002,7 +1014,7 @@ function Panel:step_review(direction, staged, keep_focus)
         end
         wrapped = wrapped or crossed
         local e = self.meta[next_row].entry
-        if e and (e.staged or false) == staged and entry_key(e) ~= self.selected_key then
+        if e and has_review_work(e, staged) and entry_key(e) ~= self.selected_key then
             self.selected_row = next_row
             if self:is_open() then
                 vim.api.nvim_win_set_cursor(self.winid, { next_row, 0 })

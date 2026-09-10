@@ -75,7 +75,7 @@ function M.diff()
     -- so s and u both still have something to do on it. staged and unstaged say nothing
     -- here, the shading being the whole story for them
     local mixed = ""
-    if k > 0 and view.staging and view.staging.marks and view:_hunk_state(k) == "partial" then
+    if k > 0 and view:_hunk_state(k) == "partial" then
         mixed = "%#differPanelContext#partial%*  "
     end
     return (" %s %%=%s%s%s hunk %d/%d "):format(
