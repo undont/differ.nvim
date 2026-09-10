@@ -5,12 +5,12 @@
 
 local M = {}
 
----@alias differ.union.State "staged"|"unstaged"|"partial"
+---@alias differ.model.HunkState "staged"|"unstaged"|"partial"
 
----@class differ.union.Marks
+---@class differ.model.Marks
 ---@field old table<integer, boolean>   -- HEAD lnum -> the index already dropped this line
 ---@field new table<integer, boolean>   -- worktree lnum -> the index already holds this line
----@field hunks differ.union.State[]    -- union hunk index -> rolled-up state
+---@field hunks differ.model.HunkState[]    -- union hunk index -> rolled-up state
 
 -- the lines a hunk list covers on one side, as a set
 ---@param hunks differ.Hunk[]
@@ -35,7 +35,7 @@ end
 ---@param union differ.Hunk[]     -- HEAD↔worktree
 ---@param cached differ.Hunk[]    -- HEAD↔index
 ---@param unstaged differ.Hunk[]  -- index↔worktree
----@return differ.union.Marks
+---@return differ.model.Marks
 function M.classify(union, cached, unstaged)
     local dropped = covered(cached, "old")
     local fresh = covered(unstaged, "new")
@@ -131,8 +131,8 @@ function M.complete(union, cached, unstaged)
 end
 
 -- how many hunks sit in each state, for the summary line
----@param marks differ.union.Marks
----@return table<differ.union.State, integer>
+---@param marks differ.model.Marks
+---@return table<differ.model.HunkState, integer>
 function M.tally(marks)
     local out = { staged = 0, unstaged = 0, partial = 0 }
     for _, state in ipairs(marks.hunks) do

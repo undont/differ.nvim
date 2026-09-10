@@ -1,12 +1,10 @@
--- the old side's text with only part of a diff applied, for staging a selection of
--- lines rather than a whole hunk. the caller re-diffs the result against the real file
--- and patches from that, so a selection never hand-builds a patch body: a diff of two
--- real texts always applies, where a hand-built body can place an added line on the
--- wrong side of a context line and land a silently wrong index.
+-- the old side's text with part of a diff applied: the text the index should hold once
+-- a selection of hunks is staged, written whole rather than patched in.
 --
--- a hunk carries two blocks and no correspondence between them, so a partial hunk is
--- only splittable where the mapping is unambiguous: an insertion, a deletion, or a
--- replacement of equal length. anything else is refused rather than guessed at.
+-- a hunk carries two blocks and no correspondence between them, so a hunk picked only
+-- in part is splittable where the mapping is unambiguous: an insertion, a deletion, or
+-- a replacement of equal length. anything else is refused rather than guessed at.
+-- staging picks whole hunks; the split is for selections narrower than one.
 -- pure lua, no vim API
 
 local to_lines = require("differ.util.text").to_lines

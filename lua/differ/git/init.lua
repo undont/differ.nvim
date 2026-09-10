@@ -694,7 +694,7 @@ local function unifiable(root, path)
     if union.binary then
         return false
     end
-    return (require("differ.union.marks").complete(union.hunks, cached.hunks, unstaged.hunks))
+    return (require("differ.model.marks").complete(union.hunks, cached.hunks, unstaged.hunks))
 end
 
 -- working-tree status as panel sections: Staged / Partial / Unstaged / Untracked
@@ -1446,7 +1446,7 @@ function M.panel(opts)
     ---@param entry differ.FileEntry
     ---@return differ.view.Staging
     local function partial_staging(entry)
-        local marks = require("differ.union.marks")
+        local marks = require("differ.model.marks")
         local apply_text = require("differ.model.apply").partial
         -- the view holds this table, so a re-classify writes through it rather than
         -- replacing it. it keys on the union hunks read back each time rather than the

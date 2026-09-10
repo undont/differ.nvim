@@ -90,7 +90,7 @@ local armed_view = nil
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
 ---@field settle? fun(): boolean  -- post-op: re-target the view when this pair emptied
----@field marks? differ.union.Marks  -- union source: which lines the index already holds
+---@field marks? differ.model.Marks  -- union source: which lines the index already holds
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]

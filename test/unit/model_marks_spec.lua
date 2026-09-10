@@ -1,4 +1,4 @@
-local marks = require("differ.union.marks")
+local marks = require("differ.model.marks")
 
 -- classify only reads the four line-range fields, so the hunks here carry just those
 local function h(old_start, old_count, new_start, new_count)
