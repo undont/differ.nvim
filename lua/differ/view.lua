@@ -93,6 +93,7 @@ local armed_view = nil
 ---@field hidden? string  -- union source: why some staged content isn't on screen
 ---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
 ---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
+---@field no_local? string  -- why dw does nothing here, in place of the default
 ---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
 ---@field badge? string  -- winbar tag naming a view that isn't the whole change
 
@@ -668,7 +669,9 @@ end
 function View:toggle_local()
     local toggle = self.staging and self.staging.toggle_local
     if not toggle then
-        return vim.notify("differ: only a partly staged file has a local view", vim.log.levels.INFO)
+        local why = self.staging and self.staging.no_local
+            or "only a partly staged file has a local view"
+        return vim.notify("differ: " .. why, vim.log.levels.INFO)
     end
     toggle()
 end

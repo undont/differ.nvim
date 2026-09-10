@@ -782,6 +782,40 @@ function M.status_sections(root)
     return sections, err
 end
 
+-- the rows a commit would take, as one section: every path the index changes, counted
+-- and lettered against HEAD. conflicts and untracked files hold nothing to commit
+---@param root string
+---@return differ.panel.Section[] sections, string|nil err
+function M.staged_sections(root)
+    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
+    local entries = rev.parse_status(out or "")
+    local counts = numstat({ "--cached" }, root)
+    local untracked = {}
+    for _, s in ipairs(entries) do
+        if s.x == "?" then
+            untracked[s.path] = true
+        end
+    end
+    local rows = {}
+    for _, s in ipairs(entries) do
+        local section = row_of(s)
+        if section ~= "Untracked" and section ~= "Conflicts" and s.x ~= " " then
+            local c = counts[s.path] or {}
+            rows[#rows + 1] = {
+                path = s.path,
+                status = s.x,
+                additions = c.additions or 0,
+                deletions = c.deletions or 0,
+                x = s.x,
+                y = s.y,
+                previous_path = s.previous_path,
+                kept = (s.x == "D" and untracked[s.path]) or nil,
+            }
+        end
+    end
+    return { { title = "Staged changes", entries = rows } }, err
+end
+
 -- file-level staging ops driven from the panel (slice C); each is whole-file
 -- and operates on the repo root. hunk-level staging stays in the diff view
 
@@ -1243,28 +1277,37 @@ function M.panel(opts)
     -- against the one resolved source. a staged deletion diffs HEAD↔index, since its
     -- worktree copy is a row of its own. `actions` (file-level staging) is only
     -- meaningful for the worktree-status source
+    local preview = false -- gs: the panel lists only what a commit would take
     local sections, model_for, raw_args_for, actions
     local list_err ---@type string|nil -- git's own words when the listing failed
     if is_worktree_status(source) then
         sections, list_err = M.status_sections(root)
         model_for = function(entry)
-            local s = { old = HEAD, new = entry.x == "D" and INDEX or WORKTREE }
+            local s = { old = HEAD, new = (preview or entry.x == "D") and INDEX or WORKTREE }
             -- re-read HEAD per build so a branch switch under an open panel updates
             -- the synthetic buffer's statusline label, not just the diff content
             return M.model(s, root, entry, head_branch(root))
         end
         -- the entry's own pair as `diff` args
         raw_args_for = function(entry)
-            return entry.x == "D" and { "--cached" } or { "HEAD" }
+            return (preview or entry.x == "D") and { "--cached" } or { "HEAD" }
         end
         actions = {
             stage = function(entry)
+                if preview then
+                    notify("the commit preview only unstages: gs goes back", vim.log.levels.WARN)
+                    return false
+                end
                 set_staged(root, entry, true)
             end,
             unstage = function(entry)
                 set_staged(root, entry, false)
             end,
             stage_all = function()
+                if preview then
+                    notify("the commit preview only unstages: gs goes back", vim.log.levels.WARN)
+                    return false
+                end
                 M.stage_all(root)
             end,
             unstage_all = function()
@@ -1274,7 +1317,7 @@ function M.panel(opts)
                 M.discard(root, entry)
             end,
             reload = function()
-                local live = M.status_sections(root)
+                local live = preview and M.staged_sections(root) or M.status_sections(root)
                 return (nonempty_sections(live))
             end,
         }
@@ -1304,6 +1347,7 @@ function M.panel(opts)
     local panel ---@type differ.Panel|nil -- forward ref so staging can refresh it
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local retarget_view ---@type fun(outside: boolean): boolean -- assigned below
+    local set_preview ---@type fun(on: boolean) -- assigned below
 
     -- hunk-level staging. content edits stage by hunk; anything with no lines to stage
     -- sets `whole_file`. `apply` stages one hunk, or unstages it with `reverse`
@@ -1674,6 +1718,58 @@ function M.panel(opts)
         }
     end
 
+    -- whole-file staging frozen at the index the view opened on: u resets the row's
+    -- paths to HEAD, s puts back the entries the index held then
+    ---@param entry differ.FileEntry
+    ---@return differ.view.Staging
+    local function snapshot_staging(entry)
+        local paths = entry_paths(entry)
+        local held = {} ---@type table<string, string> -- path -> update-index cacheinfo
+        local listed = git(vim.list_extend({ "ls-files", "-s", "-z", "--" }, paths), root) or ""
+        for mode, sha, path in listed:gmatch("(%d+) (%x+) %d+\t([^%z]+)") do
+            held[path] = ("%s,%s,%s"):format(mode, sha, path)
+        end
+        return {
+            initial = "staged",
+            whole_file = true,
+            refresh = refresh_panel,
+            apply = function(_, _, reverse)
+                if reverse then
+                    return set_staged(root, entry, false)
+                end
+                local ok = true
+                for _, path in ipairs(paths) do
+                    local cmd = { "update-index", "--force-remove", "--", path }
+                    if held[path] then
+                        cmd = { "update-index", "--add", "--cacheinfo", held[path] }
+                    end
+                    ok = git_ok(cmd, root, "staging " .. path) and ok
+                end
+                return ok
+            end,
+        }
+    end
+
+    -- staging for a commit-preview row, HEAD↔index. an add or a deletion is one unit
+    -- whose index entry comes and goes, so it stages as a file
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- HEAD↔index
+    ---@return differ.view.Staging
+    local function preview_staging(entry, model)
+        local staging
+        if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
+            staging = frozen_staging(entry, model, true)
+        else
+            staging = snapshot_staging(entry)
+        end
+        staging.badge = "STAGED"
+        staging.no_local = "the commit preview has no local view: gs goes back"
+        staging.leave = function()
+            set_preview(false)
+        end
+        return staging
+    end
+
     -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
     -- retarget_view, which re-reads the row, since staging here can move it to another
     -- section
@@ -1730,8 +1826,13 @@ function M.panel(opts)
         elseif entry.kept then
             model.banner = "still on disk, untracked: u tracks it again"
         end
-        local staging = stage_for(entry, model)
-        if staging and partly_staged(entry) then
+        local staging ---@type differ.view.Staging|nil
+        if preview then
+            staging = preview_staging(entry, model)
+        else
+            staging = stage_for(entry, model)
+        end
+        if staging and not preview and partly_staged(entry) then
             staging.toggle_local = function()
                 show_local(entry)
             end
@@ -1758,7 +1859,7 @@ function M.panel(opts)
     ---@return differ.FileEntry[]
     local function entries_for_path(path)
         local out = {}
-        local live = M.status_sections(root)
+        local live = preview and M.staged_sections(root) or M.status_sections(root)
         for _, sec in ipairs(live) do
             for _, e in ipairs(sec.entries) do
                 if e.path == path then
@@ -1797,6 +1898,26 @@ function M.panel(opts)
             return true
         end
         return false
+    end
+
+    -- gs: flip the panel between every change and the commit preview, then reopen the
+    -- file on screen in the new listing, else the nearest one
+    set_preview = function(on)
+        if on then
+            local _, staged_total = nonempty_sections((M.staged_sections(root)))
+            if staged_total == 0 then
+                return notify("nothing staged to preview")
+            end
+        end
+        preview = on
+        local path = active_entry and active_entry.path
+        panel:refresh()
+        if not panel:is_alive() then
+            return
+        end
+        if not (path and panel:goto_path(path, true)) then
+            panel:open_nearest(true)
+        end
     end
 
     -- after an external git change (lazygit, a tmux-pane commit, `:!git`): refresh the
@@ -1841,6 +1962,7 @@ function M.panel(opts)
     -- defaults, else Panel.new's own hardcoded fallbacks
     local cfg = require("differ").get_config()
     local panel_cfg = cfg.panel or {}
+    local panel_keys = cfg.keymaps.panel or require("differ.config").defaults.keymaps
     local return_tab, session_tab = open_session_tab()
     panel = Panel.new({
         sections = nonempty,
@@ -1857,6 +1979,15 @@ function M.panel(opts)
             end
         end,
         keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
+        extra_keymaps = stageable and {
+            {
+                spec = panel_keys.commit_preview,
+                fn = function()
+                    set_preview(not preview)
+                end,
+                desc = "commit preview: staged changes only",
+            },
+        } or nil,
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,
         height = opts.height or panel_cfg.height,
@@ -1883,6 +2014,9 @@ function M.panel(opts)
         -- empty sidebar next to a diff of a file that's now clean. only the worktree
         -- source can reach this; a rev-pair list never reloads
         on_empty = function()
+            if preview then
+                return set_preview(false) -- everything unstaged: back to the whole list
+            end
             notify("no changes left")
             local back = panel and panel.return_tab
             if panel then

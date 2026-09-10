@@ -174,6 +174,7 @@ require("differ").setup({
     goto_file = "de",            -- open the real file and close the session; in a pr it opens
                                  -- the real file in a new tab
     toggle_listing = "i",        -- tree/flat list
+    commit_preview = "gs",       -- panel: only the staged changes, each as HEAD↔index, and back
     close_node = "c",
     close_all = "C",
     open_all = "O",

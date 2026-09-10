@@ -61,9 +61,9 @@ local STATUS_HL = {
 -- file-level staging hooks (slice C); supplied by the local frontend for the
 -- working-tree source, nil otherwise (rev-pair lists aren't stageable)
 ---@class differ.panel.Actions
----@field stage fun(entry: differ.FileEntry)
+---@field stage fun(entry: differ.FileEntry): boolean|nil  -- false: refused, nothing moved
 ---@field unstage fun(entry: differ.FileEntry)
----@field stage_all fun()
+---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
 ---@field reload fun(): differ.panel.Section[] -- recompute sections after an op
@@ -760,7 +760,9 @@ function Panel:stage_op(op)
     end
     local paths ---@type table<string, boolean>|nil -- nil: the op moved every file
     if op == "stage_all" or op == "unstage_all" then
-        self.actions[op]()
+        if self.actions[op]() == false then
+            return
+        end
     else
         local entries = self:_op_targets()
         if #entries == 0 then
@@ -768,8 +770,12 @@ function Panel:stage_op(op)
         end
         paths = {}
         for _, e in ipairs(entries) do
-            self.actions[op](e)
-            paths[e.path] = true
+            if self.actions[op](e) ~= false then
+                paths[e.path] = true
+            end
+        end
+        if next(paths) == nil then
+            return
         end
     end
     self:_after_stage_op(paths)

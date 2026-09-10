@@ -2251,6 +2251,177 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: only a partly staged file has a local view", msg)
     end)
 
+    -- gs, from the panel
+    local function toggle_preview(p)
+        p.extra_keymaps[1].fn()
+    end
+    local function titles(p)
+        local out = {}
+        for _, sec in ipairs(p.sections) do
+            out[#out + 1] = sec.title
+        end
+        return out
+    end
+    local function paths(p)
+        local out = {}
+        for _, sec in ipairs(p.sections) do
+            for _, e in ipairs(sec.entries) do
+                out[#out + 1] = e.path
+            end
+        end
+        table.sort(out)
+        return out
+    end
+    -- the partly staged a.lua plus a staged add c.lua (edited again) and an unstaged b.lua
+    local function preview_repo()
+        local root = partly_staged_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b", "--", "b.lua") -- a.lua's staged edits stay staged
+        write(root .. "/b.lua", "b2\n")
+        write(root .. "/c.lua", "one\n")
+        git(root, "add", "c.lua")
+        write(root .. "/c.lua", "one\ntwo\n")
+        return root
+    end
+
+    it("gs lists only the staged changes, each diffing HEAD-to-index, and back", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local before = titles(p)
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local in_titles, in_paths = titles(p), paths(p)
+        local path, revs = v.model.path, { v.model.old_rev, v.model.new_rev }
+        local state, text = v:_hunk_state(1), winbar_of(v)
+        toggle_preview(p)
+        local out_titles, out_rev = titles(p), v.model.new_rev
+        p:close()
+        assert.are.same({ "Staged changes" }, in_titles)
+        assert.are.same({ "a.lua", "c.lua" }, in_paths)
+        assert.are.equal("a.lua", path) -- the file on screen stays
+        assert.are.same({ "HEAD", "INDEX" }, revs)
+        assert.are.equal("staged", state)
+        assert.is_truthy(text:find(" STAGED ", 1, true))
+        assert.is_truthy(text:find(" hunk 1/2 ", 1, true))
+        assert.is_nil(text:find("staged ·", 1, true)) -- every hunk staged: no tally
+        assert.are.same(before, out_titles)
+        assert.are.equal("WORKTREE", out_rev)
+    end)
+
+    -- frozen like the local view: the index is rebuilt from HEAD plus the hunks still
+    -- marked staged, so hunks come out in any order and go straight back
+    it("unstages in the commit preview in any order, and stages back in place", function()
+        local root = preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:unstage_hunk()
+        local second_out = indexed(root, "a.lua")
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        local both_out = indexed(root, "a.lua")
+        v:stage_hunk()
+        local first_back = indexed(root, "a.lua")
+        local hunks, rev_after = #v.model.hunks, v.model.new_rev
+        p:close()
+        assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n", second_out)
+        assert.are.equal(committed(root, "a.lua"), both_out)
+        assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n", first_back)
+        assert.are.equal(2, hunks)
+        assert.are.equal("INDEX", rev_after)
+    end)
+
+    -- an add is one unit whose index entry goes and comes back: s restores what was
+    -- staged, not the worktree's copy
+    it("unstages an add in the commit preview and stages back what was staged", function()
+        local root = preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        v:unstage_hunk()
+        local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
+        v:stage_hunk()
+        local back = indexed(root, "c.lua")
+        p:close()
+        assert.are.equal("?? c.lua\n", status)
+        assert.are.equal("one\n", back)
+    end)
+
+    it("refuses s in the commit preview panel", function()
+        local root = preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local before = indexed(root, "a.lua")
+        _G.notifs = {}
+        p:stage_op("stage_all")
+        local msg, after = _G.notifs[#_G.notifs].msg, indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: the commit preview only unstages: gs goes back", msg)
+        assert.are.equal(before, after)
+    end)
+
+    it("returns to the whole list once the commit preview is unstaged", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        p:stage_op("unstage_all")
+        local alive, got = p:is_alive(), titles(p)
+        local rev_after = view_in_origin(p).model.new_rev
+        p:close()
+        assert.is_true(alive)
+        assert.are.same({ "Unstaged", "Untracked" }, got)
+        assert.are.equal("WORKTREE", rev_after)
+    end)
+
+    it("df from the commit preview edits the file from the whole list", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        v:edit_file()
+        local got, rev_after, win = titles(p), v.model.new_rev, v.edit_win
+        p:close()
+        assert.are.same({ "Partial", "Unstaged" }, got)
+        assert.are.equal("WORKTREE", rev_after)
+        assert.is_truthy(win)
+    end)
+
+    it("dw and gs say why they do nothing", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        _G.notifs = {}
+        v:toggle_local()
+        local dw_msg = _G.notifs[#_G.notifs].msg
+        p:close()
+
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        p = Panel.current()
+        _G.notifs = {}
+        toggle_preview(p)
+        local gs_msg, got = _G.notifs[#_G.notifs].msg, titles(p)
+        p:close()
+        assert.are.equal("differ: the commit preview has no local view: gs goes back", dw_msg)
+        assert.are.equal("differ: nothing staged to preview", gs_msg)
+        assert.are.same({ "Unstaged" }, got)
+    end)
+
     -- the winbar counts the hunks the index holds whole and in part; zero counts drop out
     it("tallies staged and partial hunks in the diff winbar", function()
         local root = fresh_repo()
