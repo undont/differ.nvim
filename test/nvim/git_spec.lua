@@ -75,6 +75,40 @@ describe("git.read / changed_files", function()
         assert.are.equal("a\r\nb\r\nc\r\n", git_src.read(head, root, "f.txt"))
         assert.are.equal("a\r\nB\r\nc\r\n", git_src.read(index, root, "f.txt"))
     end)
+
+    -- git stores a symlink as the path it points at, not the contents behind it
+    it("reads a worktree symlink as its target path", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "local y = 1\n")
+        vim.uv.fs_symlink("a.lua", root .. "/l")
+        git(root, "add", "b.lua", "l")
+        git(root, "commit", "-q", "-m", "link")
+        os.remove(root .. "/l")
+        vim.uv.fs_symlink("b.lua", root .. "/l")
+
+        local wt = { kind = "worktree", label = "WORKTREE" }
+        local index = { kind = "index", label = "INDEX" }
+        assert.are.equal("a.lua", git_src.read(index, root, "l"))
+        assert.are.equal("b.lua", git_src.read(wt, root, "l"))
+    end)
+end)
+
+-- a file name with glob characters, next to a file its glob matches
+describe("git pathspecs", function()
+    it("unstages only the file named, not the files its glob matches", function()
+        local root = fresh_repo()
+        write(root .. "/a1.txt", "one\n")
+        write(root .. "/a[1].txt", "bracket\n")
+        git(root, "add", "a1.txt", "a[1].txt")
+        git(root, "commit", "-q", "-m", "two")
+        write(root .. "/a1.txt", "one staged\n")
+        write(root .. "/a[1].txt", "bracket staged\n")
+        git(root, "add", "--", "a1.txt", ":(literal)a[1].txt")
+
+        assert.is_true(git_src.unstage(root, "a[1].txt"))
+        local staged = git(root, "diff", "--cached", "--name-only")
+        assert.are.equal("a1.txt\n", staged)
+    end)
 end)
 
 describe("git.read_stage", function()
@@ -2145,6 +2179,36 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: the file has changed these lines: nothing reverted", said)
         assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", index)
         assert.are.equal(edited, work)
+    end)
+
+    -- the glob a[1].txt matches the executable a1.txt, which sorts first
+    it("stages a hunk of a glob-named file keeping its own mode", function()
+        local root = fresh_repo()
+        local ten = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n"
+        write(root .. "/a1.txt", "one\n")
+        write(root .. "/a[1].txt", ten)
+        git(root, "add", "a1.txt", "a[1].txt")
+        git(root, "update-index", "--chmod=+x", "a1.txt")
+        git(root, "commit", "-q", "-m", "two")
+        write(root .. "/a[1].txt", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "--", ":(literal)a[1].txt")
+        write(root .. "/a[1].txt", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
+
+        vim.cmd.edit(vim.fn.fnameescape(root .. "/a[1].txt"))
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        if v.model.path ~= "a[1].txt" then
+            p:close()
+            error("opened " .. v.model.path .. ", not the bracketed file")
+        end
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        p:close()
+        local listed = git(root, "--literal-pathspecs", "ls-files", "-s", "--", "a[1].txt")
+        assert.are.equal("100644", listed:match("^(%d+)"))
     end)
 
     -- a partial hunk still holds something to unstage, so the backward walk stops on it

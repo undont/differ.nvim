@@ -82,6 +82,9 @@ local function run(cmd, opts)
     return obj:wait()
 end
 
+-- every path differ hands git is a real file name, never a glob
+local GIT = { "git", "--literal-pathspecs" }
+
 -- run git in `cwd`. returns stdout on success, or nil + stderr on failure.
 -- `text = true` normalises `\r\n` to `\n` in stdout, which is right for plumbing
 -- output (status/numstat/rev-parse/name-status/...) but would corrupt file
@@ -91,7 +94,7 @@ end
 ---@param opts? { timeout?: integer, env?: table<string, string> }
 ---@return string|nil stdout, string|nil stderr
 local function git(args, cwd, opts)
-    local cmd = { "git" }
+    local cmd = vim.list_extend({}, GIT)
     vim.list_extend(cmd, args)
     opts = opts or {}
     local res, err = run(cmd, {
@@ -125,7 +128,7 @@ end
 ---@param cwd string
 ---@return string|nil stdout, string|nil stderr
 local function git_raw(args, cwd)
-    local cmd = { "git" }
+    local cmd = vim.list_extend({}, GIT)
     vim.list_extend(cmd, args)
     local res, err = run(cmd, { cwd = cwd })
     if not res then
@@ -240,6 +243,11 @@ end
 ---@param abs string
 ---@return string|nil
 local function read_file(abs)
+    local uv = vim.uv or vim.loop
+    local st = uv.fs_lstat(abs)
+    if st and st.type == "link" then
+        return uv.fs_readlink(abs) -- git stores a symlink as its target path
+    end
     if vim.fn.filereadable(abs) == 0 then
         return nil
     end
@@ -290,7 +298,8 @@ local function as_staged(root, relpath, data)
         dst:close()
     end
     local env = { GIT_INDEX_FILE = tmp }
-    local add = vim.system({ "git", "add", "--", relpath }, { cwd = root, env = env }):wait()
+    local add_cmd = vim.list_extend(vim.list_extend({}, GIT), { "add", "--", relpath })
+    local add = vim.system(add_cmd, { cwd = root, env = env }):wait()
     if add.code ~= 0 then
         os.remove(tmp)
         return data
