@@ -1430,29 +1430,20 @@ function M.panel(opts)
         return at, at + n
     end
 
-    -- every line of the hunks in `hunks` that do (or don't) meet `[a, b)` on `side`.
-    -- whole hunks either way, so the partial apply never has to split one: at hunk
-    -- granularity the unit staged is already a hunk of the pair being patched
+    -- the indices of the hunks in `hunks` that do (or don't) meet `[a, b)` on `side`
     ---@param hunks differ.Hunk[]
     ---@param side "old"|"new"
     ---@param a integer
     ---@param b integer
     ---@param want boolean  -- true picks the hunks that meet the region, false the rest
-    ---@return differ.model.Selection
+    ---@return table<integer, boolean>
     local function select_hunks(hunks, side, a, b, want)
-        local sel = { old = {}, new = {} }
-        for _, h in ipairs(hunks) do
+        local picked = {}
+        for i, h in ipairs(hunks) do
             local hs, he = extent(h, side)
-            if (hs < b and he > a) == want then
-                for k = 0, h.old_count - 1 do
-                    sel.old[h.old_start + k] = true
-                end
-                for k = 0, h.new_count - 1 do
-                    sel.new[h.new_start + k] = true
-                end
-            end
+            picked[i] = (hs < b and he > a) == want
         end
-        return sel
+        return picked
     end
 
     -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
@@ -1510,7 +1501,7 @@ function M.panel(opts)
     ---@return differ.view.Staging
     local function union_staging(entry)
         local marks = require("differ.model.marks")
-        local apply_text = require("differ.model.apply").partial
+        local splice = require("differ.model.apply").splice
         local mode_why ---@type string|nil
         if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry) then
             mode_why = "the index holds a mode change"
@@ -1544,18 +1535,13 @@ function M.panel(opts)
                 return false
             end
             local union, cached, unstaged = M.union_models(root, entry)
-            local from, sel
+            local text
             if reverse then
                 local a, b = extent(hunk, "old")
-                from, sel = cached, select_hunks(cached.hunks, "old", a, b, false)
+                text = splice(cached, select_hunks(cached.hunks, "old", a, b, false))
             else
                 local a, b = extent(hunk, "new")
-                from, sel = unstaged, select_hunks(unstaged.hunks, "new", a, b, true)
-            end
-            local text, why = apply_text(from, sel)
-            if not text then
-                notify(("this hunk can't be staged: %s"):format(why), vim.log.levels.WARN)
-                return false
+                text = splice(unstaged, select_hunks(unstaged.hunks, "new", a, b, true))
             end
             if not put_index(entry, text) then
                 return false
@@ -1573,8 +1559,8 @@ function M.panel(opts)
             local union, cached = M.union_models(root, entry)
             local hunk = model.hunks[idx]
             local a, b = extent(hunk, "old")
-            local text = apply_text(cached, select_hunks(cached.hunks, "old", a, b, false))
-            if text and text ~= cached.new_text and not put_index(entry, text) then
+            local text = splice(cached, select_hunks(cached.hunks, "old", a, b, false))
+            if text ~= cached.new_text and not put_index(entry, text) then
                 return false
             end
             local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
@@ -1586,7 +1572,7 @@ function M.panel(opts)
                 return false
             end
             local work = require("differ.model.diff").revert_hunk(model, idx).new_text
-            remark(union_pairs(root, entry.path, union.old_text, text or cached.new_text, work))
+            remark(union_pairs(root, entry.path, union.old_text, text, work))
             return true
         end
         return staging
@@ -1688,7 +1674,8 @@ function M.panel(opts)
     ---@param staged boolean  -- every hunk's opening state
     ---@return differ.view.Staging
     local function frozen_staging(entry, model, staged)
-        local apply_text = require("differ.model.apply").partial
+        local splice = require("differ.model.apply").splice
+        local state = require("differ.model.marks").state
         local marks = { old = {}, new = {} }
         ---@param h differ.Hunk
         ---@param on boolean
@@ -1711,9 +1698,11 @@ function M.panel(opts)
                     return false
                 end
                 mark(hunk, not reverse)
-                -- whole hunks only, so the rebuild never has to split one
-                local text = apply_text(model, marks)
-                if text and put_index(entry, text) then
+                local picked = {}
+                for i, h in ipairs(model.hunks) do
+                    picked[i] = state(marks, h) == "staged"
+                end
+                if put_index(entry, splice(model, picked)) then
                     return true
                 end
                 mark(hunk, reverse)
@@ -1844,13 +1833,8 @@ function M.panel(opts)
     local function drop_hidden(entry, hunk)
         local _, cached = M.union_models(root, entry)
         local a, b = extent(hunk, "old")
-        local sel = select_hunks(cached.hunks, "new", a, b, false)
-        local text, why = require("differ.model.apply").partial(cached, sel)
-        if not text then
-            notify(("this hunk can't be unstaged: %s"):format(why), vim.log.levels.WARN)
-            return false
-        end
-        if not put_index(entry, text) then
+        local picked = select_hunks(cached.hunks, "new", a, b, false)
+        if not put_index(entry, require("differ.model.apply").splice(cached, picked)) then
             return false
         end
         refresh_panel()
