@@ -372,6 +372,26 @@ function View:_paint_staged()
     end
 end
 
+-- 'cursorlineopt' values that highlight the line text; screenline still gets the
+-- whole line, an extmark can't target one screen row
+local CURSORLINE_TEXT = { line = true, screenline = true, both = true }
+
+-- reads the window's effective values, so a :setlocal inside the diff wins over the global
+---@param win integer
+---@return boolean
+local function highlights_cursor_text(win)
+    if not vim.api.nvim_get_option_value("cursorline", { scope = "local", win = win }) then
+        return false
+    end
+    local opt = vim.api.nvim_get_option_value("cursorlineopt", { scope = "local", win = win })
+    for value in opt:gmatch("[^,]+") do
+        if CURSORLINE_TEXT[value] then
+            return true
+        end
+    end
+    return false
+end
+
 -- repaint our own cursor line above the diff backgrounds, since a no-foreground
 -- CursorLine is low-priority and gets buried by them. mirrors the diff line bg
 -- (a char-level fill with hl_eol so it spans the whole row past EOL) but at a higher
@@ -391,9 +411,7 @@ function View:_paint_cursorline()
     if not (win and vim.api.nvim_win_is_valid(win)) then
         return
     end
-    -- read the window's effective value, so a :setlocal cursorline inside the diff
-    -- still paints while a global nocursorline leaves the rows clean
-    if not vim.api.nvim_get_option_value("cursorline", { scope = "local", win = win }) then
+    if not highlights_cursor_text(win) then
         return
     end
     local row = vim.api.nvim_win_get_cursor(win)[1] - 1
@@ -632,7 +650,7 @@ function View:_setup_window(winid, bufnr)
     -- can't also be buffer-scoped: skip the fire unless this view holds focus
     vim.api.nvim_create_autocmd("OptionSet", {
         group = group,
-        pattern = "cursorline",
+        pattern = { "cursorline", "cursorlineopt" },
         callback = function()
             if vim.api.nvim_get_current_buf() == bufnr then
                 self:_paint_cursorline()

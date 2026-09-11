@@ -288,6 +288,19 @@ describe("panel navigation", function()
         assert.is_truthy(vim.tbl_contains(texts, "-3"))
         p:close()
     end)
+
+    it("highlights the cursor row even when cursorlineopt is number only", function()
+        local had = vim.o.cursorlineopt
+        vim.o.cursorlineopt = "number"
+        local p = panel({ fe("a.lua") })
+        p:open()
+        local opt =
+            vim.api.nvim_get_option_value("cursorlineopt", { scope = "local", win = p.winid })
+        assert.are.equal("line", opt)
+        assert.are.equal("number", vim.go.cursorlineopt)
+        p:close()
+        vim.o.cursorlineopt = had
+    end)
 end)
 
 -- the panel window's position relative to the origin window it was split from

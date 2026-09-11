@@ -124,6 +124,7 @@ local function render(checks)
         title_pos = "center",
     })
     set_wo(win, "cursorline", true)
+    set_wo(win, "cursorlineopt", "line")
 
     local function close()
         if vim.api.nvim_win_is_valid(win) then
