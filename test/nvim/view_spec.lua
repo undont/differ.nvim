@@ -1032,13 +1032,14 @@ describe("view cursor-line overlay", function()
     local cursor_ns = vim.api.nvim_create_namespace("differ.cursorline")
 
     -- the overlay follows the window's cursorline, and nvim ships it off
-    local had_cursorline
+    local had_cursorline, had_cursorlineopt
     before_each(function()
-        had_cursorline = vim.o.cursorline
+        had_cursorline, had_cursorlineopt = vim.o.cursorline, vim.o.cursorlineopt
         vim.o.cursorline = true
+        vim.o.cursorlineopt = "both"
     end)
     after_each(function()
-        vim.o.cursorline = had_cursorline
+        vim.o.cursorline, vim.o.cursorlineopt = had_cursorline, had_cursorlineopt
     end)
 
     local CURSORLINE = {
@@ -1199,6 +1200,61 @@ describe("view cursor-line overlay", function()
         -- and turning it back off wipes the overlay already painted
         vim.api.nvim_set_option_value("cursorline", false, { scope = "local", win = win })
         assert.are.same({}, overlay_rows(buf))
+        v:close()
+    end)
+
+    it("paints no overlay when cursorlineopt only highlights the number", function()
+        vim.cmd("silent! only")
+        vim.o.cursorlineopt = "number"
+        local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local buf, win = v.columns[1].bufnr, v.columns[1].winid
+        assert.are.same({}, overlay_rows(buf))
+
+        vim.api.nvim_win_set_cursor(win, { 1, 0 })
+        vim.api.nvim_exec_autocmds("CursorMoved", { buffer = buf })
+        assert.are.same({}, overlay_rows(buf))
+        v:close()
+    end)
+
+    it("paints the overlay for every cursorlineopt that highlights the line", function()
+        vim.cmd("silent! only")
+        local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local buf, win = v.columns[1].bufnr, v.columns[1].winid
+        local cur = vim.api.nvim_win_get_cursor(win)[1] - 1
+        for _, opt in ipairs({ "line", "screenline", "line,number", "number,screenline" }) do
+            vim.api.nvim_set_option_value("cursorlineopt", opt, { scope = "local", win = win })
+            assert.are.same({ cur }, overlay_rows(buf), opt)
+        end
+        v:close()
+    end)
+
+    it("repaints when cursorlineopt changes on the diff window mid-session", function()
+        vim.cmd("silent! only")
+        local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
+            layout = "stacked",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local buf, win = v.columns[1].bufnr, v.columns[1].winid
+        local cur = vim.api.nvim_win_get_cursor(win)[1] - 1
+        assert.are.same({ cur }, overlay_rows(buf))
+
+        vim.api.nvim_set_option_value("cursorlineopt", "number", { scope = "local", win = win })
+        assert.are.same({}, overlay_rows(buf))
+
+        vim.api.nvim_set_option_value("cursorlineopt", "both", { scope = "local", win = win })
+        assert.are.same({ cur }, overlay_rows(buf))
         v:close()
     end)
 end)

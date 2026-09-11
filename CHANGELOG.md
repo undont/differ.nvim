@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The diff drew its cursor line over the text even with `cursorlineopt=number`, and the panel, history and PR checks lists lost their cursor row under that setting. The diff now follows `cursorlineopt`, and the lists always highlight the row
+
+## [0.1.43] — 2026-09-08
+
 ### Added
 
 - The PR overview can now be commented on without leaving it. `ga` posts a comment on the pull request, and `gp`/`gq` answer what's under the cursor: into that code thread, or as a new PR comment where GitHub offers no threading. `gq` opens with the comment quoted, and in visual mode quotes just the selection

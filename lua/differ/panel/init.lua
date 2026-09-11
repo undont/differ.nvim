@@ -1216,6 +1216,7 @@ function Panel:_setup_window()
     set_wo(win, "foldcolumn", "0")
     set_wo(win, "wrap", false)
     set_wo(win, "cursorline", true)
+    set_wo(win, "cursorlineopt", "line")
     if self.progress then
         -- a `%!` expression so the file-position meter tracks the cursor on each redraw
         set_wo(win, "winbar", '%!v:lua.require("differ.ui.winbar").panel()')
