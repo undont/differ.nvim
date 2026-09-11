@@ -1417,33 +1417,20 @@ function M.panel(opts)
         return true
     end
 
-    -- a hunk's extent on one side, widened to a single line where it has none, so a
-    -- pure insertion or deletion still overlaps the region it sits in
-    ---@param h differ.Hunk
-    ---@param side "old"|"new"
-    ---@return integer start, integer stop  -- [start, stop)
-    local function extent(h, side)
-        local at, n = h[side .. "_start"], h[side .. "_count"]
-        if n == 0 then
-            return at, at + 1
-        end
-        return at, at + n
-    end
-
-    -- the indices of the hunks in `hunks` that do (or don't) meet `[a, b)` on `side`
+    -- the indices of the hunks in `hunks` that do (or don't) meet `anchor`
     ---@param hunks differ.Hunk[]
-    ---@param side "old"|"new"
-    ---@param a integer
-    ---@param b integer
-    ---@param want boolean  -- true picks the hunks that meet the region, false the rest
+    ---@param side "old"|"new"  -- the side of `hunks` compared
+    ---@param anchor differ.Hunk
+    ---@param anchor_side "old"|"new"
+    ---@param want boolean  -- true picks the hunks that meet it, false the rest
     ---@return table<integer, boolean>
-    local function select_hunks(hunks, side, a, b, want)
-        local picked = {}
+    local function select_hunks(hunks, side, anchor, anchor_side, want)
+        local meets = require("differ.model.marks").meets
+        local applied = {}
         for i, h in ipairs(hunks) do
-            local hs, he = extent(h, side)
-            picked[i] = (hs < b and he > a) == want
+            applied[i] = meets(h, side, anchor, anchor_side) == want
         end
-        return picked
+        return applied
     end
 
     -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
@@ -1537,11 +1524,9 @@ function M.panel(opts)
             local union, cached, unstaged = M.union_models(root, entry)
             local text
             if reverse then
-                local a, b = extent(hunk, "old")
-                text = splice(cached, select_hunks(cached.hunks, "old", a, b, false))
+                text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
             else
-                local a, b = extent(hunk, "new")
-                text = splice(unstaged, select_hunks(unstaged.hunks, "new", a, b, true))
+                text = splice(unstaged, select_hunks(unstaged.hunks, "new", hunk, "new", true))
             end
             if not put_index(entry, text) then
                 return false
@@ -1558,8 +1543,7 @@ function M.panel(opts)
         staging.revert = function(model, idx)
             local union, cached = M.union_models(root, entry)
             local hunk = model.hunks[idx]
-            local a, b = extent(hunk, "old")
-            local text = splice(cached, select_hunks(cached.hunks, "old", a, b, false))
+            local text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
             if text ~= cached.new_text and not put_index(entry, text) then
                 return false
             end
@@ -1698,11 +1682,11 @@ function M.panel(opts)
                     return false
                 end
                 mark(hunk, not reverse)
-                local picked = {}
+                local applied = {}
                 for i, h in ipairs(model.hunks) do
-                    picked[i] = state(marks, h) == "staged"
+                    applied[i] = state(marks, h) == "staged"
                 end
-                if put_index(entry, splice(model, picked)) then
+                if put_index(entry, splice(model, applied)) then
                     return true
                 end
                 mark(hunk, reverse)
@@ -1832,9 +1816,8 @@ function M.panel(opts)
     ---@return boolean
     local function drop_hidden(entry, hunk)
         local _, cached = M.union_models(root, entry)
-        local a, b = extent(hunk, "old")
-        local picked = select_hunks(cached.hunks, "new", a, b, false)
-        if not put_index(entry, require("differ.model.apply").splice(cached, picked)) then
+        local applied = select_hunks(cached.hunks, "new", hunk, "old", false)
+        if not put_index(entry, require("differ.model.apply").splice(cached, applied)) then
             return false
         end
         refresh_panel()

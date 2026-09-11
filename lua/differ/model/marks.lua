@@ -89,16 +89,27 @@ local function span(h, side)
     return at, at + n
 end
 
--- a hunk's extent on the old side, widened to a line where it has none, so a pure
--- insertion still meets the change it sits in
----@param h differ.Hunk
----@return integer start, integer stop  -- [start, stop)
-local function reach(h)
-    local at, n = h.old_start, h.old_count
-    if n == 0 then
-        return at, at + 1
+-- whether two hunks meet on the sides given: lines in common, or an insertion that
+-- sits inside the other's lines or at either edge of them. an insertion's start names
+-- the line it follows
+---@param a differ.Hunk
+---@param a_side "old"|"new"
+---@param b differ.Hunk
+---@param b_side "old"|"new"
+---@return boolean
+function M.meets(a, a_side, b, b_side)
+    local as, an = a[a_side .. "_start"], a[a_side .. "_count"]
+    local bs, bn = b[b_side .. "_start"], b[b_side .. "_count"]
+    if an > 0 and bn > 0 then
+        return as < bs + bn and bs < as + an
     end
-    return at, at + n
+    if an == 0 and bn == 0 then
+        return as == bs
+    end
+    if an == 0 then
+        return as >= bs - 1 and as <= bs + bn - 1
+    end
+    return bs >= as - 1 and bs <= as + an - 1
 end
 
 -- the HEAD↔index hunks that touch a HEAD↔worktree hunk
@@ -106,11 +117,9 @@ end
 ---@param cached differ.Hunk[] -- HEAD↔index
 ---@return differ.Hunk[]
 local function touching(h, cached)
-    local a, b = reach(h)
     local out = {}
     for _, c in ipairs(cached) do
-        local ca, cb = reach(c)
-        if ca < b and cb > a then
+        if M.meets(h, "old", c, "old") then
             out[#out + 1] = c
         end
     end

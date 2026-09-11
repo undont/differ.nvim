@@ -1997,6 +1997,77 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- a staged insertion sits after line 2, and the edit below it starts at line 3: the
+    -- one hunk they merge into holds both, so u and X reach the insertion too
+    ---@param root string
+    ---@return differ.Panel, differ.View
+    local function insert_then_edit_below(root)
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\nN\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\nN\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        return p, v
+    end
+
+    it("unstages an insertion staged just above the hunk's edit", function()
+        local root = fresh_repo()
+        local p, v = insert_then_edit_below(root)
+        assert.are.equal("partial", v:_hunk_state(1))
+        v:unstage_hunk()
+        local state, index = v:_hunk_state(1), indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("unstaged", state)
+        assert.are.equal(committed(root, "a.lua"), index)
+    end)
+
+    it("reverts an insertion staged just above the hunk's edit from both sides", function()
+        local root = fresh_repo()
+        local p, v = insert_then_edit_below(root)
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local work, index = worktree(root, "a.lua"), indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(committed(root, "a.lua"), work)
+        assert.are.equal(committed(root, "a.lua"), index)
+    end)
+
+    -- the worktree deletes line 3, just above the staged 4x: index↔worktree holds the
+    -- deletion as an insertion point that sits before the union hunk's first line
+    it("stages a deletion just above a staged edit", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3\n4x\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\n4x\n5\n6\n7\n8\n9\n10\n")
+
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        assert.are.equal("partial", v:_hunk_state(1))
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local state, index = v:_hunk_state(1), indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("staged", state)
+        assert.are.equal(worktree(root, "a.lua"), index)
+    end)
+
     -- a partial hunk still holds something to unstage, so the backward walk stops on it
     it("walks u back onto a partial hunk", function()
         local root = fresh_repo()

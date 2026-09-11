@@ -199,4 +199,29 @@ describe("union marks", function()
             assert.are.same({}, marks.restaged({ beside, apart }, cached))
         end)
     end)
+
+    describe("meets", function()
+        it("meets on shared lines and not on lines apart", function()
+            assert.is_true(marks.meets(h(3, 2, 3, 2), "old", h(4, 1, 4, 1), "old"))
+            assert.is_false(marks.meets(h(3, 1, 3, 1), "old", h(4, 1, 4, 1), "old"))
+        end)
+
+        it("meets an insertion at either edge of its lines", function()
+            local lines = h(3, 1, 3, 2) -- HEAD line 3
+            assert.is_true(marks.meets(h(2, 0, 3, 1), "old", lines, "old")) -- after line 2
+            assert.is_true(marks.meets(lines, "old", h(3, 0, 4, 1), "old")) -- after line 3
+            assert.is_false(marks.meets(h(1, 0, 2, 1), "old", lines, "old"))
+            assert.is_false(marks.meets(h(4, 0, 5, 1), "old", lines, "old"))
+        end)
+
+        it("meets two insertions only at the same place", function()
+            assert.is_true(marks.meets(h(2, 0, 3, 1), "old", h(2, 0, 3, 2), "old"))
+            assert.is_false(marks.meets(h(2, 0, 3, 1), "old", h(3, 0, 4, 1), "old"))
+        end)
+
+        it("compares the sides it's given", function()
+            -- index↔worktree deletes index line 3; HEAD↔index changes it
+            assert.is_true(marks.meets(h(3, 1, 2, 0), "old", h(3, 1, 3, 1), "new"))
+        end)
+    end)
 end)

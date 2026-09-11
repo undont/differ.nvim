@@ -39,15 +39,15 @@ describe("splice", function()
         { h(2, { "2" }, 2, { "2x" }), h(4, { "4", "5" }, 4, { "4y", "5y" }) }
     )
 
-    it("takes the picked hunk and leaves the other", function()
+    it("takes the applied hunk and leaves the other", function()
         assert.are.equal("1\n2\n3\n4y\n5y\n", apply.splice(two, set(2)))
     end)
 
-    it("returns the old text when nothing is picked", function()
+    it("returns the old text when nothing is applied", function()
         assert.are.equal(two.old_text, apply.splice(two, {}))
     end)
 
-    it("returns the new text when everything is picked", function()
+    it("returns the new text when everything is applied", function()
         assert.are.equal(two.new_text, apply.splice(two, set(1, 2)))
     end)
 
@@ -76,7 +76,7 @@ describe("splice", function()
             assert.are.equal("A\nb\nc", apply.splice(m, set(1)))
         end)
 
-        it("takes the new side's ending when a picked hunk reaches eof", function()
+        it("takes the new side's ending when an applied hunk reaches eof", function()
             local m = model("a\nb", "a\nB", { h(2, { "b" }, 2, { "B" }) })
             assert.are.equal("a\nB", apply.splice(m, set(1)))
         end)

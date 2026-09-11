@@ -135,16 +135,16 @@ function M.revert_hunk(model, idx)
     assert(model.hunks[idx], "revert_hunk: no hunk at index " .. tostring(idx))
     -- only the new side moves: the worktree on an index↔worktree diff, the index on a
     -- HEAD↔index one
-    local picked = {}
+    local applied = {}
     for i in ipairs(model.hunks) do
-        picked[i] = i ~= idx
+        applied[i] = i ~= idx
     end
     return M.build({
         path = model.path,
         old_rev = model.old_rev,
         new_rev = model.new_rev,
         old_text = model.old_text,
-        new_text = require("differ.model.apply").splice(model, picked, "new"),
+        new_text = require("differ.model.apply").splice(model, applied, "new"),
         head = model.head,
         root = model.root,
     })
