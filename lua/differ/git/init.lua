@@ -1764,17 +1764,76 @@ function M.panel(opts)
         end
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: gs goes back"
+        staging.revert_refusal = function()
+            return "X doesn't revert in the commit preview: gs goes back"
+        end
         staging.leave = function()
             set_preview(false)
         end
         return staging
     end
 
+    local show_local ---@type fun(entry: differ.FileEntry)
+
+    -- u on a `!` hunk in the local view: the index takes HEAD's lines under it, dropping
+    -- the staged change the worktree undid, then the view re-reads against that index
+    ---@param entry differ.FileEntry
+    ---@param hunk differ.Hunk  -- index↔worktree
+    ---@return boolean
+    local function drop_hidden(entry, hunk)
+        local _, cached = M.union_models(root, entry)
+        local a, b = extent(hunk, "old")
+        local sel = select_hunks(cached.hunks, "new", a, b, false)
+        local text, why = require("differ.model.apply").partial(cached, sel)
+        if not text then
+            notify(("this hunk can't be unstaged: %s"):format(why), vim.log.levels.WARN)
+            return false
+        end
+        if not put_index(entry, text) then
+            return false
+        end
+        refresh_panel()
+        show_local(entry)
+        return true
+    end
+
+    -- X in the local view: the worktree hunk goes back to the index's version. a hunk
+    -- marked staged leaves the index first, so neither side keeps it; then the view
+    -- re-reads, since the frozen rebuild's worktree side has moved
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- index↔worktree
+    ---@param staging differ.view.Staging
+    ---@param idx integer
+    ---@return boolean
+    local function revert_local(entry, model, staging, idx)
+        local hunk = model.hunks[idx]
+        local marked = require("differ.model.marks").state(staging.marks, hunk) == "staged"
+        if marked and not (staging.apply and staging.apply(model, hunk, true)) then
+            return false
+        end
+        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+        local ok, err = M.apply_patch(root, p, true, "worktree")
+        reload_buffer(root, entry.path)
+        if not ok then
+            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            return false
+        end
+        -- a last hunk leaves no local view, and the view hands over to the panel itself
+        if #model.hunks > 1 then
+            vim.schedule(function()
+                if view and view.staging == staging then
+                    show_local(entry)
+                end
+            end)
+        end
+        return true
+    end
+
     -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
     -- retarget_view, which re-reads the row, since staging here can move it to another
     -- section
     ---@param entry differ.FileEntry
-    local function show_local(entry)
+    show_local = function(entry)
         if not (view and view:is_open()) then
             return
         end
@@ -1787,7 +1846,14 @@ function M.panel(opts)
         if #model.hunks > 0 then
             staging = frozen_staging(entry, model, false)
             local _, cached = M.union_models(root, entry)
-            staging.hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
+            local hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
+            staging.hidden_in = hidden_in
+            staging.unstage_hidden = function(idx)
+                return drop_hidden(entry, model.hunks[idx])
+            end
+            staging.revert = function(m, idx)
+                return revert_local(entry, m, staging, idx)
+            end
         else
             if not model.binary then
                 model.notice = empty_notice(root, entry, model, {}) or "No local content change"

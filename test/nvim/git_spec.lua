@@ -2251,6 +2251,122 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: only a partly staged file has a local view", msg)
     end)
 
+    -- HEAD's twelve numbered lines with `edits` (line -> text) applied
+    local function twelve(edits)
+        local out = {}
+        for n = 1, 12 do
+            out[n] = edits[n] or tostring(n)
+        end
+        return table.concat(out, "\n") .. "\n"
+    end
+    -- line 1 staged as 1x, then the worktree set to `work`
+    local function staged_then(work)
+        local root = fresh_repo()
+        write(root .. "/a.lua", twelve({}))
+        git(root, "commit", "-q", "-am", "twelve lines")
+        write(root .. "/a.lua", twelve({ "1x" }))
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", work)
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+    -- the local view of the file :Differ opened, cursor on hunk `n`
+    local function local_view_at(n)
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        v:toggle_local()
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, n), 0 })
+        return p, v
+    end
+
+    -- 1x staged and then put back to 1 in the worktree: the local hunk undoing it is `!`
+    it("u on a ! hunk in the local view drops the staged change it undoes", function()
+        local root = staged_then(twelve({ [12] = "12x" }))
+        local p, v = local_view_at(1)
+        local marked = v.staging.hidden_in
+        v:unstage_hunk()
+        local index, hunks, rev_after = indexed(root, "a.lua"), #v.model.hunks, v.model.old_rev
+        local after = v.staging.hidden_in
+        p:close()
+        assert.are.same({ 1 }, marked)
+        assert.are.equal(committed(root, "a.lua"), index)
+        assert.are.equal(1, hunks) -- only 12x is left to stage
+        assert.are.equal("INDEX", rev_after) -- still the local view
+        assert.are.same({}, after)
+    end)
+
+    -- 1x staged and then edited to 1y: u gives the index HEAD's line, where s gives 1y
+    it("u on a ! hunk takes HEAD's lines, not the worktree's", function()
+        local root = staged_then(twelve({ "1y", [12] = "12x" }))
+        local p, v = local_view_at(1)
+        v:unstage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(committed(root, "a.lua"), index)
+    end)
+
+    -- where u drops the staged 1x, X keeps it: the put-back goes and the file holds 1x again
+    it("X on a ! hunk in the local view puts the staged line back into the file", function()
+        local root = staged_then(twelve({ [12] = "12x" }))
+        local p, v = local_view_at(1)
+        local opened = v.staging
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        vim.wait(500, function() -- the local view re-reads on a schedule
+            return v.staging ~= opened
+        end)
+        local work, index = worktree(root, "a.lua"), indexed(root, "a.lua")
+        local hidden = v.staging.hidden_in
+        p:close()
+        assert.are.equal(twelve({ "1x", [12] = "12x" }), work)
+        assert.are.equal(twelve({ "1x" }), index)
+        assert.are.same({}, hidden)
+    end)
+
+    it("X in the local view puts the worktree hunk back to the index's version", function()
+        local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
+        local p, v = local_view_at(1)
+        local opened = v.staging
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        vim.wait(500, function() -- the local view re-reads on a schedule
+            return v.staging ~= opened
+        end)
+        local work, index, hunks = worktree(root, "a.lua"), indexed(root, "a.lua"), #v.model.hunks
+        p:close()
+        assert.are.equal(twelve({ "1x", [12] = "12y" }), work)
+        assert.are.equal(twelve({ "1x" }), index)
+        assert.are.equal(1, hunks)
+    end)
+
+    -- s put 6y in the index; throwing the hunk away takes it out of both
+    it("X on a hunk staged in the local view drops it from the index too", function()
+        local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
+        local p, v = local_view_at(1)
+        v:stage_hunk()
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local work, index = worktree(root, "a.lua"), indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(twelve({ "1x", [12] = "12y" }), work)
+        assert.are.equal(twelve({ "1x" }), index)
+    end)
+
     -- gs, from the panel
     local function toggle_preview(p)
         p.extra_keymaps[1].fn()
@@ -2395,6 +2511,24 @@ describe(":Differ diff hunk staging", function()
         assert.are.same({ "Partial", "Unstaged" }, got)
         assert.are.equal("WORKTREE", rev_after)
         assert.is_truthy(win)
+    end)
+
+    it("X refuses in the commit preview", function()
+        local root = preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        local before = indexed(root, "a.lua")
+        _G.notifs = {}
+        v:revert_hunk()
+        local msg, after = _G.notifs[#_G.notifs].msg, indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: X doesn't revert in the commit preview: gs goes back", msg)
+        assert.are.equal(before, after)
     end)
 
     it("dw and gs say why they do nothing", function()

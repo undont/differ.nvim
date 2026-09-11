@@ -96,6 +96,8 @@ local armed_view = nil
 ---@field no_local? string  -- why dw does nothing here, in place of the default
 ---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
 ---@field badge? string  -- winbar tag naming a view that isn't the whole change
+---@field unstage_hidden? fun(idx: integer): boolean  -- u on a `!` hunk: drop the staged change it undoes
+---@field revert_refusal? fun(idx: integer): string|nil  -- why X won't revert hunk `idx`, asked before the prompt
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1269,9 +1271,21 @@ function View:unstage_hunk()
     local idx = self:_target_index()
     if idx and self:_hunk_state(idx) ~= "unstaged" then
         self:_toggle_hunk(false)
+    elseif idx and self:_drops_hidden(idx) then
+        self.staging.unstage_hidden(idx)
     else
         self:_step_review("prev")
     end
+end
+
+-- whether u on unmarked hunk `idx` drops staged content the whole change can't show
+---@param idx integer
+---@return boolean
+function View:_drops_hidden(idx)
+    if not self.staging.unstage_hidden then
+        return false
+    end
+    return vim.tbl_contains(self.staging.hidden_in or {}, idx)
 end
 
 -- hand the file-level half of the review walk to the panel: the next file with work
@@ -1466,11 +1480,15 @@ function View:revert_hunk()
     if not (self.can_stage and self.staging) then
         return vim.notify("differ: hunk revert isn't available here", vim.log.levels.WARN)
     end
+    local idx = self:_hunk_index_under_cursor()
+    local refusal = idx and self.staging.revert_refusal and self.staging.revert_refusal(idx)
+    if refusal then
+        return vim.notify("differ: " .. refusal, vim.log.levels.WARN)
+    end
     local revert = self.staging.revert
     if not revert then
         return vim.notify("differ: this hunk can't be reverted", vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
