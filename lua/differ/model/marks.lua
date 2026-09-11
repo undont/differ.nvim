@@ -242,20 +242,32 @@ function M.restaged(unstaged, cached)
     return out
 end
 
+-- how far line `lnum` on side `from` moves on the other side: the net lines the hunks
+-- ending before it add there
+---@param hunks differ.Hunk[]
+---@param lnum integer
+---@param from "old"|"new"
+---@return integer
+function M.shift(hunks, lnum, from)
+    local to = from == "old" and "new" or "old"
+    local out = 0
+    for _, h in ipairs(hunks) do
+        local start, count = h[from .. "_start"], h[from .. "_count"]
+        local last = count == 0 and start or start + count - 1
+        if last >= lnum then
+            break
+        end
+        out = out + h[to .. "_count"] - count
+    end
+    return out
+end
+
 -- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
 ---@param cached differ.Hunk[]  -- HEAD↔index
 ---@param lnum integer          -- index line
 ---@return integer
 local function head_line(cached, lnum)
-    local shift = 0
-    for _, h in ipairs(cached) do
-        local last = h.new_count == 0 and h.new_start or h.new_start + h.new_count - 1
-        if last >= lnum then
-            break
-        end
-        shift = shift + h.new_count - h.old_count
-    end
-    return lnum - shift
+    return lnum + M.shift(cached, lnum, "new")
 end
 
 -- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot

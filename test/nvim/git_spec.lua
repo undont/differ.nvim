@@ -2114,6 +2114,39 @@ describe(":Differ diff hunk staging", function()
         end)
     end
 
+    -- the file is edited under the open view: X can't take the hunk out of it, so the
+    -- index keeps its half too rather than dropping it alone
+    it("X leaves the index alone when the file won't take the revert", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        local edited = "1z\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n"
+        write(root .. "/a.lua", edited)
+        _G.notifs = {}
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: the file has changed these lines: nothing reverted", said)
+        assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", index)
+        assert.are.equal(edited, work)
+    end)
+
     -- a partial hunk still holds something to unstage, so the backward walk stops on it
     it("walks u back onto a partial hunk", function()
         local root = fresh_repo()
@@ -2683,10 +2716,34 @@ describe(":Differ diff hunk staging", function()
         local msg = _G.notifs[#_G.notifs].msg
         local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
         p:close()
-        local want = "differ: the file has changed these lines since they were staged: "
-        assert.are.equal(want .. "nothing reverted", msg)
+        assert.are.equal("differ: the file has changed these lines: nothing reverted", msg)
         assert.are.equal(twelve({ "1x" }), index)
         assert.are.equal(twelve({ "1y", [12] = "12x" }), work)
+    end)
+
+    -- the index drops l6 l7 and the worktree does too, with three lines added on top:
+    -- the deletion's index line number is three short of where it sits in the file
+    it("X in the commit preview puts a staged deletion back where the file has it", function()
+        local root = fresh_repo()
+        local head = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n"
+        write(root .. "/a.lua", head)
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "l1\nl2\nl3\nl4\nl5\nl8\nl9\nl10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "n1\nn2\nn3\nl1\nl2\nl3\nl4\nl5\nl8\nl9\nl10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        revert_confirmed(v)
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.are.equal(head, index)
+        assert.are.equal("n1\nn2\nn3\n" .. head, work)
     end)
 
     it("X in the commit preview deletes a staged add", function()

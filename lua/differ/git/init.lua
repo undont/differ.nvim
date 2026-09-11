@@ -1558,22 +1558,25 @@ function M.panel(opts)
             return true
         end
         -- X throws the hunk away on both sides at once: the index gives up whatever of
-        -- it it holds and the worktree gives up the rest. index first, so a worktree copy
-        -- that won't take the patch leaves the file merely unstaged rather than holding a
-        -- change the index no longer has. the worktree half goes through a patch, not a
-        -- write: the model's new side was read through the clean filter, so writing it
-        -- back would push that conversion to disk
+        -- it it holds and the worktree gives up the rest. the worktree half is checked
+        -- first, so a file that changed those lines refuses before the index moves. it
+        -- goes through a patch, not a write: the model's new side was read through the
+        -- clean filter, so writing it back would push that conversion to disk
         staging.revert = function(model, idx)
             local union, cached = M.union_models(root, entry)
             local hunk = model.hunks[idx]
             if shared(union, cached, "old", hunk) then
                 return false
             end
+            local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+            if not M.apply_patch(root, p, true, "worktree", true) then
+                notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
+                return false
+            end
             local text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
             if text ~= cached.new_text and not put_index(entry, text) then
                 return false
             end
-            local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
             local ok, err = M.apply_patch(root, p, true, "worktree")
             reload_buffer(root, entry.path)
             if not ok then
@@ -1753,20 +1756,23 @@ function M.panel(opts)
         }
     end
 
-    -- X in the commit preview: the staged hunk leaves the index and the file both. the
-    -- file half is the same hunk reverse-applied, tried first, so a file that changed
-    -- those lines again refuses before the index moves; then the preview re-reads
+    -- X in a frozen view (the commit preview, the local view): the hunk leaves the index
+    -- if marked staged, and the file takes its old lines back. the file half is checked
+    -- first, so a file that changed those lines refuses before the index moves; then
+    -- `reopen` re-reads the view. a last hunk leaves nothing to reopen, and the view
+    -- hands over to the panel itself
     ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel  -- HEAD↔index
+    ---@param model differ.DiffModel
     ---@param staging differ.view.Staging
     ---@param idx integer
+    ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
+    ---@param reopen fun()
     ---@return boolean
-    local function revert_staged(entry, model, staging, idx)
+    local function revert_frozen(entry, model, staging, idx, offset, reopen)
         local hunk = model.hunks[idx]
-        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
         if not M.apply_patch(root, p, true, "worktree", true) then
-            local msg = "the file has changed these lines since they were staged: nothing reverted"
-            notify(msg, vim.log.levels.WARN)
+            notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
             return false
         end
         local marked = require("differ.model.marks").state(staging.marks, hunk) == "staged"
@@ -1779,11 +1785,10 @@ function M.panel(opts)
             notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
             return false
         end
-        -- a last hunk leaves the row, and the view hands over to the panel itself
         if #model.hunks > 1 then
             vim.schedule(function()
                 if view and view.staging == staging then
-                    retarget_view(false)
+                    reopen()
                 end
             end)
         end
@@ -1818,8 +1823,16 @@ function M.panel(opts)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
             staging = frozen_staging(entry, model, true)
+            -- the model's new side is the index, so its lines move by whatever the
+            -- worktree has added or dropped above them since
             staging.revert = function(m, idx)
-                return revert_staged(entry, m, staging, idx)
+                local h = m.hunks[idx]
+                local _, _, unstaged = M.union_models(root, entry)
+                local at = h.new_count > 0 and h.new_start or h.new_start + 1
+                local offset = require("differ.model.marks").shift(unstaged.hunks, at, "old")
+                return revert_frozen(entry, m, staging, idx, offset, function()
+                    retarget_view(false)
+                end)
             end
         else
             staging = snapshot_staging(entry)
@@ -1851,38 +1864,6 @@ function M.panel(opts)
         return true
     end
 
-    -- X in the local view: the worktree hunk goes back to the index's version. a hunk
-    -- marked staged leaves the index first, so neither side keeps it; then the view
-    -- re-reads, since the frozen rebuild's worktree side has moved
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel  -- index↔worktree
-    ---@param staging differ.view.Staging
-    ---@param idx integer
-    ---@return boolean
-    local function revert_local(entry, model, staging, idx)
-        local hunk = model.hunks[idx]
-        local marked = require("differ.model.marks").state(staging.marks, hunk) == "staged"
-        if marked and not (staging.apply and staging.apply(model, hunk, true)) then
-            return false
-        end
-        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
-        local ok, err = M.apply_patch(root, p, true, "worktree")
-        reload_buffer(root, entry.path)
-        if not ok then
-            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
-            return false
-        end
-        -- a last hunk leaves no local view, and the view hands over to the panel itself
-        if #model.hunks > 1 then
-            vim.schedule(function()
-                if view and view.staging == staging then
-                    show_local(entry)
-                end
-            end)
-        end
-        return true
-    end
-
     -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
     -- retarget_view, which re-reads the row, since staging here can move it to another
     -- section
@@ -1906,7 +1887,9 @@ function M.panel(opts)
                 return drop_hidden(entry, model.hunks[idx])
             end
             staging.revert = function(m, idx)
-                return revert_local(entry, m, staging, idx)
+                return revert_frozen(entry, m, staging, idx, 0, function()
+                    show_local(entry)
+                end)
             end
         else
             if not model.binary then

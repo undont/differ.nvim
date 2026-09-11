@@ -240,4 +240,19 @@ describe("union marks", function()
             assert.is_true(marks.meets(h(3, 1, 2, 0), "old", h(3, 1, 3, 1), "new"))
         end)
     end)
+
+    describe("shift", function()
+        -- three lines inserted at the top, and line 5 replaced by two
+        local hunks = { h(0, 0, 1, 3), h(5, 1, 8, 2) }
+
+        it("moves a line by the hunks that end before it", function()
+            assert.are.equal(3, marks.shift(hunks, 1, "old"))
+            assert.are.equal(4, marks.shift(hunks, 6, "old"))
+            assert.are.equal(-3, marks.shift(hunks, 4, "new"))
+        end)
+
+        it("leaves out a hunk that starts on the line", function()
+            assert.are.equal(3, marks.shift(hunks, 5, "old"))
+        end)
+    end)
 end)
