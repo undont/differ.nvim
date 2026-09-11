@@ -62,25 +62,17 @@ local armed_view = nil
 ---@field side differ.ColumnSide
 ---@field folds? differ.FoldRange[]
 
--- the hunk-staging capability the git frontend supplies per source. the
--- view keeps its diff frozen and marks staged hunks in place rather than re-reading
--- git, so it tracks per-hunk state and calls `apply` to patch one hunk: `reverse`
--- false stages, true unstages, `offset` shifts past already-staged hunks before it.
--- `initial` is every hunk's opening state (an unstaged diff opens unstaged, a staged
--- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
--- panel counts and is called once after a single toggle or a whole S/U batch
+-- the hunk-staging capability the git frontend supplies per source. the view keeps its
+-- diff frozen and reads staged state from `marks`, which the source keeps current;
+-- `apply` stages one hunk (`reverse` unstages it) and returns ok, and `refresh`
+-- repaints the panel counts once after a single toggle or a whole S/U batch.
 -- `apply` and `revert` are independently optional, and each one's absence gates its own
--- keys rather than the whole capability. the git frontend supplies both wherever it
--- stages at all: a deleted file stages wholesale like a new one, and reverts by
--- restoring the file rather than removing it.
--- `revert` throws a hunk away instead of moving it between index and worktree, and its
--- absence is what gates the key off a source that can't do it. `offset` shifts its
--- index-side apply past hunks unstaged before it; its worktree apply needs none, since
--- a revert re-sources the model. `revert_label` names the consequence for a file whose
+-- keys rather than the whole capability. `revert` throws a hunk away instead of moving
+-- it between index and worktree. `revert_label` names the consequence for a file whose
 -- whole content is one hunk, where reverting isn't a partial act: the frontend knows
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
----@field initial? differ.model.HunkState  -- a source without marks: where it starts
+---@field initial? differ.model.HunkState  -- a whole-file source: where it starts
 -- `whole_file` stages as a unit: the keys act on the file, and its diff shares one
 -- staged-state slot
 ---@field whole_file? boolean
@@ -182,8 +174,8 @@ function View.new(model, opts)
     return self
 end
 
--- seed staged state for the current source. a union source (HEAD↔worktree) hands over
--- its marks and keeps them current itself; any other starts from `initial`
+-- seed staged state for the current source. a hunk-level source hands over its marks
+-- and keeps them current itself; a whole-file one starts from `initial`
 function View:_init_staged()
     local staging = self.staging
     if staging and staging.marks then
@@ -191,30 +183,8 @@ function View:_init_staged()
         return
     end
     self.marks = { old = {}, new = {} }
-    if not staging then
-        return
-    end
-    if self:_whole_file() then
+    if staging and self:_whole_file() then
         self.marks.whole = staging.initial
-        return
-    end
-    if staging.initial ~= "staged" then
-        return
-    end
-    for _, h in ipairs(self.model.hunks) do
-        self:_mark_hunk(h, true)
-    end
-end
-
--- set every line of `h` staged or not
----@param h differ.Hunk
----@param staged boolean
-function View:_mark_hunk(h, staged)
-    for l = h.old_start, h.old_start + h.old_count - 1 do
-        self.marks.old[l] = staged
-    end
-    for l = h.new_start, h.new_start + h.new_count - 1 do
-        self.marks.new[l] = staged
     end
 end
 
@@ -1008,7 +978,7 @@ end
 function View:_review_filter(staged)
     local done = staged and "unstaged" or "staged"
     return function(hunk)
-        return self:_hunk_state(self:_slot(hunk)) ~= done
+        return self:_hunk_state(hunk) ~= done
     end
 end
 
@@ -1166,16 +1136,6 @@ function View:_slot_count()
     return #self.model.hunks
 end
 
--- the slot holding hunk `h`'s staged state
----@param h integer
----@return integer
-function View:_slot(h)
-    if self:_whole_file() then
-        return 1
-    end
-    return h
-end
-
 -- whether a rail line's content is already in the index
 ---@param line differ.RailLine
 ---@return boolean
@@ -1239,8 +1199,6 @@ function View:_apply_hunk(idx, want_staged)
     end
     if self:_whole_file() then
         self.marks.whole = want
-    elseif not self.staging.marks then -- a union source has re-read its own
-        self:_mark_hunk(self.model.hunks[idx], want_staged)
     end
     return true
 end

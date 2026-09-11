@@ -151,9 +151,7 @@ describe("union marks", function()
             local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
             local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
             local m = marks.classify(union, cached, unstaged)
-            local where, outside = marks.hidden_in({ "foo" }, union, cached, m)
-            assert.are.same({ 1 }, where)
-            assert.is_false(outside)
+            assert.are.same({ 1 }, marks.hidden_in({ "foo" }, union, cached, m))
         end)
 
         -- HEAD 1..5, line 3 staged as 3x, then 4 edited on top in the worktree
@@ -162,20 +160,7 @@ describe("union marks", function()
             local cached = { hl(3, { "3" }, 3, { "3x" }) }
             local unstaged = { hl(4, { "4" }, 4, { "4y" }) }
             local m = marks.classify(union, cached, unstaged)
-            local where, outside = marks.hidden_in(head, union, cached, m)
-            assert.are.same({}, where)
-            assert.is_false(outside)
-        end)
-
-        -- line 5 staged as 5x and then put back in the worktree, beside an edit at 1
-        it("reports a staged change that touches no hunk", function()
-            local union = { hl(1, { "1" }, 1, { "1y" }) }
-            local cached = { hl(5, { "5" }, 5, { "5x" }) }
-            local unstaged = { hl(1, { "1" }, 1, { "1y" }), hl(5, { "5x" }, 5, { "5" }) }
-            local m = marks.classify(union, cached, unstaged)
-            local where, outside = marks.hidden_in(head, union, cached, m)
-            assert.are.same({}, where)
-            assert.is_true(outside)
+            assert.are.same({}, marks.hidden_in(head, union, cached, m))
         end)
     end)
 

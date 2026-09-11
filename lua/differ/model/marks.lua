@@ -155,15 +155,14 @@ local function bag(lines)
 end
 
 -- the HEAD↔worktree hunks whose lines, read as the marks say, don't hold what the index
--- does there, and whether any staged change touches no hunk at all. by content, so a
--- hunk whose index lines differ only in order isn't counted
+-- does there. by content, so a hunk whose index lines differ only in order isn't counted
 ---@param head string[]           -- HEAD's lines
 ---@param union differ.Hunk[]     -- HEAD↔worktree
 ---@param cached differ.Hunk[]    -- HEAD↔index
 ---@param marks differ.model.Marks
----@return integer[] hunks, boolean outside
+---@return integer[]
 function M.hidden_in(head, union, cached, marks)
-    local out, touched = {}, {}
+    local out = {}
     for i, h in ipairs(union) do
         local in_union, in_cached, region = {}, {}, {}
         local ua, ub = span(h, "old")
@@ -172,7 +171,6 @@ function M.hidden_in(head, union, cached, marks)
         end
         local actual = {}
         for _, c in ipairs(touching(h, cached)) do
-            touched[c] = true
             local ca, cb = span(c, "old")
             for l = ca, cb - 1 do
                 in_cached[l], region[l] = true, true
@@ -200,11 +198,7 @@ function M.hidden_in(head, union, cached, marks)
             out[#out + 1] = i
         end
     end
-    local outside = false
-    for _, c in ipairs(cached) do
-        outside = outside or not touched[c]
-    end
-    return out, outside
+    return out
 end
 
 -- whether index↔worktree hunk `h` puts back lines HEAD↔index hunk `c` deleted outright

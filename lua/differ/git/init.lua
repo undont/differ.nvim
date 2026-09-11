@@ -737,6 +737,41 @@ local function row_of(s)
     return "Partial", s.x
 end
 
+-- the worktree's porcelain entries, and the set of paths it lists as untracked
+---@param root string
+---@return differ.git.StatusEntry[] entries, table<string, boolean> untracked, string|nil err
+local function porcelain(root)
+    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
+    local entries = rev.parse_status(out or "")
+    local untracked = {}
+    for _, s in ipairs(entries) do
+        if s.x == "?" then
+            untracked[s.path] = true
+        end
+    end
+    return entries, untracked, err
+end
+
+-- a panel row for porcelain entry `s`, lettered `status` and counted from `counts`
+---@param s differ.git.StatusEntry
+---@param status string
+---@param counts table<string, { additions: integer, deletions: integer }>
+---@param untracked table<string, boolean>
+---@return differ.FileEntry
+local function status_row(s, status, counts, untracked)
+    local c = counts[s.path] or {}
+    return {
+        path = s.path,
+        status = status,
+        additions = c.additions or 0,
+        deletions = c.deletions or 0,
+        x = s.x,
+        y = s.y,
+        previous_path = s.previous_path,
+        kept = (s.x == "D" and untracked[s.path]) or nil,
+    }
+end
+
 -- working-tree status as panel sections: Staged / Partial / Unstaged / Untracked
 -- (slice B). git status compares HEAD/index/worktree, so it only models the
 -- default HEAD-vs-worktree source; rev-pair sources use file_entries instead.
@@ -747,38 +782,26 @@ end
 ---@param root string
 ---@return differ.panel.Section[] sections, string|nil err
 function M.status_sections(root)
-    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
-    local entries = rev.parse_status(out or "")
+    local entries, untracked, err = porcelain(root)
     local staged_counts = numstat({ "--cached" }, root)
     local head_counts = numstat({ "HEAD" }, root)
-    local removed, untracked = {}, {}
+    local removed = {}
     for _, s in ipairs(entries) do
         if s.x == "D" then
             removed[s.path] = true
-        elseif s.x == "?" then
-            untracked[s.path] = true
         end
     end
     local rows = { Conflicts = {}, Staged = {}, Partial = {}, Unstaged = {}, Untracked = {} }
     for _, s in ipairs(entries) do
         if not (s.x == "?" and removed[s.path]) then
             local section, status = row_of(s)
-            local c = (s.x == "D" and staged_counts or head_counts)[s.path] or {}
-            local additions = c.additions or 0
+            local counts = s.x == "D" and staged_counts or head_counts
+            local row = status_row(s, status, counts, untracked)
             if status == "?" then
-                additions = untracked_additions(root, s.path)
+                row.additions = untracked_additions(root, s.path)
             end
             local list = rows[section]
-            list[#list + 1] = {
-                path = s.path,
-                status = status,
-                additions = additions,
-                deletions = c.deletions or 0,
-                x = s.x,
-                y = s.y,
-                previous_path = s.previous_path,
-                kept = (s.x == "D" and untracked[s.path]) or nil,
-            }
+            list[#list + 1] = row
         end
     end
     local sections = {
@@ -796,30 +819,13 @@ end
 ---@param root string
 ---@return differ.panel.Section[] sections, string|nil err
 function M.staged_sections(root)
-    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
-    local entries = rev.parse_status(out or "")
+    local entries, untracked, err = porcelain(root)
     local counts = numstat({ "--cached" }, root)
-    local untracked = {}
-    for _, s in ipairs(entries) do
-        if s.x == "?" then
-            untracked[s.path] = true
-        end
-    end
     local rows = {}
     for _, s in ipairs(entries) do
         local section = row_of(s)
         if section ~= "Untracked" and section ~= "Conflicts" and s.x ~= " " then
-            local c = counts[s.path] or {}
-            rows[#rows + 1] = {
-                path = s.path,
-                status = s.x,
-                additions = c.additions or 0,
-                deletions = c.deletions or 0,
-                x = s.x,
-                y = s.y,
-                previous_path = s.previous_path,
-                kept = (s.x == "D" and untracked[s.path]) or nil,
-            }
+            rows[#rows + 1] = status_row(s, s.x, counts, untracked)
         end
     end
     return { { title = "Staged changes", entries = rows } }, err
@@ -1636,44 +1642,35 @@ function M.panel(opts)
             end
             return staging
         end
-        -- shared by every whole-file status below
-        local function whole_file_apply(_, _, reverse)
-            return set_staged(root, entry, not reverse)
-        end
-        -- no lines to stage: a mode change, a submodule pointer, a binary file, a change
-        -- git normalises away, a rename or copy with no content change
+        -- whole-file from here: no lines to stage (a mode change, a submodule pointer, a
+        -- binary file, a change git normalises away, a bare rename or copy), or a file
+        -- added, untracked or deleted as one unit
+        ---@type differ.view.Staging
+        local staging = {
+            initial = row_state(entry),
+            whole_file = true,
+            apply = function(_, _, reverse)
+                return set_staged(root, entry, not reverse)
+            end,
+            refresh = refresh_panel,
+        }
         if content then
-            return {
-                initial = row_state(entry),
-                whole_file = true,
-                apply = whole_file_apply,
-                refresh = refresh_panel,
-            }
+            return staging
         end
         if entry.status == "?" or entry.status == "A" then
-            return {
-                initial = row_state(entry),
-                whole_file = true,
-                apply = whole_file_apply,
-                -- `discard` drops the staged add before removing the file
-                revert = function()
-                    return M.discard(root, entry)
-                end,
-                revert_label = "deletes the file",
-                refresh = refresh_panel,
-            }
+            -- `discard` drops the staged add before removing the file
+            staging.revert = function()
+                return M.discard(root, entry)
+            end
+            staging.revert_label = "deletes the file"
+            return staging
         end
         if entry.status == "D" then
-            return {
-                initial = row_state(entry),
-                whole_file = true,
-                apply = whole_file_apply,
-                revert = function()
-                    return restore_deleted(entry)
-                end,
-                revert_label = "restores the file",
-                refresh = refresh_panel,
-            }
+            staging.revert = function()
+                return restore_deleted(entry)
+            end
+            staging.revert_label = "restores the file"
+            return staging
         end
         return nil
     end
