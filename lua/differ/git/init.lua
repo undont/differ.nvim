@@ -1516,18 +1516,41 @@ function M.panel(opts)
             end
         end
 
+        -- a pair hunk that also reaches another union hunk holds index-only content
+        -- between the two, and taking it whole would carry the op into that hunk
+        ---@param union differ.DiffModel
+        ---@param pair differ.DiffModel  -- index↔worktree on the new side, HEAD↔index on the old
+        ---@param side "old"|"new"
+        ---@param hunk differ.Hunk
+        ---@return boolean
+        local function shared(union, pair, side, hunk)
+            local other = marks.shared_with(union.hunks, hunk, pair.hunks, side)
+            if not other then
+                return false
+            end
+            local what, where = "staged", "gs"
+            if side == "new" then
+                what, where = "unstaged", "dw"
+            end
+            local msg = "this hunk and hunk %d share one %s change: %s takes it whole"
+            notify(msg:format(other, what, where), vim.log.levels.WARN)
+            return true
+        end
+
         remark(M.union_models(root, entry))
         staging.apply = function(_, hunk, reverse)
             if not hunk then
                 return false
             end
             local union, cached, unstaged = M.union_models(root, entry)
-            local text
+            local from, side = unstaged, "new"
             if reverse then
-                text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
-            else
-                text = splice(unstaged, select_hunks(unstaged.hunks, "new", hunk, "new", true))
+                from, side = cached, "old"
             end
+            if shared(union, from, side, hunk) then
+                return false
+            end
+            local text = splice(from, select_hunks(from.hunks, side, hunk, side, not reverse))
             if not put_index(entry, text) then
                 return false
             end
@@ -1543,6 +1566,9 @@ function M.panel(opts)
         staging.revert = function(model, idx)
             local union, cached = M.union_models(root, entry)
             local hunk = model.hunks[idx]
+            if shared(union, cached, "old", hunk) then
+                return false
+            end
             local text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
             if text ~= cached.new_text and not put_index(entry, text) then
                 return false

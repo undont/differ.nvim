@@ -112,6 +112,27 @@ function M.meets(a, a_side, b, b_side)
     return bs >= as - 1 and bs <= as + an - 1
 end
 
+-- another union hunk that a pair hunk meeting `anchor` also meets, or nil. staging
+-- takes pair hunks whole, so one of these would carry the op into that hunk too.
+-- union hunks never meet each other, so the one `anchor` meets is itself
+---@param union differ.Hunk[]
+---@param anchor differ.Hunk
+---@param pair differ.Hunk[]
+---@param side "old"|"new"  -- the side union and pair share
+---@return integer|nil
+function M.shared_with(union, anchor, pair, side)
+    for _, p in ipairs(pair) do
+        if M.meets(p, side, anchor, side) then
+            for j, u in ipairs(union) do
+                if M.meets(p, side, u, side) and not M.meets(u, side, anchor, side) then
+                    return j
+                end
+            end
+        end
+    end
+    return nil
+end
+
 -- the HEAD↔index hunks that touch a HEAD↔worktree hunk
 ---@param h differ.Hunk        -- HEAD↔worktree
 ---@param cached differ.Hunk[] -- HEAD↔index

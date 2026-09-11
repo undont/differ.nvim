@@ -2068,6 +2068,52 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(worktree(root, "a.lua"), index)
     end)
 
+    -- the index rewrote 2..6 as A..E and the worktree put 3 and 4 back: both pairs hold
+    -- one hunk across what shows as two, and B C sit only in the index
+    ---@param root string
+    ---@return differ.Panel, differ.View
+    local function shared_change(root)
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n")
+        git(root, "commit", "-q", "-am", "seven lines")
+        write(root .. "/a.lua", "1\nA\nB\nC\nD\nE\n7\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\nA2\n3\n4\nD2\nE2\n7\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        _G.notifs = {}
+        return p, v
+    end
+
+    for _, case in ipairs({
+        { key = "s", op = "stage_hunk", what = "unstaged change: dw" },
+        { key = "u", op = "unstage_hunk", what = "staged change: gs" },
+        { key = "X", op = "revert_hunk", what = "staged change: gs" },
+    }) do
+        it(("refuses %s on a hunk sharing a change with the next"):format(case.key), function()
+            local root = fresh_repo()
+            local p, v = shared_change(root)
+            local before = { worktree(root, "a.lua"), indexed(root, "a.lua") }
+            local hunks = #v.model.hunks
+            local orig = vim.fn.confirm
+            vim.fn.confirm = function()
+                return 1
+            end
+            v[case.op](v)
+            vim.fn.confirm = orig
+            local after = { worktree(root, "a.lua"), indexed(root, "a.lua") }
+            local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+            p:close()
+            assert.are.equal(2, hunks)
+            assert.are.same(before, after)
+            assert.is_truthy(said:find("this hunk and hunk 2 share one " .. case.what, 1, true))
+        end)
+    end
+
     -- a partial hunk still holds something to unstage, so the backward walk stops on it
     it("walks u back onto a partial hunk", function()
         local root = fresh_repo()

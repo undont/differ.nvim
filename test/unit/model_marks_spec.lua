@@ -219,6 +219,22 @@ describe("union marks", function()
             assert.is_false(marks.meets(h(2, 0, 3, 1), "old", h(3, 0, 4, 1), "old"))
         end)
 
+        -- HEAD 1..7, index 1 A B C D E 7, worktree 1 A2 3 4 D2 E2 7: one pair hunk each
+        -- way spans both union hunks, through the B C only the index holds
+        it("names the other union hunk a pair hunk reaches", function()
+            local union = { h(2, 1, 2, 1), h(5, 2, 5, 2) }
+            local pair = { h(2, 5, 2, 5) }
+            assert.are.equal(2, marks.shared_with(union, union[1], pair, "new"))
+            assert.are.equal(1, marks.shared_with(union, union[2], pair, "old"))
+        end)
+
+        it("names no hunk when each pair hunk stays in one", function()
+            local union = { h(2, 1, 2, 1), h(5, 2, 5, 2) }
+            local pair = { h(2, 1, 2, 1), h(5, 1, 5, 1) }
+            assert.is_nil(marks.shared_with(union, union[1], pair, "new"))
+            assert.is_nil(marks.shared_with(union, union[2], pair, "new"))
+        end)
+
         it("compares the sides it's given", function()
             -- index↔worktree deletes index line 3; HEAD↔index changes it
             assert.is_true(marks.meets(h(3, 1, 2, 0), "old", h(3, 1, 3, 1), "new"))
