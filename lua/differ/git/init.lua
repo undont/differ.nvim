@@ -1681,14 +1681,21 @@ function M.panel(opts)
 
     -- staging frozen at the index the view opened on: s and u rewrite the index as the
     -- model's old side plus the hunks marked staged, so a marked hunk stays on screen
-    -- and the opposite key puts it back
+    -- and the opposite key puts it back. an index written outside differ since then
+    -- would be overwritten by that rebuild, so s and u refuse and `reopen` re-reads
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel  -- read once, with at least one hunk
     ---@param staged boolean  -- every hunk's opening state
+    ---@param reopen fun()
     ---@return differ.view.Staging
-    local function frozen_staging(entry, model, staged)
+    local function frozen_staging(entry, model, staged, reopen)
         local splice = require("differ.model.apply").splice
         local state = require("differ.model.marks").state
+        -- the commit preview opens staged with the index as its new side; the local view
+        -- opens unstaged with it as its old side
+        local held = staged and model.new_text or model.old_text
+        -- a rename only the worktree has made leaves the index at the old path
+        local at_index = entry.y == "R" and entry.previous_path or entry.path
         local marks = { old = {}, new = {} }
         ---@param h differ.Hunk
         ---@param on boolean
@@ -1710,12 +1717,19 @@ function M.panel(opts)
                 if not hunk then
                     return false
                 end
+                if (M.read(INDEX, root, at_index) or "") ~= held then
+                    notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
+                    vim.schedule(reopen)
+                    return false
+                end
                 mark(hunk, not reverse)
                 local applied = {}
                 for i, h in ipairs(model.hunks) do
                     applied[i] = state(marks, h) == "staged"
                 end
-                if put_index(entry, splice(model, applied)) then
+                local text = splice(model, applied)
+                if put_index(entry, text) then
+                    held, at_index = text, entry.path -- put_index stages a rename at the new path
                     return true
                 end
                 mark(hunk, reverse)
@@ -1822,7 +1836,9 @@ function M.panel(opts)
     local function preview_staging(entry, model)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
-            staging = frozen_staging(entry, model, true)
+            staging = frozen_staging(entry, model, true, function()
+                retarget_view(false)
+            end)
             -- the model's new side is the index, so its lines move by whatever the
             -- worktree has added or dropped above them since
             staging.revert = function(m, idx)
@@ -1879,7 +1895,9 @@ function M.panel(opts)
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
         local staging ---@type differ.view.Staging
         if #model.hunks > 0 then
-            staging = frozen_staging(entry, model, false)
+            staging = frozen_staging(entry, model, false, function()
+                show_local(entry)
+            end)
             local _, cached = M.union_models(root, entry)
             local hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
             staging.hidden_in = hidden_in

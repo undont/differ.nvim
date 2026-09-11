@@ -2420,6 +2420,14 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
         return root
     end
+    -- stage `content` as a.lua from outside differ, leaving the worktree file alone
+    local function stage_behind(root, content)
+        local blob = vim.fn.tempname()
+        write(blob, content)
+        local sha = vim.trim(git(root, "hash-object", "-w", blob))
+        os.remove(blob)
+        git(root, "update-index", "--cacheinfo", "100644," .. sha .. ",a.lua")
+    end
     -- the local view of the file :Differ opened, cursor on hunk `n`
     local function local_view_at(n)
         git_src.panel({ rev = {}, open_first = true })
@@ -2478,6 +2486,21 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(twelve({ "1x", [12] = "12x" }), work)
         assert.are.equal(twelve({ "1x" }), index)
         assert.are.same({}, hidden)
+    end)
+
+    -- the rebuild starts from the index the view opened on, so a write made outside
+    -- differ since then would be lost to it
+    it("s in the local view refuses an index staged from outside since it opened", function()
+        local root = staged_then(twelve({ "1x", [12] = "12x" }))
+        local p, v = local_view_at(1)
+        stage_behind(root, twelve({ "1x", "2x" }))
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal(twelve({ "1x", "2x" }), index)
     end)
 
     it("X in the local view puts the worktree hunk back to the index's version", function()
@@ -2744,6 +2767,25 @@ describe(":Differ diff hunk staging", function()
         p:close()
         assert.are.equal(head, index)
         assert.are.equal("n1\nn2\nn3\n" .. head, work)
+    end)
+
+    it("u in the commit preview refuses an index staged from outside since it opened", function()
+        local root = staged_then(twelve({ "1x", [12] = "12x" }))
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        stage_behind(root, twelve({ "1x", "2x" }))
+        _G.notifs = {}
+        v:unstage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal(twelve({ "1x", "2x" }), index)
     end)
 
     it("X in the commit preview deletes a staged add", function()
