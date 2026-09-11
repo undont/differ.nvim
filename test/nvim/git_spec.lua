@@ -2513,7 +2513,21 @@ describe(":Differ diff hunk staging", function()
         assert.is_truthy(win)
     end)
 
-    it("X refuses in the commit preview", function()
+    -- confirm X's prompt, then wait out the re-read the preview schedules
+    local function revert_confirmed(v)
+        local opened = v.staging
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        vim.wait(500, function()
+            return v.staging ~= opened
+        end)
+    end
+
+    it("X in the commit preview drops a staged hunk from the index and the file", function()
         local root = preview_repo()
         git_src.panel({ rev = {}, open_first = true })
         local p = Panel.current()
@@ -2521,14 +2535,61 @@ describe(":Differ diff hunk staging", function()
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
-        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-        local before = indexed(root, "a.lua")
-        _G.notifs = {}
-        v:revert_hunk()
-        local msg, after = _G.notifs[#_G.notifs].msg, indexed(root, "a.lua")
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        revert_confirmed(v)
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+        local hunks, rev_after = #v.model.hunks, v.model.new_rev
         p:close()
-        assert.are.equal("differ: X doesn't revert in the commit preview: gs goes back", msg)
-        assert.are.equal(before, after)
+        assert.are.equal(twelve({ "1x" }), index)
+        assert.are.equal(twelve({ "1x", [12] = "12x" }), work)
+        assert.are.equal(1, hunks)
+        assert.are.equal("INDEX", rev_after) -- still the preview
+    end)
+
+    -- 1x staged and then edited to 1y: taking 1x out of the file would lose 1y
+    it("X in the commit preview refuses a hunk the file has changed since staging", function()
+        local root = staged_then(twelve({ "1y", [12] = "12x" }))
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        _G.notifs = {}
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local msg = _G.notifs[#_G.notifs].msg
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        local want = "differ: the file has changed these lines since they were staged: "
+        assert.are.equal(want .. "nothing reverted", msg)
+        assert.are.equal(twelve({ "1x" }), index)
+        assert.are.equal(twelve({ "1y", [12] = "12x" }), work)
+    end)
+
+    it("X in the commit preview deletes a staged add", function()
+        local root = preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local on_disk = vim.fn.filereadable(root .. "/c.lua")
+        local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
+        p:close()
+        assert.are.equal(0, on_disk)
+        assert.are.equal("", status)
     end)
 
     it("dw and gs say why they do nothing", function()

@@ -931,14 +931,18 @@ end
 ---@param text string  -- the unified diff to apply
 ---@param reverse boolean
 ---@param target? "index"|"worktree"  -- default "index"
+---@param check? boolean  -- only test that it applies, writing nothing
 ---@return boolean ok, string|nil err
-function M.apply_patch(root, text, reverse, target)
+function M.apply_patch(root, text, reverse, target, check)
     local cmd = { "git", "apply", "--unidiff-zero", "--whitespace=nowarn" }
     if (target or "index") == "index" then
         cmd[#cmd + 1] = "--cached"
     end
     if reverse then
         cmd[#cmd + 1] = "--reverse"
+    end
+    if check then
+        cmd[#cmd + 1] = "--check"
     end
     cmd[#cmd + 1] = "-"
     local res = vim.system(cmd, { cwd = root, stdin = text, text = true }):wait()
@@ -1750,6 +1754,62 @@ function M.panel(opts)
         }
     end
 
+    -- X in the commit preview: the staged hunk leaves the index and the file both. the
+    -- file half is the same hunk reverse-applied, tried first, so a file that changed
+    -- those lines again refuses before the index moves; then the preview re-reads
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- HEAD↔index
+    ---@param staging differ.view.Staging
+    ---@param idx integer
+    ---@return boolean
+    local function revert_staged(entry, model, staging, idx)
+        local hunk = model.hunks[idx]
+        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+        if not M.apply_patch(root, p, true, "worktree", true) then
+            local msg = "the file has changed these lines since they were staged: nothing reverted"
+            notify(msg, vim.log.levels.WARN)
+            return false
+        end
+        local marked = require("differ.model.marks").state(staging.marks, hunk) == "staged"
+        if marked and not (staging.apply and staging.apply(model, hunk, true)) then
+            return false
+        end
+        local ok, err = M.apply_patch(root, p, true, "worktree")
+        reload_buffer(root, entry.path)
+        if not ok then
+            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            return false
+        end
+        -- a last hunk leaves the row, and the view hands over to the panel itself
+        if #model.hunks > 1 then
+            vim.schedule(function()
+                if view and view.staging == staging then
+                    retarget_view(false)
+                end
+            end)
+        end
+        return true
+    end
+
+    -- X on a whole-file commit-preview row, and what it does to the file
+    ---@param entry differ.FileEntry
+    ---@return fun(): boolean revert, string label
+    local function whole_file_revert(entry)
+        local label = "puts it back as HEAD has it"
+        local revert = function()
+            return M.discard(root, entry)
+        end
+        if entry.x == "D" then
+            label = "restores the file"
+            revert = function()
+                return restore_deleted(entry)
+            end
+        elseif entry.x == "A" then
+            label = "deletes the file"
+        end
+        return revert, label
+    end
+
     -- staging for a commit-preview row, HEAD↔index. an add or a deletion is one unit
     -- whose index entry comes and goes, so it stages as a file
     ---@param entry differ.FileEntry
@@ -1759,14 +1819,15 @@ function M.panel(opts)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
             staging = frozen_staging(entry, model, true)
+            staging.revert = function(m, idx)
+                return revert_staged(entry, m, staging, idx)
+            end
         else
             staging = snapshot_staging(entry)
+            staging.revert, staging.revert_label = whole_file_revert(entry)
         end
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: gs goes back"
-        staging.revert_refusal = function()
-            return "X doesn't revert in the commit preview: gs goes back"
-        end
         staging.leave = function()
             set_preview(false)
         end
