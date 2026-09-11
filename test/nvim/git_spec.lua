@@ -36,6 +36,27 @@ local function fresh_repo()
     return root
 end
 
+-- the panel row for `path`; `staged` narrows to a row with nothing unstaged (true) or
+-- with something unstaged (false)
+local function file_line(p, path, staged)
+    for i, m in ipairs(p.meta) do
+        if
+            m.kind == "file"
+            and m.entry.path == path
+            and (staged == nil or (m.entry.y == " ") == staged)
+        then
+            return i
+        end
+    end
+end
+
+-- the diff view the panel drives. View.current keys off the focused buffer, and
+-- panel keys leave focus on the panel, so it's looked up from the origin window
+local function view_in_origin(p)
+    vim.api.nvim_set_current_win(p.origin_win)
+    return require("differ.view").current()
+end
+
 describe("git.read / changed_files", function()
     it("reads the committed version and the worktree version", function()
         local root = fresh_repo()
@@ -621,17 +642,6 @@ describe(":Differ panel", function()
 
     -- 1-based line of the file row for `path` (optionally pinned to a staged/unstaged
     -- section), located via the panel's meta so tests don't hardcode header offsets
-    local function file_line(p, path, staged)
-        for i, m in ipairs(p.meta) do
-            if
-                m.kind == "file"
-                and m.entry.path == path
-                and (staged == nil or (m.entry.y == " ") == staged)
-            then
-                return i
-            end
-        end
-    end
 
     -- the View driven by the panel, read without moving focus (which the focus-steal
     -- assertions below depend on): it lives in the origin window
@@ -1112,21 +1122,15 @@ describe(":Differ panel", function()
 
         git_src.panel({})
         local p = Panel.current()
-        -- p:select returns focus to the panel, so look the View up via the origin
-        -- window's buffer (View.current keys off the focused buffer)
-        local function view_in_origin()
-            vim.api.nvim_set_current_win(p.origin_win)
-            return require("differ.view").current()
-        end
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua", true), 0 })
         p:select()
-        local v = view_in_origin()
+        local v = view_in_origin(p)
         assert.are.equal(V1, v.model.old_text) -- HEAD
         assert.are.equal("local x = 2\nreturn x\n", v.model.new_text) -- index
 
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
         p:select()
-        v = view_in_origin()
+        v = view_in_origin(p)
         assert.are.equal("one\n", v.model.old_text) -- index
         assert.are.equal("two\n", v.model.new_text) -- worktree
         p:close()
@@ -1176,17 +1180,6 @@ describe(":Differ panel staging (slice C)", function()
                 and (staged == nil or (m.entry.y == " ") == staged)
             then
                 return m.entry
-            end
-        end
-    end
-    local function file_line(p, path, staged)
-        for i, m in ipairs(p.meta) do
-            if
-                m.kind == "file"
-                and m.entry.path == path
-                and (staged == nil or (m.entry.y == " ") == staged)
-            then
-                return i
             end
         end
     end
@@ -1440,11 +1433,6 @@ end)
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
-    -- p:select returns focus to the panel, so the View lives in the origin window
-    local function view_in_origin(p)
-        vim.api.nvim_set_current_win(p.origin_win)
-        return require("differ.view").current()
-    end
     -- the first buffer row of the diff showing `text`
     local function row_at(v, text)
         for row, l in ipairs(vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)) do
@@ -3161,17 +3149,6 @@ describe(":Differ diff hunk staging", function()
     end)
 
     -- the panel row for `path`, optionally pinned to its staged or unstaged side
-    local function file_line(p, path, staged)
-        for i, m in ipairs(p.meta) do
-            if
-                m.kind == "file"
-                and m.entry.path == path
-                and (staged == nil or (m.entry.y == " ") == staged)
-            then
-                return i
-            end
-        end
-    end
 
     -- answer the revert confirm with `choice` for the duration of `fn`
     local function confirming(choice, fn)
@@ -4576,10 +4553,6 @@ describe(":Differ (open_first)", function()
     local Panel = require("differ.panel")
 
     -- p:select returns focus to the panel, so the View lives in the origin window
-    local function view_in_origin(p)
-        vim.api.nvim_set_current_win(p.origin_win)
-        return require("differ.view").current()
-    end
 
     it("opens the panel and the first file's diff (DiffviewOpen-style)", function()
         local root = fresh_repo()
@@ -4907,10 +4880,6 @@ end)
 describe(":Differ diff whole-file staging", function()
     local Panel = require("differ.panel")
 
-    local function view_in_origin(p)
-        vim.api.nvim_set_current_win(p.origin_win)
-        return require("differ.view").current()
-    end
     -- the mode git records for `path` in the index
     local function index_mode(root, path)
         return (git(root, "ls-files", "--stage", "--", path):match("^(%d+)"))
@@ -5017,11 +4986,6 @@ end)
 -- owns two paths. git pairs renames only in the index, so every R entry is staged
 describe(":Differ diff rename staging", function()
     local Panel = require("differ.panel")
-
-    local function view_in_origin(p)
-        vim.api.nvim_set_current_win(p.origin_win)
-        return require("differ.view").current()
-    end
 
     -- a 60-line file committed at old/big.lua, then staged-renamed to new/big.lua with
     -- `edits` (a list of line numbers) changed on the way, so the rename carries that
