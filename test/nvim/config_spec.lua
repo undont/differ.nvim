@@ -122,3 +122,34 @@ describe("config.resolve context", function()
         assert.are.equal("full", config.resolve({ context = "10" }).context)
     end)
 end)
+
+describe("context reaching the view", function()
+    after_each(function()
+        require("differ").setup({})
+    end)
+
+    -- the view's context for a config `context` and a per-diff one
+    local function view_context(configured, given)
+        require("differ").setup({ context = configured })
+        local v = require("differ").diff({
+            path = "x",
+            old_text = "a\n",
+            new_text = "b\n",
+            context = given,
+        })
+        local context = v.context
+        v:close()
+        return context
+    end
+
+    it("reads full as the whole file, from config or a single diff", function()
+        assert.are.equal(math.huge, view_context(nil, nil))
+        assert.are.equal(math.huge, view_context("full", nil))
+        assert.are.equal(math.huge, view_context(3, "full"))
+    end)
+
+    it("passes a count through, a single diff's over config", function()
+        assert.are.equal(3, view_context(3, nil))
+        assert.are.equal(0, view_context("full", 0))
+    end)
+end)

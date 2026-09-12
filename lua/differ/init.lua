@@ -70,14 +70,14 @@ end
 ---@field old_rev string|nil
 ---@field new_rev string|nil
 ---@field layout differ.Layout|nil
----@field context number|nil
+---@field context number|"full"|nil
 
 -- open a View from an already-built DiffModel. the git frontend and panel use
 -- this; `opts` overrides the layout/context defaults and carries the hunk-staging
 -- capability for worktree-status panels
 ---@class differ.DiffModelOpts
 ---@field layout? differ.Layout
----@field context? number
+---@field context? number|"full"
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
 ---@field on_edit_unstage? fun(path: string)
@@ -96,7 +96,7 @@ function M.diff_model(model, opts)
     return require("differ.view")
         .new(model, {
             layout = opts.layout or cfg.layout,
-            context = opts.context or config.context_lines(cfg.context),
+            context = config.context_lines(opts.context or cfg.context),
             wrap = cfg.wrap,
             counter = cfg.diff_counter,
             cursorline_tint = cfg.cursorline_tint,
