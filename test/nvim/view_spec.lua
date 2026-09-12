@@ -493,7 +493,7 @@ describe("view context controls", function()
     end)
 
     -- hunks X, Y, Z with a 5-line gap before each of Y and Z, at context 1
-    local function revertable_view()
+    local function three_hunk_view()
         return View.new(
             model(
                 "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n",
@@ -542,7 +542,7 @@ describe("view context controls", function()
     end
 
     it("keeps an opened fold open when a hunk above it is reverted", function()
-        local v = revertable_view()
+        local v = three_hunk_view()
         vim.api.nvim_win_call(v.columns[1].winid, function()
             vim.cmd(("normal! %dGzo"):format(row_of(v, "11")))
         end)
@@ -554,7 +554,7 @@ describe("view context controls", function()
     end)
 
     it("keeps an opened fold open when a hunk below it is reverted", function()
-        local v = revertable_view()
+        local v = three_hunk_view()
         vim.api.nvim_win_call(v.columns[1].winid, function()
             vim.cmd(("normal! %dGzo"):format(row_of(v, "5")))
         end)
@@ -562,6 +562,36 @@ describe("view context controls", function()
         assert.are.equal(2, #v.model.hunks)
         assert.are.equal(-1, foldclosed_at(v, "5"))
         assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11")) -- the joined trailing run
+        v:close()
+    end)
+
+    it("closes an opened fold when another diff of the same file is sourced", function()
+        -- the next commit in a file's history, and the file's other staging pair
+        for _, revs in ipairs({ { "B", "C" }, { "B", "WORKTREE" } }) do
+            local v = three_hunk_view()
+            vim.api.nvim_win_call(v.columns[1].winid, function()
+                vim.cmd(("normal! %dGzo"):format(row_of(v, "11")))
+            end)
+            v:set_source(diff.build({
+                path = "x",
+                old_rev = revs[1],
+                new_rev = revs[2],
+                old_text = v.model.new_text,
+                new_text = "1\nX2\n3\n4\n5\n6\n7\nY2\n9\n10\n11\n12\n13\nZ2\n15\n",
+            }))
+            assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11"))
+            v:close()
+        end
+    end)
+
+    it("closes an opened fold when a re-source changes the hunk count", function()
+        local v = three_hunk_view()
+        vim.api.nvim_win_call(v.columns[1].winid, function()
+            vim.cmd(("normal! %dGzo"):format(row_of(v, "11")))
+        end)
+        v:set_source(model(v.model.old_text, "1\n2\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"))
+        assert.are.equal(2, #v.model.hunks)
+        assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11"))
         v:close()
     end)
 

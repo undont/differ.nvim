@@ -524,6 +524,17 @@ function View:is_open()
     return col ~= nil and col.winid ~= nil and vim.api.nvim_win_is_valid(col.winid)
 end
 
+-- whether `b` re-reads the diff `a` shows, so a fold's gap names the same run in both
+---@param a differ.DiffModel
+---@param b differ.DiffModel
+---@return boolean
+local function same_diff(a, b)
+    return a.path == b.path
+        and a.old_rev == b.old_rev
+        and a.new_rev == b.new_rev
+        and #a.hunks == #b.hunks
+end
+
 -- swap the diffed file in place: same windows/layout/context, new model. the
 -- panel calls this when a different file is selected so the View is re-sourced,
 -- not recreated (separation of concerns). column count is layout-determined,
@@ -541,7 +552,7 @@ function View:set_source(model, staging, opts)
         self:_release_edit_window()
     end
     local opened = {}
-    if self.model.path == model.path then
+    if same_diff(self.model, model) then
         opened = self:_opened_folds()
     end
     self.model = model
