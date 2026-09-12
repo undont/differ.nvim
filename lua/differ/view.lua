@@ -460,9 +460,8 @@ function View:_stage_offset(idx)
 end
 
 -- (re)create each column's native folds, closed unless `opened` holds their `gap`
----@param opened? table<integer, boolean>
+---@param opened table<integer, boolean>
 function View:_apply_folds(opened)
-    opened = opened or {}
     for _, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
@@ -541,7 +540,7 @@ function View:set_source(model, staging, opts)
     if self.edit_win and self.model.path ~= model.path then
         self:_release_edit_window()
     end
-    local opened = nil
+    local opened = {}
     if self.model.path == model.path then
         opened = self:_opened_folds()
     end
@@ -1308,6 +1307,27 @@ function View:_rekey_staged(removed, before)
     self.staged_hunks = out
 end
 
+-- the same shift for the gaps of opened folds: the two gaps either side of the
+-- removed hunk join into one, open if either was
+---@param opened table<integer, boolean>
+---@param removed integer
+---@param before integer  -- hunk count before the revert
+---@return table<integer, boolean>
+function View:_rekey_opened(opened, removed, before)
+    if #self.model.hunks ~= before - 1 then
+        return {}
+    end
+    local out = {}
+    for gap in pairs(opened) do
+        if gap < removed then
+            out[gap] = true
+        else
+            out[gap - 1] = true
+        end
+    end
+    return out
+end
+
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
 -- whatever the revert added or removed above it. a cursor inside the reverted region
 -- has no line of its own to return to, so it lands at the region's start
@@ -1417,10 +1437,12 @@ function View:revert_hunk()
         return
     end
 
+    local opened = self:_opened_folds() -- before rerender replaces col.folds
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
     self:_rekey_staged(idx, before)
+    opened = self:_rekey_opened(opened, idx, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds()
+    self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one
     if focus then
         self:_hold_new_line(reverted_focus(hunk, focus))
@@ -1824,7 +1846,7 @@ end
 -- lay the columns into windows. the first column anchors on its existing window
 -- (or the current one on first open); extra columns reuse their window or vsplit
 -- a fresh one; >1 column scroll-binds. single authority for open + layout toggle
----@param opened? table<integer, boolean>
+---@param opened table<integer, boolean>
 function View:_relayout(opened)
     local anchor = self.columns[1].winid
     if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
@@ -1858,7 +1880,7 @@ end
 -- open the view: stacked takes the current window, split adds a scroll-bound pane
 ---@return differ.View
 function View:open()
-    self:_relayout()
+    self:_relayout({})
     self:_focus_first_hunk() -- land on the first hunk; the tinted cursor line shows its kind
     self:_paint_cursorline()
     return self
