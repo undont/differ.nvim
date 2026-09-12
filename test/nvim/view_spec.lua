@@ -572,6 +572,26 @@ describe("view context controls", function()
         v:close()
     end)
 
+    it("keeps an opened fold open when another diff is sourced underneath the user", function()
+        -- staging the last unstaged hunk: the index takes the worktree text and the
+        -- view moves to HEAD..INDEX, holding the cursor
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(
+            diff.build({
+                path = "x",
+                old_rev = "HEAD",
+                new_rev = "INDEX",
+                old_text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n16\n",
+                new_text = v.model.new_text,
+            }),
+            nil,
+            { focus_line = 11 }
+        )
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        v:close()
+    end)
+
     it("closes an opened fold when another diff of the same file is sourced", function()
         -- the next commit in a file's history, and the file's other staging pair
         for _, revs in ipairs({ { "B", "C" }, { "B", "WORKTREE" } }) do

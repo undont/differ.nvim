@@ -578,9 +578,9 @@ local function diff_key(model)
 end
 
 -- store the open folds of the diff on screen, dropping its entry when none are open
-function View:_remember_folds()
+---@param opened differ.view.OpenedFolds
+function View:_remember_folds(opened)
     local key = diff_key(self.model)
-    local opened = self:_opened_folds()
     if #opened.runs == 0 then
         self.fold_memory[key] = nil
     else
@@ -604,12 +604,17 @@ function View:set_source(model, staging, opts)
     if self.edit_win and self.model.path ~= model.path then
         self:_release_edit_window()
     end
-    self:_remember_folds()
+    local on_screen = self:_opened_folds()
+    self:_remember_folds(on_screen)
     self.model = model
     self.staging = staging
     self:_init_staged() -- a new file: reseed staged state from the fresh git read
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds(self.fold_memory[diff_key(model)] or NONE_OPENED)
+    if opts and opts.focus_line then
+        self:_apply_folds(on_screen) -- underneath the user, even onto another diff
+    else
+        self:_apply_folds(self.fold_memory[diff_key(model)] or NONE_OPENED)
+    end
     if opts and opts.focus_line then
         -- hold the precise position across a refresh
         self:focus_new_line(opts.focus_line, true, opts.focus_col)
