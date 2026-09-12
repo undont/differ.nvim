@@ -459,9 +459,52 @@ function View:_stage_offset(idx)
     return off
 end
 
--- (re)create each column's native folds, closed unless `opened` holds their `gap`
----@param opened table<integer, boolean>
+-- open folds as the first and last rows of their unchanged runs, whose old/new line
+-- numbers index the texts alongside
+---@class differ.view.OpenedFolds
+---@field old_text? string
+---@field new_text? string
+---@field runs { first: differ.RailLine, last: differ.RailLine }[]
+
+---@type differ.view.OpenedFolds
+local NONE_OPENED = { runs = {} }
+
+-- the side whose line numbers mean the same lines in `opened` and `model`: one whose
+-- text is unchanged. nil when both changed
+---@param opened differ.view.OpenedFolds
+---@param model differ.DiffModel
+---@return "old"|"new"|nil
+local function anchor_side(opened, model)
+    if opened.old_text == model.old_text then
+        return "old"
+    end
+    if opened.new_text == model.new_text then
+        return "new"
+    end
+    return nil
+end
+
+-- whether fold `f` of column `col` shares a line with an opened run, on `side`
+---@param opened differ.view.OpenedFolds
+---@param side "old"|"new"
+---@param col differ.ViewColumn
+---@param f differ.FoldRange
+---@return boolean
+local function was_opened(opened, side, col, f)
+    local first, last = col.map.lines[f.first][side], col.map.lines[f.last][side]
+    for _, run in ipairs(opened.runs) do
+        if first <= run.last[side] and run.first[side] <= last then
+            return true
+        end
+    end
+    return false
+end
+
+-- (re)create each column's native folds, closed unless they share a line with an
+-- opened run
+---@param opened differ.view.OpenedFolds
 function View:_apply_folds(opened)
+    local side = anchor_side(opened, self.model)
     for _, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
@@ -473,7 +516,7 @@ function View:_apply_folds(opened)
                 for _, f in ipairs(col.folds or {}) do
                     if f.last > f.first then
                         vim.cmd(("silent! %d,%dfold"):format(f.first, f.last)) -- :fold starts closed
-                        if f.gap ~= nil and opened[f.gap] then
+                        if side and was_opened(opened, side, col, f) then
                             vim.cmd(("silent! %dfoldopen"):format(f.first))
                         end
                     end
@@ -483,17 +526,18 @@ function View:_apply_folds(opened)
     end
 end
 
--- the `gap` of every open fold, in any column
----@return table<integer, boolean>
+-- the open folds of every column, against the current model's texts
+---@return differ.view.OpenedFolds
 function View:_opened_folds()
-    local opened = {}
+    local opened = { old_text = self.model.old_text, new_text = self.model.new_text, runs = {} }
     for _, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_call(win, function()
                 for _, f in ipairs(col.folds or {}) do
-                    if f.last > f.first and f.gap ~= nil and vim.fn.foldclosed(f.first) == -1 then
-                        opened[f.gap] = true
+                    if f.last > f.first and vim.fn.foldclosed(f.first) == -1 then
+                        opened.runs[#opened.runs + 1] =
+                            { first = col.map.lines[f.first], last = col.map.lines[f.last] }
                     end
                 end
             end)
@@ -524,15 +568,12 @@ function View:is_open()
     return col ~= nil and col.winid ~= nil and vim.api.nvim_win_is_valid(col.winid)
 end
 
--- whether `b` re-reads the diff `a` shows, so a fold's gap names the same run in both
+-- whether `b` re-reads the diff `a` shows: the same file between the same revs
 ---@param a differ.DiffModel
 ---@param b differ.DiffModel
 ---@return boolean
 local function same_diff(a, b)
-    return a.path == b.path
-        and a.old_rev == b.old_rev
-        and a.new_rev == b.new_rev
-        and #a.hunks == #b.hunks
+    return a.path == b.path and a.old_rev == b.old_rev and a.new_rev == b.new_rev
 end
 
 -- swap the diffed file in place: same windows/layout/context, new model. the
@@ -551,7 +592,7 @@ function View:set_source(model, staging, opts)
     if self.edit_win and self.model.path ~= model.path then
         self:_release_edit_window()
     end
-    local opened = {}
+    local opened = NONE_OPENED
     if same_diff(self.model, model) then
         opened = self:_opened_folds()
     end
@@ -1318,27 +1359,6 @@ function View:_rekey_staged(removed, before)
     self.staged_hunks = out
 end
 
--- the same shift for the gaps of opened folds: the two gaps either side of the
--- removed hunk join into one, open if either was
----@param opened table<integer, boolean>
----@param removed integer
----@param before integer  -- hunk count before the revert
----@return table<integer, boolean>
-function View:_rekey_opened(opened, removed, before)
-    if #self.model.hunks ~= before - 1 then
-        return {}
-    end
-    local out = {}
-    for gap in pairs(opened) do
-        if gap < removed then
-            out[gap] = true
-        else
-            out[gap - 1] = true
-        end
-    end
-    return out
-end
-
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
 -- whatever the revert added or removed above it. a cursor inside the reverted region
 -- has no line of its own to return to, so it lands at the region's start
@@ -1451,7 +1471,6 @@ function View:revert_hunk()
     local opened = self:_opened_folds() -- before rerender replaces col.folds
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
     self:_rekey_staged(idx, before)
-    opened = self:_rekey_opened(opened, idx, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one
@@ -1857,7 +1876,7 @@ end
 -- lay the columns into windows. the first column anchors on its existing window
 -- (or the current one on first open); extra columns reuse their window or vsplit
 -- a fresh one; >1 column scroll-binds. single authority for open + layout toggle
----@param opened table<integer, boolean>
+---@param opened differ.view.OpenedFolds
 function View:_relayout(opened)
     local anchor = self.columns[1].winid
     if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
@@ -1891,7 +1910,7 @@ end
 -- open the view: stacked takes the current window, split adds a scroll-bound pane
 ---@return differ.View
 function View:open()
-    self:_relayout({})
+    self:_relayout(NONE_OPENED)
     self:_focus_first_hunk() -- land on the first hunk; the tinted cursor line shows its kind
     self:_paint_cursorline()
     return self

@@ -543,12 +543,72 @@ describe("view context controls", function()
         end
     end)
 
-    it("closes an opened fold when a re-source changes the hunk count", function()
+    it("keeps an opened stretch open when a re-read drops a hunk above it", function()
         local v = three_hunk_view()
         open_fold(v, row_of(v, "11"))
         v:set_source(model(v.model.old_text, "1\n2\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"))
         assert.are.equal(2, #v.model.hunks)
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        assert.are.equal(row_of(v, "1"), foldclosed_at(v, "4")) -- the new leading run
+        v:close()
+    end)
+
+    it("keeps an opened stretch open when only the old side changes", function()
+        -- a stage from outside differ: the index takes X, the worktree is untouched
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(model("1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n", v.model.new_text))
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    it("closes every fold when a re-read changes both sides", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(
+            model(
+                "1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n",
+                "1\nX\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n16\n"
+            )
+        )
         assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    -- 30 lines named l1..l30, with `edits` swapped in by line number
+    local function numbered(edits)
+        local out = {}
+        for i = 1, 30 do
+            out[i] = edits[i] or ("l" .. i)
+        end
+        return table.concat(out, "\n") .. "\n"
+    end
+
+    local function numbered_view(edits)
+        return View.new(model(numbered({}), numbered(edits)), {
+            layout = "stacked",
+            context = 1,
+            deep_diff = { enabled = true },
+        }):open()
+    end
+
+    it("keeps the opened stretch open when a re-read moves the hunks around it", function()
+        local v = numbered_view({ [2] = "X", [8] = "Y", [14] = "Z" })
+        open_fold(v, row_of(v, "l11"))
+        -- X undone and W added: still three hunks, but l9..l13 now comes first
+        v:set_source(model(numbered({}), numbered({ [8] = "Y", [14] = "Z", [24] = "W" })))
+        assert.are.equal(-1, foldclosed_at(v, "l11"))
+        assert.are.equal(row_of(v, "l16"), foldclosed_at(v, "l19"))
+        v:close()
+    end)
+
+    it("keeps both halves open when a re-read splits an opened stretch", function()
+        local v = numbered_view({ [2] = "X", [20] = "Y" })
+        open_fold(v, row_of(v, "l11"))
+        v:set_source(model(numbered({}), numbered({ [2] = "X", [11] = "M", [20] = "Y" })))
+        assert.are.equal(-1, foldclosed_at(v, "l6"))
+        assert.are.equal(-1, foldclosed_at(v, "l15"))
+        assert.are.equal(row_of(v, "l22"), foldclosed_at(v, "l25")) -- never opened
         v:close()
     end)
 
