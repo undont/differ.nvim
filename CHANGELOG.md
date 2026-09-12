@@ -12,7 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- A finite `context` built its folds open, so nothing collapsed until `zM`, and every file switch reopened them. Folds now start closed and stay closed across files, and a fold opened with `zo` survives context/layout changes
+- A finite `context` built its folds open, so nothing collapsed until `zM`, and every file switch reopened them. Diff view folds now start closed, and a fold you open stays open for the rest of the session, including when you come back to its file
 - `:Differ context` and `:Differ layout` reported "no diff view here" from the file panel. They now act on the diff the panel drives
 - An invalid `context` in config was accepted silently. It now warns and falls back to `"full"`
 

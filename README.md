@@ -234,7 +234,7 @@ Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>.
 | `:Differ context <n>` | Fold unchanged lines more than `<n>` away from a hunk |
 | `:Differ context +` / `-` | Widen / narrow the threshold by one |
 
-`context` decides where a native fold forms once an unchanged run exceeds it either side of a hunk; every line is in the buffer either way, so search, yank and motions are unaffected. Folds start closed and stay closed from file to file, so a number for `context` in `setup()` opens every session folded. A fold you open (`zo` / `za`) stays open through a context or layout change. `d-` narrows out of whole-file by landing on a threshold of 10, which collapses the file, and steps down from there; `d=` has nothing wider to reach, so it does nothing.
+`context` decides where a native fold forms once an unchanged run exceeds it either side of a hunk; every line is in the buffer either way, so search, yank and motions are unaffected. With a number for `context`, folds start closed, so setting one in `setup()` opens every session folded. A fold you open (`zo` / `za`) stays open for the rest of the session, including when you come back to its file. `d-` narrows out of whole-file by landing on a threshold of 10, which collapses the file, and steps down from there; `d=` has nothing wider to reach, so it does nothing.
 
 Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](TROUBLESHOOTING.md#command_alias-and-lazy-loading) (`:h differ-troubleshooting-command_alias-and-lazy-loading`) for why.
 
