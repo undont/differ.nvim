@@ -104,6 +104,7 @@ local armed_view = nil
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
 ---@field staged_hunks table<integer, boolean>  -- hunk index -> staged, for marking
+---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field on_edit_unstage fun(path: string)|nil  -- frontend hook: unstage + re-source for edit-in-review
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
@@ -167,6 +168,7 @@ function View.new(model, opts)
         on_cursor = opts.on_cursor,
         on_repurpose = opts.on_repurpose,
         staged_hunks = {},
+        fold_memory = {},
         id = next_id(),
         _suppress_close = false,
         _closing = false,
@@ -568,12 +570,22 @@ function View:is_open()
     return col ~= nil and col.winid ~= nil and vim.api.nvim_win_is_valid(col.winid)
 end
 
--- whether `b` re-reads the diff `a` shows: the same file between the same revs
----@param a differ.DiffModel
----@param b differ.DiffModel
----@return boolean
-local function same_diff(a, b)
-    return a.path == b.path and a.old_rev == b.old_rev and a.new_rev == b.new_rev
+-- one key per diff: the file and the revs it is diffed between
+---@param model differ.DiffModel
+---@return string
+local function diff_key(model)
+    return table.concat({ model.path, model.old_rev, model.new_rev }, "\0")
+end
+
+-- store the open folds of the diff on screen, dropping its entry when none are open
+function View:_remember_folds()
+    local key = diff_key(self.model)
+    local opened = self:_opened_folds()
+    if #opened.runs == 0 then
+        self.fold_memory[key] = nil
+    else
+        self.fold_memory[key] = opened
+    end
 end
 
 -- swap the diffed file in place: same windows/layout/context, new model. the
@@ -592,15 +604,12 @@ function View:set_source(model, staging, opts)
     if self.edit_win and self.model.path ~= model.path then
         self:_release_edit_window()
     end
-    local opened = NONE_OPENED
-    if same_diff(self.model, model) then
-        opened = self:_opened_folds()
-    end
+    self:_remember_folds()
     self.model = model
     self.staging = staging
     self:_init_staged() -- a new file: reseed staged state from the fresh git read
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds(opened)
+    self:_apply_folds(self.fold_memory[diff_key(model)] or NONE_OPENED)
     if opts and opts.focus_line then
         -- hold the precise position across a refresh
         self:focus_new_line(opts.focus_line, true, opts.focus_col)

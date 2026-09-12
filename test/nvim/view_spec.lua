@@ -427,17 +427,63 @@ describe("view context controls", function()
         return v
     end
 
-    it("closes every fold again on a file switch", function()
-        local v = opened_fold_view()
-        v:set_source(diff.build({
+    local function other_file()
+        return diff.build({
             path = "y",
             old_rev = "A",
             new_rev = "B",
             old_text = "a\nb\nc\nd\ne\nf\ng\nh\ni\n",
             new_text = "a\nB\nc\nd\ne\nf\ng\nH\ni\n",
-        }))
+        })
+    end
+
+    it("opens a file it hasn't shown yet with every fold closed", function()
+        local v = opened_fold_view()
+        v:set_source(other_file())
         local fold_row = real_fold(v).first
         assert.are.equal(fold_row, foldclosed(v, fold_row))
+        v:close()
+    end)
+
+    it("reopens a file's opened folds on coming back to it", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    it("keeps a fold closed on coming back once it was closed again", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x)
+        vim.api.nvim_win_call(v.columns[1].winid, function()
+            vim.cmd("normal! 5Gzc")
+        end)
+        v:set_source(other_file())
+        v:set_source(x)
+        assert.are.equal(5, foldclosed(v, 5))
+        v:close()
+    end)
+
+    it("remembers each diff of a file apart", function()
+        local v = opened_fold_view()
+        local ab = v.model
+        local bc = diff.build({
+            path = "x",
+            old_rev = "B",
+            new_rev = "C",
+            old_text = ab.new_text,
+            new_text = "1\nX\n3\n4\n5\n6\n7\nY2\n9\n",
+        })
+        v:set_source(bc)
+        assert.are.equal(real_fold(v).first, foldclosed(v, real_fold(v).first))
+        v:set_source(ab)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:set_source(bc)
+        assert.are.equal(real_fold(v).first, foldclosed(v, real_fold(v).first))
         v:close()
     end)
 
@@ -609,6 +655,16 @@ describe("view context controls", function()
         assert.are.equal(-1, foldclosed_at(v, "l6"))
         assert.are.equal(-1, foldclosed_at(v, "l15"))
         assert.are.equal(row_of(v, "l22"), foldclosed_at(v, "l25")) -- never opened
+        v:close()
+    end)
+
+    it("reopens a file's folds after it was edited while away", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        local old_text = v.model.old_text
+        v:set_source(other_file())
+        v:set_source(model(old_text, "1\n2\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"))
+        assert.are.equal(-1, foldclosed_at(v, "11"))
         v:close()
     end)
 
