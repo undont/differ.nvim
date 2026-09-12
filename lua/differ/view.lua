@@ -461,8 +461,7 @@ function View:_stage_offset(idx)
     return off
 end
 
--- open folds as the first and last rows of their unchanged runs, whose old/new line
--- numbers index the texts alongside
+-- open folds by the rail lines at their ends, with the texts those line numbers refer to
 ---@class differ.view.OpenedFolds
 ---@field old_text? string
 ---@field new_text? string

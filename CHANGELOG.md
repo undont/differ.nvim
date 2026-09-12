@@ -9,10 +9,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `context` accepts `"full"` in config, matching `:Differ context full`, and it is now the default (`math.huge` still works)
+- A fold you open in the diff view stays open for the rest of the session, including when you come back to its file
 
 ### Fixed
 
-- A finite `context` built its folds open, so nothing collapsed until `zM`, and every file switch reopened them. Diff view folds now start closed, and a fold you open stays open for the rest of the session, including when you come back to its file
+- A finite `context` built its folds open, so nothing collapsed until `zM`, and every file switch reopened them. Diff view folds now start closed
 - `:Differ context` and `:Differ layout` reported "no diff view here" from the file panel. They now act on the diff the panel drives
 - An invalid `context` in config was accepted silently. It now warns and falls back to `"full"`
 
