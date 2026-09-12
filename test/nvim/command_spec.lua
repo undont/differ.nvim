@@ -267,6 +267,21 @@ describe("command view controls from the panel", function()
         p:close()
         v:close()
     end)
+
+    it("leaves a session in another tab alone", function()
+        local v, p = view_under_panel()
+        vim.cmd("tabnew")
+        local tab = vim.api.nvim_get_current_tabpage()
+        _G.notifs = {}
+        command.layout("split")
+        local on_tab = vim.api.nvim_get_current_tabpage() == tab
+        vim.cmd("tabclose")
+        p:close()
+        v:close()
+        assert.is_true(on_tab)
+        assert.are.equal("stacked", v.layout)
+        assert.matches("no diff view here", _G.notifs[#_G.notifs].msg)
+    end)
 end)
 
 describe("command panel position", function()
