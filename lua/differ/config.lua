@@ -235,7 +235,7 @@ local function check_enum(path, value, diags)
 end
 
 local function valid_context(value)
-    if value == "full" or value == math.huge then
+    if value == "full" then
         return true
     end
     return type(value) == "number" and value >= 0 and value == math.floor(value)
