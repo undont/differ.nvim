@@ -572,7 +572,7 @@ describe("view context controls", function()
         v:close()
     end)
 
-    it("keeps an opened fold open when another diff is sourced underneath the user", function()
+    it("keeps the folds on screen when told to, even onto another diff", function()
         -- staging the last unstaged hunk: the index takes the worktree text and the
         -- view moves to HEAD..INDEX, holding the cursor
         local v = three_hunk_view()
@@ -586,9 +586,18 @@ describe("view context controls", function()
                 new_text = v.model.new_text,
             }),
             nil,
-            { focus_line = 11 }
+            { focus_line = 11, keep_folds = true }
         )
         assert.are.equal(-1, foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    it("brings back a diff's own folds when only the cursor is held", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x, nil, { focus_line = 6 })
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
         v:close()
     end)
 

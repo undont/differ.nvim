@@ -587,16 +587,21 @@ function View:_remember_folds(opened)
     end
 end
 
+---@class differ.view.SourceOpts
+---@field focus_line? integer
+---@field focus_col? integer
+---@field keep_folds? boolean
+
 -- swap the diffed file in place: same windows/layout/context, new model. the
 -- panel calls this when a different file is selected so the View is re-sourced,
 -- not recreated (separation of concerns). column count is layout-determined,
 -- so it never changes here, no relayout. `staging` rides along because the stage
 -- direction is per-file (a staged entry unstages, an unstaged one stages).
--- `opts.focus_line` is a new-side file line to snap to (a re-source of the same
--- file underneath the user); without it the cursor lands on the first unstaged hunk
+-- `opts.focus_line` holds the cursor on a new-side line, else it lands on the first
+-- unstaged hunk; `opts.keep_folds` keeps the folds on screen over the diff's memory
 ---@param model differ.DiffModel
 ---@param staging differ.view.Staging|nil
----@param opts? { focus_line?: integer, focus_col?: integer }
+---@param opts? differ.view.SourceOpts
 function View:set_source(model, staging, opts)
     -- a switch to a different file leaves any edit window stale; drop it. a same-file
     -- re-source (the watcher after a `:w`) keeps it so editing continues uninterrupted
@@ -609,8 +614,8 @@ function View:set_source(model, staging, opts)
     self.staging = staging
     self:_init_staged() -- a new file: reseed staged state from the fresh git read
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    if opts and opts.focus_line then
-        self:_apply_folds(on_screen) -- underneath the user, even onto another diff
+    if opts and opts.keep_folds then
+        self:_apply_folds(on_screen)
     else
         self:_apply_folds(self.fold_memory[diff_key(model)] or NONE_OPENED)
     end

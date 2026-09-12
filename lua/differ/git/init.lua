@@ -1402,14 +1402,11 @@ function M.panel(opts)
 
     -- (re)source the diff view from an entry's current git state. false when the
     -- entry has no diff anymore (committed / fully staged / reverted outside differ).
-    -- `focus_line`/`focus_col` (a new-side file position) hold the cursor across an
-    -- in-place refresh of the same file; without them the view lands on the first
-    -- unstaged hunk
+    -- `source_opts` goes to View:set_source when the view is open
     ---@param entry differ.FileEntry
-    ---@param focus_line integer|nil
-    ---@param focus_col integer|nil
+    ---@param source_opts? differ.view.SourceOpts
     ---@return boolean shown
-    local function show_entry(entry, focus_line, focus_col)
+    local function show_entry(entry, source_opts)
         local model = model_for(entry)
         if #model.hunks == 0 and not model.binary then
             -- a real change with no lines to show (a mode change, a rename, a final
@@ -1423,11 +1420,7 @@ function M.panel(opts)
         end
         local staging = stage_for(entry, model)
         if view and view:is_open() then
-            view:set_source(
-                model,
-                staging,
-                focus_line and { focus_line = focus_line, focus_col = focus_col } or nil
-            )
+            view:set_source(model, staging, source_opts)
         else
             view = require("differ").diff_model(model, {
                 staging = staging,
@@ -1488,7 +1481,12 @@ function M.panel(opts)
         -- switch, so landing on the first hunk would lose the reviewer's place; the
         -- unstaged pair just emptied, so index and worktree agree and the line carries
         local focus_line, focus_col = view:cursor_new_line()
-        if not show_entry(survivor, focus_line, focus_col) then
+        if
+            not show_entry(
+                survivor,
+                { focus_line = focus_line, focus_col = focus_col, keep_folds = true }
+            )
+        then
             return false
         end
         panel:mark_selected(survivor)
@@ -1505,7 +1503,7 @@ function M.panel(opts)
         refresh_panel() -- the file moves to the Unstaged section; records last_sig
         for _, e in ipairs(entries_for_path(path)) do
             if not e.staged then
-                show_entry(e) -- switch the diff to index↔worktree, updating active_entry
+                show_entry(e, { keep_folds = true }) -- switch the diff to index↔worktree
                 return
             end
         end
@@ -1531,7 +1529,8 @@ function M.panel(opts)
             end
         end
         local was = active_entry
-        if pick and show_entry(pick, focus_line, focus_col) then
+        local source_opts = { focus_line = focus_line, focus_col = focus_col, keep_folds = true }
+        if pick and show_entry(pick, source_opts) then
             if outside and (pick.staged ~= was.staged or pick.status ~= was.status) then
                 local msg = "%s changed outside differ; showing its %s change instead"
                 notify(msg:format(pick.path, pick.staged and "staged" or "unstaged"))
