@@ -118,7 +118,7 @@ require("differ").setup({
   },
 
   layout = "stacked",            -- "stacked" | "split" (can be toggled with :Differ layout in-session)
-  context = math.huge,           -- fold threshold; math.huge = whole file, no folds
+  context = "full",              -- "full" = whole file, no folds | integer = lines of context, folds start closed
   wrap = true,                   -- soft-wrap long lines in the diff view
   diff_counter = true,           -- hunk counter in the diff window's winbar
   cursorline_tint = true,        -- add/delete tint on the cursor line; only drawn when 'cursorline' is on
@@ -231,10 +231,10 @@ Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>.
 | `:Differ layout [stacked\|split]` | Set layout; no argument toggles between |
 | `:Differ panel [left\|right\|top\|bottom]` | Reposition the live panel or history sidebar |
 | `:Differ context full` | Show the whole file, no folds (the default) |
-| `:Differ context <n>` | Set the fold threshold around hunks |
+| `:Differ context <n>` | Fold unchanged lines more than `<n>` away from a hunk |
 | `:Differ context +` / `-` | Widen / narrow the threshold by one |
 
-`context` decides where a native fold forms once an unchanged run exceeds it either side of a hunk; every line is in the buffer either way, so search, yank and motions are unaffected. Folds are created open, so nothing is hidden until you close one (`zc` / `za` / `zM`). `d-` narrows out of whole-file by landing on a threshold of 10 and stepping down from there; `d=` has nothing wider to reach, so it does nothing.
+`context` decides where a native fold forms once an unchanged run exceeds it either side of a hunk; every line is in the buffer either way, so search, yank and motions are unaffected. Folds start closed and stay closed from file to file, so a number for `context` in `setup()` opens every session folded. A fold you open (`zo` / `za`) stays open through a context or layout change. `d-` narrows out of whole-file by landing on a threshold of 10, which collapses the file, and steps down from there; `d=` has nothing wider to reach, so it does nothing.
 
 Set `command_alias` in `setup()` to register a shorter name for the same command, e.g. `command_alias = "D"` gives `:D HEAD~1`, `:D log`. If you lazy-load on `cmd`, list the alias there too (`cmd = { "Differ", "D" }`); see [troubleshooting](TROUBLESHOOTING.md#command_alias-and-lazy-loading) (`:h differ-troubleshooting-command_alias-and-lazy-loading`) for why.
 
