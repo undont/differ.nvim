@@ -459,15 +459,12 @@ function View:_stage_offset(idx)
     return off
 end
 
--- (re)create the native folds for each column's window from its fold ranges, closed
--- except the ones `opened` names. `opened[i]` is per column, keyed by the fold's `gap`
--- boundary index rather than list position, so a neighbouring gap vanishing at a new
--- context can't shift a later fold's key. with context = full there are no ranges
----@param opened? table<integer, boolean>[]
+-- (re)create each column's native folds, closed unless `opened` holds their `gap`
+---@param opened? table<integer, boolean>
 function View:_apply_folds(opened)
-    for ci, col in ipairs(self.columns) do
+    opened = opened or {}
+    for _, col in ipairs(self.columns) do
         local win = col.winid
-        local col_opened = opened and opened[ci] or {}
         if win and vim.api.nvim_win_is_valid(win) then
             set_wo(win, "foldmethod", "manual")
             set_wo(win, "foldtext", FOLDTEXT_EXPR)
@@ -477,7 +474,7 @@ function View:_apply_folds(opened)
                 for _, f in ipairs(col.folds or {}) do
                     if f.last > f.first then
                         vim.cmd(("silent! %d,%dfold"):format(f.first, f.last)) -- :fold starts closed
-                        if f.gap ~= nil and col_opened[f.gap] then
+                        if f.gap ~= nil and opened[f.gap] then
                             vim.cmd(("silent! %dfoldopen"):format(f.first))
                         end
                     end
@@ -487,18 +484,17 @@ function View:_apply_folds(opened)
     end
 end
 
--- per column, the `gap` of every fold currently open, for _apply_folds to reopen
----@return table<integer, boolean>[]
+-- the `gap` of every open fold, in any column
+---@return table<integer, boolean>
 function View:_opened_folds()
     local opened = {}
-    for ci, col in ipairs(self.columns) do
-        opened[ci] = {}
+    for _, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
             vim.api.nvim_win_call(win, function()
                 for _, f in ipairs(col.folds or {}) do
-                    if f.last > f.first and f.gap ~= nil then
-                        opened[ci][f.gap] = vim.fn.foldclosed(f.first) == -1
+                    if f.last > f.first and f.gap ~= nil and vim.fn.foldclosed(f.first) == -1 then
+                        opened[f.gap] = true
                     end
                 end
             end)
@@ -547,13 +543,13 @@ function View:set_source(model, staging, opts)
     end
     local opened = nil
     if self.model.path == model.path then
-        opened = self:_opened_folds() -- a same-file re-source keeps the folds opened with zo
+        opened = self:_opened_folds()
     end
     self.model = model
     self.staging = staging
     self:_init_staged() -- a new file: reseed staged state from the fresh git read
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds(opened) -- windows unchanged so refold in place
+    self:_apply_folds(opened)
     if opts and opts.focus_line then
         -- hold the precise position across a refresh
         self:focus_new_line(opts.focus_line, true, opts.focus_col)
@@ -569,8 +565,9 @@ function View:set_layout(layout)
     if layout == self.layout then
         return
     end
+    local opened = self:_opened_folds() -- before rerender replaces the columns
     self:rerender({ layout = layout, context = self.context, deep_diff = self.deep_diff })
-    self:_relayout()
+    self:_relayout(opened)
 end
 
 -- flip stacked <-> split
@@ -1827,7 +1824,8 @@ end
 -- lay the columns into windows. the first column anchors on its existing window
 -- (or the current one on first open); extra columns reuse their window or vsplit
 -- a fresh one; >1 column scroll-binds. single authority for open + layout toggle
-function View:_relayout()
+---@param opened? table<integer, boolean>
+function View:_relayout(opened)
     local anchor = self.columns[1].winid
     if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
         anchor = vim.api.nvim_get_current_win()
@@ -1852,7 +1850,7 @@ function View:_relayout()
         vim.api.nvim_set_current_win(self.columns[1].winid)
         vim.cmd("syncbind")
     end
-    self:_apply_folds() -- windows now exist; build the folds over unchanged regions
+    self:_apply_folds(opened) -- windows now exist; build the folds over unchanged regions
     self:_paint_cursorline() -- windows now exist; show the cursor line over the bg
     self:_arm_close_guard() -- re-arm now the winids are current
 end

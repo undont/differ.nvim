@@ -466,6 +466,24 @@ describe("view context controls", function()
         v:close()
     end)
 
+    it("keeps an opened fold open across a layout toggle", function()
+        local v = opened_fold_view()
+        v:toggle_layout() -- -> split
+        local fold_row = real_fold(v).first
+        for _, col in ipairs(v.columns) do
+            assert.are.equal(
+                -1,
+                vim.api.nvim_win_call(col.winid, function()
+                    return vim.fn.foldclosed(fold_row)
+                end)
+            )
+        end
+        v:toggle_layout() -- -> stacked
+        local _, closed_at = first_fold_closed_at(v)
+        assert.are.equal(-1, closed_at)
+        v:close()
+    end)
+
     it("keeps an opened fold open when the same file is re-sourced", function()
         local v = opened_fold_view()
         v:set_source(model("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nX\n3\n4\n5\n6\n7\nZ\n9\n"))
@@ -477,11 +495,8 @@ describe("view context controls", function()
     it(
         "keeps the right fold open when an earlier gap vanishes entirely at wider context",
         function()
-            -- a 2-line gap then a 10-line gap between three hunks. at context=0 both are
-            -- real folds; widening to context=2 fully absorbs the 2-line gap as lead/tail
-            -- context (walk.lua never even emits a foldable line for it, so it's absent
-            -- from col.folds), while the 10-line gap stays real. keyed by list position,
-            -- the vanished first entry would shift the second fold's index down
+            -- a 2-line gap then a 10-line gap. context=2 absorbs the 2-line gap entirely
+            -- (absent from col.folds), so the 10-line gap's fold moves up the list
             local v = View.new(
                 model(
                     "1\ng1\ng2\n2\nh1\nh2\nh3\nh4\nh5\nh6\nh7\nh8\nh9\nh10\n3\n",
