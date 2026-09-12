@@ -723,8 +723,7 @@ local function dress(win)
 end
 
 -- (re)create the native folds for a window from its fold ranges, left open by default
--- (the structure stays so zM/zc collapse the unchanged regions on demand), mirroring
--- view.lua:_apply_folds
+-- (the structure stays so zM/zc collapse the unchanged regions on demand)
 ---@param win integer
 ---@param folds differ.FoldRange[]|nil
 local function apply_folds(win, folds)

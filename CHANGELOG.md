@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `context` accepts `"full"` in config, matching `:Differ context full`, and it is now the default (`math.huge` still works)
+- A fold you open in the diff view stays open for the rest of the session, including when you come back to its file
+
+### Fixed
+
+- A finite `context` built its folds open, so nothing collapsed until `zM`, and every file switch reopened them. Diff view folds now start closed
+- `:Differ context` and `:Differ layout` reported "no diff view here" from the file panel. They now act on the diff the panel drives
+- An invalid `context` in config was accepted silently. It now warns and falls back to `"full"`
+
+## [0.1.44] — 2026-09-11
+
 ### Fixed
 
 - The diff drew its cursor line over the text even with `cursorlineopt=number`, and the panel, history and PR checks lists lost their cursor row under that setting. The diff now follows `cursorlineopt`, and the lists always highlight the row

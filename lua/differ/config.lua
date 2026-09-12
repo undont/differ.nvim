@@ -22,7 +22,7 @@
 
 ---@class differ.Config
 ---@field layout differ.Layout
----@field context number  -- math.huge = whole file, no folds
+---@field context number|"full"  -- "full" or math.huge = whole file, no folds
 ---@field wrap boolean
 ---@field diff_counter boolean
 ---@field cursorline_tint boolean
@@ -57,7 +57,7 @@ local COMMENTS = { "expanded", "peek", "markers" }
 ---@type differ.Config
 M.defaults = {
     layout = "stacked",
-    context = math.huge, -- whole file, no folds
+    context = "full", -- whole file, no folds
     wrap = true, -- soft-wrap long lines in the diff view
     diff_counter = true, -- "hunk K/N" counter in the diff window's winbar
     -- tint the diff cursor line by the line's change kind (a stronger add/delete
@@ -234,6 +234,21 @@ local function check_enum(path, value, diags)
     )
 end
 
+local function valid_context(value)
+    if value == "full" then
+        return true
+    end
+    return type(value) == "number" and value >= 0 and value == math.floor(value)
+end
+
+local function check_context(value, diags)
+    if not valid_context(value) then
+        diags[#diags + 1] = ('context must be a non-negative integer or "full" (got %s)'):format(
+            show(value)
+        )
+    end
+end
+
 -- one level down into a known table option: unknown sub-keys and their enums.
 -- every nested default is non-nil, so absence from the default is a real typo
 local function check_section(key, value, diags)
@@ -302,6 +317,8 @@ function M.validate(user)
     for key, value in pairs(user) do
         if key == "keymaps" then
             check_keymaps(value, diags)
+        elseif key == "context" then
+            check_context(value, diags)
         elseif M.defaults[key] == nil and not NILABLE[key] then
             diags[#diags + 1] = ('unknown option "%s"'):format(key)
         else
@@ -374,6 +391,16 @@ local function clamp_closed(cfg)
     end
 end
 
+-- the line count a view takes for a `context` option
+---@param context number|"full"
+---@return number
+function M.context_lines(context)
+    if type(context) == "number" then
+        return context
+    end
+    return math.huge -- "full"
+end
+
 -- merge user opts over defaults and return the resolved config. keymaps are resolved
 -- into per-surface tables separately (a plain deep-extend would index-merge the
 -- multi-lhs lists)
@@ -384,6 +411,9 @@ function M.resolve(user)
     local cfg = vim.tbl_deep_extend("force", M.defaults, user)
     cfg.keymaps = M.resolve_keymaps(user.keymaps)
     clamp_closed(cfg)
+    if not valid_context(cfg.context) then
+        cfg.context = M.defaults.context
+    end
     return cfg
 end
 

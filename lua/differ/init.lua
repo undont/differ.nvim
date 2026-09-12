@@ -70,14 +70,14 @@ end
 ---@field old_rev string|nil
 ---@field new_rev string|nil
 ---@field layout differ.Layout|nil
----@field context number|nil
+---@field context number|"full"|nil
 
 -- open a View from an already-built DiffModel. the git frontend and panel use
 -- this; `opts` overrides the layout/context defaults and carries the hunk-staging
 -- capability for worktree-status panels
 ---@class differ.DiffModelOpts
 ---@field layout? differ.Layout
----@field context? number
+---@field context? number|"full"
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
 ---@field on_edit_unstage? fun(path: string)
@@ -96,7 +96,7 @@ function M.diff_model(model, opts)
     return require("differ.view")
         .new(model, {
             layout = opts.layout or cfg.layout,
-            context = opts.context or cfg.context,
+            context = config.context_lines(opts.context or cfg.context),
             wrap = cfg.wrap,
             counter = cfg.diff_counter,
             cursorline_tint = cfg.cursorline_tint,
@@ -184,23 +184,32 @@ function M.close()
     require("differ.git").close()
 end
 
+-- the view a panel or history sidebar drives from its origin window, when that
+-- window is in the current tab
+---@param sidebar? { origin_win?: integer }
+---@return differ.View|nil
+local function driven_view(sidebar)
+    if not sidebar then
+        return nil
+    end
+    local win = sidebar.origin_win
+    if not (win and vim.api.nvim_win_is_valid(win)) then
+        return nil
+    end
+    if vim.api.nvim_win_get_tabpage(win) ~= vim.api.nvim_get_current_tabpage() then
+        return nil
+    end
+    return require("differ.view").for_buf(vim.api.nvim_win_get_buf(win))
+end
+
 -- the diff view to act on: the one under the cursor, or, when focused in the file
 -- panel, the view the panel drives (its origin window's buffer). lets the diff
 -- commands (gofile, hunk nav) work from either the diff window or the panel
 ---@return differ.View|nil
 function M.active_view()
-    local View = require("differ.view")
-    local view = View.current()
-    if view then
-        return view
-    end
-    local panel = require("differ.panel").current()
-    local history = require("differ.history").current()
-    local origin = (panel and panel.origin_win) or (history and history.origin_win)
-    if origin and vim.api.nvim_win_is_valid(origin) then
-        return View.for_buf(vim.api.nvim_win_get_buf(origin))
-    end
-    return nil
+    return require("differ.view").current()
+        or driven_view(require("differ.panel").current())
+        or driven_view(require("differ.history").current())
 end
 
 -- jump-to-file (the `de` keymap): from the diff under the cursor, close the

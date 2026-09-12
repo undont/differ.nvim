@@ -1333,6 +1333,24 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_set_current_win(p.origin_win)
         return require("differ.view").current()
     end
+    -- the first buffer row of the diff showing `text`
+    local function row_at(v, text)
+        for row, l in ipairs(vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)) do
+            if l == text then
+                return row
+            end
+        end
+    end
+    local function fold_closed_at(v, text)
+        return vim.api.nvim_win_call(v.columns[1].winid, function()
+            return vim.fn.foldclosed(row_at(v, text))
+        end)
+    end
+    local function open_fold_at(v, text)
+        vim.api.nvim_win_call(v.columns[1].winid, function()
+            vim.cmd(("normal! %dGzo"):format(row_at(v, text)))
+        end)
+    end
     -- the staged (index) content of `path`
     local function indexed(root, path)
         return git(root, "show", ":" .. path)
@@ -1782,6 +1800,35 @@ describe(":Differ diff hunk staging", function()
         local row, ccol = unpack(vim.api.nvim_win_get_cursor(col.winid))
         assert.are.equal(10, col.map.lines[row].new)
         assert.are.equal(2, ccol)
+        p:close()
+    end)
+
+    it("keeps the folds the user opened when staging follows to the staged side", function()
+        local root = fresh_repo()
+        local lines = {}
+        for i = 1, 20 do
+            lines[i] = tostring(i)
+        end
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "commit", "-q", "-am", "20 lines")
+        lines[1] = "1x"
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "add", "a.lua") -- staged: a hunk at line 1
+        lines[20] = "20x"
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n") -- unstaged: line 20
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        v:set_context(1)
+        open_fold_at(v, "10")
+
+        vim.api.nvim_set_current_win(p.origin_win)
+        vim.api.nvim_win_set_cursor(0, { row_at(v, "20x"), 0 })
+        v:stage_hunk()
+        assert.are.equal("staged", v.staging.initial)
+        assert.are.equal(-1, fold_closed_at(v, "10"))
         p:close()
     end)
 
@@ -2642,6 +2689,32 @@ describe(":Differ diff hunk staging", function()
         assert.is_truthy(v.edit_win) -- and the editable window opened
         local staged = git(root, "diff", "--cached", "--name-only") or ""
         assert.is_nil(staged:find("a.lua", 1, true)) -- a.lua is no longer staged
+        p:close()
+    end)
+
+    it("df on a staged diff keeps the folds the user opened", function()
+        local root = fresh_repo()
+        local lines = {}
+        for i = 1, 20 do
+            lines[i] = tostring(i)
+        end
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "commit", "-q", "-am", "20 lines")
+        lines[2], lines[18] = "2x", "18x"
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n")
+        git(root, "add", "a.lua")
+        vim.cmd.edit(root .. "/a.lua")
+
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        v:set_context(1)
+        assert.are_not.equal(-1, fold_closed_at(v, "10"))
+        open_fold_at(v, "10")
+
+        v:edit_file()
+        assert.are.equal("WORKTREE", v.model.new_rev)
+        assert.are.equal(-1, fold_closed_at(v, "10"))
         p:close()
     end)
 

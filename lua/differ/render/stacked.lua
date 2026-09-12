@@ -22,7 +22,6 @@ function M.render(model, opts)
     local lines = {}
     local folds = {}
     local fold_start = nil
-    local gap = 0 -- boundary index: 0 before the first hunk, hi between hunk hi and hi+1
 
     -- extend/close the running fold run as lines are pushed; foldable context
     -- lines accumulate, anything else closes the run at the previous line
@@ -30,7 +29,7 @@ function M.render(model, opts)
         if foldable then
             fold_start = fold_start or #lines
         elseif fold_start then
-            folds[#folds + 1] = { first = fold_start, last = #lines - 1, gap = gap }
+            folds[#folds + 1] = { first = fold_start, last = #lines - 1 }
             fold_start = nil
         end
     end
@@ -95,11 +94,10 @@ function M.render(model, opts)
                 })
                 mark(false)
             end
-            gap = hi -- entering the gap between this hunk and the next
         end,
     })
     if fold_start then
-        folds[#folds + 1] = { first = fold_start, last = #lines, gap = gap }
+        folds[#folds + 1] = { first = fold_start, last = #lines }
     end
 
     return {

@@ -354,11 +354,24 @@ describe("view context controls", function()
         return nth_real_fold(view, 1)
     end
 
+    -- foldclosed() of buffer row `row` in column `ci`, the first by default
+    local function foldclosed(v, row, ci)
+        return vim.api.nvim_win_call(v.columns[ci or 1].winid, function()
+            return vim.fn.foldclosed(row)
+        end)
+    end
+
+    local function open_fold(v, row)
+        vim.api.nvim_win_call(v.columns[1].winid, function()
+            vim.cmd(("normal! %dGzo"):format(row))
+        end)
+    end
+
     -- two hunks with a 5-line gap between them
-    local function gap_view()
+    local function gap_view(context)
         return View.new(model("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nX\n3\n4\n5\n6\n7\nY\n9\n"), {
             layout = "stacked",
-            context = math.huge,
+            context = context or math.huge,
             deep_diff = { enabled = true },
         })
     end
@@ -374,65 +387,321 @@ describe("view context controls", function()
         v:close()
     end)
 
-    it("creates the collapsed region as an open native fold the user can close", function()
-        local v = View.new(model("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nX\n3\n4\n5\n6\n7\nY\n9\n"), {
-            layout = "stacked",
-            context = 1,
-            deep_diff = { enabled = true },
-        })
+    it("creates the collapsed region as a closed native fold the user can open", function()
+        local v = gap_view(1)
         v:open()
-        local win = v.columns[1].winid
-        assert.are.equal("manual", vim.wo[win].foldmethod)
-        -- buffer rows 5..7 are the foldable middle: a real fold (level >= 1) but open
-        -- by default, so za/zo/zc/zm act on it and zc collapses it to its start row
-        local fold = vim.api.nvim_win_call(win, function()
-            local c = vim.fn.foldclosed(5)
-            local l = vim.fn.foldlevel(5)
-            vim.cmd("normal! 5Gzc")
-            return { open = c, level = l, after_close = vim.fn.foldclosed(5) }
-        end)
-        assert.are.equal(-1, fold.open) -- open by default
-        assert.is_true(fold.level >= 1) -- but a real fold lives there
-        assert.are.equal(5, fold.after_close) -- and zc collapses it
+        assert.are.equal("manual", vim.wo[v.columns[1].winid].foldmethod)
+        -- buffer rows 5..7 are the foldable middle, collapsed to its start row
+        assert.are.equal(5, foldclosed(v, 5))
+        open_fold(v, 5)
+        assert.are.equal(-1, foldclosed(v, 5))
         v:close()
     end)
 
-    it("keeps a manually-closed fold closed across a context change", function()
+    it("builds no native folds at whole-file context", function()
+        local v = gap_view()
+        v:open()
+        local level = vim.api.nvim_win_call(v.columns[1].winid, function()
+            return vim.fn.foldlevel(5)
+        end)
+        assert.are.equal(0, level)
+        v:close()
+    end)
+
+    it("keeps an opened fold open across a context change", function()
         local v = gap_view()
         v:open()
         v:set_context(1) -- folds the 5-line gap
-        local win = v.columns[1].winid
-        local fold_row = real_fold(v).first
-        vim.api.nvim_win_call(win, function()
-            vim.cmd(("normal! %dGzc"):format(fold_row))
-        end)
-        assert.are.equal(
-            fold_row,
-            vim.api.nvim_win_call(win, function()
-                return vim.fn.foldclosed(fold_row)
-            end)
-        )
+        open_fold(v, real_fold(v).first)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
         v:set_context(0) -- narrows further: same gap, wider fold, range shifts
-        local new_fold_row = real_fold(v).first
-        assert.are.equal(
-            new_fold_row,
-            vim.api.nvim_win_call(win, function()
-                return vim.fn.foldclosed(new_fold_row) -- still closed, not reset open
-            end)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    -- the gap_view file at context 1, with its one fold opened
+    local function opened_fold_view()
+        local v = gap_view(1)
+        v:open()
+        open_fold(v, 5)
+        return v
+    end
+
+    local function other_file()
+        return diff.build({
+            path = "y",
+            old_rev = "A",
+            new_rev = "B",
+            old_text = "a\nb\nc\nd\ne\nf\ng\nh\ni\n",
+            new_text = "a\nB\nc\nd\ne\nf\ng\nH\ni\n",
+        })
+    end
+
+    it("opens a file it hasn't shown yet with every fold closed", function()
+        local v = opened_fold_view()
+        v:set_source(other_file())
+        local fold_row = real_fold(v).first
+        assert.are.equal(fold_row, foldclosed(v, fold_row))
+        v:close()
+    end)
+
+    it("reopens a file's opened folds on coming back to it", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    it("keeps a fold closed on coming back once it was closed again", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x)
+        vim.api.nvim_win_call(v.columns[1].winid, function()
+            vim.cmd("normal! 5Gzc")
+        end)
+        v:set_source(other_file())
+        v:set_source(x)
+        assert.are.equal(5, foldclosed(v, 5))
+        v:close()
+    end)
+
+    it("remembers each diff of a file apart", function()
+        local v = opened_fold_view()
+        local ab = v.model
+        local bc = diff.build({
+            path = "x",
+            old_rev = "B",
+            new_rev = "C",
+            old_text = ab.new_text,
+            new_text = "1\nX\n3\n4\n5\n6\n7\nY2\n9\n",
+        })
+        v:set_source(bc)
+        assert.are.equal(real_fold(v).first, foldclosed(v, real_fold(v).first))
+        v:set_source(ab)
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:set_source(bc)
+        assert.are.equal(real_fold(v).first, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    it("keeps an opened fold open across a layout toggle", function()
+        local v = opened_fold_view()
+        v:toggle_layout() -- -> split
+        for ci in ipairs(v.columns) do
+            assert.are.equal(-1, foldclosed(v, real_fold(v).first, ci))
+        end
+        v:toggle_layout() -- -> stacked
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    it("keeps an opened fold open when the same file is re-sourced", function()
+        local v = opened_fold_view()
+        v:set_source(model("1\n2\n3\n4\n5\n6\n7\n8\n9\n", "1\nX\n3\n4\n5\n6\n7\nZ\n9\n"))
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    -- hunks X, Y, Z with a 5-line gap before each of Y and Z, at context 1
+    local function three_hunk_view()
+        return View.new(
+            model(
+                "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n",
+                "1\nX\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"
+            ),
+            {
+                layout = "stacked",
+                context = 1,
+                deep_diff = { enabled = true },
+                can_stage = true,
+                staging = {
+                    revert = function()
+                        return true
+                    end,
+                    refresh = function() end,
+                },
+            }
+        ):open()
+    end
+
+    local function row_of(v, text)
+        for i, l in ipairs(vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)) do
+            if l == text then
+                return i
+            end
+        end
+    end
+
+    local function foldclosed_at(v, text)
+        return foldclosed(v, row_of(v, text))
+    end
+
+    local function revert_at(v, text)
+        local confirm = vim.fn.confirm
+        vim.fn.confirm = function()
+            return 1
+        end
+        finally(function()
+            vim.fn.confirm = confirm
+        end)
+        vim.api.nvim_set_current_win(v.columns[1].winid)
+        vim.api.nvim_win_set_cursor(0, { row_of(v, text), 0 })
+        v:revert_hunk()
+    end
+
+    it("keeps an opened fold open when a hunk above it is reverted", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        revert_at(v, "X") -- the Y..Z gap renumbers from 2 to 1
+        assert.are.equal(2, #v.model.hunks)
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        assert.are.equal(row_of(v, "1"), foldclosed_at(v, "4")) -- the leading run, now folded
+        v:close()
+    end)
+
+    it("keeps an opened fold open when a hunk below it is reverted", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "5"))
+        revert_at(v, "Z")
+        assert.are.equal(2, #v.model.hunks)
+        assert.are.equal(-1, foldclosed_at(v, "5"))
+        assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11")) -- the joined trailing run
+        v:close()
+    end)
+
+    it("keeps the folds on screen when told to, even onto another diff", function()
+        -- staging the last unstaged hunk: the index takes the worktree text and the
+        -- view moves to HEAD..INDEX, holding the cursor
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(
+            diff.build({
+                path = "x",
+                old_rev = "HEAD",
+                new_rev = "INDEX",
+                old_text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n16\n",
+                new_text = v.model.new_text,
+            }),
+            nil,
+            { focus_line = 11, keep_folds = true }
         )
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    it("brings back a diff's own folds when only the cursor is held", function()
+        local v = opened_fold_view()
+        local x = v.model
+        v:set_source(other_file())
+        v:set_source(x, nil, { focus_line = 6 })
+        assert.are.equal(-1, foldclosed(v, real_fold(v).first))
+        v:close()
+    end)
+
+    it("closes an opened fold when another diff of the same file is sourced", function()
+        -- the next commit in a file's history, and the file's other staging pair
+        for _, revs in ipairs({ { "B", "C" }, { "B", "WORKTREE" } }) do
+            local v = three_hunk_view()
+            open_fold(v, row_of(v, "11"))
+            v:set_source(diff.build({
+                path = "x",
+                old_rev = revs[1],
+                new_rev = revs[2],
+                old_text = v.model.new_text,
+                new_text = "1\nX2\n3\n4\n5\n6\n7\nY2\n9\n10\n11\n12\n13\nZ2\n15\n",
+            }))
+            assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11"))
+            v:close()
+        end
+    end)
+
+    it("keeps an opened stretch open when a re-read drops a hunk above it", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(model(v.model.old_text, "1\n2\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"))
+        assert.are.equal(2, #v.model.hunks)
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        assert.are.equal(row_of(v, "1"), foldclosed_at(v, "4")) -- the new leading run
+        v:close()
+    end)
+
+    it("keeps an opened stretch open when only the old side changes", function()
+        -- a stage from outside differ: the index takes X, the worktree is untouched
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(model("1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n", v.model.new_text))
+        assert.are.equal(-1, foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    it("closes every fold when a re-read changes both sides", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        v:set_source(
+            model(
+                "1\nX\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12\n13\n14\n15\n",
+                "1\nX\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n16\n"
+            )
+        )
+        assert.are.equal(row_of(v, "10"), foldclosed_at(v, "11"))
+        v:close()
+    end)
+
+    -- 30 lines named l1..l30, with `edits` swapped in by line number
+    local function numbered(edits)
+        local out = {}
+        for i = 1, 30 do
+            out[i] = edits[i] or ("l" .. i)
+        end
+        return table.concat(out, "\n") .. "\n"
+    end
+
+    local function numbered_view(edits)
+        return View.new(model(numbered({}), numbered(edits)), {
+            layout = "stacked",
+            context = 1,
+            deep_diff = { enabled = true },
+        }):open()
+    end
+
+    it("keeps the opened stretch open when a re-read moves the hunks around it", function()
+        local v = numbered_view({ [2] = "X", [8] = "Y", [14] = "Z" })
+        open_fold(v, row_of(v, "l11"))
+        -- X undone and W added: still three hunks, but l9..l13 now comes first
+        v:set_source(model(numbered({}), numbered({ [8] = "Y", [14] = "Z", [24] = "W" })))
+        assert.are.equal(-1, foldclosed_at(v, "l11"))
+        assert.are.equal(row_of(v, "l16"), foldclosed_at(v, "l19"))
+        v:close()
+    end)
+
+    it("keeps both halves open when a re-read splits an opened stretch", function()
+        local v = numbered_view({ [2] = "X", [20] = "Y" })
+        open_fold(v, row_of(v, "l11"))
+        v:set_source(model(numbered({}), numbered({ [2] = "X", [11] = "M", [20] = "Y" })))
+        assert.are.equal(-1, foldclosed_at(v, "l6"))
+        assert.are.equal(-1, foldclosed_at(v, "l15"))
+        assert.are.equal(row_of(v, "l22"), foldclosed_at(v, "l25")) -- never opened
+        v:close()
+    end)
+
+    it("reopens a file's folds after it was edited while away", function()
+        local v = three_hunk_view()
+        open_fold(v, row_of(v, "11"))
+        local old_text = v.model.old_text
+        v:set_source(other_file())
+        v:set_source(model(old_text, "1\n2\n3\n4\n5\n6\n7\nY\n9\n10\n11\n12\n13\nZ\n15\n"))
+        assert.are.equal(-1, foldclosed_at(v, "11"))
         v:close()
     end)
 
     it(
-        "keeps the right fold closed when an earlier gap vanishes entirely at wider context",
+        "keeps the right fold open when an earlier gap vanishes entirely at wider context",
         function()
-            -- a 2-line gap then a 10-line gap between three hunks. at context=0 both are
-            -- real folds; widening to context=2 fully absorbs the 2-line gap as lead/tail
-            -- context (walk.lua never even emits a foldable line for it, so it's not just
-            -- non-real, it's absent from col.folds), while the 10-line gap stays real.
-            -- _apply_folds/set_context restore closed state by *position among real
-            -- folds*, so the vanished first entry shifts the second fold's index down
-            -- and its closed state is lost
+            -- a 2-line gap then a 10-line gap. context=2 absorbs the 2-line gap entirely
+            -- (absent from col.folds), so the 10-line gap's fold moves up the list
             local v = View.new(
                 model(
                     "1\ng1\ng2\n2\nh1\nh2\nh3\nh4\nh5\nh6\nh7\nh8\nh9\nh10\n3\n",
@@ -443,44 +712,23 @@ describe("view context controls", function()
             v:open()
             assert.are.equal(2, fold_count(v)) -- both gaps are real folds at context=0
 
-            local win = v.columns[1].winid
-            local big_gap_fold = nth_real_fold(v, 2)
-            vim.api.nvim_win_call(win, function()
-                vim.cmd(("normal! %dGzc"):format(big_gap_fold.first))
-            end)
-            assert.are.equal(
-                big_gap_fold.first,
-                vim.api.nvim_win_call(win, function()
-                    return vim.fn.foldclosed(big_gap_fold.first)
-                end)
-            )
+            open_fold(v, nth_real_fold(v, 2).first)
+            assert.are.equal(-1, foldclosed(v, nth_real_fold(v, 2).first))
 
             v:set_context(2) -- the 2-line gap is fully absorbed as context and disappears
             assert.are.equal(1, fold_count(v)) -- only the big gap's fold remains
-            local shifted_fold = nth_real_fold(v, 1)
-            assert.are.equal(
-                shifted_fold.first,
-                vim.api.nvim_win_call(win, function()
-                    return vim.fn.foldclosed(shifted_fold.first) -- still closed, not reset open
-                end)
-            )
+            assert.are.equal(-1, foldclosed(v, real_fold(v).first))
             v:close()
         end
     )
 
-    it("still opens an untouched fold after a context change", function()
+    it("keeps an untouched fold closed after a context change", function()
         local v = gap_view()
         v:open()
         v:set_context(1)
-        v:set_context(0) -- shifts the fold's range; it was never closed
-        local win = v.columns[1].winid
+        v:set_context(0) -- shifts the fold's range; it was never opened
         local fold_row = real_fold(v).first
-        assert.are.equal(
-            -1,
-            vim.api.nvim_win_call(win, function()
-                return vim.fn.foldclosed(fold_row)
-            end)
-        )
+        assert.are.equal(fold_row, foldclosed(v, fold_row))
         v:close()
     end)
 

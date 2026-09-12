@@ -28,7 +28,6 @@ function M.render(model, opts)
     local old_lines, new_lines = {}, {}
     local folds = {}
     local fold_start = nil
-    local gap = 0 -- boundary index: 0 before the first hunk, hi between hunk hi and hi+1
 
     -- push one aligned row, keeping both columns the same length
     ---@param ltext string|nil
@@ -47,7 +46,7 @@ function M.render(model, opts)
         if foldable then
             fold_start = fold_start or #old_lines
         elseif fold_start then
-            folds[#folds + 1] = { first = fold_start, last = #old_lines - 1, gap = gap }
+            folds[#folds + 1] = { first = fold_start, last = #old_lines - 1 }
             fold_start = nil
         end
     end
@@ -152,11 +151,10 @@ function M.render(model, opts)
                 inss[#inss + 1] = k
             end
             flush(dels, inss)
-            gap = hi -- entering the gap between this hunk and the next
         end,
     })
     if fold_start then
-        folds[#folds + 1] = { first = fold_start, last = #old_lines, gap = gap }
+        folds[#folds + 1] = { first = fold_start, last = #old_lines }
     end
 
     return result()

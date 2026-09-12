@@ -104,6 +104,7 @@ local armed_view = nil
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
 ---@field staged_hunks table<integer, boolean>  -- hunk index -> staged, for marking
+---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field on_edit_unstage fun(path: string)|nil  -- frontend hook: unstage + re-source for edit-in-review
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
@@ -167,6 +168,7 @@ function View.new(model, opts)
         on_cursor = opts.on_cursor,
         on_repurpose = opts.on_repurpose,
         staged_hunks = {},
+        fold_memory = {},
         id = next_id(),
         _suppress_close = false,
         _closing = false,
@@ -459,24 +461,53 @@ function View:_stage_offset(idx)
     return off
 end
 
--- (re)create the native folds for each column's window from its fold ranges, left
--- open by default (the structure stays so zc/za collapse them on demand), unless
--- `closed` says otherwise. `closed[i]` (per column, keyed by the fold's `gap`
--- boundary index, not position in the list) re-closes the fold the user had
--- manually closed before a context change shifted the ranges; omit it to open
--- everything (a file switch or the initial open, where the previous fold state
--- doesn't carry over). matching by `gap` rather than list position survives a
--- neighbouring gap disappearing from the list entirely at the new context (not
--- just becoming a non-real single-line range): a gap's boundary index is fixed
--- by which hunks flank it, regardless of whether *that* gap folds at either
--- context. reapplied only where the ranges or windows change: a context change
--- (d= / d-), a file switch, a layout toggle, and open; never on scroll or redraw.
--- with context = full the renderer returns no ranges.
----@param closed? table<integer, boolean>[]  -- per-column, keyed by fold.gap: "was this one closed"
-function View:_apply_folds(closed)
-    for ci, col in ipairs(self.columns) do
+-- open folds by the rail lines at their ends, with the texts those line numbers refer to
+---@class differ.view.OpenedFolds
+---@field old_text? string
+---@field new_text? string
+---@field runs { first: differ.RailLine, last: differ.RailLine }[]
+
+---@type differ.view.OpenedFolds
+local NONE_OPENED = { runs = {} }
+
+-- the side whose line numbers mean the same lines in `opened` and `model`: one whose
+-- text is unchanged. nil when both changed
+---@param opened differ.view.OpenedFolds
+---@param model differ.DiffModel
+---@return "old"|"new"|nil
+local function anchor_side(opened, model)
+    if opened.old_text == model.old_text then
+        return "old"
+    end
+    if opened.new_text == model.new_text then
+        return "new"
+    end
+    return nil
+end
+
+-- whether fold `f` of column `col` shares a line with an opened run, on `side`
+---@param opened differ.view.OpenedFolds
+---@param side "old"|"new"
+---@param col differ.ViewColumn
+---@param f differ.FoldRange
+---@return boolean
+local function was_opened(opened, side, col, f)
+    local first, last = col.map.lines[f.first][side], col.map.lines[f.last][side]
+    for _, run in ipairs(opened.runs) do
+        if first <= run.last[side] and run.first[side] <= last then
+            return true
+        end
+    end
+    return false
+end
+
+-- (re)create each column's native folds, closed unless they share a line with an
+-- opened run
+---@param opened differ.view.OpenedFolds
+function View:_apply_folds(opened)
+    local side = anchor_side(opened, self.model)
+    for _, col in ipairs(self.columns) do
         local win = col.winid
-        local was_closed = closed and closed[ci]
         if win and vim.api.nvim_win_is_valid(win) then
             set_wo(win, "foldmethod", "manual")
             set_wo(win, "foldtext", FOLDTEXT_EXPR)
@@ -486,7 +517,7 @@ function View:_apply_folds(closed)
                 for _, f in ipairs(col.folds or {}) do
                     if f.last > f.first then
                         vim.cmd(("silent! %d,%dfold"):format(f.first, f.last)) -- :fold starts closed
-                        if not (was_closed and f.gap ~= nil and was_closed[f.gap]) then
+                        if side and was_opened(opened, side, col, f) then
                             vim.cmd(("silent! %dfoldopen"):format(f.first))
                         end
                     end
@@ -494,6 +525,26 @@ function View:_apply_folds(closed)
             end)
         end
     end
+end
+
+-- the open folds of every column, against the current model's texts
+---@return differ.view.OpenedFolds
+function View:_opened_folds()
+    local opened = { old_text = self.model.old_text, new_text = self.model.new_text, runs = {} }
+    for _, col in ipairs(self.columns) do
+        local win = col.winid
+        if win and vim.api.nvim_win_is_valid(win) then
+            vim.api.nvim_win_call(win, function()
+                for _, f in ipairs(col.folds or {}) do
+                    if f.last > f.first and vim.fn.foldclosed(f.first) == -1 then
+                        opened.runs[#opened.runs + 1] =
+                            { first = col.map.lines[f.first], last = col.map.lines[f.last] }
+                    end
+                end
+            end)
+        end
+    end
+    return opened
 end
 
 -- the view owning the current buffer, if any. commands dispatch through this
@@ -518,27 +569,56 @@ function View:is_open()
     return col ~= nil and col.winid ~= nil and vim.api.nvim_win_is_valid(col.winid)
 end
 
+-- one key per diff: the file and the revs it is diffed between
+---@param model differ.DiffModel
+---@return string
+local function diff_key(model)
+    return table.concat({ model.path, model.old_rev, model.new_rev }, "\0")
+end
+
+-- store the open folds of the diff on screen, dropping its entry when none are open
+---@param opened differ.view.OpenedFolds
+function View:_remember_folds(opened)
+    local key = diff_key(self.model)
+    if #opened.runs == 0 then
+        self.fold_memory[key] = nil
+    else
+        self.fold_memory[key] = opened
+    end
+end
+
+---@class differ.view.SourceOpts
+---@field focus_line? integer
+---@field focus_col? integer
+---@field keep_folds? boolean
+
 -- swap the diffed file in place: same windows/layout/context, new model. the
 -- panel calls this when a different file is selected so the View is re-sourced,
 -- not recreated (separation of concerns). column count is layout-determined,
 -- so it never changes here, no relayout. `staging` rides along because the stage
 -- direction is per-file (a staged entry unstages, an unstaged one stages).
--- `opts.focus_line` is a new-side file line to snap to (a re-source of the same
--- file underneath the user); without it the cursor lands on the first unstaged hunk
+-- `opts.focus_line` holds the cursor on a new-side line, else it lands on the first
+-- unstaged hunk; `opts.keep_folds` keeps the folds on screen over the diff's memory
 ---@param model differ.DiffModel
 ---@param staging differ.view.Staging|nil
----@param opts? { focus_line?: integer, focus_col?: integer }
+---@param opts? differ.view.SourceOpts
 function View:set_source(model, staging, opts)
     -- a switch to a different file leaves any edit window stale; drop it. a same-file
     -- re-source (the watcher after a `:w`) keeps it so editing continues uninterrupted
     if self.edit_win and self.model.path ~= model.path then
         self:_release_edit_window()
     end
+    local on_screen = self:_opened_folds()
+    self:_remember_folds(on_screen)
     self.model = model
     self.staging = staging
     self:_init_staged() -- a new file: reseed staged state from the fresh git read
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds() -- new file's ranges; windows unchanged so refold in place
+    if opts and opts.keep_folds then
+        self:_apply_folds(on_screen)
+    else
+        self:_apply_folds(self.fold_memory[diff_key(model)] or NONE_OPENED)
+    end
     if opts and opts.focus_line then
         -- hold the precise position across a refresh
         self:focus_new_line(opts.focus_line, true, opts.focus_col)
@@ -554,8 +634,9 @@ function View:set_layout(layout)
     if layout == self.layout then
         return
     end
+    local opened = self:_opened_folds() -- before rerender replaces the columns
     self:rerender({ layout = layout, context = self.context, deep_diff = self.deep_diff })
-    self:_relayout()
+    self:_relayout(opened)
 end
 
 -- flip stacked <-> split
@@ -567,27 +648,9 @@ end
 -- count, so no relayout, content/map/gutter/highlights refresh in place
 ---@param n number
 function View:set_context(n)
-    -- snapshot which folds are closed before rerender replaces col.folds with the
-    -- ranges at the new context, so a manually-closed fold (zc/zm) survives the
-    -- boundary shift instead of reopening under the user. keyed by fold.gap, not
-    -- list position, so a neighbouring gap vanishing at the new context can't
-    -- shift a later fold's key out from under it (see _apply_folds)
-    local closed = {}
-    for ci, col in ipairs(self.columns) do
-        closed[ci] = {}
-        local win = col.winid
-        if win and vim.api.nvim_win_is_valid(win) then
-            vim.api.nvim_win_call(win, function()
-                for _, f in ipairs(col.folds or {}) do
-                    if f.last > f.first and f.gap ~= nil then
-                        closed[ci][f.gap] = vim.fn.foldclosed(f.first) ~= -1
-                    end
-                end
-            end)
-        end
-    end
+    local opened = self:_opened_folds() -- before rerender replaces col.folds
     self:rerender({ layout = self.layout, context = n, deep_diff = self.deep_diff })
-    self:_apply_folds(closed) -- ranges shifted with the context; windows unchanged
+    self:_apply_folds(opened) -- ranges shifted with the context; windows unchanged
 end
 
 -- widen/narrow context by `delta`. narrowing from whole-file seeds FULL_STEP_DOWN
@@ -1423,10 +1486,11 @@ function View:revert_hunk()
         return
     end
 
+    local opened = self:_opened_folds() -- before rerender replaces col.folds
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
     self:_rekey_staged(idx, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
-    self:_apply_folds()
+    self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one
     if focus then
         self:_hold_new_line(reverted_focus(hunk, focus))
@@ -1830,7 +1894,8 @@ end
 -- lay the columns into windows. the first column anchors on its existing window
 -- (or the current one on first open); extra columns reuse their window or vsplit
 -- a fresh one; >1 column scroll-binds. single authority for open + layout toggle
-function View:_relayout()
+---@param opened differ.view.OpenedFolds
+function View:_relayout(opened)
     local anchor = self.columns[1].winid
     if not (anchor and vim.api.nvim_win_is_valid(anchor)) then
         anchor = vim.api.nvim_get_current_win()
@@ -1855,7 +1920,7 @@ function View:_relayout()
         vim.api.nvim_set_current_win(self.columns[1].winid)
         vim.cmd("syncbind")
     end
-    self:_apply_folds() -- windows now exist; build the folds over unchanged regions
+    self:_apply_folds(opened) -- windows now exist; build the folds over unchanged regions
     self:_paint_cursorline() -- windows now exist; show the cursor line over the bg
     self:_arm_close_guard() -- re-arm now the winids are current
 end
@@ -1863,7 +1928,7 @@ end
 -- open the view: stacked takes the current window, split adds a scroll-bound pane
 ---@return differ.View
 function View:open()
-    self:_relayout()
+    self:_relayout(NONE_OPENED)
     self:_focus_first_hunk() -- land on the first hunk; the tinted cursor line shows its kind
     self:_paint_cursorline()
     return self
