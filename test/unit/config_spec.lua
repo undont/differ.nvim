@@ -99,6 +99,27 @@ describe("config.validate", function()
         }, config.validate({ comments = { display = "inline" } }))
     end)
 
+    it("accepts a whole-number or whole-file context", function()
+        for _, context in ipairs({ 0, 3, "full", math.huge }) do
+            assert.are.same({}, config.validate({ context = context }))
+        end
+    end)
+
+    it("flags a context that isn't a non-negative integer or full", function()
+        assert.are.same(
+            { 'context must be a non-negative integer or "full" (got -1)' },
+            config.validate({ context = -1 })
+        )
+        assert.are.same(
+            { 'context must be a non-negative integer or "full" (got "10")' },
+            config.validate({ context = "10" })
+        )
+        assert.are.same(
+            { 'context must be a non-negative integer or "full" (got 1.5)' },
+            config.validate({ context = 1.5 })
+        )
+    end)
+
     it("flags a misspelled keymap action, top-level and per-surface", function()
         assert.are.same(
             { 'unknown keymap action "keymaps.next_hunkk"' },
@@ -149,6 +170,14 @@ describe("config.validate", function()
             { "setup() expects a table of options (got string)" },
             config.validate("stacked")
         )
+    end)
+end)
+
+describe("config.context_lines", function()
+    it("reads full as the whole file and passes a count through", function()
+        assert.are.equal(math.huge, config.context_lines("full"))
+        assert.are.equal(math.huge, config.context_lines(math.huge))
+        assert.are.equal(0, config.context_lines(0))
     end)
 end)
 

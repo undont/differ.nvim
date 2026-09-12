@@ -96,7 +96,7 @@ function M.diff_model(model, opts)
     return require("differ.view")
         .new(model, {
             layout = opts.layout or cfg.layout,
-            context = opts.context or cfg.context,
+            context = opts.context or config.context_lines(cfg.context),
             wrap = cfg.wrap,
             counter = cfg.diff_counter,
             cursorline_tint = cfg.cursorline_tint,
