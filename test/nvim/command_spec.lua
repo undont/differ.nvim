@@ -236,6 +236,39 @@ describe("command panel", function()
     end)
 end)
 
+describe("command view controls from the panel", function()
+    local function view_under_panel()
+        vim.cmd("silent! only")
+        local model = require("differ.model.diff").build({
+            path = "a.lua",
+            old_rev = "A",
+            new_rev = "B",
+            old_text = "1\n2\n3\n4\n5\n6\n7\n8\n9\n",
+            new_text = "1\nX\n3\n4\n5\n6\n7\nY\n9\n",
+        })
+        local v = require("differ.view")
+            .new(model, { layout = "stacked", context = math.huge, deep_diff = { enabled = true } })
+            :open()
+        return v, open_panel()
+    end
+
+    it(":Differ context acts on the view the panel drives", function()
+        local v, p = view_under_panel()
+        command.context("0")
+        assert.are.equal(0, v.context)
+        p:close()
+        v:close()
+    end)
+
+    it(":Differ layout acts on the view the panel drives", function()
+        local v, p = view_under_panel()
+        command.layout("split")
+        assert.are.equal("split", v.layout)
+        p:close()
+        v:close()
+    end)
+end)
+
 describe("command panel position", function()
     it("repositions the live panel", function()
         local p = open_panel()

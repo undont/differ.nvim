@@ -1,8 +1,6 @@
 -- :Differ subcommand router. phase 1 wires the runtime view controls;
 -- diff/pr/log/mergetool subcommands arrive with their frontends (phases 2+)
 
-local View = require("differ.view")
-
 local M = {}
 
 ---@param msg string
@@ -14,7 +12,7 @@ end
 -- :Differ layout [stacked|split], no arg flips the current view's layout
 ---@param arg string|nil
 function M.layout(arg)
-    local view = View.current()
+    local view = require("differ").active_view()
     if not view then
         return notify("no diff view here", vim.log.levels.WARN)
     end
@@ -30,7 +28,7 @@ end
 -- :Differ context <n|full|+|->, sets/adjusts the per-view context lines
 ---@param arg string|nil
 function M.context(arg)
-    local view = View.current()
+    local view = require("differ").active_view()
     if not view then
         return notify("no diff view here", vim.log.levels.WARN)
     end
