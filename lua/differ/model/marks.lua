@@ -143,6 +143,23 @@ function M.spliced(union, head, index)
     return taken
 end
 
+-- marks for union hunks each held whole or not at all
+---@param union differ.Hunk[]
+---@param taken table<integer, boolean>  -- hunk index -> the index holds it
+---@return differ.model.Marks
+function M.of_hunks(union, taken)
+    local out = { old = {}, new = {} }
+    for i, h in ipairs(union) do
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            out.old[l] = taken[i]
+        end
+        for l = h.new_start, h.new_start + h.new_count - 1 do
+            out.new[l] = taken[i]
+        end
+    end
+    return out
+end
+
 -- a hunk's real lines on one side, [start, stop). a zero-count hunk has none
 ---@param h differ.Hunk
 ---@param side "old"|"new"

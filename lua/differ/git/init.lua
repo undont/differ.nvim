@@ -1516,17 +1516,25 @@ function M.panel(opts)
         ---@param cached differ.DiffModel
         ---@param unstaged differ.DiffModel
         local function remark(union, cached, unstaged)
+            local to_lines = require("differ.util.text").to_lines
+            local head = to_lines(union.old_text)
+            local taken = marks.spliced(union.hunks, head, to_lines(cached.new_text))
+            staging.hidden_in = nil
+            if taken then
+                local held = marks.of_hunks(union.hunks, taken)
+                staging.marks.old, staging.marks.new = held.old, held.new
+                staging.hidden = mode_why
+                return
+            end
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
             staging.marks.old, staging.marks.new = fresh.old, fresh.new
             local complete, why = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
-            staging.hidden_in = nil
             if mode_why then
                 staging.hidden = mode_why
             elseif complete then
                 staging.hidden = nil
             else
                 staging.hidden = why
-                local head = require("differ.util.text").to_lines(union.old_text)
                 staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
             end
         end
@@ -1552,21 +1560,71 @@ function M.panel(opts)
             return true
         end
 
+        ---@param a differ.Hunk
+        ---@param b differ.Hunk
+        ---@return boolean
+        local function same_range(a, b)
+            return a.old_start == b.old_start
+                and a.old_count == b.old_count
+                and a.new_start == b.new_start
+                and a.new_count == b.new_count
+        end
+
+        -- the index with the union hunks it holds whole, and `hunk` taken or given back.
+        -- nil unless the index is exactly HEAD with whole union hunks spliced in
+        ---@param union differ.DiffModel
+        ---@param cached differ.DiffModel
+        ---@param hunk differ.Hunk
+        ---@param take boolean
+        ---@return string|nil
+        local function respliced(union, cached, hunk, take)
+            local to_lines = require("differ.util.text").to_lines
+            local head, index = to_lines(union.old_text), to_lines(cached.new_text)
+            local taken = marks.spliced(union.hunks, head, index)
+            if not taken or splice(union, taken) ~= cached.new_text then
+                return nil
+            end
+            for i, u in ipairs(union.hunks) do
+                if same_range(u, hunk) then
+                    taken[i] = take
+                    return splice(union, taken)
+                end
+            end
+            return nil
+        end
+
+        -- the text the index takes when `hunk` is staged (`take`) or unstaged, or nil
+        -- when the op would reach another hunk. an index of whole union hunks moves by
+        -- union hunk; otherwise by the pair hunks meeting it on the side that pair shares
+        ---@param union differ.DiffModel
+        ---@param cached differ.DiffModel
+        ---@param unstaged differ.DiffModel
+        ---@param hunk differ.Hunk
+        ---@param take boolean
+        ---@return string|nil
+        local function next_index(union, cached, unstaged, hunk, take)
+            local text = respliced(union, cached, hunk, take)
+            if text then
+                return text
+            end
+            local from, side = unstaged, "new"
+            if not take then
+                from, side = cached, "old"
+            end
+            if shared(union, from, side, hunk) then
+                return nil
+            end
+            return splice(from, select_hunks(from.hunks, side, hunk, side, take))
+        end
+
         remark(M.union_models(root, entry))
         staging.apply = function(_, hunk, reverse)
             if not hunk then
                 return false
             end
             local union, cached, unstaged = M.union_models(root, entry)
-            local from, side = unstaged, "new"
-            if reverse then
-                from, side = cached, "old"
-            end
-            if shared(union, from, side, hunk) then
-                return false
-            end
-            local text = splice(from, select_hunks(from.hunks, side, hunk, side, not reverse))
-            if not put_index(entry, text) then
+            local text = next_index(union, cached, unstaged, hunk, not reverse)
+            if not text or not put_index(entry, text) then
                 return false
             end
             remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
@@ -1578,9 +1636,10 @@ function M.panel(opts)
         -- goes through a patch, not a write: the model's new side was read through the
         -- clean filter, so writing it back would push that conversion to disk
         staging.revert = function(model, idx)
-            local union, cached = M.union_models(root, entry)
+            local union, cached, unstaged = M.union_models(root, entry)
             local hunk = model.hunks[idx]
-            if shared(union, cached, "old", hunk) then
+            local text = next_index(union, cached, unstaged, hunk, false)
+            if not text then
                 return false
             end
             local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
@@ -1588,7 +1647,6 @@ function M.panel(opts)
                 notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
                 return false
             end
-            local text = splice(cached, select_hunks(cached.hunks, "old", hunk, "old", false))
             if text ~= cached.new_text and not put_index(entry, text) then
                 return false
             end

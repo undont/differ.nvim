@@ -266,6 +266,13 @@ describe("union marks", function()
             local top = { hl(0, {}, 1, { "z" }) }
             assert.are.same({ true }, marks.spliced(top, head, { "z", "a", "b", "c", "d" }))
         end)
+
+        it("marks each hunk's lines as the hunk is held", function()
+            local m = marks.of_hunks(union, { false, true })
+            assert.are.same({ "unstaged", "staged" }, states(m, union))
+            assert.are.same({ [2] = false, [4] = true }, m.old)
+            assert.are.same({ [2] = false, [4] = true, [5] = true }, m.new)
+        end)
     end)
 
     describe("shift", function()
