@@ -1575,12 +1575,12 @@ function M.panel(opts)
             if not other then
                 return false
             end
-            local what, where = "staged", "gs"
+            local msg = "this hunk's staged change also covers hunk %d: "
+                .. "u on the ! hunk in dw, or in gs, unstages it whole"
             if side == "new" then
-                what, where = "unstaged", "dw"
+                msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
             end
-            local msg = "this hunk and hunk %d share one %s change: %s takes it whole"
-            notify(msg:format(other, what, where), vim.log.levels.WARN)
+            notify(msg:format(other), vim.log.levels.WARN)
             return true
         end
 

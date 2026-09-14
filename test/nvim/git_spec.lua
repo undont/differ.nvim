@@ -2413,9 +2413,9 @@ func getDownloadSpeed() {
     end
 
     for _, case in ipairs({
-        { key = "s", op = "stage_hunk", what = "unstaged change: dw" },
-        { key = "u", op = "unstage_hunk", what = "staged change: gs" },
-        { key = "X", op = "revert_hunk", what = "staged change: gs" },
+        { key = "s", op = "stage_hunk", what = "unstaged change also covers hunk 2: s in dw" },
+        { key = "u", op = "unstage_hunk", what = "staged change also covers hunk 2: u on the !" },
+        { key = "X", op = "revert_hunk", what = "staged change also covers hunk 2: u on the !" },
     }) do
         it(("refuses %s on a hunk sharing a change with the next"):format(case.key), function()
             local root = fresh_repo()
@@ -2433,7 +2433,7 @@ func getDownloadSpeed() {
             p:close()
             assert.are.equal(2, hunks)
             assert.are.same(before, after)
-            assert.is_truthy(said:find("this hunk and hunk 2 share one " .. case.what, 1, true))
+            assert.is_truthy(said:find("this hunk's " .. case.what, 1, true))
         end)
     end
 
