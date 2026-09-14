@@ -1677,6 +1677,20 @@ function M.panel(opts)
             remark(union_pairs(root, entry.path, union.old_text, text, work))
             return true
         end
+        -- S and U: the index takes the worktree's or HEAD's text whole, staged content no
+        -- hunk shows included. the entry's mode is left as it is
+        staging.set_all = function(staged)
+            local union, cached = M.union_models(root, entry)
+            local text = union.old_text
+            if staged then
+                text = union.new_text
+            end
+            if text == cached.new_text or not put_index(entry, text) then
+                return false
+            end
+            remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
+            return true
+        end
         return staging
     end
 

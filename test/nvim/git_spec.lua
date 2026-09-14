@@ -2215,6 +2215,52 @@ func getDownloadSpeed() {
         assert.are.equal(want, written)
     end)
 
+    -- HEAD 1..7, index 1 A B C D E 7, worktree 1 A2 3 4 D2 E2 7: the index's B C sit
+    -- between the two hunks, where neither u nor s on one hunk can reach them
+    local JOINED = {
+        head = lines_of({ "1", "2", "3", "4", "5", "6", "7" }),
+        index = lines_of({ "1", "A", "B", "C", "D", "E", "7" }),
+        work = lines_of({ "1", "A2", "3", "4", "D2", "E2", "7" }),
+    }
+
+    it("U gives the index HEAD's text where hunk by hunk can't", function()
+        local root, p, v = staged_as(JOINED.head, JOINED.index, JOINED.work)
+        v:unstage_all()
+        local written, hidden = indexed(root, "a.lua"), v.staging.hidden
+        p:close()
+        assert.are.equal(JOINED.head, written)
+        assert.is_nil(hidden)
+    end)
+
+    it("S gives the index the worktree's text where hunk by hunk can't", function()
+        local root, p, v = staged_as(JOINED.head, JOINED.index, JOINED.work)
+        v:stage_all()
+        local written, hidden = indexed(root, "a.lua"), v.staging.hidden
+        p:close()
+        assert.are.equal(JOINED.work, written)
+        assert.is_nil(hidden)
+    end)
+
+    -- 5x staged and then put back to 5 on disk: no hunk shows it, U still takes it out
+    it("U drops staged content no hunk shows", function()
+        local ten = {}
+        for i = 1, 10 do
+            ten[i] = tostring(i)
+        end
+        local head = lines_of(ten)
+        ten[5] = "5x"
+        local index = lines_of(ten)
+        ten[5], ten[1] = "5", "1x"
+        local root, p, v = staged_as(head, index, lines_of(ten))
+        local hidden_before = v.staging.hidden
+        v:unstage_all()
+        local written, hidden = indexed(root, "a.lua"), v.staging.hidden
+        p:close()
+        assert.is_not_nil(hidden_before)
+        assert.are.equal(head, written)
+        assert.is_nil(hidden)
+    end)
+
     -- a change staged and then edited again within a few lines merges into one
     -- HEAD↔worktree hunk holding both. it reads as partial, and per line the marks still
     -- say which of it the index has

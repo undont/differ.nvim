@@ -89,6 +89,7 @@ local armed_view = nil
 ---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
 ---@field badge? string  -- winbar tag naming a view that isn't the whole change
 ---@field unstage_hidden? fun(idx: integer): boolean  -- u on a `!` hunk: drop the staged change it undoes
+---@field set_all? fun(staged: boolean): boolean  -- S / U on the whole file at once; whether the index moved
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1367,9 +1368,9 @@ function View:unstage_all()
     end
 end
 
--- stage / unstage every hunk; the panel refreshes once after the batch. returns
--- whether anything changed (false when already wholly in the target state), so S/U
--- can fall through to file stepping
+-- stage / unstage every hunk, through the source's whole-file op when it has one; the
+-- panel refreshes once after the batch. returns whether anything changed (false when
+-- already wholly in the target state), so S/U can fall through to file stepping
 ---@param want_staged boolean
 ---@return boolean changed
 function View:_toggle_all(want_staged)
@@ -1378,9 +1379,13 @@ function View:_toggle_all(want_staged)
         return false
     end
     local changed = false
-    for i = 1, self:_slot_count() do
-        if self:_apply_hunk(i, want_staged) then
-            changed = true
+    if self.staging.set_all then
+        changed = self.staging.set_all(want_staged)
+    else
+        for i = 1, self:_slot_count() do
+            if self:_apply_hunk(i, want_staged) then
+                changed = true
+            end
         end
     end
     if changed then
