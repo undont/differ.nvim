@@ -1960,6 +1960,199 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    local ACME_HEAD = [==[
+package main
+
+import (
+    "context"
+    "fmt"
+    "net/http"
+    "net/http/httptrace"
+    "time"
+)
+
+func main() {
+    now := time.Now()
+    fmt.Printf("starting up: %v\n", now.Format(time.UnixDate))
+
+    ctx := context.TODO()
+
+    for i := range 5 {
+        startTime := time.Now()
+        c := http.Client{}
+        trace := httptrace.ClientTrace{
+            DNSStart: func(di httptrace.DNSStartInfo) {
+                fmt.Printf("dns lookup started at %v with host: %s\n", time.Now().Format(time.UnixDate), di.Host)
+            },
+            TLSHandshakeStart: func() {
+                fmt.Printf("tls handshake started at %v\n", time.Since(startTime))
+            },
+            ConnectDone: func(network, addr string, err error) {
+                if err != nil {
+                    fmt.Printf("failed to connect: %s\n", err.Error())
+                    return
+                }
+                fmt.Printf("connected to network at address: %s\n", addr)
+            },
+        }
+        traceCtx := httptrace.WithClientTrace(ctx, &trace)
+        req, err := http.NewRequestWithContext(traceCtx, http.MethodGet, "https://acme.example/download?bytes=42", nil)
+        if err != nil {
+            panic(err)
+        }
+
+        _, err = c.Do(req)
+        if err != nil {
+            panic(err)
+        }
+        fmt.Printf("request %d took %v\n", i, time.Since(startTime))
+    }
+
+    fmt.Printf("total time lapsed: %s\n", time.Since(now).String())
+}
+]==]
+
+    local ACME_WORK = [==[
+package main
+
+import (
+    "context"
+    "fmt"
+    "io"
+    "net/http"
+    "net/http/httptrace"
+    "slices"
+    "time"
+)
+
+func main() {
+    now := time.Now()
+    times := []time.Duration{}
+    ctx := context.TODO()
+    url := "https://acme.example/download?bytes=1337"
+
+    fmt.Printf("starting up: %v\n", now.Format(time.UnixDate))
+
+    for i := range 5 {
+        reqTime := ping(ctx, url, i)
+        fmt.Printf("request %d took %v\n", i, reqTime)
+        times = append(times, reqTime)
+    }
+
+    slices.Sort(times)
+
+    fmt.Printf("total time lapsed: %s\nmedian request: %v\n", time.Since(now).String(), median(times))
+}
+
+func ping(ctx context.Context, url string, iteration int) time.Duration {
+    now := time.Now()
+    c := http.Client{}
+    trace := httptrace.ClientTrace{
+        DNSStart: func(di httptrace.DNSStartInfo) {
+            fmt.Printf("dns lookup started at %v with host: %s\n", time.Now().Format(time.UnixDate), di.Host)
+        },
+        TLSHandshakeStart: func() {
+            fmt.Printf("tls handshake started at %v\n", time.Now().Format(time.UnixDate))
+        },
+        ConnectDone: func(network, addr string, err error) {
+            if err != nil {
+                fmt.Printf("failed to connect: %s\n", err.Error())
+                return
+            }
+            fmt.Printf("connected to network at address: %s\n", addr)
+        },
+        GotFirstResponseByte: func() {
+            fmt.Printf("response %d took %s to get first response byte\n", iteration, time.Since(now).String())
+        },
+    }
+    traceCtx := httptrace.WithClientTrace(ctx, &trace)
+    req, err := http.NewRequestWithContext(traceCtx, http.MethodGet, url, nil)
+    if err != nil {
+        panic(err)
+    }
+
+    resp, err := c.Do(req)
+    if err != nil {
+        panic(err)
+    }
+
+    io.Copy(io.Discard, resp.Body)
+
+    defer resp.Body.Close()
+
+    return time.Since(now)
+}
+
+func median(input []time.Duration) time.Duration {
+    middle := len(input) / 2
+    if len(input)%2 == 1 {
+        return input[middle]
+    }
+
+    return (input[middle-1] + input[middle]) / 2
+}
+
+func getDownloadSpeed() {
+    // throughput = bytes / (t_end − t_first_byte)
+}
+]==]
+
+    -- with hunks 1-4 staged, HEAD↔index keeps `ctx` in place and moves the Printf, where
+    -- HEAD↔worktree keeps the Printf and moves `ctx`: the index still holds whole hunks
+    it("stages and unstages hunk by hunk where HEAD↔index pairs lines differently", function()
+        local root = fresh_repo()
+        write(root .. "/a.go", ACME_HEAD)
+        git(root, "add", "a.go")
+        git(root, "commit", "-q", "-m", "ping")
+        write(root .. "/a.go", ACME_WORK)
+
+        vim.cmd.edit(root .. "/a.go")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        local function press(n, op)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, n), 0 })
+            v[op](v)
+        end
+        local function states()
+            local out = {}
+            for i = 1, #v.model.hunks do
+                out[i] = v:_hunk_state(i)
+            end
+            return out
+        end
+
+        local count = #v.model.hunks
+        for n = 1, 4 do
+            press(n, "stage_hunk")
+        end
+        local staged, hidden, index = states(), v.staging.hidden_in, indexed(root, "a.go")
+        press(4, "unstage_hunk")
+        local after4 = states()
+        press(3, "unstage_hunk")
+        local after3, index3 = states(), indexed(root, "a.go")
+        press(2, "unstage_hunk")
+        press(1, "unstage_hunk")
+        local final = indexed(root, "a.go")
+        p:close()
+
+        local h, w = vim.split(ACME_HEAD, "\n"), vim.split(ACME_WORK, "\n")
+        local function joined(top, rest)
+            return table.concat(vim.list_extend(top, rest), "\n")
+        end
+        local S, U = "staged", "unstaged"
+        assert.are.equal(6, count)
+        assert.are.same({ S, S, S, S, U, U }, staged)
+        assert.is_nil(hidden)
+        assert.are.equal(joined(vim.list_slice(w, 1, 20), vim.list_slice(h, 17)), index)
+        assert.are.same({ S, S, S, U, U, U }, after4)
+        assert.are.same({ S, S, U, U, U, U }, after3)
+        assert.are.equal(joined(vim.list_slice(w, 1, 14), vim.list_slice(h, 13)), index3)
+        assert.are.equal(ACME_HEAD, final)
+    end)
+
     -- a change staged and then edited again within a few lines merges into one
     -- HEAD↔worktree hunk holding both. it reads as partial, and per line the marks still
     -- say which of it the index has
