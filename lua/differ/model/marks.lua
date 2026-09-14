@@ -80,6 +80,69 @@ function M.state(marks, h)
     return "partial"
 end
 
+---@param lines string[]
+---@param at integer
+---@param block string[]
+---@return boolean
+local function holds(lines, at, block)
+    for k, line in ipairs(block) do
+        if lines[at + k - 1] ~= line then
+            return false
+        end
+    end
+    return true
+end
+
+-- the union hunks the index takes, when it is HEAD with whole union hunks spliced in;
+-- nil when it isn't. an unchanged stretch that fits either side of a hunk is settled
+-- by the lines after it
+---@param union differ.Hunk[]  -- HEAD↔worktree
+---@param head string[]        -- HEAD's lines
+---@param index string[]       -- the index's lines
+---@return table<integer, boolean>|nil
+function M.spliced(union, head, index)
+    local taken = {}
+    local stuck = {} ---@type table<string, boolean>  -- "hunk:index line" with no way through
+    ---@param i integer   -- the next union hunk
+    ---@param from integer  -- the next HEAD line
+    ---@param at integer    -- the next index line
+    ---@return boolean
+    local function walk(i, from, at)
+        local key = i .. ":" .. at
+        if stuck[key] then
+            return false
+        end
+        local h = union[i]
+        local stop = #head + 1
+        if h then
+            stop = h.old_count > 0 and h.old_start or h.old_start + 1
+        end
+        for l = from, stop - 1 do
+            if index[at] ~= head[l] then
+                stuck[key] = true
+                return false
+            end
+            at = at + 1
+        end
+        if not h then
+            return at == #index + 1
+        end
+        for _, take in ipairs({ true, false }) do
+            local block = take and h.new_lines or h.old_lines
+            if holds(index, at, block) and walk(i + 1, stop + h.old_count, at + #block) then
+                taken[i] = take
+                return true
+            end
+        end
+        stuck[key] = true
+        return false
+    end
+    if not walk(1, 1, 1) then
+        return nil
+    end
+    return taken
+end
+
 -- a hunk's real lines on one side, [start, stop). a zero-count hunk has none
 ---@param h differ.Hunk
 ---@param side "old"|"new"

@@ -226,6 +226,48 @@ describe("union marks", function()
         end)
     end)
 
+    describe("spliced", function()
+        -- HEAD a b c d, worktree a B c D e: b and d rewritten, e added at the end
+        local head = { "a", "b", "c", "d" }
+        local union = { hl(2, { "b" }, 2, { "B" }), hl(4, { "d" }, 4, { "D", "e" }) }
+
+        it("takes no hunk when the index is HEAD", function()
+            assert.are.same({ false, false }, marks.spliced(union, head, head))
+        end)
+
+        it("takes every hunk when the index is the worktree", function()
+            local index = { "a", "B", "c", "D", "e" }
+            assert.are.same({ true, true }, marks.spliced(union, head, index))
+        end)
+
+        it("names the hunks taken", function()
+            local index = { "a", "b", "c", "D", "e" }
+            assert.are.same({ false, true }, marks.spliced(union, head, index))
+        end)
+
+        it("gives nil for part of a hunk", function()
+            assert.is_nil(marks.spliced(union, head, { "a", "b", "c", "D" }))
+        end)
+
+        it("gives nil for a line neither side has", function()
+            assert.is_nil(marks.spliced(union, head, { "a", "X", "c", "d" }))
+            assert.is_nil(marks.spliced(union, head, { "a", "b", "c", "d", "z" }))
+        end)
+
+        -- HEAD a x c, worktree a x x c: the inserted x also fits HEAD's own x
+        it("settles a hunk its unchanged lines repeat by the lines after it", function()
+            local repeat_head = { "a", "x", "c" }
+            local insert = { hl(1, {}, 2, { "x" }) }
+            assert.are.same({ false }, marks.spliced(insert, repeat_head, repeat_head))
+            assert.are.same({ true }, marks.spliced(insert, repeat_head, { "a", "x", "x", "c" }))
+        end)
+
+        it("places an insertion at the top of the file", function()
+            local top = { hl(0, {}, 1, { "z" }) }
+            assert.are.same({ true }, marks.spliced(top, head, { "z", "a", "b", "c", "d" }))
+        end)
+    end)
+
     describe("shift", function()
         -- three lines inserted at the top, and line 5 replaced by two
         local hunks = { h(0, 0, 1, 3), h(5, 1, 8, 2) }
