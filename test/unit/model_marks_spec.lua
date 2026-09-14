@@ -226,52 +226,71 @@ describe("union marks", function()
         end)
     end)
 
-    describe("spliced", function()
+    describe("blocks", function()
         -- HEAD a b c d, worktree a B c D e: b and d rewritten, e added at the end
         local head = { "a", "b", "c", "d" }
         local union = { hl(2, { "b" }, 2, { "B" }), hl(4, { "d" }, 4, { "D", "e" }) }
 
-        it("takes no hunk when the index is HEAD", function()
-            assert.are.same({ false, false }, marks.spliced(union, head, head))
+        it("reads HEAD's lines at every hunk of an index that is HEAD", function()
+            assert.are.same({ { "b" }, { "d" } }, marks.blocks(union, head, head))
         end)
 
-        it("takes every hunk when the index is the worktree", function()
-            local index = { "a", "B", "c", "D", "e" }
-            assert.are.same({ true, true }, marks.spliced(union, head, index))
+        it("reads whatever the index holds at a hunk", function()
+            local index = { "a", "B", "c", "D" }
+            assert.are.same({ { "B" }, { "D" } }, marks.blocks(union, head, index))
+            index = { "a", "b", "X", "Y", "c", "d" }
+            assert.are.same({ { "b", "X", "Y" }, { "d" } }, marks.blocks(union, head, index))
         end)
 
-        it("names the hunks taken", function()
-            local index = { "a", "b", "c", "D", "e" }
-            assert.are.same({ false, true }, marks.spliced(union, head, index))
-        end)
-
-        it("gives nil for part of a hunk", function()
-            assert.is_nil(marks.spliced(union, head, { "a", "b", "c", "D" }))
-        end)
-
-        it("gives nil for a line neither side has", function()
-            assert.is_nil(marks.spliced(union, head, { "a", "X", "c", "d" }))
-            assert.is_nil(marks.spliced(union, head, { "a", "b", "c", "d", "z" }))
+        it("gives nil when the index changes a line between hunks", function()
+            assert.is_nil(marks.blocks(union, head, { "a", "b", "C", "d" }))
         end)
 
         -- HEAD a x c, worktree a x x c: the inserted x also fits HEAD's own x
-        it("settles a hunk its unchanged lines repeat by the lines after it", function()
+        it("settles a block its unchanged lines repeat by the lines after it", function()
             local repeat_head = { "a", "x", "c" }
             local insert = { hl(1, {}, 2, { "x" }) }
-            assert.are.same({ false }, marks.spliced(insert, repeat_head, repeat_head))
-            assert.are.same({ true }, marks.spliced(insert, repeat_head, { "a", "x", "x", "c" }))
+            assert.are.same({ {} }, marks.blocks(insert, repeat_head, repeat_head))
+            local index = { "a", "x", "x", "c" }
+            assert.are.same({ { "x" } }, marks.blocks(insert, repeat_head, index))
         end)
 
-        it("places an insertion at the top of the file", function()
-            local top = { hl(0, {}, 1, { "z" }) }
-            assert.are.same({ true }, marks.spliced(top, head, { "z", "a", "b", "c", "d" }))
+        it("gives the last hunk the rest of the index", function()
+            local index = { "a", "b", "c", "D", "e", "f" }
+            assert.are.same({ { "b" }, { "D", "e", "f" } }, marks.blocks(union, head, index))
+        end)
+    end)
+
+    describe("of_blocks", function()
+        -- HEAD 1 a b 4, worktree 1 A B C 4: one hunk rewriting two lines as three
+        local union = { hl(2, { "a", "b" }, 2, { "A", "B", "C" }) }
+
+        it("reads a block of HEAD's lines as unstaged and the worktree's as staged", function()
+            local m = marks.of_blocks(union, { { "a", "b" } })
+            assert.are.same({ "unstaged" }, states(m, union))
+            m = marks.of_blocks(union, { { "A", "B", "C" } })
+            assert.are.same({ "staged" }, states(m, union))
         end)
 
-        it("marks each hunk's lines as the hunk is held", function()
-            local m = marks.of_hunks(union, { false, true })
-            assert.are.same({ "unstaged", "staged" }, states(m, union))
-            assert.are.same({ [2] = false, [4] = true }, m.old)
-            assert.are.same({ [2] = false, [4] = true, [5] = true }, m.new)
+        it("marks each line of a block that holds part of the hunk", function()
+            local m, hidden = marks.of_blocks(union, { { "a", "B" } })
+            assert.are.same({ "partial" }, states(m, union))
+            assert.are.same({ [2] = false, [3] = true }, m.old)
+            assert.are.same({ [2] = false, [3] = true, [4] = false }, m.new)
+            assert.are.same({}, hidden)
+        end)
+
+        it("names the hunk whose block holds a line neither side has", function()
+            local _, hidden = marks.of_blocks(union, { { "a", "Z" } })
+            assert.are.same({ 1 }, hidden)
+        end)
+
+        -- HEAD x a, worktree a x: a block of HEAD's lines pairs with the old side first
+        it("reads a moved line from HEAD before the worktree", function()
+            local moved = { hl(1, { "x", "a" }, 1, { "a", "x" }) }
+            local m, hidden = marks.of_blocks(moved, { { "x", "a" } })
+            assert.are.same({ "unstaged" }, states(m, moved))
+            assert.are.same({}, hidden)
         end)
     end)
 

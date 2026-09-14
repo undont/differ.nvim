@@ -2153,6 +2153,68 @@ func getDownloadSpeed() {
         assert.are.equal(ACME_HEAD, final)
     end)
 
+    -- point `path`'s index entry at `content` without touching the worktree
+    local function index_as(root, path, content)
+        local blob = root .. "/.blob"
+        write(blob, content)
+        local sha = vim.trim(git(root, "hash-object", "-w", blob))
+        os.remove(blob)
+        git(root, "update-index", "--cacheinfo", "100644," .. sha .. "," .. path)
+    end
+    -- a repo with a.lua committed as `head`, staged as `index` and on disk as `work`, and
+    -- the diff :Differ opens on it
+    local function staged_as(head, index, work)
+        local root = fresh_repo()
+        write(root .. "/a.lua", head)
+        git(root, "commit", "-q", "-am", "head")
+        index_as(root, "a.lua", index)
+        write(root .. "/a.lua", work)
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        return root, p, view_in_origin(p)
+    end
+    local function lines_of(t)
+        return table.concat(t, "\n") .. "\n"
+    end
+
+    -- hunk 3 staged without its `url` line and hunk 4 staged whole: u on 3 leaves 4 alone
+    it("unstages a partly staged hunk without reaching the whole one beside it", function()
+        local h, w = vim.split(ACME_HEAD, "\n"), vim.split(ACME_WORK, "\n")
+        local function joined(...)
+            local out = {}
+            for _, part in ipairs({ ... }) do
+                vim.list_extend(out, part)
+            end
+            return table.concat(out, "\n")
+        end
+        local index =
+            joined(vim.list_slice(w, 1, 16), vim.list_slice(w, 18, 20), vim.list_slice(h, 17))
+        local root, p, v = staged_as(ACME_HEAD, index, ACME_WORK)
+        local function states()
+            local out = {}
+            for i = 1, #v.model.hunks do
+                out[i] = v:_hunk_state(i)
+            end
+            return out
+        end
+        local before, hidden = states(), v.staging.hidden_in
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 3), 0 })
+        v:unstage_hunk()
+        local after, written = states(), indexed(root, "a.lua")
+        p:close()
+
+        local S, U, P = "staged", "unstaged", "partial"
+        assert.are.same({ S, S, P, S, U, U }, before)
+        assert.is_nil(hidden)
+        assert.are.same({ S, S, U, S, U, U }, after)
+        local want =
+            joined(vim.list_slice(w, 1, 14), vim.list_slice(h, 13, 14), vim.list_slice(h, 17))
+        assert.are.equal(want, written)
+    end)
+
     -- a change staged and then edited again within a few lines merges into one
     -- HEAD↔worktree hunk holding both. it reads as partial, and per line the marks still
     -- say which of it the index has

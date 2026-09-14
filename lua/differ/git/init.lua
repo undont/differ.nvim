@@ -1504,6 +1504,7 @@ function M.panel(opts)
     local function union_staging(entry)
         local marks = require("differ.model.marks")
         local splice = require("differ.model.apply").splice
+        local join = require("differ.model.apply").join
         local mode_why ---@type string|nil
         if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry) then
             mode_why = "the index holds a mode change"
@@ -1511,19 +1512,41 @@ function M.panel(opts)
         ---@type differ.view.Staging
         local staging = { marks = { old = {}, new = {} }, refresh = refresh_panel }
 
-        -- the view keeps staging.marks, so a re-mark writes through it
+        -- the index's lines at each union hunk; nil unless the index holds every unchanged
+        -- line between them and rejoins to exactly its own text
+        ---@param union differ.DiffModel
+        ---@param cached differ.DiffModel
+        ---@return string[][]|nil
+        local function index_blocks(union, cached)
+            local to_lines = require("differ.util.text").to_lines
+            local index = cached.new_text
+            local blocks = marks.blocks(union.hunks, to_lines(union.old_text), to_lines(index))
+            if not blocks or join(union, blocks, index) ~= index then
+                return nil
+            end
+            return blocks
+        end
+
+        -- the view keeps staging.marks, so a re-mark writes through it. marks come from
+        -- the index's own lines at each hunk, and from the two pairs only when the index
+        -- changes a line between hunks
         ---@param union differ.DiffModel
         ---@param cached differ.DiffModel
         ---@param unstaged differ.DiffModel
         local function remark(union, cached, unstaged)
-            local to_lines = require("differ.util.text").to_lines
-            local head = to_lines(union.old_text)
-            local taken = marks.spliced(union.hunks, head, to_lines(cached.new_text))
             staging.hidden_in = nil
-            if taken then
-                local held = marks.of_hunks(union.hunks, taken)
+            local blocks = index_blocks(union, cached)
+            local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
+            if blocks then
+                held, hidden_in = marks.of_blocks(union.hunks, blocks)
+            end
+            if held then
                 staging.marks.old, staging.marks.new = held.old, held.new
                 staging.hidden = mode_why
+                if not mode_why and #hidden_in > 0 then
+                    staging.hidden = "the index holds a line neither HEAD nor the worktree has"
+                    staging.hidden_in = hidden_in
+                end
                 return
             end
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
@@ -1535,6 +1558,7 @@ function M.panel(opts)
                 staging.hidden = nil
             else
                 staging.hidden = why
+                local head = require("differ.util.text").to_lines(union.old_text)
                 staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
             end
         end
@@ -1560,42 +1584,28 @@ function M.panel(opts)
             return true
         end
 
-        ---@param a differ.Hunk
-        ---@param b differ.Hunk
-        ---@return boolean
-        local function same_range(a, b)
-            return a.old_start == b.old_start
-                and a.old_count == b.old_count
-                and a.new_start == b.new_start
-                and a.new_count == b.new_count
-        end
-
-        -- the index with the union hunks it holds whole, and `hunk` taken or given back.
-        -- nil unless the index is exactly HEAD with whole union hunks spliced in
+        -- where `hunk` sits in a fresh read of the union, by its line ranges
         ---@param union differ.DiffModel
-        ---@param cached differ.DiffModel
         ---@param hunk differ.Hunk
-        ---@param take boolean
-        ---@return string|nil
-        local function respliced(union, cached, hunk, take)
-            local to_lines = require("differ.util.text").to_lines
-            local head, index = to_lines(union.old_text), to_lines(cached.new_text)
-            local taken = marks.spliced(union.hunks, head, index)
-            if not taken or splice(union, taken) ~= cached.new_text then
-                return nil
-            end
+        ---@return integer|nil
+        local function hunk_index(union, hunk)
             for i, u in ipairs(union.hunks) do
-                if same_range(u, hunk) then
-                    taken[i] = take
-                    return splice(union, taken)
+                if
+                    u.old_start == hunk.old_start
+                    and u.old_count == hunk.old_count
+                    and u.new_start == hunk.new_start
+                    and u.new_count == hunk.new_count
+                then
+                    return i
                 end
             end
             return nil
         end
 
         -- the text the index takes when `hunk` is staged (`take`) or unstaged, or nil
-        -- when the op would reach another hunk. an index of whole union hunks moves by
-        -- union hunk; otherwise by the pair hunks meeting it on the side that pair shares
+        -- when the op would reach another hunk. the index's lines at the hunk become the
+        -- hunk's new or old lines; an index that changes a line between hunks moves by
+        -- the pair hunks meeting it on the side that pair shares
         ---@param union differ.DiffModel
         ---@param cached differ.DiffModel
         ---@param unstaged differ.DiffModel
@@ -1603,9 +1613,15 @@ function M.panel(opts)
         ---@param take boolean
         ---@return string|nil
         local function next_index(union, cached, unstaged, hunk, take)
-            local text = respliced(union, cached, hunk, take)
-            if text then
-                return text
+            local blocks = index_blocks(union, cached)
+            local i = hunk_index(union, hunk)
+            if blocks and i then
+                local lines = union.hunks[i].old_lines
+                if take then
+                    lines = union.hunks[i].new_lines
+                end
+                blocks[i] = lines
+                return join(union, blocks, cached.new_text)
             end
             local from, side = unstaged, "new"
             if not take then

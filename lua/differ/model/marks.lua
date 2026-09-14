@@ -80,30 +80,45 @@ function M.state(marks, h)
     return "partial"
 end
 
----@param lines string[]
----@param at integer
----@param block string[]
----@return boolean
-local function holds(lines, at, block)
-    for k, line in ipairs(block) do
-        if lines[at + k - 1] ~= line then
-            return false
-        end
-    end
-    return true
+-- the HEAD line a union hunk's lines start at, and the first HEAD line after them
+---@param h differ.Hunk
+---@return integer first, integer after
+local function old_bounds(h)
+    local first = h.old_count > 0 and h.old_start or h.old_start + 1
+    return first, first + h.old_count
 end
 
--- the union hunks the index takes, when it is HEAD with whole union hunks spliced in;
--- nil when it isn't. an unchanged stretch that fits either side of a hunk is settled
--- by the lines after it
+-- the block lengths to try for hunk `h` with `left` index lines to go: its own two
+-- sides first, then the rest shortest first
+---@param h differ.Hunk
+---@param left integer
+---@return integer[]
+local function block_lengths(h, left)
+    local out, seen = {}, {}
+    for _, n in ipairs({ h.new_count, h.old_count }) do
+        if n <= left and not seen[n] then
+            out[#out + 1], seen[n] = n, true
+        end
+    end
+    for n = 0, left do
+        if not seen[n] then
+            out[#out + 1] = n
+        end
+    end
+    return out
+end
+
+-- the index's lines at each union hunk, when the index holds every unchanged line
+-- between them; nil when it doesn't. where unchanged lines repeat, a hunk's block
+-- ends at the first length that lets the rest of the index through
 ---@param union differ.Hunk[]  -- HEAD↔worktree
 ---@param head string[]        -- HEAD's lines
 ---@param index string[]       -- the index's lines
----@return table<integer, boolean>|nil
-function M.spliced(union, head, index)
-    local taken = {}
+---@return string[][]|nil
+function M.blocks(union, head, index)
+    local out = {}
     local stuck = {} ---@type table<string, boolean>  -- "hunk:index line" with no way through
-    ---@param i integer   -- the next union hunk
+    ---@param i integer     -- the next union hunk
     ---@param from integer  -- the next HEAD line
     ---@param at integer    -- the next index line
     ---@return boolean
@@ -113,11 +128,11 @@ function M.spliced(union, head, index)
             return false
         end
         local h = union[i]
-        local stop = #head + 1
+        local first, after = #head + 1, #head + 1
         if h then
-            stop = h.old_count > 0 and h.old_start or h.old_start + 1
+            first, after = old_bounds(h)
         end
-        for l = from, stop - 1 do
+        for l = from, first - 1 do
             if index[at] ~= head[l] then
                 stuck[key] = true
                 return false
@@ -127,10 +142,15 @@ function M.spliced(union, head, index)
         if not h then
             return at == #index + 1
         end
-        for _, take in ipairs({ true, false }) do
-            local block = take and h.new_lines or h.old_lines
-            if holds(index, at, block) and walk(i + 1, stop + h.old_count, at + #block) then
-                taken[i] = take
+        for _, n in ipairs(block_lengths(h, #index - at + 1)) do
+            -- the unchanged line after the block, when there is one, has to come next
+            local fits = after > #head or index[at + n] == head[after]
+            if fits and walk(i + 1, after, at + n) then
+                local block = {}
+                for l = at, at + n - 1 do
+                    block[#block + 1] = index[l]
+                end
+                out[i] = block
                 return true
             end
         end
@@ -140,24 +160,105 @@ function M.spliced(union, head, index)
     if not walk(1, 1, 1) then
         return nil
     end
-    return taken
+    return out
 end
 
--- marks for union hunks each held whole or not at all
----@param union differ.Hunk[]
----@param taken table<integer, boolean>  -- hunk index -> the index holds it
----@return differ.model.Marks
-function M.of_hunks(union, taken)
-    local out = { old = {}, new = {} }
-    for i, h in ipairs(union) do
-        for l = h.old_start, h.old_start + h.old_count - 1 do
-            out.old[l] = taken[i]
-        end
-        for l = h.new_start, h.new_start + h.new_count - 1 do
-            out.new[l] = taken[i]
+-- LCS grid size past which a hunk's block isn't compared line by line
+local MAX_CELLS = 1e6
+
+-- which lines of `a` and `b` a longest common subsequence pairs up; nil past MAX_CELLS
+---@param a string[]
+---@param b string[]
+---@return table<integer, boolean>|nil in_a, table<integer, boolean>|nil in_b
+local function common(a, b)
+    local n, m = #a, #b
+    if n * m > MAX_CELLS then
+        return nil, nil
+    end
+    local dp = {} -- dp[i][j] = LCS length of a[i..] and b[j..]
+    for i = 1, n + 1 do
+        dp[i] = { [m + 1] = 0 }
+    end
+    for j = 1, m + 1 do
+        dp[n + 1][j] = 0
+    end
+    for i = n, 1, -1 do
+        for j = m, 1, -1 do
+            if a[i] == b[j] then
+                dp[i][j] = dp[i + 1][j + 1] + 1
+            else
+                dp[i][j] = math.max(dp[i + 1][j], dp[i][j + 1])
+            end
         end
     end
-    return out
+    local in_a, in_b = {}, {}
+    local i, j = 1, 1
+    while i <= n and j <= m do
+        if a[i] == b[j] then
+            in_a[i], in_b[j] = true, true
+            i, j = i + 1, j + 1
+        elseif dp[i + 1][j] >= dp[i][j + 1] then
+            i = i + 1
+        else
+            j = j + 1
+        end
+    end
+    return in_a, in_b
+end
+
+-- mark one hunk's lines from its index block. a block line is HEAD's where it pairs
+-- with an old line, else the worktree's where it pairs with a new one
+---@param h differ.Hunk
+---@param block string[]
+---@param marks differ.model.Marks
+---@return boolean compared  -- false for a hunk too big to compare
+---@return boolean hidden    -- a block line neither side has
+local function mark_block(h, block, marks)
+    local kept, used = common(h.old_lines, block)
+    if not (kept and used) then
+        return false, false
+    end
+    local rest = {}
+    for k, line in ipairs(block) do
+        if not used[k] then
+            rest[#rest + 1] = line
+        end
+    end
+    local held, placed = common(h.new_lines, rest)
+    if not (held and placed) then
+        return false, false
+    end
+    for k = 1, h.old_count do
+        marks.old[h.old_start + k - 1] = not kept[k]
+    end
+    local paired = 0
+    for k = 1, h.new_count do
+        marks.new[h.new_start + k - 1] = held[k] == true
+        if held[k] then
+            paired = paired + 1
+        end
+    end
+    return true, paired < #rest
+end
+
+-- marks for the union hunks from the index's block at each, and the hunks whose block
+-- holds a line neither side has. nil when a hunk is too big to compare
+---@param union differ.Hunk[]
+---@param blocks string[][]
+---@return differ.model.Marks|nil marks, integer[] hidden
+function M.of_blocks(union, blocks)
+    local marks = { old = {}, new = {} }
+    local hidden = {}
+    for i, h in ipairs(union) do
+        local compared, extra = mark_block(h, blocks[i], marks)
+        if not compared then
+            return nil, {}
+        end
+        if extra then
+            hidden[#hidden + 1] = i
+        end
+    end
+    return marks, hidden
 end
 
 -- a hunk's real lines on one side, [start, stop). a zero-count hunk has none

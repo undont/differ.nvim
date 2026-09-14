@@ -97,3 +97,35 @@ describe("splice", function()
         end)
     end)
 end)
+
+describe("join", function()
+    -- 1,2,3,4,5 -> 1,2x,3,4y,5y
+    local two = model(
+        "1\n2\n3\n4\n5\n",
+        "1\n2x\n3\n4y\n5y\n",
+        { h(2, { "2" }, 2, { "2x" }), h(4, { "4", "5" }, 4, { "4y", "5y" }) }
+    )
+
+    it("rejoins each side's own blocks to that side's text", function()
+        assert.are.equal(two.old_text, apply.join(two, { { "2" }, { "4", "5" } }, two.old_text))
+        assert.are.equal(two.new_text, apply.join(two, { { "2x" }, { "4y", "5y" } }, two.new_text))
+    end)
+
+    it("places any lines at a hunk between the unchanged ones", function()
+        local text = apply.join(two, { { "2", "z" }, {} }, two.old_text)
+        assert.are.equal("1\n2\nz\n3\n", text)
+    end)
+
+    describe("the final newline", function()
+        it("ends as the text given when no hunk reaches eof", function()
+            local m = model("a\nb\nc", "A\nb\nc\n", { h(1, { "a" }, 1, { "A" }) })
+            assert.are.equal("A\nb\nc\n", apply.join(m, { { "A" } }, "A\nb\nc\n"))
+        end)
+
+        it("ends as a side does when the last hunk reaches eof holding its lines", function()
+            local m = model("a\nb", "a\nB\n", { h(2, { "b" }, 2, { "B" }) })
+            assert.are.equal("a\nB\n", apply.join(m, { { "B" } }, "a\nb"))
+            assert.are.equal("a\nb", apply.join(m, { { "b" } }, "a\nB\n"))
+        end)
+    end)
+end)
