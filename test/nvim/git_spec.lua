@@ -2261,6 +2261,50 @@ func getDownloadSpeed() {
         assert.is_nil(hidden)
     end)
 
+    -- the file moves on disk after the diff is drawn and before the watcher re-reads it
+    for _, case in ipairs({
+        {
+            what = "an edit inside a hunk",
+            edit = function(t)
+                t[10] = "10z"
+            end,
+        },
+        {
+            what = "a line above every hunk",
+            edit = function(t)
+                table.insert(t, 1, "0")
+            end,
+        },
+    }) do
+        it(("refuses s on a diff drawn before %s, then re-reads"):format(case.what), function()
+            local t = {}
+            for i = 1, 12 do
+                t[i] = tostring(i)
+            end
+            local head = lines_of(t)
+            t[3], t[10] = "3x", "10x"
+            local root, p, v = staged_as(head, head, lines_of(t))
+            local drawn = v.model
+            case.edit(t)
+            write(root .. "/a.lua", lines_of(t))
+            local col = v.columns[#v.columns]
+            vim.api.nvim_set_current_win(col.winid)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+            _G.notifs = {}
+            v:stage_hunk()
+            local written = indexed(root, "a.lua")
+            local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+            vim.wait(1000, function()
+                return v.model ~= drawn
+            end, 20)
+            local reread = v.model.new_text
+            p:close()
+            assert.are.equal(head, written)
+            assert.is_truthy(said:find("changed since the diff was drawn", 1, true))
+            assert.are.equal(lines_of(t), reread)
+        end)
+    end
+
     -- a change staged and then edited again within a few lines merges into one
     -- HEAD↔worktree hunk holding both. it reads as partial, and per line the marks still
     -- say which of it the index has
@@ -2437,7 +2481,7 @@ func getDownloadSpeed() {
         end)
     end
 
-    -- the file is edited under the open view: X can't take the hunk out of it, so the
+    -- the file is edited under the open view: X refuses before either side moves, so the
     -- index keeps its half too rather than dropping it alone
     it("X leaves the index alone when the file won't take the revert", function()
         local root = fresh_repo()
@@ -2465,7 +2509,7 @@ func getDownloadSpeed() {
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
         p:close()
-        assert.are.equal("differ: the file has changed these lines: nothing reverted", said)
+        assert.are.equal("differ: the file changed since the diff was drawn: re-reading", said)
         assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", index)
         assert.are.equal(edited, work)
     end)

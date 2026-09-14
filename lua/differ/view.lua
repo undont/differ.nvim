@@ -89,7 +89,8 @@ local armed_view = nil
 ---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
 ---@field badge? string  -- winbar tag naming a view that isn't the whole change
 ---@field unstage_hidden? fun(idx: integer): boolean  -- u on a `!` hunk: drop the staged change it undoes
----@field set_all? fun(staged: boolean): boolean  -- S / U on the whole file at once; whether the index moved
+-- `set_all` runs S / U on the whole file at once, and says whether the index moved
+---@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1380,7 +1381,7 @@ function View:_toggle_all(want_staged)
     end
     local changed = false
     if self.staging.set_all then
-        changed = self.staging.set_all(want_staged)
+        changed = self.staging.set_all(self.model, want_staged)
     else
         for i = 1, self:_slot_count() do
             if self:_apply_hunk(i, want_staged) then

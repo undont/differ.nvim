@@ -1633,12 +1633,32 @@ function M.panel(opts)
             return splice(from, select_hunks(from.hunks, side, hunk, side, take))
         end
 
+        -- whether the diff still shows the file as it is. one drawn before the file or
+        -- HEAD moved would place an op by stale line numbers, so it refuses and re-reads
+        ---@param model differ.DiffModel  -- the view's
+        ---@param union differ.DiffModel  -- read fresh
+        ---@return boolean
+        local function drawn_current(model, union)
+            if model.old_text == union.old_text and model.new_text == union.new_text then
+                return true
+            end
+            notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
+            vim.schedule(function()
+                refresh_panel()
+                retarget_view(false)
+            end)
+            return false
+        end
+
         remark(M.union_models(root, entry))
-        staging.apply = function(_, hunk, reverse)
+        staging.apply = function(model, hunk, reverse)
             if not hunk then
                 return false
             end
             local union, cached, unstaged = M.union_models(root, entry)
+            if not drawn_current(model, union) then
+                return false
+            end
             local text = next_index(union, cached, unstaged, hunk, not reverse)
             if not text or not put_index(entry, text) then
                 return false
@@ -1653,6 +1673,9 @@ function M.panel(opts)
         -- clean filter, so writing it back would push that conversion to disk
         staging.revert = function(model, idx)
             local union, cached, unstaged = M.union_models(root, entry)
+            if not drawn_current(model, union) then
+                return false
+            end
             local hunk = model.hunks[idx]
             local text = next_index(union, cached, unstaged, hunk, false)
             if not text then
@@ -1679,8 +1702,11 @@ function M.panel(opts)
         end
         -- S and U: the index takes the worktree's or HEAD's text whole, staged content no
         -- hunk shows included. the entry's mode is left as it is
-        staging.set_all = function(staged)
+        staging.set_all = function(model, staged)
             local union, cached = M.union_models(root, entry)
+            if not drawn_current(model, union) then
+                return false
+            end
             local text = union.old_text
             if staged then
                 text = union.new_text
