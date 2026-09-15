@@ -54,4 +54,41 @@ function M.truncate_end(s, max)
     return s:sub(1, max - 1) .. "…" -- "…" is one display column
 end
 
+-- set on a last line with no newline after it, so `c` and `c\n` compare unequal as they
+-- do in git's diff. a NUL never reaches a line: is_binary text isn't read by line
+M.NO_EOL = "\0"
+
+-- `text`'s lines, the last carrying NO_EOL when the text doesn't end in a newline
+---@param text string
+---@return string[]
+function M.ended_lines(text)
+    local lines = M.to_lines(text)
+    if #lines > 0 and text:sub(-1) ~= "\n" then
+        lines[#lines] = lines[#lines] .. M.NO_EOL
+    end
+    return lines
+end
+
+-- the text ended_lines reads `lines` from: a newline after each line but one that
+-- carries NO_EOL
+---@param lines string[]
+---@return string
+function M.ended_text(lines)
+    if #lines == 0 then
+        return ""
+    end
+    local out = {}
+    for i, line in ipairs(lines) do
+        if line:sub(-1) == M.NO_EOL then
+            line = line:sub(1, -2)
+        end
+        out[i] = line
+    end
+    local text = table.concat(out, "\n")
+    if lines[#lines]:sub(-1) == M.NO_EOL then
+        return text
+    end
+    return text .. "\n"
+end
+
 return M

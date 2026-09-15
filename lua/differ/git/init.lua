@@ -1523,19 +1523,22 @@ function M.panel(opts)
         ---@type differ.view.Staging
         local staging = { marks = { old = {}, new = {} }, refresh = refresh_panel }
 
-        -- the index's lines at each union hunk; nil unless the index holds every unchanged
-        -- line between them and rejoins to exactly its own text
+        -- the index's lines at each union hunk, and the union with a last line and its
+        -- ending read as one (apply.ended). the blocks are nil unless the index holds
+        -- every unchanged line between them and rejoins to exactly its own text
         ---@param union differ.DiffModel
         ---@param cached differ.DiffModel
-        ---@return string[][]|nil
+        ---@return string[][]|nil blocks, differ.DiffModel ended
         local function index_blocks(union, cached)
-            local to_lines = require("differ.util.text").to_lines
+            local ended_lines = require("differ.util.text").ended_lines
+            local ended = require("differ.model.apply").ended(union)
             local index = cached.new_text
-            local blocks = marks.blocks(union.hunks, to_lines(union.old_text), to_lines(index))
-            if not blocks or join(union, blocks, index) ~= index then
-                return nil
+            local blocks =
+                marks.blocks(ended.hunks, ended_lines(union.old_text), ended_lines(index))
+            if not blocks or join(ended, blocks) ~= index then
+                return nil, ended
             end
-            return blocks
+            return blocks, ended
         end
 
         -- the view keeps staging.marks, so a re-mark writes through it. marks come from
@@ -1549,10 +1552,10 @@ function M.panel(opts)
                 return
             end
             staging.hidden_in = nil
-            local blocks = index_blocks(union, cached)
+            local blocks, ended = index_blocks(union, cached)
             local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
             if blocks then
-                held, hidden_in = marks.of_blocks(union, blocks, cached.new_text)
+                held, hidden_in = marks.of_blocks(ended.hunks, blocks)
             end
             if held then
                 staging.marks.old, staging.marks.new = held.old, held.new
@@ -1627,15 +1630,14 @@ function M.panel(opts)
         ---@param take boolean
         ---@return string|nil
         local function next_index(union, cached, unstaged, hunk, take)
-            local blocks = index_blocks(union, cached)
+            local blocks, ended = index_blocks(union, cached)
             local i = hunk_index(union, hunk)
             if blocks and i then
-                local side = "old"
+                blocks[i] = ended.hunks[i].old_lines
                 if take then
-                    side = "new"
+                    blocks[i] = ended.hunks[i].new_lines
                 end
-                blocks[i] = union.hunks[i][side .. "_lines"]
-                return join(union, blocks, cached.new_text, { [i] = side })
+                return join(ended, blocks)
             end
             local from, side = unstaged, "new"
             if not take then

@@ -2,7 +2,8 @@
 -- and its old block otherwise, with the unchanged lines between read from one side.
 -- staging writes the result whole, so it only ever applies whole hunks; pure lua, no vim API
 
-local to_lines = require("differ.util.text").to_lines
+local text = require("differ.util.text")
+local to_lines = text.to_lines
 
 local M = {}
 
@@ -40,18 +41,52 @@ function M.splice(model, applied, base)
     return table.concat(out, "\n") .. (ending:sub(-1) == "\n" and "\n" or "")
 end
 
--- the model's unchanged old lines with `blocks` at its hunks. the file ends as `text`
--- does, unless the hunk reaching the end is named in `sides`: then as that side does.
--- a hunk's two sides can be the same lines ending differently, so its lines can't say
+---@param lines string[]
+---@param start integer
+---@param count integer
+---@return string[]
+local function slice(lines, start, count)
+    local out = {}
+    for l = start, start + count - 1 do
+        out[#out + 1] = lines[l]
+    end
+    return out
+end
+
+-- `model` with its hunks' lines as text.ended_lines reads each side, so a hunk reaching
+-- an unterminated end holds that side's last line with NO_EOL on it
+---@param model differ.DiffModel
+---@return differ.DiffModel
+function M.ended(model)
+    local old, new = text.ended_lines(model.old_text), text.ended_lines(model.new_text)
+    local hunks = {}
+    for i, h in ipairs(model.hunks) do
+        hunks[i] = {
+            old_start = h.old_start,
+            old_count = h.old_count,
+            old_lines = slice(old, h.old_start, h.old_count),
+            new_start = h.new_start,
+            new_count = h.new_count,
+            new_lines = slice(new, h.new_start, h.new_count),
+        }
+    end
+    local out = {}
+    for k, v in pairs(model) do
+        out[k] = v
+    end
+    out.hunks = hunks
+    return out
+end
+
+-- the model's unchanged old lines with `blocks` at its hunks. every line is an ended
+-- line (M.ended's side lines, or marks.blocks over ended lines), so the file ends
+-- without a newline exactly when its last line carries NO_EOL
 ---@param model differ.DiffModel
 ---@param blocks string[][]  -- hunk index -> the lines at that hunk
----@param text string        -- the text the ending comes from otherwise
----@param sides? table<integer, "old"|"new">  -- hunk index -> the side its block is
 ---@return string
-function M.join(model, blocks, text, sides)
-    sides = sides or {}
-    local lines = to_lines(model.old_text)
-    local out, next_line, ending = {}, 1, text
+function M.join(model, blocks)
+    local lines = text.ended_lines(model.old_text)
+    local out, next_line = {}, 1
     for i, h in ipairs(model.hunks) do
         local first = h.old_count > 0 and h.old_start or h.old_start + 1
         for l = next_line, first - 1 do
@@ -61,17 +96,11 @@ function M.join(model, blocks, text, sides)
             out[#out + 1] = line
         end
         next_line = first + h.old_count
-        if next_line > #lines and sides[i] then
-            ending = model[sides[i] .. "_text"]
-        end
     end
     for l = next_line, #lines do
         out[#out + 1] = lines[l]
     end
-    if #out == 0 then
-        return ""
-    end
-    return table.concat(out, "\n") .. (ending:sub(-1) == "\n" and "\n" or "")
+    return text.ended_text(out)
 end
 
 return M
