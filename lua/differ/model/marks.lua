@@ -88,44 +88,63 @@ local function old_bounds(h)
     return first, first + h.old_count
 end
 
--- the block lengths to try for hunk `h` with `left` index lines to go: its own two
--- sides first, then the rest shortest first
----@param h differ.Hunk
----@param left integer
----@return integer[]
-local function block_lengths(h, left)
-    local out, seen = {}, {}
-    for _, n in ipairs({ h.new_count, h.old_count }) do
-        if n <= left and not seen[n] then
-            out[#out + 1], seen[n] = n, true
+-- whether the index holds `lines` from line `at`
+---@param index string[]
+---@param at integer
+---@param lines string[]
+---@return boolean
+local function holds(index, at, lines)
+    for k, line in ipairs(lines) do
+        if index[at + k - 1] ~= line then
+            return false
         end
     end
-    for n = 0, left do
-        if not seen[n] then
-            out[#out + 1] = n
-        end
+    return true
+end
+
+---@alias differ.model.BlockLengths fun(h: differ.Hunk, index: string[], at: integer): integer[]
+
+-- lengths for a block that is exactly one of the hunk's sides
+---@type differ.model.BlockLengths
+local function whole_lengths(h, index, at)
+    local out = {}
+    if holds(index, at, h.new_lines) then
+        out[#out + 1] = h.new_count
+    end
+    if holds(index, at, h.old_lines) and h.old_count ~= out[1] then
+        out[#out + 1] = h.old_count
     end
     return out
 end
 
--- the index's lines at each union hunk, when the index holds every unchanged line
--- between them; nil when it doesn't. where unchanged lines repeat, a hunk's block
--- ends at the first length that lets the rest of the index through
----@param union differ.Hunk[]  -- HEAD↔worktree
----@param head string[]        -- HEAD's lines
----@param index string[]       -- the index's lines
----@return string[][]|nil
-function M.blocks(union, head, index)
+-- every length the rest of the index allows, shortest first
+---@type differ.model.BlockLengths
+local function any_lengths(_, index, at)
     local out = {}
-    local stuck = {} ---@type table<string, boolean>  -- "hunk:index line" with no way through
+    for n = 0, #index - at + 1 do
+        out[#out + 1] = n
+    end
+    return out
+end
+
+-- the ways to cut the index into a block per union hunk, with HEAD's unchanged lines
+-- between them: the first cut, and how many there are (0, 1, or 2 for two or more)
+---@param union differ.Hunk[]
+---@param head string[]
+---@param index string[]
+---@param lengths differ.model.BlockLengths
+---@return string[][] cut, integer ways
+local function cut(union, head, index, lengths)
+    local ways = {} ---@type table<string, integer>  -- "hunk:index line" -> ways through
+    local picks = {} ---@type table<string, integer[]>  -- "hunk:index line" -> first block's {at, n}
     ---@param i integer     -- the next union hunk
     ---@param from integer  -- the next HEAD line
     ---@param at integer    -- the next index line
-    ---@return boolean
-    local function walk(i, from, at)
+    ---@return integer
+    local function count(i, from, at)
         local key = i .. ":" .. at
-        if stuck[key] then
-            return false
+        if ways[key] then
+            return ways[key]
         end
         local h = union[i]
         local first, after = #head + 1, #head + 1
@@ -134,33 +153,72 @@ function M.blocks(union, head, index)
         end
         for l = from, first - 1 do
             if index[at] ~= head[l] then
-                stuck[key] = true
-                return false
+                ways[key] = 0
+                return 0
             end
             at = at + 1
         end
         if not h then
-            return at == #index + 1
+            ways[key] = 0
+            if at == #index + 1 then
+                ways[key] = 1
+            end
+            return ways[key]
         end
-        for _, n in ipairs(block_lengths(h, #index - at + 1)) do
+        local total = 0
+        for _, n in ipairs(lengths(h, index, at)) do
             -- the unchanged line after the block, when there is one, has to come next
             local fits = after > #head or index[at + n] == head[after]
-            if fits and walk(i + 1, after, at + n) then
-                local block = {}
-                for l = at, at + n - 1 do
-                    block[#block + 1] = index[l]
-                end
-                out[i] = block
-                return true
+            local through = 0
+            if fits then
+                through = count(i + 1, after, at + n)
+            end
+            if through > 0 and total == 0 then
+                picks[key] = { at, n }
+            end
+            total = total + through
+            if total >= 2 then
+                break
             end
         end
-        stuck[key] = true
-        return false
+        ways[key] = math.min(total, 2)
+        return ways[key]
     end
-    if not walk(1, 1, 1) then
-        return nil
+    local total = count(1, 1, 1)
+    local out, at = {}, 1
+    if total == 0 then
+        return out, 0
     end
-    return out
+    for i in ipairs(union) do
+        local pick = picks[i .. ":" .. at]
+        local block = {}
+        for l = pick[1], pick[1] + pick[2] - 1 do
+            block[#block + 1] = index[l]
+        end
+        out[i] = block
+        at = pick[1] + pick[2]
+    end
+    return out, total
+end
+
+-- the index's lines at each union hunk, when the index holds every unchanged line
+-- between them. a cut where every block is one of its hunk's sides wins; nil when the
+-- index can't be cut, or can be cut more than one way
+---@param union differ.Hunk[]  -- HEAD↔worktree
+---@param head string[]        -- HEAD's lines
+---@param index string[]       -- the index's lines
+---@return string[][]|nil
+function M.blocks(union, head, index)
+    for _, lengths in ipairs({ whole_lengths, any_lengths }) do
+        local found, ways = cut(union, head, index, lengths)
+        if ways == 1 then
+            return found
+        end
+        if ways > 1 then
+            return nil
+        end
+    end
+    return nil
 end
 
 -- LCS grid size past which a hunk's block isn't compared line by line
@@ -214,6 +272,19 @@ end
 ---@return boolean compared  -- false for a hunk too big to compare
 ---@return boolean hidden    -- a block line neither side has
 local function mark_block(h, block, marks)
+    -- a block that is one whole side is that side, even where the two sides share a line
+    for _, staged in ipairs({ true, false }) do
+        local side = staged and h.new_lines or h.old_lines
+        if #block == #side and holds(block, 1, side) then
+            for l = h.old_start, h.old_start + h.old_count - 1 do
+                marks.old[l] = staged
+            end
+            for l = h.new_start, h.new_start + h.new_count - 1 do
+                marks.new[l] = staged
+            end
+            return true, false
+        end
+    end
     local kept, used = common(h.old_lines, block)
     if not (kept and used) then
         return false, false

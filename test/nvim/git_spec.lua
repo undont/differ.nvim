@@ -2178,6 +2178,42 @@ func getDownloadSpeed() {
         return table.concat(t, "\n") .. "\n"
     end
 
+    -- HEAD a b _ _ c d, worktree a b B _ d: the blank beside hunk 1 also fits hunk 2
+    it("stages and reverts by hunk where a blank line fits either hunk", function()
+        local head = lines_of({ "a", "b", "", "", "c", "d" })
+        local root, p, v = staged_as(head, head, lines_of({ "a", "b", "B", "", "d" }))
+        local function states()
+            local out = {}
+            for i = 1, #v.model.hunks do
+                out[i] = v:_hunk_state(i)
+            end
+            return out
+        end
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        local before, hidden = states(), v.staging.hidden
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local staged, index = states(), indexed(root, "a.lua")
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        local unstaged = indexed(root, "a.lua")
+        local reverted = v.staging.revert(v.model, 1)
+        local after, work =
+            indexed(root, "a.lua"), table.concat(vim.fn.readfile(root .. "/a.lua"), "\n")
+        p:close()
+
+        local S, U = "staged", "unstaged"
+        assert.are.same({ U, U }, before)
+        assert.is_nil(hidden)
+        assert.are.same({ S, U }, staged)
+        assert.are.equal(lines_of({ "a", "b", "B", "", "", "c", "d" }), index)
+        assert.are.equal(head, unstaged)
+        assert.is_true(reverted)
+        assert.are.equal(head, after)
+        assert.are.equal("a\nb\n\nd", work)
+    end)
+
     -- hunk 3 staged without its `url` line and hunk 4 staged whole: u on 3 leaves 4 alone
     it("unstages a partly staged hunk without reaching the whole one beside it", function()
         local h, w = vim.split(ACME_HEAD, "\n"), vim.split(ACME_WORK, "\n")

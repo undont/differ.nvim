@@ -255,6 +255,18 @@ describe("union marks", function()
             assert.are.same({ { "x" } }, marks.blocks(insert, repeat_head, index))
         end)
 
+        -- HEAD a b _ _ c d, worktree a b B _ d: a blank either side of hunk 1's insertion,
+        -- so the index's first blank fits hunk 1's block or the context after it
+        it("reads a block by the hunk's own lines where a repeated line fits two ways", function()
+            local blank = { "a", "b", "", "", "c", "d" }
+            local around = { hl(2, {}, 3, { "B" }), hl(4, { "", "c" }, 4, {}) }
+            assert.are.same({ {}, { "", "c" } }, marks.blocks(around, blank, blank))
+            local index = { "a", "b", "B", "", "", "c", "d" }
+            assert.are.same({ { "B" }, { "", "c" } }, marks.blocks(around, blank, index))
+            index = { "a", "b", "", "d" }
+            assert.are.same({ {}, {} }, marks.blocks(around, blank, index))
+        end)
+
         it("gives the last hunk the rest of the index", function()
             local index = { "a", "b", "c", "D", "e", "f" }
             assert.are.same({ { "b" }, { "D", "e", "f" } }, marks.blocks(union, head, index))
@@ -283,6 +295,16 @@ describe("union marks", function()
         it("names the hunk whose block holds a line neither side has", function()
             local _, hidden = marks.of_blocks(union, { { "a", "Z" } })
             assert.are.same({ 1 }, hidden)
+        end)
+
+        -- HEAD a a, worktree a z: the two sides share an a
+        it("reads a block that is one whole side as that side", function()
+            local shared = { hl(1, { "a", "a" }, 1, { "a", "z" }) }
+            assert.are.same({ "staged" }, states(marks.of_blocks(shared, { { "a", "z" } }), shared))
+            assert.are.same(
+                { "unstaged" },
+                states(marks.of_blocks(shared, { { "a", "a" } }), shared)
+            )
         end)
 
         -- HEAD x a, worktree a x: a block of HEAD's lines pairs with the old side first
