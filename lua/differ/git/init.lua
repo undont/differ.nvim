@@ -305,7 +305,7 @@ local function as_staged(root, relpath, data)
         return data
     end
     -- raw read, no text=true: that would strip the CRs git chose to keep
-    local show = vim.system({ "git", "show", ":" .. relpath }, { cwd = root, env = env }):wait()
+    local show = vim.system({ "git", "show", ":0:" .. relpath }, { cwd = root, env = env }):wait()
     os.remove(tmp)
     if show.code ~= 0 or not show.stdout then
         return data
@@ -327,8 +327,9 @@ function M.read(ref, root, relpath)
         local data = read_file(root .. "/" .. relpath)
         return data and as_staged(root, relpath, data) or nil
     end
-    -- index (stage 0) is `:path`; a rev is `<rev>:path`
-    local spec = (ref.kind == "index" and ":" or (ref.rev .. ":")) .. relpath
+    -- a rev is `<rev>:path`; the index is `:0:path`, since `:path` reads a leading
+    -- `1:` as a stage number
+    local spec = (ref.kind == "index" and ":0:" or (ref.rev .. ":")) .. relpath
     return git_raw({ "show", spec }, root) -- nil if the path is absent in that tree
 end
 
@@ -691,12 +692,12 @@ local function union_pairs(root, path, head, index, work)
         pair("INDEX", "WORKTREE", index, work)
 end
 
--- a row's three diffs, read fresh. HEAD is read at a rename's old path, and so is the
--- index for a rename only the worktree has made (` R`), whose entry at the new path is
--- an empty intent-to-add placeholder
+-- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
+-- a rename's old path, and so is the index for a rename only the worktree has made
+-- (` R`), whose entry at the new path is an empty intent-to-add placeholder
 ---@param root string
 ---@param entry differ.FileEntry
----@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
+---@return differ.DiffModel|nil union, differ.DiffModel|nil cached, differ.DiffModel|nil unstaged
 function M.union_models(root, entry)
     local prev = entry.previous_path
     local at_head = prev or entry.path
@@ -704,11 +705,15 @@ function M.union_models(root, entry)
     if entry.y == "R" and prev then
         at_index = prev
     end
+    local index = M.read(INDEX, root, at_index)
+    if not index then
+        return nil
+    end
     return union_pairs(
         root,
         entry.path,
         M.read(HEAD, root, at_head) or "",
-        M.read(INDEX, root, at_index) or "",
+        index,
         M.read(WORKTREE, root, entry.path) or ""
     )
 end
@@ -1497,6 +1502,14 @@ function M.panel(opts)
         return index_mode ~= head_mode and index_mode ~= work_mode
     end
 
+    -- an op built on a failed index read would write the file's index from nothing
+    ---@param entry differ.FileEntry
+    ---@return false
+    local function index_unreadable(entry)
+        notify(("couldn't read %s from the index"):format(entry.path), vim.log.levels.WARN)
+        return false
+    end
+
     -- staging for a row shown as HEAD↔worktree. both directions work out the content
     -- the index should hold and write it whole rather than patching: staging a hunk
     -- means the index takes the worktree's version of the lines it covers, and
@@ -1533,10 +1546,13 @@ function M.panel(opts)
         -- the view keeps staging.marks, so a re-mark writes through it. marks come from
         -- the index's own lines at each hunk, and from the two pairs only when the index
         -- changes a line between hunks
-        ---@param union differ.DiffModel
-        ---@param cached differ.DiffModel
-        ---@param unstaged differ.DiffModel
+        ---@param union differ.DiffModel|nil  -- nil keeps the marks there are
+        ---@param cached differ.DiffModel|nil
+        ---@param unstaged differ.DiffModel|nil
         local function remark(union, cached, unstaged)
+            if not (union and cached and unstaged) then
+                return
+            end
             staging.hidden_in = nil
             local blocks = index_blocks(union, cached)
             local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
@@ -1659,6 +1675,9 @@ function M.panel(opts)
                 return false
             end
             local union, cached, unstaged = M.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                return index_unreadable(entry)
+            end
             if not drawn_current(model, union) then
                 return false
             end
@@ -1676,6 +1695,9 @@ function M.panel(opts)
         -- clean filter, so writing it back would push that conversion to disk
         staging.revert = function(model, idx)
             local union, cached, unstaged = M.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                return index_unreadable(entry)
+            end
             if not drawn_current(model, union) then
                 return false
             end
@@ -1707,6 +1729,9 @@ function M.panel(opts)
         -- hunk shows included. the entry's mode is left as it is
         staging.set_all = function(model, staged)
             local union, cached = M.union_models(root, entry)
+            if not (union and cached) then
+                return index_unreadable(entry)
+            end
             if not drawn_current(model, union) then
                 return false
             end
@@ -1967,6 +1992,9 @@ function M.panel(opts)
             staging.revert = function(m, idx)
                 local h = m.hunks[idx]
                 local _, _, unstaged = M.union_models(root, entry)
+                if not unstaged then
+                    return index_unreadable(entry)
+                end
                 local at = h.new_count > 0 and h.new_start or h.new_start + 1
                 local offset = require("differ.model.marks").shift(unstaged.hunks, at, "old")
                 return revert_frozen(entry, m, staging, idx, offset, function()
@@ -2006,6 +2034,9 @@ function M.panel(opts)
             end
         end
         local _, cached = M.union_models(root, entry)
+        if not cached then
+            return index_unreadable(entry)
+        end
         if cached.new_text ~= splice(model, applied) then
             notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
             vim.schedule(function()
@@ -2045,8 +2076,10 @@ function M.panel(opts)
                 show_local(entry)
             end)
             local _, cached = M.union_models(root, entry)
-            local hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
-            staging.hidden_in = hidden_in
+            if cached then
+                staging.hidden_in =
+                    require("differ.model.marks").restaged(model.hunks, cached.hunks)
+            end
             staging.unstage_hidden = function(idx)
                 return drop_hidden(entry, model, staging, idx)
             end

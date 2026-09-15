@@ -2989,6 +2989,45 @@ func getDownloadSpeed() {
         assert.are.same({ S, S, U }, after)
     end)
 
+    -- git reads `:1:x.txt` as conflict stage 1 of x.txt
+    it("reads the index of a file whose name starts with a stage number", function()
+        local root = fresh_repo()
+        write(root .. "/1:x.txt", twelve({}))
+        git(root, "add", "1:x.txt")
+        git(root, "commit", "-q", "-m", "twelve lines")
+        index_as(root, "1:x.txt", twelve({ "1x" }))
+        write(root .. "/1:x.txt", twelve({ "1x", [12] = "12x" }))
+        vim.cmd.edit(vim.fn.fnameescape(root .. "/1:x.txt"))
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local states = { v:_hunk_state(1), v:_hunk_state(2) }
+        p:close()
+        assert.are.same({ "staged", "unstaged" }, states)
+    end)
+
+    it("refuses s when the index can't be read", function()
+        local root, p, v = staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [12] = "12x" }))
+        local read = git_src.read
+        git_src.read = function(ref, ...)
+            if ref.kind == "index" then
+                return nil
+            end
+            return read(ref, ...)
+        end
+        _G.notifs = {}
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        git_src.read = read
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: couldn't read a.lua from the index", said)
+        assert.are.equal(twelve({ "1x" }), index)
+    end)
+
     it("X in the local view puts the worktree hunk back to the index's version", function()
         local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
         local p, v = local_view_at(1)
