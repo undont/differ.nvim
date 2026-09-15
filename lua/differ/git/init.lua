@@ -1051,11 +1051,6 @@ end
 ---@return string|nil
 local function empty_notice(root, entry, model, args)
     local reason = require("differ.model.diff").empty_reason(model)
-    if reason == "eol_added" then
-        return "Final newline added"
-    elseif reason == "eol_removed" then
-        return "Final newline removed"
-    end
     local empty_or_not = reason == "empty" and "Empty file" or "No content change"
     if entry.status == "?" then
         return live_status(root, entry) == entry.status and empty_or_not or nil
@@ -1557,7 +1552,7 @@ function M.panel(opts)
             local blocks = index_blocks(union, cached)
             local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
             if blocks then
-                held, hidden_in = marks.of_blocks(union.hunks, blocks)
+                held, hidden_in = marks.of_blocks(union, blocks, cached.new_text)
             end
             if held then
                 staging.marks.old, staging.marks.new = held.old, held.new
@@ -1635,12 +1630,12 @@ function M.panel(opts)
             local blocks = index_blocks(union, cached)
             local i = hunk_index(union, hunk)
             if blocks and i then
-                local lines = union.hunks[i].old_lines
+                local side = "old"
                 if take then
-                    lines = union.hunks[i].new_lines
+                    side = "new"
                 end
-                blocks[i] = lines
-                return join(union, blocks, cached.new_text)
+                blocks[i] = union.hunks[i][side .. "_lines"]
+                return join(union, blocks, cached.new_text, { [i] = side })
             end
             local from, side = unstaged, "new"
             if not take then

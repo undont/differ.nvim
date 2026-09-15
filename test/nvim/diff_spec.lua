@@ -26,7 +26,8 @@ describe("model.diff.build", function()
         assert.are.same({ "B" }, m.hunks[1].new_lines)
     end)
 
-    it("handles add-only and missing trailing newline", function()
+    -- as in git: the unterminated `a` gives way to a terminated one
+    it("counts an unterminated last line as changed when lines follow it", function()
         local m = diff.build({
             path = "x.lua",
             old_rev = "HEAD",
@@ -35,6 +36,21 @@ describe("model.diff.build", function()
             new_text = "a\nb",
         })
         assert.are.equal(1, #m.hunks)
+        assert.are.same({ "a" }, m.hunks[1].old_lines)
+        assert.are.same({ "a", "b" }, m.hunks[1].new_lines)
+    end)
+
+    it("counts a final newline alone as a change to the last line", function()
+        local m = diff.build({
+            path = "x.lua",
+            old_rev = "HEAD",
+            new_rev = "WORKTREE",
+            old_text = "a\nb",
+            new_text = "a\nb\n",
+        })
+        assert.are.equal(1, #m.hunks)
+        assert.are.equal(2, m.hunks[1].old_start)
+        assert.are.same({ "b" }, m.hunks[1].old_lines)
         assert.are.same({ "b" }, m.hunks[1].new_lines)
     end)
 
@@ -181,10 +197,9 @@ describe("model.diff.empty_reason", function()
         assert.are.equal("identical", reason("a\n", "a\n"))
     end)
 
-    it("names a final newline in either direction", function()
-        -- build ensures a trailing newline, so these reach zero hunks
-        assert.are.equal("eol_added", reason("a", "a\n"))
-        assert.are.equal("eol_removed", reason("a\n", "a"))
+    it("is nil for a final newline change, which is a hunk on the last line", function()
+        assert.is_nil(reason("a", "a\n"))
+        assert.is_nil(reason("a\n", "a"))
     end)
 
     it("is nil for binary content, which has its own placeholder", function()

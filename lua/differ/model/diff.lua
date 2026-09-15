@@ -24,7 +24,6 @@
 
 local text_util = require("differ.util.text")
 local to_lines = text_util.to_lines
-local ensure_trailing_nl = text_util.ensure_trailing_nl
 local is_binary = text_util.is_binary
 
 local M = {}
@@ -76,11 +75,11 @@ function M.build(opts)
     local old_lines = to_lines(opts.old_text)
     local new_lines = to_lines(opts.new_text)
 
-    local raw =
-        vim.text.diff(ensure_trailing_nl(opts.old_text), ensure_trailing_nl(opts.new_text), {
-            result_type = "indices",
-            algorithm = "histogram",
-        })
+    -- a last line with and without its newline differ, as in git
+    local raw = vim.text.diff(opts.old_text, opts.new_text, {
+        result_type = "indices",
+        algorithm = "histogram",
+    })
 
     ---@cast raw integer[][]
     local hunks = {}
@@ -108,17 +107,13 @@ function M.build(opts)
     }
 end
 
--- why a zero-hunk model has nothing to show, from its two texts alone. build
--- ensures a trailing newline on both sides, so that's the only way two differing
--- texts reach zero hunks. nil when only the frontend knows (a mode change, a rename)
+-- why a zero-hunk model has nothing to show, from its two texts alone. nil when only
+-- the frontend knows (a mode change, a rename)
 ---@param model differ.DiffModel
----@return "empty"|"eol_added"|"eol_removed"|"identical"|nil
+---@return "empty"|"identical"|nil
 function M.empty_reason(model)
-    if #model.hunks > 0 or model.binary then
+    if #model.hunks > 0 or model.binary or model.old_text ~= model.new_text then
         return nil
-    end
-    if model.old_text ~= model.new_text then
-        return model.new_text:sub(-1) == "\n" and "eol_added" or "eol_removed"
     end
     return model.old_text == "" and "empty" or "identical"
 end

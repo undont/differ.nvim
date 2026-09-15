@@ -40,45 +40,16 @@ function M.splice(model, applied, base)
     return table.concat(out, "\n") .. (ending:sub(-1) == "\n" and "\n" or "")
 end
 
----@param a string[]
----@param b string[]
----@return boolean
-local function same_lines(a, b)
-    if #a ~= #b then
-        return false
-    end
-    for i, line in ipairs(a) do
-        if b[i] ~= line then
-            return false
-        end
-    end
-    return true
-end
-
--- the text a file ends as when hunk `h`, holding `block`, reaches its end: a side's
--- text when the block is that side's lines, else `text`
----@param model differ.DiffModel
----@param h differ.Hunk
----@param block string[]
----@param text string
----@return string
-local function ending_at(model, h, block, text)
-    if same_lines(block, h.new_lines) then
-        return model.new_text
-    end
-    if same_lines(block, h.old_lines) then
-        return model.old_text
-    end
-    return text
-end
-
 -- the model's unchanged old lines with `blocks` at its hunks. the file ends as `text`
--- does, unless the last hunk reaches the end holding one side's lines
+-- does, unless the hunk reaching the end is named in `sides`: then as that side does.
+-- a hunk's two sides can be the same lines ending differently, so its lines can't say
 ---@param model differ.DiffModel
 ---@param blocks string[][]  -- hunk index -> the lines at that hunk
 ---@param text string        -- the text the ending comes from otherwise
+---@param sides? table<integer, "old"|"new">  -- hunk index -> the side its block is
 ---@return string
-function M.join(model, blocks, text)
+function M.join(model, blocks, text, sides)
+    sides = sides or {}
     local lines = to_lines(model.old_text)
     local out, next_line, ending = {}, 1, text
     for i, h in ipairs(model.hunks) do
@@ -90,8 +61,8 @@ function M.join(model, blocks, text)
             out[#out + 1] = line
         end
         next_line = first + h.old_count
-        if next_line > #lines then
-            ending = ending_at(model, h, blocks[i], text)
+        if next_line > #lines and sides[i] then
+            ending = model[sides[i] .. "_text"]
         end
     end
     for l = next_line, #lines do

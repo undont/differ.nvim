@@ -274,18 +274,23 @@ describe("union marks", function()
     end)
 
     describe("of_blocks", function()
+        -- texts that end alike, so no hunk's ending counts
+        local function of_blocks(union, blocks)
+            return marks.of_blocks({ hunks = union, old_text = "", new_text = "" }, blocks, "")
+        end
+
         -- HEAD 1 a b 4, worktree 1 A B C 4: one hunk rewriting two lines as three
         local union = { hl(2, { "a", "b" }, 2, { "A", "B", "C" }) }
 
         it("reads a block of HEAD's lines as unstaged and the worktree's as staged", function()
-            local m = marks.of_blocks(union, { { "a", "b" } })
+            local m = of_blocks(union, { { "a", "b" } })
             assert.are.same({ "unstaged" }, states(m, union))
-            m = marks.of_blocks(union, { { "A", "B", "C" } })
+            m = of_blocks(union, { { "A", "B", "C" } })
             assert.are.same({ "staged" }, states(m, union))
         end)
 
         it("marks each line of a block that holds part of the hunk", function()
-            local m, hidden = marks.of_blocks(union, { { "a", "B" } })
+            local m, hidden = of_blocks(union, { { "a", "B" } })
             assert.are.same({ "partial" }, states(m, union))
             assert.are.same({ [2] = false, [3] = true }, m.old)
             assert.are.same({ [2] = false, [3] = true, [4] = false }, m.new)
@@ -293,26 +298,50 @@ describe("union marks", function()
         end)
 
         it("names the hunk whose block holds a line neither side has", function()
-            local _, hidden = marks.of_blocks(union, { { "a", "Z" } })
+            local _, hidden = of_blocks(union, { { "a", "Z" } })
             assert.are.same({ 1 }, hidden)
         end)
 
         -- HEAD a a, worktree a z: the two sides share an a
         it("reads a block that is one whole side as that side", function()
             local shared = { hl(1, { "a", "a" }, 1, { "a", "z" }) }
-            assert.are.same({ "staged" }, states(marks.of_blocks(shared, { { "a", "z" } }), shared))
-            assert.are.same(
-                { "unstaged" },
-                states(marks.of_blocks(shared, { { "a", "a" } }), shared)
-            )
+            assert.are.same({ "staged" }, states(of_blocks(shared, { { "a", "z" } }), shared))
+            assert.are.same({ "unstaged" }, states(of_blocks(shared, { { "a", "a" } }), shared))
         end)
 
         -- HEAD x a, worktree a x: a block of HEAD's lines pairs with the old side first
         it("reads a moved line from HEAD before the worktree", function()
             local moved = { hl(1, { "x", "a" }, 1, { "a", "x" }) }
-            local m, hidden = marks.of_blocks(moved, { { "x", "a" } })
+            local m, hidden = of_blocks(moved, { { "x", "a" } })
             assert.are.same({ "unstaged" }, states(m, moved))
             assert.are.same({}, hidden)
+        end)
+    end)
+
+    describe("of_blocks at the end of the file", function()
+        -- HEAD a b unterminated, worktree a b⏎: hunk 2 holds b on both sides
+        local same = {
+            hunks = { hl(2, { "b" }, 2, { "b" }) },
+            old_text = "a\nb",
+            new_text = "a\nb\n",
+        }
+
+        it("reads the index's ending to say which side a same-line block is", function()
+            local unstaged = marks.of_blocks(same, { { "b" } }, "a\nb")
+            local staged = marks.of_blocks(same, { { "b" } }, "a\nb\n")
+            assert.are.same({ "unstaged" }, states(unstaged, same.hunks))
+            assert.are.same({ "staged" }, states(staged, same.hunks))
+        end)
+
+        -- HEAD a b unterminated, worktree a B⏎: the index holds B without the newline
+        it("marks the hunk partial when the index holds its line but not its ending", function()
+            local rewrite = {
+                hunks = { hl(2, { "b" }, 2, { "B" }) },
+                old_text = "a\nb",
+                new_text = "a\nB\n",
+            }
+            local m = marks.of_blocks(rewrite, { { "B" } }, "a\nB")
+            assert.are.same({ "partial" }, states(m, rewrite.hunks))
         end)
     end)
 

@@ -2178,6 +2178,51 @@ func getDownloadSpeed() {
         return table.concat(t, "\n") .. "\n"
     end
 
+    -- HEAD a b c unterminated, worktree A b c with its final newline: the ending is
+    -- hunk 2, on line c
+    it("stages and unstages a final newline as the last line's hunk", function()
+        local head = "a\nb\nc"
+        local root, p, v = staged_as(head, head, "A\nb\nc\n")
+        local function states()
+            local out = {}
+            for i = 1, #v.model.hunks do
+                out[i] = v:_hunk_state(i)
+            end
+            return out
+        end
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        local function press(n, op)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, n), 0 })
+            v[op](v)
+            return states(), indexed(root, "a.lua")
+        end
+        local before = states()
+        local s1, i1 = press(1, "stage_hunk")
+        local s2, i2 = press(2, "stage_hunk")
+        local u2, i3 = press(2, "unstage_hunk")
+        local u1, i4 = press(1, "unstage_hunk")
+        local reverted = v.staging.revert(v.model, 2)
+        local fd = assert(io.open(root .. "/a.lua", "rb")) -- worktree() always adds a newline
+        local work, index = fd:read("*a"), indexed(root, "a.lua")
+        fd:close()
+        p:close()
+
+        local S, U = "staged", "unstaged"
+        assert.are.same({ U, U }, before)
+        assert.are.same({ S, U }, s1)
+        assert.are.equal("A\nb\nc", i1)
+        assert.are.same({ S, S }, s2)
+        assert.are.equal("A\nb\nc\n", i2)
+        assert.are.same({ S, U }, u2)
+        assert.are.equal("A\nb\nc", i3)
+        assert.are.same({ U, U }, u1)
+        assert.are.equal(head, i4)
+        assert.is_true(reverted)
+        assert.are.equal("A\nb\nc", work)
+        assert.are.equal(head, index)
+    end)
+
     -- HEAD a b _ _ c d, worktree a b B _ d: the blank beside hunk 1 also fits hunk 2
     it("stages and reverts by hunk where a blank line fits either hunk", function()
         local head = lines_of({ "a", "b", "", "", "c", "d" })
@@ -5293,15 +5338,17 @@ describe(":Differ panel (zero-hunk entries)", function()
         p:close()
     end)
 
-    it("opens a final-newline-only change on a notice", function()
+    it("opens a final-newline-only change on its last line", function()
         local root = fresh_repo()
         write(root .. "/a.lua", V1:sub(1, -2)) -- same content, no trailing newline
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_only_entry(root)
-        assert.is_not_nil(v)
-        assert.are.equal("Final newline removed", v.model.notice)
+        local hunks, notice = v.model.hunks, v.model.notice
         p:close()
+        assert.are.equal(1, #hunks)
+        assert.are.same(hunks[1].old_lines, hunks[1].new_lines)
+        assert.is_nil(notice)
     end)
 
     it("names a moved submodule pointer, which reads empty on both sides", function()

@@ -3,6 +3,8 @@
 -- shares the worktree), so a displayed line is classified by whichever pair shares its
 -- side and the two never have to be composed. pure lua, no nvim API
 
+local to_lines = require("differ.util.text").to_lines
+
 local M = {}
 
 ---@alias differ.model.HunkState "staged"|"unstaged"|"partial"
@@ -264,18 +266,26 @@ local function common(a, b)
     return in_a, in_b
 end
 
+---@class differ.model.Endings  -- whether each text ends in a newline
+---@field old boolean
+---@field new boolean
+---@field index boolean
+
 -- mark one hunk's lines from its index block. a block line is HEAD's where it pairs
--- with an old line, else the worktree's where it pairs with a new one
+-- with an old line, else the worktree's where it pairs with a new one. a hunk reaching
+-- the end of the file takes `ends` too: its last line and ending count as one
 ---@param h differ.Hunk
 ---@param block string[]
 ---@param marks differ.model.Marks
+---@param ends? differ.model.Endings
 ---@return boolean compared  -- false for a hunk too big to compare
 ---@return boolean hidden    -- a block line neither side has
-local function mark_block(h, block, marks)
+local function mark_block(h, block, marks, ends)
     -- a block that is one whole side is that side, even where the two sides share a line
     for _, staged in ipairs({ true, false }) do
         local side = staged and h.new_lines or h.old_lines
-        if #block == #side and holds(block, 1, side) then
+        local ending_fits = not ends or ends[staged and "new" or "old"] == ends.index
+        if ending_fits and #block == #side and holds(block, 1, side) then
             for l = h.old_start, h.old_start + h.old_count - 1 do
                 marks.old[l] = staged
             end
@@ -309,19 +319,37 @@ local function mark_block(h, block, marks)
             paired = paired + 1
         end
     end
+    if ends and ends.index ~= ends.new and h.new_count > 0 then
+        marks.new[h.new_start + h.new_count - 1] = false
+    end
+    if ends and ends.index ~= ends.old and h.old_count > 0 then
+        marks.old[h.old_start + h.old_count - 1] = true
+    end
     return true, paired < #rest
 end
 
 -- marks for the union hunks from the index's block at each, and the hunks whose block
 -- holds a line neither side has. nil when a hunk is too big to compare
----@param union differ.Hunk[]
+---@param union differ.DiffModel  -- HEAD↔worktree
 ---@param blocks string[][]
+---@param index string  -- the index's text, for the ending of a hunk that reaches it
 ---@return differ.model.Marks|nil marks, integer[] hidden
-function M.of_blocks(union, blocks)
+function M.of_blocks(union, blocks, index)
     local marks = { old = {}, new = {} }
     local hidden = {}
-    for i, h in ipairs(union) do
-        local compared, extra = mark_block(h, blocks[i], marks)
+    local last = #to_lines(union.old_text)
+    local ends = {
+        old = union.old_text:sub(-1) == "\n",
+        new = union.new_text:sub(-1) == "\n",
+        index = index:sub(-1) == "\n",
+    }
+    for i, h in ipairs(union.hunks) do
+        local _, after = old_bounds(h)
+        local at_end = nil ---@type differ.model.Endings|nil
+        if after > last then
+            at_end = ends
+        end
+        local compared, extra = mark_block(h, blocks[i], marks, at_end)
         if not compared then
             return nil, {}
         end

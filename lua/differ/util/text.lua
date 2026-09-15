@@ -54,15 +54,4 @@ function M.truncate_end(s, max)
     return s:sub(1, max - 1) .. "…" -- "…" is one display column
 end
 
--- vim.text.diff is line-oriented; an unterminated final line reads as changed,
--- so normalise to newline-terminated before diffing
----@param text string
----@return string
-function M.ensure_trailing_nl(text)
-    if text == "" or text:sub(-1) == "\n" then
-        return text
-    end
-    return text .. "\n"
-end
-
 return M
