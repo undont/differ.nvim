@@ -2968,6 +2968,27 @@ func getDownloadSpeed() {
         assert.are.equal("0\n" .. twelve({}), index)
     end)
 
+    -- 1x staged, 6y and 12x not: staging 6y from outside leaves the row MM
+    it("re-marks a partial stage from outside that leaves the row as it was", function()
+        local root, p, v =
+            staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [6] = "6y", [12] = "12x" }))
+        local function states()
+            local out = {}
+            for i = 1, #v.model.hunks do
+                out[i] = v:_hunk_state(i)
+            end
+            return out
+        end
+        local before = states()
+        stage_behind(root, twelve({ "1x", [6] = "6y" }))
+        p.on_external_change()
+        local after = states()
+        p:close()
+        local S, U = "staged", "unstaged"
+        assert.are.same({ S, U, U }, before)
+        assert.are.same({ S, S, U }, after)
+    end)
+
     it("X in the local view puts the worktree hunk back to the index's version", function()
         local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
         local p, v = local_view_at(1)

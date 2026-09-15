@@ -1373,11 +1373,11 @@ function M.panel(opts)
     local stageable = is_worktree_status(source)
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
 
-    -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status (the index
-    -- side) + the shown file's mtime/size (the worktree side). external refreshes act
-    -- only when it moved, so a stray event doesn't re-source over an in-progress
-    -- in-differ staging session, and a differ stage records it so the index write it
-    -- caused doesn't read as outside. content-aware so a worktree edit counts too
+    -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status + the shown
+    -- file's index blobs (the index side) + its mtime/size (the worktree side). external
+    -- refreshes act only when it moved, so a stray event doesn't re-source over an
+    -- in-progress in-differ staging session, and a differ stage records it so the index
+    -- write it caused doesn't read as outside
     local function git_signature()
         if not stageable then
             return ""
@@ -1386,6 +1386,9 @@ function M.panel(opts)
             .. "\0"
             .. (git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
         if active_entry then
+            -- a partial stage that leaves the row MM moves only the blob
+            local blobs = { "ls-files", "-s", "--", active_entry.path, active_entry.previous_path }
+            sig = sig .. "\0" .. (git(blobs, root) or "")
             local st = (vim.uv or vim.loop).fs_stat(root .. "/" .. active_entry.path)
             if st and st.mtime then
                 sig = sig .. "\0" .. st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size
