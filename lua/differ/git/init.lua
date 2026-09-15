@@ -1985,14 +1985,37 @@ function M.panel(opts)
     local show_local ---@type fun(entry: differ.FileEntry)
 
     -- u on a `!` hunk in the local view: the index takes HEAD's lines under it, dropping
-    -- the staged change the worktree undid, then the view re-reads against that index
+    -- the staged change the worktree undid, then the view re-reads against that index.
+    -- the hunk's lines are the index's at open, moved by whatever s has staged since
     ---@param entry differ.FileEntry
-    ---@param hunk differ.Hunk  -- index↔worktree
+    ---@param model differ.DiffModel  -- index↔worktree, as the view opened on it
+    ---@param staging differ.view.Staging
+    ---@param idx integer
     ---@return boolean
-    local function drop_hidden(entry, hunk)
+    local function drop_hidden(entry, model, staging, idx)
+        local marks = require("differ.model.marks")
+        local splice = require("differ.model.apply").splice
+        local applied, moved = {}, {} ---@type table<integer, boolean>, differ.Hunk[]
+        for i, h in ipairs(model.hunks) do
+            applied[i] = marks.state(staging.marks, h) == "staged"
+            if applied[i] then
+                moved[#moved + 1] = h
+            end
+        end
         local _, cached = M.union_models(root, entry)
-        local applied = select_hunks(cached.hunks, "new", hunk, "old", false)
-        if not put_index(entry, require("differ.model.apply").splice(cached, applied)) then
+        if cached.new_text ~= splice(model, applied) then
+            notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
+            vim.schedule(function()
+                show_local(entry)
+            end)
+            return false
+        end
+        local hunk = model.hunks[idx]
+        local placed = vim.tbl_extend("force", hunk, {
+            old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
+        })
+        local keep = select_hunks(cached.hunks, "new", placed, "old", false)
+        if not put_index(entry, splice(cached, keep)) then
             return false
         end
         refresh_panel()
@@ -2022,7 +2045,7 @@ function M.panel(opts)
             local hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
             staging.hidden_in = hidden_in
             staging.unstage_hidden = function(idx)
-                return drop_hidden(entry, model.hunks[idx])
+                return drop_hidden(entry, model, staging, idx)
             end
             staging.revert = function(m, idx)
                 return revert_frozen(entry, m, staging, idx, 0, function()

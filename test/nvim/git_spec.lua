@@ -2936,6 +2936,38 @@ func getDownloadSpeed() {
         assert.are.equal(twelve({ "1x", "2x" }), index)
     end)
 
+    it("u on a ! hunk refuses an index staged from outside since the view opened", function()
+        local root = staged_then(twelve({ [12] = "12x" }))
+        local p, v = local_view_at(1)
+        stage_behind(root, twelve({ "1x", "2x" }))
+        _G.notifs = {}
+        v:unstage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal(twelve({ "1x", "2x" }), index)
+    end)
+
+    -- 5x staged and put back on disk, 0 added above it: s on the 0 moves the 5x down a line
+    it("u on a ! hunk finds its line below a hunk s staged in the same view", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", twelve({}))
+        git(root, "commit", "-q", "-am", "twelve lines")
+        stage_behind(root, twelve({ [5] = "5x" }))
+        write(root .. "/a.lua", "0\n" .. twelve({ [12] = "12x" }))
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = local_view_at(1)
+        local marked = v.staging.hidden_in
+        v:stage_hunk()
+        vim.api.nvim_win_set_cursor(0, { hunk_line(v, 2), 0 })
+        v:unstage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.same({ 2 }, marked)
+        assert.are.equal("0\n" .. twelve({}), index)
+    end)
+
     it("X in the local view puts the worktree hunk back to the index's version", function()
         local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
         local p, v = local_view_at(1)
