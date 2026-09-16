@@ -13,6 +13,7 @@
 ---@field new integer|nil
 ---@field hunk integer|nil           -- index into DiffModel.hunks
 ---@field spans differ.SubSpan[]|nil -- word-level changed regions (old/new only)
+---@field no_eol boolean|nil         -- a side's last line, with no newline after it
 
 ---@class differ.LineMap
 ---@field lines differ.RailLine[]          -- indexed by buffer lnum (1-based)

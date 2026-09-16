@@ -23,6 +23,8 @@ local LINKS = {
     -- a dashed fill marks the side that has no line here, the native-vimdiff look, so
     -- the gap reads as "absent on this side" rather than an empty void. dim like NonText
     differFiller = { link = "NonText" },
+    -- the note after a changed last line with no newline after it
+    differNoEol = { link = "NonText" },
     -- neutral fallback for a staged line with no add/delete kind; kinded staged lines
     -- use the dimmed deep-diff groups (differStagedLine{Add,Delete}/Word*) instead
     differStagedLine = { link = "CursorLine" },
