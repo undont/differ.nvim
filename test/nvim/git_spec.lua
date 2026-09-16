@@ -57,6 +57,24 @@ local function view_in_origin(p)
     return require("differ.view").current()
 end
 
+-- the panel session on the repo just built, and the diff it opens on the origin file
+local function open_panel()
+    git_src.panel({ rev = {}, open_first = true })
+    local p = assert(require("differ.panel").current())
+    return p, view_in_origin(p)
+end
+
+-- run `fn` with vim.fn.confirm answering `choice`: 1 yes, 2 no
+local function confirming(choice, fn)
+    local orig = vim.fn.confirm
+    vim.fn.confirm = function()
+        return choice
+    end
+    local ok, err = pcall(fn)
+    vim.fn.confirm = orig
+    assert(ok, err)
+end
+
 describe("git.read / changed_files", function()
     it("reads the committed version and the worktree version", function()
         local root = fresh_repo()
@@ -734,8 +752,7 @@ describe(":Differ panel", function()
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua modified, unstaged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local winbar = require("differ.ui.winbar")
         vim.g.statusline_winid = p.winid
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
@@ -932,8 +949,7 @@ describe(":Differ panel", function()
             write(root .. "/keep.lua", "kept\n") -- a survivor the diff should land on
             vim.cmd.edit(root .. "/a.lua")
 
-            git_src.panel({ rev = {}, open_first = true })
-            local p = Panel.current()
+            local p = open_panel()
             assert.are.equal("a.lua", view_at(p).model.path)
 
             git(root, "checkout", "HEAD", "--", "a.lua") -- only the shown file goes clean
@@ -957,8 +973,7 @@ describe(":Differ panel", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.are.equal(1, #view_at(p).model.hunks)
 
         write(root .. "/a.lua", "local x = 2\nreturn x\nlocal y = 3\n") -- edited outside
@@ -1245,12 +1260,9 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
 
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        p:discard()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            p:discard()
+        end)
 
         assert.is_nil(entry_of(p, "a.lua")) -- no longer a change
         assert.are.equal(V1, table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
@@ -1271,12 +1283,9 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "u.lua"), 0 })
 
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        p:discard()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            p:discard()
+        end)
 
         assert.are.equal(0, vim.fn.filereadable(root .. "/u.lua"))
         p:close()
@@ -1370,12 +1379,9 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { dir_line(p, "src"), 0 })
 
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        p:discard()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            p:discard()
+        end)
 
         assert.are.equal(0, vim.fn.filereadable(root .. "/src/a.lua")) -- both deleted
         assert.are.equal(0, vim.fn.filereadable(root .. "/src/b.lua"))
@@ -1488,9 +1494,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two far-apart edits
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("unstaged", v:_hunk_state(1)) -- index↔worktree opens unstaged
         assert.are.equal(2, #v.model.hunks) -- two distinct hunks (lines 1 and 8)
         local before = vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)
@@ -1524,9 +1528,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/z.lua", "z1x\nz2\n") -- a second file to stage from the panel
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk() -- mark hunk 1 in place, leaving hunk 2 unstaged
@@ -1554,9 +1556,7 @@ describe(":Differ diff hunk staging", function()
         git(root, "add", "a.lua") -- whole change staged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1)) -- a staged (HEAD↔index) diff
         assert.are.equal("staged", v:_hunk_state(1)) -- opens marked staged
         assert.are.equal("local x = 2\nreturn x\n", indexed(root, "a.lua"))
@@ -1579,9 +1579,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two far-apart edits
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk()
         assert.are.equal("staged", v:_hunk_state(1))
@@ -1610,9 +1608,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/new.lua", "alpha\nbeta\n") -- untracked, the only change
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.is_not_nil(v.staging) -- a new file now offers (whole-file) staging
         assert.are.equal("unstaged", v:_hunk_state(1))
         assert.are.equal(1, #v.model.hunks) -- empty<->content is a single hunk
@@ -1638,9 +1634,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua modified
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("local x = 2\nreturn x\n", v.model.new_text)
 
         -- outside differ: edit the viewed file further, and change git state (stage a
@@ -1664,8 +1658,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.are.equal("M", p:current_entry().status)
 
         _G.notifs = {}
@@ -1690,8 +1683,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
 
         _G.notifs = {}
         write(root .. "/a.lua", "local x = 99\nreturn x\n") -- same file, same pair
@@ -1712,8 +1704,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.are.equal("unstaged", view_in_origin(p):_hunk_state(1))
 
         _G.notifs = {}
@@ -1763,9 +1754,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
         vim.api.nvim_win_set_cursor(0, { 10, 0 }) -- near the second hunk
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         -- opened a.lua (the current file) though m.lua sorts first in the list
         assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n", v.model.new_text)
@@ -1790,9 +1779,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
         vim.api.nvim_win_set_cursor(0, { 10, 2 }) -- on the unstaged change
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         -- HEAD↔worktree, carrying both the staged hunk at line 1 and the unstaged one
         assert.are.equal(committed(root, "a.lua"), v.model.old_text)
@@ -1817,9 +1804,7 @@ describe(":Differ diff hunk staging", function()
         git(root, "add", "a.lua") -- staged, with nothing left in the worktree
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(V1, v.model.old_text)
@@ -1844,9 +1829,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
         vim.api.nvim_win_set_cursor(0, { 8, 0 })
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal("unstaged", v:_hunk_state(2))
         local before = p:current_entry()
@@ -1885,9 +1868,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/" .. path)
         vim.api.nvim_win_set_cursor(0, { 10, 2 })
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks) -- the staged line-1 change and the line-10 one
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal("unstaged", v:_hunk_state(2))
@@ -1928,9 +1909,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         local buffer = vim.api.nvim_buf_get_lines(v.columns[#v.columns].bufnr, 0, -1, false)
         assert.are.equal(2, #v.model.hunks) -- both edits, in one diff
@@ -2101,9 +2080,7 @@ func getDownloadSpeed() {
         write(root .. "/a.go", ACME_WORK)
 
         vim.cmd.edit(root .. "/a.go")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         local function press(n, op)
@@ -2164,8 +2141,7 @@ func getDownloadSpeed() {
         index_as(root, "a.lua", index)
         write(root .. "/a.lua", work)
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         return root, p, view_in_origin(p)
     end
     local function lines_of(t)
@@ -2392,9 +2368,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         assert.are.equal(1, #v.model.hunks)
         assert.are.equal("partial", v:_hunk_state(1))
@@ -2425,9 +2399,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("partial", v:_hunk_state(1))
 
         local col = v.columns[#v.columns]
@@ -2450,9 +2422,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua")
         write(root .. "/a.lua", "1\n2\nN\n3x\n4\n5\n6\n7\n8\n9\n10\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
@@ -2473,12 +2443,9 @@ func getDownloadSpeed() {
     it("reverts an insertion staged just above the hunk's edit from both sides", function()
         local root = fresh_repo()
         local p, v = insert_then_edit_below(root)
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         local work, index = worktree(root, "a.lua"), indexed(root, "a.lua")
         p:close()
         assert.are.equal(committed(root, "a.lua"), work)
@@ -2496,9 +2463,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n4x\n5\n6\n7\n8\n9\n10\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("partial", v:_hunk_state(1))
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
@@ -2521,9 +2486,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua")
         write(root .. "/a.lua", "1\nA2\n3\n4\nD2\nE2\n7\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
@@ -2541,12 +2504,9 @@ func getDownloadSpeed() {
             local p, v = shared_change(root)
             local before = { worktree(root, "a.lua"), indexed(root, "a.lua") }
             local hunks = #v.model.hunks
-            local orig = vim.fn.confirm
-            vim.fn.confirm = function()
-                return 1
-            end
-            v[case.op](v)
-            vim.fn.confirm = orig
+            confirming(1, function()
+                v[case.op](v)
+            end)
             local after = { worktree(root, "a.lua"), indexed(root, "a.lua") }
             local said = (_G.notifs[#_G.notifs] or {}).msg or ""
             p:close()
@@ -2566,21 +2526,16 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua")
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
         local edited = "1z\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n"
         write(root .. "/a.lua", edited)
         _G.notifs = {}
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
         p:close()
@@ -2603,9 +2558,7 @@ func getDownloadSpeed() {
         write(root .. "/a[1].txt", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
 
         vim.cmd.edit(vim.fn.fnameescape(root .. "/a[1].txt"))
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         if v.model.path ~= "a[1].txt" then
             p:close()
             error("opened " .. v.model.path .. ", not the bracketed file")
@@ -2629,9 +2582,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10x\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("partial", v:_hunk_state(1))
         assert.are.equal("unstaged", v:_hunk_state(2))
 
@@ -2657,8 +2608,7 @@ func getDownloadSpeed() {
         write(root .. "/b.lua", "two\n") -- unstaged only
 
         vim.cmd.edit(root .. "/b.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.are.equal("b.lua", view_in_origin(p).model.path)
 
         assert.is_true(p:step_review("prev", true, true))
@@ -2689,9 +2639,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 3\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local text, gutter = winbar_of(v), gutter_of(v, hunk_line(v, 1))
         v:toggle_local()
         local local_gutter = gutter_of(v, hunk_line(v, 1))
@@ -2709,8 +2657,7 @@ func getDownloadSpeed() {
         vim.fn.setfperm(root .. "/a.lua", "rw-r--r--") -- the worktree is back to -x
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local text = winbar_of(view_in_origin(p))
         p:close()
         assert.is_truthy(text:find("staged content hidden: dw shows it", 1, true))
@@ -2742,9 +2689,7 @@ func getDownloadSpeed() {
         write(root .. "/new.lua", "one\ntwo\nthree\n") -- AM
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local state = v:_hunk_state(1)
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
@@ -2771,9 +2716,7 @@ func getDownloadSpeed() {
         git(root, "add", "-N", "b.lua") -- " R a.lua -> b.lua"
         vim.cmd.edit(root .. "/b.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local hunks = #v.model.hunks
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
@@ -2800,9 +2743,7 @@ func getDownloadSpeed() {
 
     it("dw opens a partly staged file's local view and goes back", function()
         partly_staged_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local whole = #v.model.hunks
         v:toggle_local()
         local old_rev, new_rev = v.model.old_rev, v.model.new_rev
@@ -2827,9 +2768,7 @@ func getDownloadSpeed() {
     it("stages and unstages in the local view against the index it opened on", function()
         local root = partly_staged_repo()
         local before = indexed(root, "a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         v:toggle_local()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
@@ -2847,9 +2786,7 @@ func getDownloadSpeed() {
 
     it("df from the local view edits the worktree file from the whole change", function()
         partly_staged_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         v:toggle_local()
         v:edit_file()
         local rev_after, win = v.model.old_rev, v.edit_win
@@ -2862,9 +2799,7 @@ func getDownloadSpeed() {
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         _G.notifs = {}
         v:toggle_local()
         local rev_after, msg = v.model.old_rev, _G.notifs[#_G.notifs].msg
@@ -2900,22 +2835,9 @@ func getDownloadSpeed() {
         os.remove(blob)
         git(root, "update-index", "--cacheinfo", "100644," .. sha .. ",a.lua")
     end
-    -- u on a `!` hunk confirms, like X: 1 answers yes, 2 no
-    local function dropping(choice, fn)
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return choice
-        end
-        local ok, err = pcall(fn)
-        vim.fn.confirm = orig
-        assert(ok, err)
-    end
-
     -- the local view of the file :Differ opened, cursor on hunk `n`
     local function local_view_at(n)
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         v:toggle_local()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
@@ -2927,9 +2849,7 @@ func getDownloadSpeed() {
     -- staged change it still has rather than a notice
     it("opens a staged change the worktree put back on its HEAD-to-index hunks", function()
         local root = staged_then(twelve({}))
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local revs = { v.model.old_rev, v.model.new_rev }
         local hunks, notice, badge = #v.model.hunks, v.model.notice, v.staging.badge
         local state = v:_hunk_state(1)
@@ -2954,7 +2874,7 @@ func getDownloadSpeed() {
         local root = staged_then(twelve({ [12] = "12x" }))
         local p, v = local_view_at(1)
         local marked = v.staging.hidden_in
-        dropping(1, function()
+        confirming(1, function()
             v:unstage_hunk()
         end)
         local index, hunks, rev_after = indexed(root, "a.lua"), #v.model.hunks, v.model.old_rev
@@ -2971,7 +2891,7 @@ func getDownloadSpeed() {
     it("u on a ! hunk takes HEAD's lines, not the worktree's", function()
         local root = staged_then(twelve({ "1y", [12] = "12x" }))
         local p, v = local_view_at(1)
-        dropping(1, function()
+        confirming(1, function()
             v:unstage_hunk()
         end)
         local index = indexed(root, "a.lua")
@@ -2983,7 +2903,7 @@ func getDownloadSpeed() {
     it("u on a ! hunk drops nothing when the confirm is declined", function()
         local root = staged_then(twelve({ [12] = "12x" }))
         local p, v = local_view_at(1)
-        dropping(2, function()
+        confirming(2, function()
             v:unstage_hunk()
         end)
         local index = indexed(root, "a.lua")
@@ -2996,12 +2916,9 @@ func getDownloadSpeed() {
         local root = staged_then(twelve({ [12] = "12x" }))
         local p, v = local_view_at(1)
         local opened = v.staging
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         vim.wait(500, function() -- the local view re-reads on a schedule
             return v.staging ~= opened
         end)
@@ -3033,7 +2950,7 @@ func getDownloadSpeed() {
         local p, v = local_view_at(1)
         stage_behind(root, twelve({ "1x", "2x" }))
         _G.notifs = {}
-        dropping(1, function()
+        confirming(1, function()
             v:unstage_hunk()
         end)
         local said = (_G.notifs[#_G.notifs] or {}).msg
@@ -3055,7 +2972,7 @@ func getDownloadSpeed() {
         local marked = v.staging.hidden_in
         v:stage_hunk()
         vim.api.nvim_win_set_cursor(0, { hunk_line(v, 2), 0 })
-        dropping(1, function()
+        confirming(1, function()
             v:unstage_hunk()
         end)
         local index = indexed(root, "a.lua")
@@ -3094,9 +3011,7 @@ func getDownloadSpeed() {
         index_as(root, "1:x.txt", twelve({ "1x" }))
         write(root .. "/1:x.txt", twelve({ "1x", [12] = "12x" }))
         vim.cmd.edit(vim.fn.fnameescape(root .. "/1:x.txt"))
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local states = { v:_hunk_state(1), v:_hunk_state(2) }
         p:close()
         assert.are.same({ "staged", "unstaged" }, states)
@@ -3128,12 +3043,9 @@ func getDownloadSpeed() {
         local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
         local p, v = local_view_at(1)
         local opened = v.staging
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         vim.wait(500, function() -- the local view re-reads on a schedule
             return v.staging ~= opened
         end)
@@ -3149,12 +3061,9 @@ func getDownloadSpeed() {
         local root = staged_then(twelve({ "1x", [6] = "6y", [12] = "12y" }))
         local p, v = local_view_at(1)
         v:stage_hunk()
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         local work, index = worktree(root, "a.lua"), indexed(root, "a.lua")
         p:close()
         assert.are.equal(twelve({ "1x", [12] = "12y" }), work)
@@ -3203,8 +3112,7 @@ func getDownloadSpeed() {
     it("dw in the panel opens the row's local view, and takes it back", function()
         local root = partly_staged_repo()
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_local_key(p)
         local v = view_in_origin(p)
         local revs, badge = { v.model.old_rev, v.model.new_rev }, v.staging.badge
@@ -3219,8 +3127,7 @@ func getDownloadSpeed() {
 
     it("dw in the panel refuses in the commit preview", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         _G.notifs = {}
         toggle_local_key(p)
@@ -3237,8 +3144,7 @@ func getDownloadSpeed() {
         git(root, "commit", "-q", "-m", "one")
         write(root .. "/a.lua", "one\ntwo2\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         _G.notifs = {}
         toggle_local_key(p)
         local said, rev_after = (_G.notifs[#_G.notifs] or {}).msg, view_in_origin(p).model.old_rev
@@ -3249,9 +3155,7 @@ func getDownloadSpeed() {
 
     it("gs in the diff flips the listing the same way the panel's does", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local before = titles(p)
         local bound = false
         for _, map in ipairs(vim.api.nvim_buf_get_keymap(v.columns[#v.columns].bufnr, "n")) do
@@ -3271,8 +3175,7 @@ func getDownloadSpeed() {
 
     it("gs lists only the staged changes, each diffing HEAD-to-index, and back", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local before = titles(p)
         toggle_preview(p)
         local v = view_in_origin(p)
@@ -3298,8 +3201,7 @@ func getDownloadSpeed() {
     -- marked staged, so hunks come out in any order and go straight back
     it("unstages in the commit preview in any order, and stages back in place", function()
         local root = preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
@@ -3325,8 +3227,7 @@ func getDownloadSpeed() {
     -- staged, not the worktree's copy
     it("unstages an add in the commit preview and stages back what was staged", function()
         local root = preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         assert.is_true(p:goto_path("c.lua", true))
         local v = view_in_origin(p)
@@ -3341,8 +3242,7 @@ func getDownloadSpeed() {
 
     it("refuses s in the commit preview panel", function()
         local root = preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local before = indexed(root, "a.lua")
         _G.notifs = {}
@@ -3355,8 +3255,7 @@ func getDownloadSpeed() {
 
     it("returns to the whole list once the commit preview is unstaged", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         p:stage_op("unstage_all")
         local alive, got = p:is_alive(), titles(p)
@@ -3369,8 +3268,7 @@ func getDownloadSpeed() {
 
     it("df from the commit preview edits the file from the whole list", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         v:edit_file()
@@ -3384,12 +3282,9 @@ func getDownloadSpeed() {
     -- confirm X's prompt, then wait out the re-read the preview schedules
     local function revert_confirmed(v)
         local opened = v.staging
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         vim.wait(500, function()
             return v.staging ~= opened
         end)
@@ -3397,8 +3292,7 @@ func getDownloadSpeed() {
 
     it("X in the commit preview drops a staged hunk from the index and the file", function()
         local root = preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
@@ -3417,20 +3311,16 @@ func getDownloadSpeed() {
     -- 1x staged and then edited to 1y: taking 1x out of the file would lose 1y
     it("X in the commit preview refuses a hunk the file has changed since staging", function()
         local root = staged_then(twelve({ "1y", [12] = "12x" }))
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
         _G.notifs = {}
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         local msg = _G.notifs[#_G.notifs].msg
         local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
         p:close()
@@ -3450,8 +3340,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua")
         write(root .. "/a.lua", "n1\nn2\nn3\nl1\nl2\nl3\nl4\nl5\nl8\nl9\nl10\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
@@ -3466,8 +3355,7 @@ func getDownloadSpeed() {
 
     it("u in the commit preview refuses an index staged from outside since it opened", function()
         local root = staged_then(twelve({ "1x", [12] = "12x" }))
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         local col = v.columns[#v.columns]
@@ -3485,17 +3373,13 @@ func getDownloadSpeed() {
 
     it("X in the commit preview deletes a staged add", function()
         local root = preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         assert.is_true(p:goto_path("c.lua", true))
         local v = view_in_origin(p)
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        v:revert_hunk()
-        vim.fn.confirm = orig
+        confirming(1, function()
+            v:revert_hunk()
+        end)
         local on_disk = vim.fn.filereadable(root .. "/c.lua")
         local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
         p:close()
@@ -3505,8 +3389,7 @@ func getDownloadSpeed() {
 
     it("dw and gs say why they do nothing", function()
         preview_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         toggle_preview(p)
         local v = view_in_origin(p)
         _G.notifs = {}
@@ -3538,9 +3421,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n3x\n4y\n5y\n6\n7\n8\n9\n10\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
@@ -3572,9 +3453,7 @@ func getDownloadSpeed() {
 
     it("redraws the winbar tally as soon as a hunk is unstaged", function()
         partly_staged_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
@@ -3588,8 +3467,7 @@ func getDownloadSpeed() {
 
     it("tallies staged hunks beside unstaged ones", function()
         partly_staged_repo()
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local text = winbar_of(view_in_origin(p))
         p:close()
         assert.is_truthy(text:find(" 2 staged · hunk %d/3 "))
@@ -3608,21 +3486,15 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10x\n")
 
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1))
 
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-        local real_confirm = vim.fn.confirm
-        vim.fn.confirm = function()
-            return 1
-        end
-        local ok, err = pcall(v.revert_hunk, v)
-        vim.fn.confirm = real_confirm
-        assert.is_true(ok, tostring(err))
+        confirming(1, function()
+            v:revert_hunk()
+        end)
 
         -- the line-1 change is gone from both sides; the line-10 one is untouched
         assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
@@ -3640,9 +3512,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua") -- staged outright: the diff opens on HEAD↔index
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(1, #v.model.hunks)
 
@@ -3664,9 +3534,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua modified
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         -- edit only the worktree (status stays " M"): the content-aware signature still
         -- moves, so the diff re-sources where the old HEAD+status signature would miss it
@@ -3685,9 +3553,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua modified, unstaged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("unstaged", v:_hunk_state(1))
 
         git(root, "add", "a.lua") -- stage the whole file in "lazygit"
@@ -3710,9 +3576,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "a\nINS1\nINS2\nb\nc\nD\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -3741,9 +3605,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\nA1\nA2\n2\n3\n4\n5\n6\nB1\n7\n8\n9\n10\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -3770,9 +3632,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\nINS1\nINS2\n2\n3\n4\n7\n8\n9\nZ\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(3, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -3794,16 +3654,6 @@ func getDownloadSpeed() {
     -- the panel row for `path`, optionally pinned to its staged or unstaged side
 
     -- answer the revert confirm with `choice` for the duration of `fn`
-    local function confirming(choice, fn)
-        local orig = vim.fn.confirm
-        vim.fn.confirm = function()
-            return choice
-        end
-        local ok, err = pcall(fn)
-        vim.fn.confirm = orig
-        assert(ok, err)
-    end
-
     it("reverts one hunk from the worktree, leaving the others and the index", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
@@ -3811,9 +3661,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -3836,9 +3684,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
@@ -3867,9 +3713,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", table.concat(edited, "\n") .. "\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(3, #v.model.hunks)
         local asked_on = v.model
 
@@ -3918,9 +3762,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "local z = 99\nreturn z\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -3960,9 +3802,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua") -- both edits staged; the worktree matches the index
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal(2, #v.model.hunks)
 
@@ -3988,9 +3828,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
@@ -4014,9 +3852,7 @@ func getDownloadSpeed() {
         write(root .. "/new.lua", "fresh\n") -- untracked
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("deletes the file", v.staging.revert_label)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4044,9 +3880,7 @@ func getDownloadSpeed() {
         git(root, "add", "new.lua") -- staged add: "A"
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
 
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
@@ -4070,9 +3904,7 @@ func getDownloadSpeed() {
         write(root .. "/gone.lua", "temporary\n") -- untracked, about to go
         vim.cmd.edit(root .. "/gone.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("gone.lua", v.model.path)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4099,9 +3931,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11\n12x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4130,9 +3960,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- a.lua has one hunk
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
         assert.are.equal(1, #v.model.hunks)
 
@@ -4156,9 +3984,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- the only change in the repo
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(1, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4182,8 +4008,7 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/a.lua")
         local invoked_from = vim.api.nvim_get_current_tabpage()
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.is_false(invoked_from == vim.api.nvim_get_current_tabpage()) -- own tab
         local v = view_in_origin(p)
 
@@ -4203,9 +4028,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.is_true(v:is_open())
 
         git(root, "commit", "-q", "-am", "committed elsewhere")
@@ -4224,9 +4047,7 @@ func getDownloadSpeed() {
         write(root .. "/b.lua", "kept\n") -- a second change, untracked
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4252,8 +4073,7 @@ func getDownloadSpeed() {
         os.remove(root .. "/b.lua")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
         p:select()
         local v = view_in_origin(p)
@@ -4279,8 +4099,7 @@ func getDownloadSpeed() {
         git(root, "rm", "-q", "b.lua") -- deletion staged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", true), 0 })
         p:select()
         local v = view_in_origin(p)
@@ -4307,8 +4126,7 @@ func getDownloadSpeed() {
         os.remove(root .. "/b.lua")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua", false), 0 })
         p:select()
         local v = view_in_origin(p)
@@ -4342,9 +4160,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1\nz2\n") -- untracked: staged wholesale, not by hunk
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
 
         _G.notifs = {}
@@ -4371,9 +4187,7 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/a.lua") -- the real file is open in a buffer
         local filebuf = vim.api.nvim_get_current_buf()
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         vim.api.nvim_set_current_win(p.origin_win)
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         confirming(1, function()
@@ -4394,9 +4208,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- three hunks
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(3, #v.model.hunks)
 
         -- stage the first, then revert the second: the mark has to follow hunk 1
@@ -4431,9 +4243,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1\n2\n3\nX\n5\n6\n") -- only line 4 changes
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         local cur = vim.api.nvim_win_get_cursor(p.origin_win)[1]
         assert.is_not_nil(v.columns[1].map.lines[cur].hunk) -- on a hunk, not context
         assert.are.equal(v:_first_review_line(v.columns[1]), cur)
@@ -4447,9 +4257,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- hunks at lines 1 and 8
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(1, v:_first_review_line(v.columns[1])) -- both unstaged -> hunk 1
 
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
@@ -4466,9 +4274,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua") -- and stage it (fully staged: worktree == index)
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("WORKTREE", v.model.new_rev)
 
         v:edit_file()
@@ -4513,9 +4319,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         v:set_context(1)
         assert.are_not.equal(-1, fold_closed_at(v, "10"))
         open_fold_at(v, "10")
@@ -4538,9 +4342,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n")
         vim.cmd.edit(root .. "/z.lua") -- open on the last file in the list
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
 
         _G.notifs = {}
@@ -4569,9 +4371,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: unstaged
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
         -- the staged a.lua row renders first, so the wrap meets it before b.lua
         assert.is_true(file_line(p, "a.lua", true) < file_line(p, "b.lua", false))
@@ -4593,9 +4393,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- the only unstaged file
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
         local hunks_before = #v.model.hunks
 
@@ -4616,9 +4414,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- unstaged
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
 
         assert.is_true(p:step_review("prev", true, true))
@@ -4639,9 +4435,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- z.lua: three hunks
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
         assert.are.equal(3, #v.model.hunks)
 
@@ -4688,9 +4482,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- the only file, three hunks
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(3, #v.model.hunks)
 
         vim.api.nvim_set_current_win(p.origin_win)
@@ -4725,9 +4517,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "1x\n2\n3\n4\n5x\n6\n7\n8\n9x\n") -- the only file, three hunks
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(3, #v.model.hunks)
 
         -- stage 1 and 2, leaving 3 alone: the unstaged side survives, so the view stays
@@ -4766,9 +4556,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
         -- opened from new-file line 1 (the "1" -> "1x" change), so it lands on that
         -- line's new-side row (row 2, under the deleted old "1"), not the hunk's top
@@ -4801,9 +4589,7 @@ func getDownloadSpeed() {
         git(root, "add", "a.lua", "z.lua") -- stage both: a staged (HEAD↔index) review
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         v:step_file("next") -- move forward to z.lua (the last file)
         assert.are.equal("z.lua", v.model.path)
 
@@ -4824,9 +4610,7 @@ func getDownloadSpeed() {
         write(root .. "/a.lua", "a\nINS1\nINS2\nb\nc\nD\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal(2, #v.model.hunks)
 
         v:stage_all() -- both hunks into the index in one go
@@ -4851,9 +4635,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         v:stage_all() -- a.lua now fully staged; we stay put
@@ -4877,9 +4659,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: unstaged, last in the list
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
 
         v:stage_all() -- z.lua fully staged; the view follows to its staged side
@@ -4904,9 +4684,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk, unstaged
         vim.cmd.edit(root .. "/z.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("z.lua", v.model.path)
 
         v:unstage_all() -- nothing staged here: back to a.lua, on its last staged hunk
@@ -4926,9 +4704,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk, left unstaged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         -- u / U at the first file with nothing staged: stay put, no wrap to the last
@@ -4965,9 +4741,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         v:goto_hunk("next") -- past a.lua's only (last) hunk: flow into z.lua
@@ -5071,9 +4845,7 @@ func getDownloadSpeed() {
         write(root .. "/z.lua", table.concat(changed, "\n") .. "\n") -- z.lua: two hunks
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
 
         v:goto_hunk("next") -- past a.lua's only hunk: flow into z.lua
@@ -5092,8 +4864,7 @@ func getDownloadSpeed() {
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local lhs = keymaps(view_in_origin(p).columns[1].bufnr)
         for _, k in ipairs({ "s", "u", "S", "U", "X" }) do
             assert.is_true(lhs[k])
@@ -5118,8 +4889,7 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/a.lua")
 
         -- default `:Differ` is HEAD↔worktree (uncommitted): df is bound
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.is_true(keymaps(view_in_origin(p).columns[1].bufnr)["df"])
         p:close()
 
@@ -5144,8 +4914,7 @@ describe(":Differ panel <-> diff wiring", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.are.equal(p.origin_win, vim.api.nvim_get_current_win()) -- in the diff
         assert.are_not.equal(p.winid, vim.api.nvim_get_current_win())
         p:close()
@@ -5157,8 +4926,7 @@ describe(":Differ panel <-> diff wiring", function()
         git(root, "commit", "-q", "-am", "8 lines")
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- two hunks
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
 
         local lhs = {}
         for _, m in ipairs(vim.api.nvim_buf_get_keymap(p.bufnr, "n")) do
@@ -5179,8 +4947,7 @@ describe(":Differ panel <-> diff wiring", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_set_current_win(p.winid) -- focus the panel
         assert.is_not_nil(require("differ").active_view())
 
@@ -5202,8 +4969,7 @@ describe(":Differ (open_first)", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         assert.is_not_nil(p)
         local v = view_in_origin(p)
         assert.is_not_nil(v)
@@ -5223,8 +4989,7 @@ describe(":Differ (open_first)", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n") -- one changed line
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         local buf = vim.api.nvim_win_get_buf(p.origin_win)
         local dict = vim.b[buf].gitsigns_status_dict
         assert.is_not_nil(dict)
@@ -5262,8 +5027,7 @@ describe(":Differ (open_first)", function()
         git(root, "add", "z.lua") -- staged -> two files in the set
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_set_current_win(p.origin_win) -- emulate cursor in the diff window
         local v = require("differ.view").current()
         local first = v.model.path
@@ -5283,8 +5047,7 @@ describe(":Differ (open_first)", function()
         git(root, "add", "z.lua") -- staged (sorts first)
         vim.cmd.edit(root .. "/a.lua") -- open on a.lua, the last file
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
+        local p = open_panel()
         vim.api.nvim_set_current_win(p.origin_win)
         local v = require("differ.view").current()
         assert.are.equal("a.lua", v.model.path)
@@ -5308,9 +5071,7 @@ describe(":Differ (open_first)", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.is_true(p:is_open())
         assert.is_true(v:is_open())
 
@@ -5546,9 +5307,7 @@ describe(":Differ diff whole-file staging", function()
         assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493))
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
         assert.are.equal(0, #v.model.hunks) -- nothing to put a cursor on
         assert.is_true(v.staging.whole_file)
@@ -5569,9 +5328,7 @@ describe(":Differ diff whole-file staging", function()
         git(root, "add", "a.lua") -- stage the mode change: the only entry is staged
         vim.cmd.edit(root .. "/a.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal("staged", v:_hunk_state(1)) -- seeded with no hunk behind it
         assert.are.equal("100755", index_mode(root, "a.lua"))
@@ -5588,9 +5345,7 @@ describe(":Differ diff whole-file staging", function()
         write(root .. "/b.lua", "other\n") -- a second entry, to catch a step away
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.are.equal("new.lua", v.model.path)
         v:toggle_layout() -- -> split; the old column is all filler
         assert.are.equal(2, #v.columns)
@@ -5613,9 +5368,7 @@ describe(":Differ diff whole-file staging", function()
         write(root .. "/new.lua", "one\n")
         vim.cmd.edit(root .. "/new.lua")
 
-        git_src.panel({ rev = {}, open_first = true })
-        local p = Panel.current()
-        local v = view_in_origin(p)
+        local p, v = open_panel()
         assert.is_true(v.staging.whole_file)
         v:show_help()
         local help_buf = vim.api.nvim_win_get_buf(0)
