@@ -164,11 +164,19 @@ describe("panel navigation", function()
 
     it("focus_first_unstaged lands on the first unstaged file, skipping Staged", function()
         local function se(path, staged)
-            local x, y = "M", " "
+            local x, y, review = "M", " ", "staged"
             if not staged then
-                x, y = " ", "M"
+                x, y, review = " ", "M", "unstaged"
             end
-            return { path = path, status = "M", additions = 1, deletions = 0, x = x, y = y }
+            return {
+                path = path,
+                status = "M",
+                additions = 1,
+                deletions = 0,
+                x = x,
+                y = y,
+                review = review,
+            }
         end
         local p, picked = panel({}, {
             sections = {
@@ -185,7 +193,15 @@ describe("panel navigation", function()
 
     it("focus_first_unstaged falls back to the first file when all are staged", function()
         local function se(path)
-            return { path = path, status = "M", additions = 1, deletions = 0, x = "M", y = " " }
+            return {
+                path = path,
+                status = "M",
+                additions = 1,
+                deletions = 0,
+                x = "M",
+                y = " ",
+                review = "staged",
+            }
         end
         local p, picked = panel({}, {
             sections = { { title = "Staged", entries = { se("a.lua"), se("b.lua") } } },

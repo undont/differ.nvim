@@ -762,6 +762,25 @@ local function porcelain(root)
     return entries, untracked, err
 end
 
+-- what a row leaves to review, from the two status letters: a conflict is the merge
+-- tool's, and the panel's review walk steps past it
+---@param x string  -- index side
+---@param y string  -- worktree side
+---@param status string
+---@return differ.panel.Review
+local function review_state(x, y, status)
+    if status == "U" then
+        return "conflict"
+    end
+    if x == " " or x == "?" then
+        return "unstaged"
+    end
+    if y == " " then
+        return "staged"
+    end
+    return "partial"
+end
+
 -- a panel row for porcelain entry `s`, lettered `status` and counted from `counts`
 ---@param s differ.git.StatusEntry
 ---@param status string
@@ -773,6 +792,7 @@ local function status_row(s, status, counts, untracked)
     return {
         path = s.path,
         status = status,
+        review = review_state(s.x, s.y, status),
         additions = c.additions or 0,
         deletions = c.deletions or 0,
         x = s.x,
@@ -1708,17 +1728,18 @@ function M.panel(opts)
         return discard, "puts it back as HEAD has it"
     end
 
-    -- a whole-file row's staged state, from its status letters
+    -- a whole-file row's staged state. a conflict holds both sides at once, which the
+    -- view has no third state for
     ---@param entry differ.FileEntry
     ---@return differ.model.HunkState
     local function row_state(entry)
-        if entry.x == " " or entry.x == "?" then
-            return "unstaged"
-        end
-        if entry.y == " " then
+        if entry.review == "staged" then
             return "staged"
         end
-        return "partial"
+        if entry.review == "partial" or entry.review == "conflict" then
+            return "partial"
+        end
+        return "unstaged"
     end
 
     ---@param entry differ.FileEntry

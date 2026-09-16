@@ -91,17 +91,8 @@ end
 ---@param view differ.View
 ---@return string
 function M.tally(view)
-    if not view:_can_stage_hunk() or view:_whole_file() then
-        return ""
-    end
-    local counts = { staged = 0, partial = 0 }
-    for i = 1, #view.model.hunks do
-        local state = view:_hunk_state(i)
-        if counts[state] then
-            counts[state] = counts[state] + 1
-        end
-    end
-    if counts.staged == #view.model.hunks then
+    local counts = view:hunk_tally()
+    if not counts or counts.staged == counts.total then
         return ""
     end
     local out = ""

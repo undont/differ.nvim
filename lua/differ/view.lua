@@ -1173,6 +1173,23 @@ function View:_hunk_state(idx)
     return require("differ.model.marks").state(self.marks, h)
 end
 
+-- how many of the file's hunks the index holds, and how many it holds part of. nil off
+-- a hunk-staging source, which has nothing to tally
+---@return { staged: integer, partial: integer, total: integer }|nil
+function View:hunk_tally()
+    if not self:_can_stage_hunk() or self:_whole_file() then
+        return nil
+    end
+    local counts = { staged = 0, partial = 0, total = #self.model.hunks }
+    for i = 1, counts.total do
+        local state = self:_hunk_state(i)
+        if state == "staged" or state == "partial" then
+            counts[state] = counts[state] + 1
+        end
+    end
+    return counts
+end
+
 -- the slot the staging keys act on: slot 1 for a whole-file source, backed by a hunk
 -- or not; anything else takes the hunk under the cursor
 ---@return integer|nil

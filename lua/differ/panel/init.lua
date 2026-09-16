@@ -939,11 +939,11 @@ function Panel:_edge_file_row(edge)
 end
 
 -- whether a row has something left to stage: anything but a Staged row, and every row
--- of a source without staging
+-- of a source without staging, whose entries carry no review state
 ---@param e differ.FileEntry
 ---@return boolean
 local function has_unstaged(e)
-    return e.y ~= " "
+    return e.review ~= "staged"
 end
 
 -- move the cursor to the first unstaged file row, skipping the Staged section so
@@ -970,11 +970,11 @@ end
 ---@param staged boolean
 ---@return boolean
 local function has_review_work(e, staged)
-    if e.status == "U" then
+    if e.review == "conflict" then
         return false
     end
     if staged then
-        return e.x ~= nil and e.x ~= " " and e.x ~= "?"
+        return e.review == "staged" or e.review == "partial"
     end
     return has_unstaged(e)
 end

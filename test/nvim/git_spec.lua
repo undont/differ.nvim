@@ -565,7 +565,15 @@ describe("git.status_sections", function()
             end
         end
         assert.are.same({
-            { path = "multi.lua", status = "?", additions = 3, deletions = 0, x = "?", y = "?" },
+            {
+                path = "multi.lua",
+                status = "?",
+                additions = 3,
+                deletions = 0,
+                x = "?",
+                y = "?",
+                review = "unstaged",
+            },
         }, untracked)
     end)
 

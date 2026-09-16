@@ -5,6 +5,8 @@
 
 local M = {}
 
+---@alias differ.panel.Review "staged"|"partial"|"unstaged"|"conflict"
+
 ---@class differ.FileEntry
 ---@field path string
 ---@field status "A"|"M"|"D"|"R"|"C"|"U"|"?"
@@ -12,6 +14,7 @@ local M = {}
 ---@field deletions integer
 ---@field x string|nil            -- worktree panels: git's index status letter
 ---@field y string|nil            -- worktree panels: git's worktree status letter
+---@field review differ.panel.Review|nil -- what the row leaves to review; nil off a staging source
 ---@field kept boolean|nil        -- a staged deletion whose file is still on disk, untracked
 ---@field previous_path string|nil -- renames/copies
 ---@field viewed boolean|nil       -- PR only
