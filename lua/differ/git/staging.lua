@@ -513,7 +513,7 @@ function M.new(ctx)
             staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
         end
         staging.badge = "STAGED"
-        staging.no_local = "the commit preview has no local view: gs goes back"
+        staging.no_local = "the commit preview has no local view: goes back"
         staging.leave = function()
             ctx.preview_off()
         end

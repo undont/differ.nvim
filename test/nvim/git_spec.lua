@@ -3152,6 +3152,28 @@ func getDownloadSpeed() {
         return root
     end
 
+    it("gs in the diff flips the listing the same way the panel's does", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local before = titles(p)
+        local bound = false
+        for _, map in ipairs(vim.api.nvim_buf_get_keymap(v.columns[#v.columns].bufnr, "n")) do
+            bound = bound or map.lhs == "gs"
+        end
+        v:toggle_commit_preview()
+        local in_titles, in_badge = titles(p), view_in_origin(p).staging.badge
+        view_in_origin(p):toggle_commit_preview()
+        local out_titles, out_badge = titles(p), view_in_origin(p).staging.badge
+        p:close()
+        assert.is_true(bound)
+        assert.are.same({ "Staged changes" }, in_titles)
+        assert.are.equal("STAGED", in_badge)
+        assert.are.same(before, out_titles)
+        assert.is_nil(out_badge)
+    end)
+
     it("gs lists only the staged changes, each diffing HEAD-to-index, and back", function()
         preview_repo()
         git_src.panel({ rev = {}, open_first = true })

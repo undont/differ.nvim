@@ -104,6 +104,7 @@ local armed_view = nil
 ---@field keymaps table
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
+---@field commit_preview fun()|nil  -- session-level: gs flips the panel's listing
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
@@ -131,6 +132,7 @@ View.__index = View
 ---@field keymaps? table
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
+---@field commit_preview? fun()  -- session-level: gs flips the panel's listing
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -160,6 +162,8 @@ function View.new(model, opts)
         ),
         can_stage = opts.can_stage or false,
         staging = opts.staging,
+        -- the session's own listing flip, so gs reads the same either side of the diff
+        commit_preview = opts.commit_preview,
         -- session-supplied maps the generic diff surface doesn't own (pr unviewed nav)
         extra_keymaps = opts.extra_keymaps,
         on_rerender = opts.on_rerender,
@@ -639,6 +643,15 @@ end
 
 -- dw: swap a partly staged file between its whole change (HEAD↔worktree) and what
 -- changed since staging (index↔worktree)
+-- gs: the same flip the panel's key does. the session owns the listing, so the view
+-- only asks for it
+function View:toggle_commit_preview()
+    if not self.commit_preview then
+        return vim.notify("differ: no commit preview here", vim.log.levels.INFO)
+    end
+    self.commit_preview()
+end
+
 function View:toggle_local()
     local toggle = self.staging and self.staging.toggle_local
     if not toggle then
@@ -808,6 +821,11 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.toggle_local, function()
             self:toggle_local()
         end, "differ: toggle the local view")
+        if self.commit_preview then
+            bind(bufnr, km.commit_preview, function()
+                self:toggle_commit_preview()
+            end, "differ: toggle the commit preview")
+        end
         -- hunk-level here vs the panel's file-level discard, and destructive either
         -- way, so it confirms rather than acting straight off the key
         bind(bufnr, km.discard, function()
@@ -897,6 +915,13 @@ function View:show_help()
     if self.staging and self.staging.toggle_local then
         local what = self.staging.badge and "back to the whole change" or "changes since staging"
         rows[#rows + 1] = { fmt(km.toggle_local), what }
+    end
+    if self.commit_preview then
+        local what = "commit preview: staged changes only"
+        if self.staging and self.staging.badge == "STAGED" then
+            what = "back to every change"
+        end
+        rows[#rows + 1] = { fmt(km.commit_preview), what }
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         rows[#rows + 1] = { fmt(m.spec), m.desc }

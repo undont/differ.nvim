@@ -1349,6 +1349,9 @@ function M.panel(opts)
             view = require("differ").diff_model(model, {
                 staging = staging,
                 can_stage = stageable,
+                commit_preview = stageable and function()
+                    set_preview(not preview)
+                end or nil,
             })
         end
         active_entry = entry

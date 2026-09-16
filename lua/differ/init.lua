@@ -80,6 +80,7 @@ end
 ---@field context? number|"full"
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
+---@field commit_preview? fun()
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -103,6 +104,7 @@ function M.diff_model(model, opts)
             keymaps = cfg.keymaps.diff --[[@as table]],
             staging = opts.staging,
             can_stage = opts.can_stage,
+            commit_preview = opts.commit_preview,
             extra_keymaps = opts.extra_keymaps,
             on_rerender = opts.on_rerender,
             on_cursor = opts.on_cursor,
