@@ -692,20 +692,25 @@ local function union_pairs(root, path, head, index, work)
         pair("INDEX", "WORKTREE", index, work)
 end
 
+-- the path an entry's index entry sits at: a rename only the worktree has made (` R`)
+-- leaves it at the old path, the new one holding an empty intent-to-add placeholder
+---@param entry differ.FileEntry
+---@return string
+local function index_path(entry)
+    if entry.y == "R" and entry.previous_path then
+        return entry.previous_path
+    end
+    return entry.path
+end
+
 -- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
--- a rename's old path, and so is the index for a rename only the worktree has made
--- (` R`), whose entry at the new path is an empty intent-to-add placeholder
+-- a rename's old path
 ---@param root string
 ---@param entry differ.FileEntry
 ---@return differ.DiffModel|nil union, differ.DiffModel|nil cached, differ.DiffModel|nil unstaged
 function M.union_models(root, entry)
-    local prev = entry.previous_path
-    local at_head = prev or entry.path
-    local at_index = entry.path
-    if entry.y == "R" and prev then
-        at_index = prev
-    end
-    local index = M.read(INDEX, root, at_index)
+    local at_head = entry.previous_path or entry.path
+    local index = M.read(INDEX, root, index_path(entry))
     if not index then
         return nil
     end
@@ -1489,6 +1494,35 @@ function M.panel(opts)
         return false
     end
 
+    -- X on a hunk: the file gives those lines back, and `stage_index` moves the index's
+    -- half of the change. the file is checked first, so a file that changed those lines
+    -- refuses before the index moves, and a false from `stage_index` stops it there too.
+    -- it goes through a patch, not a write: the model's new side was read through the
+    -- clean filter, so writing it back would push that conversion to disk
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel
+    ---@param hunk differ.Hunk
+    ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
+    ---@param stage_index fun(): boolean
+    ---@return boolean
+    local function revert_worktree(entry, model, hunk, offset, stage_index)
+        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
+        if not M.apply_patch(root, p, true, "worktree", true) then
+            notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
+            return false
+        end
+        if not stage_index() then
+            return false
+        end
+        local ok, err = M.apply_patch(root, p, true, "worktree")
+        reload_buffer(root, entry.path)
+        if not ok then
+            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            return false
+        end
+        return true
+    end
+
     -- staging for a row shown as HEAD↔worktree. both directions work out the content
     -- the index should hold and write it whole rather than patching: staging a hunk
     -- means the index takes the worktree's version of the lines it covers, and
@@ -1605,10 +1639,7 @@ function M.panel(opts)
             return true
         end
         -- X throws the hunk away on both sides at once: the index gives up whatever of
-        -- it it holds and the worktree gives up the rest. the worktree half is checked
-        -- first, so a file that changed those lines refuses before the index moves. it
-        -- goes through a patch, not a write: the model's new side was read through the
-        -- clean filter, so writing it back would push that conversion to disk
+        -- it it holds and the worktree gives up the rest
         staging.revert = function(model, idx)
             local union, cached, unstaged = M.union_models(root, entry)
             if not (union and cached and unstaged) then
@@ -1622,18 +1653,10 @@ function M.panel(opts)
             if not text then
                 return false
             end
-            local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
-            if not M.apply_patch(root, p, true, "worktree", true) then
-                notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
-                return false
-            end
-            if text ~= cached.new_text and not put_index(entry, text) then
-                return false
-            end
-            local ok, err = M.apply_patch(root, p, true, "worktree")
-            reload_buffer(root, entry.path)
+            local ok = revert_worktree(entry, model, hunk, 0, function()
+                return text == cached.new_text or put_index(entry, text)
+            end)
             if not ok then
-                notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
                 remark(M.union_models(root, entry))
                 return false
             end
@@ -1662,6 +1685,27 @@ function M.panel(opts)
             return true
         end
         return staging
+    end
+
+    -- X on a whole-file row, and what it does to the file. `letter` owns the change the
+    -- row shows: its status for a worktree row, the index's (x) in the commit preview
+    ---@param entry differ.FileEntry
+    ---@param letter string
+    ---@return fun(): boolean revert, string label
+    local function whole_file_revert(entry, letter)
+        if letter == "D" then
+            return function()
+                return restore_deleted(entry)
+            end,
+                "restores the file"
+        end
+        local discard = function()
+            return M.discard(root, entry)
+        end
+        if letter == "A" or letter == "?" then
+            return discard, "deletes the file"
+        end
+        return discard, "puts it back as HEAD has it"
     end
 
     -- a whole-file row's staged state, from its status letters
@@ -1693,10 +1737,7 @@ function M.panel(opts)
             local staging = union_staging(entry)
             if added then
                 -- throwing away an add is deleting the file, not reverting a hunk of it
-                staging.revert = function()
-                    return M.discard(root, entry)
-                end
-                staging.revert_label = "deletes the file"
+                staging.revert, staging.revert_label = whole_file_revert(entry, "A")
             end
             return staging
         end
@@ -1715,19 +1756,9 @@ function M.panel(opts)
         if content then
             return staging
         end
-        if entry.status == "?" or entry.status == "A" then
-            -- `discard` drops the staged add before removing the file
-            staging.revert = function()
-                return M.discard(root, entry)
-            end
-            staging.revert_label = "deletes the file"
-            return staging
-        end
-        if entry.status == "D" then
-            staging.revert = function()
-                return restore_deleted(entry)
-            end
-            staging.revert_label = "restores the file"
+        -- an add's discard drops the staged entry before removing the file
+        if entry.status == "?" or entry.status == "A" or entry.status == "D" then
+            staging.revert, staging.revert_label = whole_file_revert(entry, entry.status)
             return staging
         end
         return nil
@@ -1758,8 +1789,7 @@ function M.panel(opts)
         -- the commit preview opens staged with the index as its new side; the local view
         -- opens unstaged with it as its old side
         local held = staged and model.new_text or model.old_text
-        -- a rename only the worktree has made leaves the index at the old path
-        local at_index = entry.y == "R" and entry.previous_path or entry.path
+        local at_index = index_path(entry)
         local marks = { old = {}, new = {} }
         ---@param h differ.Hunk
         ---@param on boolean
@@ -1835,10 +1865,8 @@ function M.panel(opts)
     end
 
     -- X in a frozen view (the commit preview, the local view): the hunk leaves the index
-    -- if marked staged, and the file takes its old lines back. the file half is checked
-    -- first, so a file that changed those lines refuses before the index moves; then
-    -- `reopen` re-reads the view. a last hunk leaves nothing to reopen, and the view
-    -- hands over to the panel itself
+    -- if marked staged, and the file takes its old lines back, then `reopen` re-reads the
+    -- view. a last hunk leaves nothing to reopen, and the view hands over to the panel
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel
     ---@param staging differ.view.Staging
@@ -1848,19 +1876,16 @@ function M.panel(opts)
     ---@return boolean
     local function revert_frozen(entry, model, staging, idx, offset, reopen)
         local hunk = model.hunks[idx]
-        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
-        if not M.apply_patch(root, p, true, "worktree", true) then
-            notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
-            return false
-        end
-        local marked = require("differ.model.marks").state(staging.marks, hunk) == "staged"
-        if marked and not (staging.apply and staging.apply(model, hunk, true)) then
-            return false
-        end
-        local ok, err = M.apply_patch(root, p, true, "worktree")
-        reload_buffer(root, entry.path)
+        local ok = revert_worktree(entry, model, hunk, offset, function()
+            if require("differ.model.marks").state(staging.marks, hunk) ~= "staged" then
+                return true
+            end
+            if not staging.apply then
+                return false
+            end
+            return staging.apply(model, hunk, true)
+        end)
         if not ok then
-            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
             return false
         end
         if #model.hunks > 1 then
@@ -1871,25 +1896,6 @@ function M.panel(opts)
             end)
         end
         return true
-    end
-
-    -- X on a whole-file commit-preview row, and what it does to the file
-    ---@param entry differ.FileEntry
-    ---@return fun(): boolean revert, string label
-    local function whole_file_revert(entry)
-        local label = "puts it back as HEAD has it"
-        local revert = function()
-            return M.discard(root, entry)
-        end
-        if entry.x == "D" then
-            label = "restores the file"
-            revert = function()
-                return restore_deleted(entry)
-            end
-        elseif entry.x == "A" then
-            label = "deletes the file"
-        end
-        return revert, label
     end
 
     -- staging for a commit-preview row, HEAD↔index. an add or a deletion is one unit
@@ -1919,7 +1925,7 @@ function M.panel(opts)
             end
         else
             staging = snapshot_staging(entry)
-            staging.revert, staging.revert_label = whole_file_revert(entry)
+            staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
         end
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: gs goes back"
@@ -1983,9 +1989,12 @@ function M.panel(opts)
             return
         end
         local focus_line, focus_col = view:cursor_new_line()
-        -- a rename only the worktree has made leaves the index at the old path
-        local at_index = entry.y == "R" and entry.previous_path or nil
-        local file = { path = entry.path, status = entry.status, previous_path = at_index }
+        local at_index = index_path(entry)
+        local prev = nil ---@type string|nil
+        if at_index ~= entry.path then
+            prev = at_index
+        end
+        local file = { path = entry.path, status = entry.status, previous_path = prev }
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
         local staging ---@type differ.view.Staging
         if #model.hunks > 0 then
