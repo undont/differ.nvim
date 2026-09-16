@@ -3152,6 +3152,58 @@ func getDownloadSpeed() {
         return root
     end
 
+    -- dw, from the panel: extra_keymaps[2], where [1] is gs
+    local function toggle_local_key(p)
+        p.extra_keymaps[2].fn()
+    end
+
+    it("dw in the panel opens the row's local view, and takes it back", function()
+        local root = partly_staged_repo()
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_local_key(p)
+        local v = view_in_origin(p)
+        local revs, badge = { v.model.old_rev, v.model.new_rev }, v.staging.badge
+        toggle_local_key(p)
+        v = view_in_origin(p)
+        local back = { v.model.old_rev, v.model.new_rev }
+        p:close()
+        assert.are.same({ "INDEX", "WORKTREE" }, revs)
+        assert.are.equal("LOCAL", badge)
+        assert.are.same({ "HEAD", "WORKTREE" }, back)
+    end)
+
+    it("dw in the panel refuses in the commit preview", function()
+        preview_repo()
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        toggle_preview(p)
+        _G.notifs = {}
+        toggle_local_key(p)
+        local said, rev_after = (_G.notifs[#_G.notifs] or {}).msg, view_in_origin(p).model.new_rev
+        p:close()
+        assert.are.equal("differ: the commit preview has no local view: gs goes back", said)
+        assert.are.equal("INDEX", rev_after)
+    end)
+
+    it("dw in the panel refuses a row with nothing staged", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "one\ntwo\n")
+        git(root, "add", "a.lua")
+        git(root, "commit", "-q", "-m", "one")
+        write(root .. "/a.lua", "one\ntwo2\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        _G.notifs = {}
+        toggle_local_key(p)
+        local said, rev_after = (_G.notifs[#_G.notifs] or {}).msg, view_in_origin(p).model.old_rev
+        p:close()
+        assert.are.equal("differ: only a partly staged file has a local view", said)
+        assert.are.equal("HEAD", rev_after)
+    end)
+
     it("gs in the diff flips the listing the same way the panel's does", function()
         preview_repo()
         git_src.panel({ rev = {}, open_first = true })

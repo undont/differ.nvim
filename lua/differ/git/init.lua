@@ -1496,6 +1496,35 @@ function M.panel(opts)
                 end,
                 desc = "commit preview: staged changes only",
             },
+            -- the diff's own dw, driven from the row under the cursor: it opens the row
+            -- first where the view is showing another one
+            {
+                spec = panel_keys.toggle_local,
+                fn = function()
+                    local entry = panel and panel:current_entry()
+                    if not entry then
+                        return
+                    end
+                    if preview then
+                        return notify("the commit preview has no local view: gs goes back")
+                    end
+                    if not staging_ops.partly_staged(entry) then
+                        return notify("only a partly staged file has a local view")
+                    end
+                    local on_row = active_entry ~= nil and active_entry.path == entry.path
+                    local local_view = view ~= nil
+                        and view.staging ~= nil
+                        and view.staging.badge == "LOCAL"
+                    if on_row and local_view then
+                        return retarget_view(false) -- the same key takes it back
+                    end
+                    if not on_row and not show_entry(entry) then
+                        return
+                    end
+                    show_local(entry)
+                end,
+                desc = "local view: changes since staging",
+            },
         } or nil,
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,
