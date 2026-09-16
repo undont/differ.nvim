@@ -2914,6 +2914,17 @@ func getDownloadSpeed() {
         os.remove(blob)
         git(root, "update-index", "--cacheinfo", "100644," .. sha .. ",a.lua")
     end
+    -- u on a `!` hunk confirms, like X: 1 answers yes, 2 no
+    local function dropping(choice, fn)
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            return choice
+        end
+        local ok, err = pcall(fn)
+        vim.fn.confirm = orig
+        assert(ok, err)
+    end
+
     -- the local view of the file :Differ opened, cursor on hunk `n`
     local function local_view_at(n)
         git_src.panel({ rev = {}, open_first = true })
@@ -2957,7 +2968,9 @@ func getDownloadSpeed() {
         local root = staged_then(twelve({ [12] = "12x" }))
         local p, v = local_view_at(1)
         local marked = v.staging.hidden_in
-        v:unstage_hunk()
+        dropping(1, function()
+            v:unstage_hunk()
+        end)
         local index, hunks, rev_after = indexed(root, "a.lua"), #v.model.hunks, v.model.old_rev
         local after = v.staging.hidden_in
         p:close()
@@ -2972,10 +2985,24 @@ func getDownloadSpeed() {
     it("u on a ! hunk takes HEAD's lines, not the worktree's", function()
         local root = staged_then(twelve({ "1y", [12] = "12x" }))
         local p, v = local_view_at(1)
-        v:unstage_hunk()
+        dropping(1, function()
+            v:unstage_hunk()
+        end)
         local index = indexed(root, "a.lua")
         p:close()
         assert.are.equal(committed(root, "a.lua"), index)
+    end)
+
+    -- it drops staged content no other side holds, so a no leaves the index alone
+    it("u on a ! hunk drops nothing when the confirm is declined", function()
+        local root = staged_then(twelve({ [12] = "12x" }))
+        local p, v = local_view_at(1)
+        dropping(2, function()
+            v:unstage_hunk()
+        end)
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(twelve({ "1x" }), index)
     end)
 
     -- where u drops the staged 1x, X keeps it: the put-back goes and the file holds 1x again
@@ -3020,7 +3047,9 @@ func getDownloadSpeed() {
         local p, v = local_view_at(1)
         stage_behind(root, twelve({ "1x", "2x" }))
         _G.notifs = {}
-        v:unstage_hunk()
+        dropping(1, function()
+            v:unstage_hunk()
+        end)
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index = indexed(root, "a.lua")
         p:close()
@@ -3040,7 +3069,9 @@ func getDownloadSpeed() {
         local marked = v.staging.hidden_in
         v:stage_hunk()
         vim.api.nvim_win_set_cursor(0, { hunk_line(v, 2), 0 })
-        v:unstage_hunk()
+        dropping(1, function()
+            v:unstage_hunk()
+        end)
         local index = indexed(root, "a.lua")
         p:close()
         assert.are.same({ 2 }, marked)

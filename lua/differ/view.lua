@@ -1273,10 +1273,32 @@ function View:unstage_hunk()
     if idx and self:_hunk_state(idx) ~= "unstaged" then
         self:_toggle_hunk(false)
     elseif idx and self:_drops_hidden(idx) then
-        self.staging.unstage_hidden(idx)
+        self:_drop_hidden(idx)
     else
         self:_step_review("prev")
     end
+end
+
+-- u on a `!` hunk drops staged content no other side holds, so it confirms like X does.
+-- the prompt drains scheduled callbacks, so the model is checked again after it
+---@param idx integer
+function View:_drop_hidden(idx)
+    local prompt = ("Drop the staged change under hunk %d/%d in %s? Nothing else holds it."):format(
+        idx,
+        #self.model.hunks,
+        self.model.path
+    )
+    local asked_on = self.model
+    if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
+        return
+    end
+    if self.model ~= asked_on then
+        return vim.notify(
+            "differ: the diff changed while the prompt was up; nothing was dropped",
+            vim.log.levels.WARN
+        )
+    end
+    self.staging.unstage_hidden(idx)
 end
 
 -- whether u on unmarked hunk `idx` drops staged content the whole change can't show
