@@ -5,7 +5,12 @@
 -- pure parsing/grammar lives in git/rev.lua; this module only does I/O + wiring
 
 local rev = require("differ.git.rev")
-local patch = require("differ.git.patch")
+local exec = require("differ.git.exec")
+local index_ops = require("differ.git.index")
+local GIT = exec.GIT
+local notify, chomp, reload_buffer = exec.notify, exec.chomp, exec.reload_buffer
+local git, git_raw, git_ok = exec.git, exec.git_raw, exec.git_ok
+local set_staged, index_path = index_ops.set_staged, index_ops.index_path
 local log = require("differ.git.log")
 local watch = require("differ.git.watch")
 local text_util = require("differ.util.text")
@@ -27,12 +32,6 @@ local EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
 -- git's mode for a submodule entry (a commit pointer)
 local GITLINK = "160000"
-
----@param msg string
----@param level integer|nil
-local function notify(msg, level)
-    vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
-end
 
 -- how long a network git call may block the editor; `wait()` has no budget of its own
 M.fetch_timeout_ms = 20000
@@ -66,83 +65,6 @@ end
 ---@return { timeout: integer, env: table<string, string> }
 local function fetch_opts()
     return { timeout = M.fetch_timeout_ms, env = { GIT_TERMINAL_PROMPT = "0" } }
-end
-
--- spawn git and wait. vim.system raises when the process can't start (no git on PATH,
--- a cwd that's gone), so the raise comes back as `err`. a nil res with no err is
--- wait() answering nothing at all; only the caller knows if a budget explains it
----@param cmd string[]
----@param opts table
----@return { code: integer, stdout: string|nil, stderr: string|nil }|nil res, string|nil err
-local function run(cmd, opts)
-    local ok, obj = pcall(vim.system, cmd, opts)
-    if not ok then
-        return nil, tostring(obj)
-    end
-    return obj:wait()
-end
-
--- every path differ hands git is a real file name, never a glob
-local GIT = { "git", "--literal-pathspecs" }
-
--- run git in `cwd`. returns stdout on success, or nil + stderr on failure.
--- `text = true` normalises `\r\n` to `\n` in stdout, which is right for plumbing
--- output (status/numstat/rev-parse/name-status/...) but would corrupt file
--- content read via `git show`; content reads use git_raw instead
----@param args string[]
----@param cwd string
----@param opts? { timeout?: integer, env?: table<string, string> }
----@return string|nil stdout, string|nil stderr
-local function git(args, cwd, opts)
-    local cmd = vim.list_extend({}, GIT)
-    vim.list_extend(cmd, args)
-    opts = opts or {}
-    local res, err = run(cmd, {
-        cwd = cwd,
-        text = true,
-        timeout = opts.timeout,
-        env = opts.env,
-    })
-    if err then
-        return nil, err -- never started
-    end
-    -- a killed process exits 124 with an empty stderr, or answers nothing at all when
-    -- a child outlives it holding the pipes (a fetch's transport helper does). both are
-    -- the budget, and neither says so itself
-    if opts.timeout and (not res or res.code == 124) then
-        return nil, ("git %s timed out after %ds"):format(args[1], opts.timeout / 1000)
-    end
-    if not res then
-        return nil, "git exited without a result"
-    end
-    if res.code ~= 0 then
-        return nil, res.stderr
-    end
-    return res.stdout
-end
-
--- like `git`, but without `text = true`: stdout comes back byte-true (CRLF kept
--- intact) instead of newline-normalised. use for content-bearing reads (`git
--- show` on the index/a rev/a conflict stage), never for plumbing output
----@param args string[]
----@param cwd string
----@return string|nil stdout, string|nil stderr
-local function git_raw(args, cwd)
-    local cmd = vim.list_extend({}, GIT)
-    vim.list_extend(cmd, args)
-    local res, err = run(cmd, { cwd = cwd })
-    if not res then
-        return nil, err
-    end
-    if res.code ~= 0 then
-        return nil, res.stderr
-    end
-    return res.stdout
-end
-
--- strip trailing whitespace from a git output line (e.g. rev-parse, show, log)
-local function chomp(s)
-    return (s:gsub("%s+$", ""))
 end
 
 -- repo root containing `path` (a file or directory), or nil if not in a repo
@@ -692,17 +614,6 @@ local function union_pairs(root, path, head, index, work)
         pair("INDEX", "WORKTREE", index, work)
 end
 
--- the path an entry's index entry sits at: a rename only the worktree has made (` R`)
--- leaves it at the old path, the new one holding an empty intent-to-add placeholder
----@param entry differ.FileEntry
----@return string
-local function index_path(entry)
-    if entry.y == "R" and entry.previous_path then
-        return entry.previous_path
-    end
-    return entry.path
-end
-
 -- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
 -- a rename's old path
 ---@param root string
@@ -864,105 +775,9 @@ end
 -- file-level staging ops driven from the panel (slice C); each is whole-file
 -- and operates on the repo root. hunk-level staging stays in the diff view
 
--- run git and report a failure where the user can see it, returning whether it landed.
--- these wrappers own their own message so callers only ever branch on the boolean: a
--- swallowed failure would leave the panel and the staged marks describing a state git
--- never reached
----@param args string[]
----@param cwd string
----@param what string  -- names the operation in the message
----@return boolean ok
-local function git_ok(args, cwd, what)
-    local out, err = git(args, cwd) -- nil out is exactly a non-zero exit; stderr can be empty
-    if not out then
-        notify(("%s failed: %s"):format(what, err or ""), vim.log.levels.ERROR)
-        return false
-    end
-    return true
-end
-
--- point `path`'s index entry at `text`, keeping its mode. the caller has already
--- worked out the exact content the index should hold, so this writes a blob and moves
--- the entry rather than applying a patch: no header to compute, no offset to carry, and
--- nothing that can half-apply. `text` must already be in index domain (M.read runs the
--- worktree side through the clean filter), so the blob is stored verbatim
----@param root string
----@param path string
----@param text string
----@return boolean ok
-local function write_index(root, path, text)
-    local listed = git({ "ls-files", "-s", "--", path }, root)
-    local mode = listed and listed:match("^(%d+)%s")
-    if not mode then
-        notify(("%s has no index entry to update"):format(path), vim.log.levels.ERROR)
-        return false
-    end
-    local hashed = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
-        cwd = root,
-        stdin = text,
-    }):wait()
-    if hashed.code ~= 0 or not hashed.stdout then
-        notify(("staging %s failed: %s"):format(path, hashed.stderr or ""), vim.log.levels.ERROR)
-        return false
-    end
-    local spec = ("%s,%s,%s"):format(mode, chomp(hashed.stdout), path)
-    return git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path)
-end
-
----@param root string
----@param path string
----@return boolean ok
-function M.stage(root, path)
-    return git_ok({ "add", "--", path }, root, "stage")
-end
-
----@param root string
----@param path string
----@return boolean ok
-function M.unstage(root, path)
-    return git_ok({ "reset", "-q", "HEAD", "--", path }, root, "unstage")
-end
-
----@param root string
----@return boolean ok
-function M.stage_all(root)
-    return git_ok({ "add", "-A" }, root, "stage all")
-end
-
----@param root string
----@return boolean ok
-function M.unstage_all(root)
-    return git_ok({ "reset", "-q", "HEAD" }, root, "unstage all")
-end
-
--- the paths one entry's staging ops act on: a rename owns both ends of the move, a copy
--- only its new path
----@param entry differ.FileEntry
----@return string[]
-local function entry_paths(entry)
-    if entry.status == "R" and entry.previous_path then
-        return { entry.path, entry.previous_path }
-    end
-    return { entry.path }
-end
-
--- move every path an entry owns into or out of the index. the panel's file keys and the
--- diff view's whole-file staging share it
----@param root string
----@param entry differ.FileEntry
----@param staged boolean
----@return boolean ok
-local function set_staged(root, entry, staged)
-    local ok = true
-    for _, p in ipairs(entry_paths(entry)) do
-        if staged then
-            ok = M.stage(root, p) and ok
-        else
-            ok = M.unstage(root, p) and ok
-        end
-    end
-    return ok
-end
+-- the index ops the panel's file keys and the merge tool drive
+M.stage, M.unstage = index_ops.stage, index_ops.unstage
+M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- apply a single-hunk patch, atomically. `--unidiff-zero` because the patch carries
 -- no context (built straight from the hunk model); `--reverse` undoes rather than
@@ -995,22 +810,6 @@ function M.apply_patch(root, text, reverse, target, check)
         return false, res.stderr
     end
     return true
-end
-
--- an open buffer on a file differ just rewrote keeps showing the old content until
--- something checks: a window switch doesn't, so a revert or discard would sit next to
--- a stale window. checktime reloads it, and leaves a buffer with unsaved edits alone
--- (nvim warns rather than clobbering), so this is safe to fire unconditionally
----@param root string
----@param relpath string
-local function reload_buffer(root, relpath)
-    local buf = require("differ.util.buf").find(root .. "/" .. relpath)
-    if buf and vim.api.nvim_buf_is_loaded(buf) then
-        -- silent!: the file may be gone entirely (a discarded untracked file)
-        pcall(vim.api.nvim_buf_call, buf, function()
-            vim.cmd("silent! checktime")
-        end)
-    end
 end
 
 -- git_ok's counterpart for the one discard path that isn't a git call
@@ -1437,571 +1236,27 @@ function M.panel(opts)
             record_state()
         end
     end
-    -- bring a deleted file back. a staged deletion is recorded in the index, so only
-    -- HEAD still has the content; an unstaged one is still in the index, so restoring
-    -- from HEAD instead would silently drop edits staged before the delete. a staged
-    -- deletion whose file is still on disk would have that copy overwritten, so it refuses
-    ---@param entry differ.FileEntry
-    ---@return boolean
-    local function restore_deleted(entry)
-        if entry.kept then
-            local msg = "%s is on disk untracked; u tracks it again"
-            notify(msg:format(entry.path), vim.log.levels.WARN)
-            return false
-        end
-        local cmd = entry.x == "D" and { "checkout", "HEAD", "--", entry.path }
-            or { "checkout", "--", entry.path }
-        local _, err = git(cmd, root)
-        if err then
-            notify(("restore failed: %s"):format(err), vim.log.levels.ERROR)
-            return false
-        end
-        reload_buffer(root, entry.path)
-        return true
-    end
 
-    -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
-    -- the index, and a rename only the worktree has made is staged along with its
-    -- content; both change the row's status, so the view re-sources onto it
-    ---@param entry differ.FileEntry
-    ---@param text string
-    ---@return boolean ok
-    local function put_index(entry, text)
-        if entry.x == "A" and text == "" then
-            if not M.unstage(root, entry.path) then
-                return false
-            end
-            vim.schedule(function()
-                retarget_view(false)
-            end)
-            return true
-        end
-        if not write_index(root, entry.path, text) then
-            return false
-        end
-        if entry.y == "R" and entry.previous_path then
-            local drop = { "update-index", "--force-remove", "--", entry.previous_path }
-            if not git_ok(drop, root, "staging " .. entry.path) then
-                return false
-            end
-            vim.schedule(function()
-                retarget_view(false)
-            end)
-        end
-        return true
-    end
-
-    -- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
-    -- then put back in the worktree
-    ---@param entry differ.FileEntry
-    ---@return boolean
-    local function mode_hidden(entry)
-        local cached = raw_line(root, { "--cached" }, entry)
-        local unstaged = raw_line(root, {}, entry)
-        if not (cached and unstaged) then
-            return false
-        end
-        local head_mode, index_mode = rev.parse_raw_modes(cached)
-        local _, work_mode = rev.parse_raw_modes(unstaged)
-        return index_mode ~= head_mode and index_mode ~= work_mode
-    end
-
-    -- an op built on a failed index read would write the file's index from nothing
-    ---@param entry differ.FileEntry
-    ---@return false
-    local function index_unreadable(entry)
-        notify(("couldn't read %s from the index"):format(entry.path), vim.log.levels.WARN)
-        return false
-    end
-
-    -- X on a hunk: the file gives those lines back, and `stage_index` moves the index's
-    -- half of the change. the file is checked first, so a file that changed those lines
-    -- refuses before the index moves, and a false from `stage_index` stops it there too.
-    -- it goes through a patch, not a write: the model's new side was read through the
-    -- clean filter, so writing it back would push that conversion to disk
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel
-    ---@param hunk differ.Hunk
-    ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
-    ---@param stage_index fun(): boolean
-    ---@return boolean
-    local function revert_worktree(entry, model, hunk, offset, stage_index)
-        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
-        if not M.apply_patch(root, p, true, "worktree", true) then
-            notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
-            return false
-        end
-        if not stage_index() then
-            return false
-        end
-        local ok, err = M.apply_patch(root, p, true, "worktree")
-        reload_buffer(root, entry.path)
-        if not ok then
-            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
-            return false
-        end
-        return true
-    end
-
-    -- staging for a row shown as HEAD↔worktree. both directions work out the content
-    -- the index should hold and write it whole rather than patching: staging a hunk
-    -- means the index takes the worktree's version of the lines it covers, and
-    -- unstaging means the index keeps every staged change except those. each op reads
-    -- the pairs once and re-marks from the text it wrote
-    ---@param entry differ.FileEntry
-    ---@return differ.view.Staging
-    local function union_staging(entry)
-        local marks = require("differ.model.marks")
-        local stage = require("differ.model.stage")
-        local mode_change = false
-        if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry) then
-            mode_change = true -- the index holds a mode change, which no hunk shows
-        end
-        ---@type differ.view.Staging
-        local staging = { marks = { old = {}, new = {} }, refresh = refresh_panel }
-
-        -- the view keeps staging.marks, so a re-mark writes through it. marks come from
-        -- the index's own lines at each hunk, and from the two pairs only when the index
-        -- changes a line between hunks
-        ---@param union differ.DiffModel|nil  -- nil keeps the marks there are
-        ---@param cached differ.DiffModel|nil
-        ---@param unstaged differ.DiffModel|nil
-        local function remark(union, cached, unstaged)
-            if not (union and cached and unstaged) then
-                return
-            end
-            staging.hidden_in = nil
-            local blocks, ended = stage.index_blocks(union, cached.new_text)
-            local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
-            if blocks then
-                held, hidden_in = marks.of_blocks(ended.hunks, blocks)
-            end
-            if held then
-                staging.marks.old, staging.marks.new = held.old, held.new
-                staging.hidden = nil
-                if mode_change then
-                    staging.hidden = true
-                elseif #hidden_in > 0 then
-                    staging.hidden = true
-                    staging.hidden_in = hidden_in
-                end
-                return
-            end
-            local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
-            staging.marks.old, staging.marks.new = fresh.old, fresh.new
-            local complete = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
-            if mode_change then
-                staging.hidden = true
-            elseif complete then
-                staging.hidden = nil
-            else
-                staging.hidden = true
-                local head = require("differ.util.text").to_lines(union.old_text)
-                staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
-            end
-        end
-
-        -- the text the index takes when `hunk` is staged (`take`) or unstaged, or nil
-        -- when the pair hunk carrying this one's change covers another union hunk too,
-        -- which the other view's key takes whole
-        ---@param union differ.DiffModel
-        ---@param cached differ.DiffModel
-        ---@param unstaged differ.DiffModel
-        ---@param hunk differ.Hunk
-        ---@param take boolean
-        ---@return string|nil
-        local function next_index(union, cached, unstaged, hunk, take)
-            local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
-            if not reaches then
-                return text
-            end
-            local msg = "this hunk's staged change also covers hunk %d: "
-                .. "u on the ! hunk in dw, or in gs, unstages it whole"
-            if take then
-                msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
-            end
-            notify(msg:format(reaches), vim.log.levels.WARN)
-            return nil
-        end
-
-        -- whether the diff still shows the file as it is. one drawn before the file or
-        -- HEAD moved would place an op by stale line numbers, so it refuses and re-reads
-        ---@param model differ.DiffModel  -- the view's
-        ---@param union differ.DiffModel  -- read fresh
-        ---@return boolean
-        local function drawn_current(model, union)
-            if model.old_text == union.old_text and model.new_text == union.new_text then
-                return true
-            end
-            notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
-            vim.schedule(function()
-                refresh_panel()
-                retarget_view(false)
-            end)
-            return false
-        end
-
-        remark(M.union_models(root, entry))
-        staging.apply = function(model, hunk, reverse)
-            if not hunk then
-                return false
-            end
-            local union, cached, unstaged = M.union_models(root, entry)
-            if not (union and cached and unstaged) then
-                return index_unreadable(entry)
-            end
-            if not drawn_current(model, union) then
-                return false
-            end
-            local text = next_index(union, cached, unstaged, hunk, not reverse)
-            if not text or not put_index(entry, text) then
-                return false
-            end
-            remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
-            return true
-        end
-        -- X throws the hunk away on both sides at once: the index gives up whatever of
-        -- it it holds and the worktree gives up the rest
-        staging.revert = function(model, idx)
-            local union, cached, unstaged = M.union_models(root, entry)
-            if not (union and cached and unstaged) then
-                return index_unreadable(entry)
-            end
-            if not drawn_current(model, union) then
-                return false
-            end
-            local hunk = model.hunks[idx]
-            local text = next_index(union, cached, unstaged, hunk, false)
-            if not text then
-                return false
-            end
-            local ok = revert_worktree(entry, model, hunk, 0, function()
-                return text == cached.new_text or put_index(entry, text)
-            end)
-            if not ok then
-                remark(M.union_models(root, entry))
-                return false
-            end
-            local work = require("differ.model.diff").revert_hunk(model, idx).new_text
-            remark(union_pairs(root, entry.path, union.old_text, text, work))
-            return true
-        end
-        -- S and U: the index takes the worktree's or HEAD's text whole, staged content no
-        -- hunk shows included. the entry's mode is left as it is
-        staging.set_all = function(model, staged)
-            local union, cached = M.union_models(root, entry)
-            if not (union and cached) then
-                return index_unreadable(entry)
-            end
-            if not drawn_current(model, union) then
-                return false
-            end
-            local text = union.old_text
-            if staged then
-                text = union.new_text
-            end
-            if text == cached.new_text or not put_index(entry, text) then
-                return false
-            end
-            remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
-            return true
-        end
-        return staging
-    end
-
-    -- X on a whole-file row, and what it does to the file. `letter` owns the change the
-    -- row shows: its status for a worktree row, the index's (x) in the commit preview
-    ---@param entry differ.FileEntry
-    ---@param letter string
-    ---@return fun(): boolean revert, string label
-    local function whole_file_revert(entry, letter)
-        if letter == "D" then
-            return function()
-                return restore_deleted(entry)
-            end,
-                "restores the file"
-        end
-        local discard = function()
-            return M.discard(root, entry)
-        end
-        if letter == "A" or letter == "?" then
-            return discard, "deletes the file"
-        end
-        return discard, "puts it back as HEAD has it"
-    end
-
-    -- a whole-file row's staged state. a conflict holds both sides at once, which the
-    -- view has no third state for
-    ---@param entry differ.FileEntry
-    ---@return differ.model.HunkState
-    local function row_state(entry)
-        if entry.review == "staged" then
-            return "staged"
-        end
-        if entry.review == "partial" or entry.review == "conflict" then
-            return "partial"
-        end
-        return "unstaged"
-    end
-
-    ---@param entry differ.FileEntry
-    ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
-    ---@return differ.view.Staging|nil
-    local function stage_for(entry, diff)
-        if not stageable then
-            return nil
-        end
-        -- git records no rename, only the old path gone from the index and the new one
-        -- present, so a hunk stages an ordinary blob and the move rides along untouched.
-        -- the move is whole-file and belongs to the panel row's keys
-        local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
-        local added = entry.status == "A" and entry.x == "A"
-        if (content or added) and entry.x ~= "D" and #diff.hunks > 0 then
-            local staging = union_staging(entry)
-            if added then
-                -- throwing away an add is deleting the file, not reverting a hunk of it
-                staging.revert, staging.revert_label = whole_file_revert(entry, "A")
-            end
-            return staging
-        end
-        -- whole-file from here: no lines to stage (a mode change, a submodule pointer, a
-        -- binary file, a change git normalises away, a bare rename or copy), or a file
-        -- added, untracked or deleted as one unit
-        ---@type differ.view.Staging
-        local staging = {
-            initial = row_state(entry),
-            whole_file = true,
-            apply = function(_, _, reverse)
-                return set_staged(root, entry, not reverse)
-            end,
-            refresh = refresh_panel,
-        }
-        if content then
-            return staging
-        end
-        -- an add's discard drops the staged entry before removing the file
-        if entry.status == "?" or entry.status == "A" or entry.status == "D" then
-            staging.revert, staging.revert_label = whole_file_revert(entry, entry.status)
-            return staging
-        end
-        return nil
-    end
-
-    -- a row with a staged change and more on top of it: the one kind with a local view
-    ---@param entry differ.FileEntry
-    ---@return boolean
-    local function partly_staged(entry)
-        if entry.status == "U" or entry.x == "?" or entry.y == "D" then
-            return false
-        end
-        return entry.x ~= " " and entry.y ~= " "
-    end
-
-    -- staging frozen at the index the view opened on: s and u rewrite the index as the
-    -- model's old side plus the hunks marked staged, so a marked hunk stays on screen
-    -- and the opposite key puts it back. an index written outside differ since then
-    -- would be overwritten by that rebuild, so s and u refuse and `reopen` re-reads
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel  -- read once, with at least one hunk
-    ---@param staged boolean  -- every hunk's opening state
-    ---@param reopen fun()
-    ---@return differ.view.Staging
-    local function frozen_staging(entry, model, staged, reopen)
-        local splice = require("differ.model.apply").splice
-        local state = require("differ.model.marks").state
-        -- the commit preview opens staged with the index as its new side; the local view
-        -- opens unstaged with it as its old side
-        local held = staged and model.new_text or model.old_text
-        local at_index = index_path(entry)
-        local marks = { old = {}, new = {} }
-        ---@param h differ.Hunk
-        ---@param on boolean
-        local function mark(h, on)
-            for l = h.old_start, h.old_start + h.old_count - 1 do
-                marks.old[l] = on
-            end
-            for l = h.new_start, h.new_start + h.new_count - 1 do
-                marks.new[l] = on
-            end
-        end
-        for _, h in ipairs(model.hunks) do
-            mark(h, staged)
-        end
-        return {
-            marks = marks,
-            refresh = refresh_panel,
-            apply = function(_, hunk, reverse)
-                if not hunk then
-                    return false
-                end
-                if (M.read(INDEX, root, at_index) or "") ~= held then
-                    notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
-                    vim.schedule(reopen)
-                    return false
-                end
-                mark(hunk, not reverse)
-                local applied = {}
-                for i, h in ipairs(model.hunks) do
-                    applied[i] = state(marks, h) == "staged"
-                end
-                local text = splice(model, applied)
-                if put_index(entry, text) then
-                    held, at_index = text, entry.path -- put_index stages a rename at the new path
-                    return true
-                end
-                mark(hunk, reverse)
-                return false
-            end,
-        }
-    end
-
-    -- whole-file staging frozen at the index the view opened on: u resets the row's
-    -- paths to HEAD, s puts back the entries the index held then
-    ---@param entry differ.FileEntry
-    ---@return differ.view.Staging
-    local function snapshot_staging(entry)
-        local paths = entry_paths(entry)
-        local held = {} ---@type table<string, string> -- path -> update-index cacheinfo
-        local listed = git(vim.list_extend({ "ls-files", "-s", "-z", "--" }, paths), root) or ""
-        for mode, sha, path in listed:gmatch("(%d+) (%x+) %d+\t([^%z]+)") do
-            held[path] = ("%s,%s,%s"):format(mode, sha, path)
-        end
-        return {
-            initial = "staged",
-            whole_file = true,
-            refresh = refresh_panel,
-            apply = function(_, _, reverse)
-                if reverse then
-                    return set_staged(root, entry, false)
-                end
-                local ok = true
-                for _, path in ipairs(paths) do
-                    local cmd = { "update-index", "--force-remove", "--", path }
-                    if held[path] then
-                        cmd = { "update-index", "--add", "--cacheinfo", held[path] }
-                    end
-                    ok = git_ok(cmd, root, "staging " .. path) and ok
-                end
-                return ok
-            end,
-        }
-    end
-
-    -- X in a frozen view (the commit preview, the local view): the hunk leaves the index
-    -- if marked staged, and the file takes its old lines back, then `reopen` re-reads the
-    -- view. a last hunk leaves nothing to reopen, and the view hands over to the panel
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel
-    ---@param staging differ.view.Staging
-    ---@param idx integer
-    ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
-    ---@param reopen fun()
-    ---@return boolean
-    local function revert_frozen(entry, model, staging, idx, offset, reopen)
-        local hunk = model.hunks[idx]
-        local ok = revert_worktree(entry, model, hunk, offset, function()
-            if require("differ.model.marks").state(staging.marks, hunk) ~= "staged" then
-                return true
-            end
-            if not staging.apply then
-                return false
-            end
-            return staging.apply(model, hunk, true)
-        end)
-        if not ok then
-            return false
-        end
-        if #model.hunks > 1 then
-            vim.schedule(function()
-                if view and view.staging == staging then
-                    reopen()
-                end
-            end)
-        end
-        return true
-    end
-
-    -- staging for a commit-preview row, HEAD↔index. an add or a deletion is one unit
-    -- whose index entry comes and goes, so it stages as a file
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel  -- HEAD↔index
-    ---@return differ.view.Staging
-    local function preview_staging(entry, model)
-        local staging
-        if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
-            staging = frozen_staging(entry, model, true, function()
-                retarget_view(false)
-            end)
-            -- the model's new side is the index, so its lines move by whatever the
-            -- worktree has added or dropped above them since
-            staging.revert = function(m, idx)
-                local h = m.hunks[idx]
-                local _, _, unstaged = M.union_models(root, entry)
-                if not unstaged then
-                    return index_unreadable(entry)
-                end
-                local at = h.new_count > 0 and h.new_start or h.new_start + 1
-                local offset = require("differ.model.marks").shift(unstaged.hunks, at, "old")
-                return revert_frozen(entry, m, staging, idx, offset, function()
-                    retarget_view(false)
-                end)
-            end
-        else
-            staging = snapshot_staging(entry)
-            staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
-        end
-        staging.badge = "STAGED"
-        staging.no_local = "the commit preview has no local view: gs goes back"
-        staging.leave = function()
+    -- the row-level staging ops. they read and write git, and call back here to reload
+    -- the list and re-source the view
+    local staging_ops = require("differ.git.staging").new({
+        root = root,
+        stageable = stageable,
+        refresh = function()
+            refresh_panel()
+        end,
+        retarget = function(outside)
+            retarget_view(outside)
+        end,
+        preview_off = function()
             set_preview(false)
-        end
-        return staging
-    end
+        end,
+        current_view = function()
+            return view
+        end,
+    })
 
     local show_local ---@type fun(entry: differ.FileEntry)
-
-    -- u on a `!` hunk in the local view: the index takes HEAD's lines under it, dropping
-    -- the staged change the worktree undid, then the view re-reads against that index.
-    -- the hunk's lines are the index's at open, moved by whatever s has staged since
-    ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel  -- index↔worktree, as the view opened on it
-    ---@param staging differ.view.Staging
-    ---@param idx integer
-    ---@return boolean
-    local function drop_hidden(entry, model, staging, idx)
-        local marks = require("differ.model.marks")
-        local stage = require("differ.model.stage")
-        local splice = require("differ.model.apply").splice
-        local applied, moved = {}, {} ---@type table<integer, boolean>, differ.Hunk[]
-        for i, h in ipairs(model.hunks) do
-            applied[i] = marks.state(staging.marks, h) == "staged"
-            if applied[i] then
-                moved[#moved + 1] = h
-            end
-        end
-        local _, cached = M.union_models(root, entry)
-        if not cached then
-            return index_unreadable(entry)
-        end
-        if cached.new_text ~= splice(model, applied) then
-            notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
-            vim.schedule(function()
-                show_local(entry)
-            end)
-            return false
-        end
-        local hunk = model.hunks[idx]
-        local placed = vim.tbl_extend("force", hunk, {
-            old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
-        })
-        local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
-        if not put_index(entry, splice(cached, keep)) then
-            return false
-        end
-        refresh_panel()
-        show_local(entry)
-        return true
-    end
 
     -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
     -- retarget_view, which re-reads the row, since staging here can move it to another
@@ -2021,7 +1276,7 @@ function M.panel(opts)
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
         local staging ---@type differ.view.Staging
         if #model.hunks > 0 then
-            staging = frozen_staging(entry, model, false, function()
+            staging = staging_ops.frozen(entry, model, false, function()
                 show_local(entry)
             end)
             local _, cached = M.union_models(root, entry)
@@ -2030,10 +1285,12 @@ function M.panel(opts)
                     require("differ.model.marks").restaged(model.hunks, cached.hunks)
             end
             staging.unstage_hidden = function(idx)
-                return drop_hidden(entry, model, staging, idx)
+                return staging_ops.drop_hidden(entry, model, staging, idx, function()
+                    show_local(entry)
+                end)
             end
             staging.revert = function(m, idx)
-                return revert_frozen(entry, m, staging, idx, 0, function()
+                return staging_ops.revert_frozen(entry, m, staging, idx, 0, function()
                     show_local(entry)
                 end)
             end
@@ -2077,11 +1334,11 @@ function M.panel(opts)
         end
         local staging ---@type differ.view.Staging|nil
         if preview then
-            staging = preview_staging(entry, model)
+            staging = staging_ops.preview(entry, model)
         else
-            staging = stage_for(entry, model)
+            staging = staging_ops.for_entry(entry, model)
         end
-        if staging and not preview and partly_staged(entry) then
+        if staging and not preview and staging_ops.partly_staged(entry) then
             staging.toggle_local = function()
                 show_local(entry)
             end
@@ -2544,5 +1801,9 @@ function M.close()
     end
     notify("no differ view open")
 end
+
+-- what git/staging.lua reads back: the pair models it re-marks from, a row's raw diff
+-- line, and the index ref
+M.raw_line, M.union_pairs, M.INDEX = raw_line, union_pairs, INDEX
 
 return M
