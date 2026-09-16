@@ -1433,6 +1433,15 @@ end)
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
+    -- a spec that aborts before its p:close() would otherwise leak its panel into every
+    -- spec after it, and the count would name them all rather than the one that broke
+    after_each(function()
+        local open = Panel.current()
+        if open then
+            open:close()
+        end
+    end)
+
     -- the first buffer row of the diff showing `text`
     local function row_at(v, text)
         for row, l in ipairs(vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)) do

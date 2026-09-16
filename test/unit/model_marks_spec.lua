@@ -302,6 +302,21 @@ describe("union marks", function()
         end)
     end)
 
+    -- past MAX_CELLS the block isn't compared line by line, and an uncompared hunk takes
+    -- the whole file to the pair diffs rather than marking half of it
+    it("gives no marks for a hunk too big to compare", function()
+        local old_lines, block = {}, {}
+        for i = 1, 1001 do
+            old_lines[i] = "line " .. i
+            block[i] = "line " .. i
+        end
+        block[1] = "changed" -- so the block isn't one whole side, which needs no compare
+        local union = { hl(1, old_lines, 1, { "one" }) }
+        local m, hidden = marks.of_blocks(union, { block })
+        assert.is_nil(m)
+        assert.are.same({}, hidden)
+    end)
+
     describe("a last line without its newline", function()
         local text = require("differ.util.text")
         local NO = text.NO_EOL

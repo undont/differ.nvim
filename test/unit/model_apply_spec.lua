@@ -127,6 +127,18 @@ describe("join", function()
             assert.are.equal("a\nb", apply.join(m, { m.hunks[1].old_lines }))
         end)
 
+        it("ends as the inserted block does when it reaches eof", function()
+            local terminated = apply.ended(model("a\nb\n", "a\nb\nc\n", { h(2, {}, 3, { "c" }) }))
+            assert.are.equal("a\nb\nc\n", apply.join(terminated, { terminated.hunks[1].new_lines }))
+            local bare = apply.ended(model("a\nb\n", "a\nb\nc", { h(2, {}, 3, { "c" }) }))
+            assert.are.equal("a\nb\nc", apply.join(bare, { bare.hunks[1].new_lines }))
+        end)
+
+        it("empties the file when every line goes", function()
+            local m = apply.ended(model("a\n", "", { h(1, { "a" }, 1, {}) }))
+            assert.are.equal("", apply.join(m, { {} }))
+        end)
+
         -- "a\nb" and "a\nb\n": the two sides differ only in the ending
         it("tells apart two sides that hold the same line", function()
             local m = apply.ended(model("a\nb", "a\nb\n", { h(2, { "b" }, 2, { "b" }) }))

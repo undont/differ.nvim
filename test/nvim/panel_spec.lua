@@ -525,6 +525,29 @@ describe("panel selection identity", function()
         }
     end
 
+    -- a refused file op moved nothing, so the list mustn't reload or the hook fire: the
+    -- commit preview refuses s this way
+    it("does nothing after a file op the action refused", function()
+        local staged, reloaded
+        local actions = acts(function()
+            reloaded = true
+        end)
+        actions.stage = function()
+            return false
+        end
+        local p = panel({ fe("a.lua") }, {
+            actions = actions,
+            on_staged = function(paths)
+                staged = paths
+            end,
+        })
+        p:open()
+        p:stage_op("stage")
+        p:close()
+        assert.is_nil(staged)
+        assert.is_nil(reloaded)
+    end)
+
     -- name mode reorders the list (b.lua rises above a.lua as the tree dir collapses
     -- away), so restoring the cursor by line number lands it on the other file
     it("holds the cursor on its file across a listing toggle", function()
