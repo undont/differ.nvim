@@ -1435,22 +1435,6 @@ function M.panel(opts)
         return true
     end
 
-    -- the indices of the hunks in `hunks` that do (or don't) meet `anchor`
-    ---@param hunks differ.Hunk[]
-    ---@param side "old"|"new"  -- the side of `hunks` compared
-    ---@param anchor differ.Hunk
-    ---@param anchor_side "old"|"new"
-    ---@param want boolean  -- true picks the hunks that meet it, false the rest
-    ---@return table<integer, boolean>
-    local function select_hunks(hunks, side, anchor, anchor_side, want)
-        local meets = require("differ.model.marks").meets
-        local applied = {}
-        for i, h in ipairs(hunks) do
-            applied[i] = meets(h, side, anchor, anchor_side) == want
-        end
-        return applied
-    end
-
     -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
     -- the index, and a rename only the worktree has made is staged along with its
     -- content; both change the row's status, so the view re-sources onto it
@@ -1514,32 +1498,13 @@ function M.panel(opts)
     ---@return differ.view.Staging
     local function union_staging(entry)
         local marks = require("differ.model.marks")
-        local splice = require("differ.model.apply").splice
-        local join = require("differ.model.apply").join
+        local stage = require("differ.model.stage")
         local mode_why ---@type string|nil
         if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry) then
             mode_why = "the index holds a mode change"
         end
         ---@type differ.view.Staging
         local staging = { marks = { old = {}, new = {} }, refresh = refresh_panel }
-
-        -- the index's lines at each union hunk, and the union with a last line and its
-        -- ending read as one (apply.ended). the blocks are nil unless the index holds
-        -- every unchanged line between them and rejoins to exactly its own text
-        ---@param union differ.DiffModel
-        ---@param cached differ.DiffModel
-        ---@return string[][]|nil blocks, differ.DiffModel ended
-        local function index_blocks(union, cached)
-            local ended_lines = require("differ.util.text").ended_lines
-            local ended = require("differ.model.apply").ended(union)
-            local index = cached.new_text
-            local blocks =
-                marks.blocks(ended.hunks, ended_lines(union.old_text), ended_lines(index))
-            if not blocks or join(ended, blocks) ~= index then
-                return nil, ended
-            end
-            return blocks, ended
-        end
 
         -- the view keeps staging.marks, so a re-mark writes through it. marks come from
         -- the index's own lines at each hunk, and from the two pairs only when the index
@@ -1552,7 +1517,7 @@ function M.panel(opts)
                 return
             end
             staging.hidden_in = nil
-            local blocks, ended = index_blocks(union, cached)
+            local blocks, ended = stage.index_blocks(union, cached.new_text)
             local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
             if blocks then
                 held, hidden_in = marks.of_blocks(ended.hunks, blocks)
@@ -1580,49 +1545,9 @@ function M.panel(opts)
             end
         end
 
-        -- a pair hunk that also reaches another union hunk holds index-only content
-        -- between the two, and taking it whole would carry the op into that hunk
-        ---@param union differ.DiffModel
-        ---@param pair differ.DiffModel  -- index↔worktree on the new side, HEAD↔index on the old
-        ---@param side "old"|"new"
-        ---@param hunk differ.Hunk
-        ---@return boolean
-        local function shared(union, pair, side, hunk)
-            local other = marks.shared_with(union.hunks, hunk, pair.hunks, side)
-            if not other then
-                return false
-            end
-            local msg = "this hunk's staged change also covers hunk %d: "
-                .. "u on the ! hunk in dw, or in gs, unstages it whole"
-            if side == "new" then
-                msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
-            end
-            notify(msg:format(other), vim.log.levels.WARN)
-            return true
-        end
-
-        -- where `hunk` sits in a fresh read of the union, by its line ranges
-        ---@param union differ.DiffModel
-        ---@param hunk differ.Hunk
-        ---@return integer|nil
-        local function hunk_index(union, hunk)
-            for i, u in ipairs(union.hunks) do
-                if
-                    u.old_start == hunk.old_start
-                    and u.old_count == hunk.old_count
-                    and u.new_start == hunk.new_start
-                    and u.new_count == hunk.new_count
-                then
-                    return i
-                end
-            end
-            return nil
-        end
-
         -- the text the index takes when `hunk` is staged (`take`) or unstaged, or nil
-        -- when the op would reach another hunk. the index's lines at the hunk become the
-        -- hunk's new or old lines; an index that changes a line between hunks moves by
-        -- the pair hunks meeting it on the side that pair shares
+        -- when the pair hunk carrying this one's change covers another union hunk too,
+        -- which the other view's key takes whole
         ---@param union differ.DiffModel
         ---@param cached differ.DiffModel
         ---@param unstaged differ.DiffModel
@@ -1630,23 +1555,17 @@ function M.panel(opts)
         ---@param take boolean
         ---@return string|nil
         local function next_index(union, cached, unstaged, hunk, take)
-            local blocks, ended = index_blocks(union, cached)
-            local i = hunk_index(union, hunk)
-            if blocks and i then
-                blocks[i] = ended.hunks[i].old_lines
-                if take then
-                    blocks[i] = ended.hunks[i].new_lines
-                end
-                return join(ended, blocks)
+            local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+            if not reaches then
+                return text
             end
-            local from, side = unstaged, "new"
-            if not take then
-                from, side = cached, "old"
+            local msg = "this hunk's staged change also covers hunk %d: "
+                .. "u on the ! hunk in dw, or in gs, unstages it whole"
+            if take then
+                msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
             end
-            if shared(union, from, side, hunk) then
-                return nil
-            end
-            return splice(from, select_hunks(from.hunks, side, hunk, side, take))
+            notify(msg:format(reaches), vim.log.levels.WARN)
+            return nil
         end
 
         -- whether the diff still shows the file as it is. one drawn before the file or
@@ -2022,6 +1941,7 @@ function M.panel(opts)
     ---@return boolean
     local function drop_hidden(entry, model, staging, idx)
         local marks = require("differ.model.marks")
+        local stage = require("differ.model.stage")
         local splice = require("differ.model.apply").splice
         local applied, moved = {}, {} ---@type table<integer, boolean>, differ.Hunk[]
         for i, h in ipairs(model.hunks) do
@@ -2045,7 +1965,7 @@ function M.panel(opts)
         local placed = vim.tbl_extend("force", hunk, {
             old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
         })
-        local keep = select_hunks(cached.hunks, "new", placed, "old", false)
+        local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
         if not put_index(entry, splice(cached, keep)) then
             return false
         end
