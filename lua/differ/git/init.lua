@@ -1285,6 +1285,24 @@ function M.panel(opts)
                     show_local(entry)
                 end)
             end
+            -- staging the last hunk empties "changes since staging", so there's nothing
+            -- left for this view to show and it hands back to the whole change
+            local stage_hunk = staging.apply
+            staging.apply = function(m, hunk, reverse)
+                if not (stage_hunk and stage_hunk(m, hunk, reverse)) then
+                    return false
+                end
+                local state = require("differ.model.marks").state
+                for _, h in ipairs(model.hunks) do
+                    if state(staging.marks, h) ~= "staged" then
+                        return true
+                    end
+                end
+                vim.schedule(function()
+                    retarget_view(false)
+                end)
+                return true
+            end
         else
             if not model.binary then
                 model.notice = empty_notice(root, entry, model, {}) or "No local content change"

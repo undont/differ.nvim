@@ -2878,6 +2878,24 @@ func getDownloadSpeed() {
         assert.are.equal(committed(root, "a.lua"), index)
     end)
 
+    -- 1x staged, 12x not: staging the one local hunk leaves nothing since staging to show
+    it("s on the last hunk in the local view hands back to the whole change", function()
+        local root = staged_then(twelve({ "1x", [12] = "12x" }))
+        local p, v = local_view_at(1)
+        local hunks = #v.model.hunks
+        v:stage_hunk()
+        vim.wait(500, function() -- the hand-back runs on a schedule
+            return v.staging.badge ~= "LOCAL"
+        end)
+        local revs, badge = { v.model.old_rev, v.model.new_rev }, v.staging.badge
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(1, hunks)
+        assert.are.same({ "HEAD", "WORKTREE" }, revs)
+        assert.is_nil(badge)
+        assert.are.equal(twelve({ "1x", [12] = "12x" }), index)
+    end)
+
     -- 1x staged and then put back to 1 in the worktree: the local hunk undoing it is `!`
     it("u on a ! hunk in the local view drops the staged change it undoes", function()
         local root = staged_then(twelve({ [12] = "12x" }))
