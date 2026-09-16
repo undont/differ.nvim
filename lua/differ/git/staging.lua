@@ -483,12 +483,13 @@ function M.new(ctx)
         return true
     end
 
-    -- staging for a commit-preview row, HEAD↔index. an add or a deletion is one unit
-    -- whose index entry comes and goes, so it stages as a file
+    -- staging for a row drawn HEAD↔index, in the commit preview or where that is the
+    -- only diff the row has. an add or a deletion is one unit whose index entry comes
+    -- and goes, so it stages as a file
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel  -- HEAD↔index
     ---@return differ.view.Staging
-    local function preview_staging(entry, model)
+    local function staged_staging(entry, model)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
             staging = frozen_staging(entry, model, true, function()
@@ -513,7 +514,16 @@ function M.new(ctx)
             staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
         end
         staging.badge = "STAGED"
-        staging.no_local = "the commit preview has no local view: goes back"
+        return staging
+    end
+
+    -- staging for a commit-preview row: the HEAD↔index keys, plus the way back out
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- HEAD↔index
+    ---@return differ.view.Staging
+    local function preview_staging(entry, model)
+        local staging = staged_staging(entry, model)
+        staging.no_local = "the commit preview has no local view: gs goes back"
         staging.leave = function()
             ctx.preview_off()
         end
@@ -566,6 +576,7 @@ function M.new(ctx)
     return {
         for_entry = stage_for,
         preview = preview_staging,
+        staged_only = staged_staging,
         frozen = frozen_staging,
         revert_frozen = revert_frozen,
         drop_hidden = drop_hidden,

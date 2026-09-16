@@ -2926,6 +2926,32 @@ func getDownloadSpeed() {
         return p, v
     end
 
+    -- 1x staged and then put back on disk: HEAD↔worktree is empty, so the row draws the
+    -- staged change it still has rather than a notice
+    it("opens a staged change the worktree put back on its HEAD-to-index hunks", function()
+        local root = staged_then(twelve({}))
+        git_src.panel({ rev = {}, open_first = true })
+        local p = Panel.current()
+        local v = view_in_origin(p)
+        local revs = { v.model.old_rev, v.model.new_rev }
+        local hunks, notice, badge = #v.model.hunks, v.model.notice, v.staging.badge
+        local state = v:_hunk_state(1)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        local index = indexed(root, "a.lua")
+        if Panel.current() then
+            p:close() -- unstaging the last staged change empties the list
+        end
+        assert.are.same({ "HEAD", "INDEX" }, revs)
+        assert.are.equal(1, hunks)
+        assert.is_nil(notice)
+        assert.are.equal("STAGED", badge)
+        assert.are.equal("staged", state)
+        assert.are.equal(committed(root, "a.lua"), index)
+    end)
+
     -- 1x staged and then put back to 1 in the worktree: the local hunk undoing it is `!`
     it("u on a ! hunk in the local view drops the staged change it undoes", function()
         local root = staged_then(twelve({ [12] = "12x" }))

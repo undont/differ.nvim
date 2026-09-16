@@ -1309,6 +1309,26 @@ function M.panel(opts)
         last_sig = git_signature()
     end
 
+    -- a row whose staged change the worktree has put back: HEAD↔worktree is empty, so
+    -- the row draws HEAD↔index instead, where the change it still has is
+    ---@param entry differ.FileEntry
+    ---@return differ.DiffModel|nil
+    local function staged_model(entry)
+        if preview or not staging_ops.partly_staged(entry) then
+            return nil
+        end
+        local file = {
+            path = entry.path,
+            status = entry.status,
+            previous_path = entry.previous_path,
+        }
+        local model = M.model({ old = HEAD, new = INDEX }, root, file, head_branch(root))
+        if #model.hunks == 0 then
+            return nil
+        end
+        return model
+    end
+
     -- (re)source the diff view from an entry's current git state. false when the
     -- entry has no diff anymore (committed / fully staged / reverted outside differ).
     -- `source_opts` goes to View:set_source when the view is open
@@ -1317,6 +1337,14 @@ function M.panel(opts)
     ---@return boolean shown
     local function show_entry(entry, source_opts)
         local model = model_for(entry)
+        local staged_only = false
+        if #model.hunks == 0 and not model.binary then
+            local staged = staged_model(entry)
+            if staged then
+                model = staged
+                staged_only = true
+            end
+        end
         if #model.hunks == 0 and not model.binary then
             -- a real change with no lines to show (a mode change, a rename, a final
             -- newline, an empty new file) opens on a notice, like a binary file does;
@@ -1335,6 +1363,8 @@ function M.panel(opts)
         local staging ---@type differ.view.Staging|nil
         if preview then
             staging = staging_ops.preview(entry, model)
+        elseif staged_only then
+            staging = staging_ops.staged_only(entry, model)
         else
             staging = staging_ops.for_entry(entry, model)
         end
