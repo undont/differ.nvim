@@ -340,26 +340,25 @@ describe("git.read (worktree clean filter)", function()
         assert.are.equal("one\r\ntwo\r\n", git_src.read(wt, root, "c.txt"))
     end)
 
-    it("hunk staging stores the same blob a git add would (no CRLF leak)", function()
+    it("staging stores the same blob a git add would (no CRLF leak)", function()
         local root = fresh_repo()
         git(root, "config", "core.autocrlf", "input")
-        write(root .. "/a.lua", "local x = 1\r\nNEW LINE\r\nreturn x\r\n")
+        write(root .. "/c.txt", "one\r\ntwo\r\n")
+        git(root, "add", "c.txt")
+        git(root, "commit", "-q", "-m", "crlf")
+        write(root .. "/c.txt", "one\r\nNEW LINE\r\ntwo\r\n")
 
-        local source = {
-            old = { kind = "index", label = "INDEX" },
-            new = { kind = "worktree", label = "WORKTREE" },
-        }
-        local model = git_src.model(source, root, { path = "a.lua" })
-        assert.are.equal(1, #model.hunks) -- the insert only, no phantom eol hunks
-        local patch = require("differ.git.patch")
-        local p = patch.hunk("a.lua", model.hunks[1], model.old_text, model.new_text, 0, false)
-        assert.is_true(git_src.apply_patch(root, p, false))
+        vim.cmd.edit(root .. "/c.txt")
+        git_src.panel({ rev = {}, open_first = true })
+        local p = require("differ.panel").current()
+        view_in_origin(p):stage_all()
+        p:close()
         -- the staged blob is byte-identical to what `git add` would have written
-        assert.are.equal("local x = 1\nNEW LINE\nreturn x\n", raw_indexed(root, "a.lua"))
+        assert.are.equal("one\nNEW LINE\ntwo\n", raw_indexed(root, "c.txt"))
     end)
 end)
 
-describe("git.apply_patch (target)", function()
+describe("git.revert_patch", function()
     local patch = require("differ.git.patch")
     local INDEX = { kind = "index", label = "INDEX" }
     local WT = { kind = "worktree", label = "WORKTREE" }
@@ -384,31 +383,22 @@ describe("git.apply_patch (target)", function()
         return git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
     end
 
+    -- the revert patches the file, so its hunk sits at the model's new-side lines
     ---@param model differ.DiffModel
     ---@param idx integer
-    ---@param reverse boolean
-    local function hunk_patch(model, idx, reverse)
-        return patch.hunk("f.txt", model.hunks[idx], model.old_text, model.new_text, 0, reverse)
+    local function hunk_patch(model, idx)
+        return patch.hunk("f.txt", model.hunks[idx], model.old_text, model.new_text, 0, "new")
     end
 
-    it("reverse-applies to the worktree and leaves the index alone", function()
+    it("reverses one hunk in the worktree and leaves the index alone", function()
         local root = two_hunk_repo()
         local model = unstaged_model(root)
         assert.are.equal(2, #model.hunks)
 
-        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        assert.is_true(git_src.revert_patch(root, hunk_patch(model, 2)))
         -- only the second edit is undone; the first survives, as does the index
         assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
         assert.are.equal(BASE, git_src.read(INDEX, root, "f.txt"))
-    end)
-
-    it("defaults to the index and leaves the worktree alone", function()
-        local root = two_hunk_repo()
-        local model = unstaged_model(root)
-
-        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 1, false), false))
-        assert.are.equal("a\nB\nc\nd\ne\n", git_src.read(INDEX, root, "f.txt"))
-        assert.are.equal(EDITED, git_src.read(WT, root, "f.txt"))
     end)
 
     -- the revert-on-a-staged-hunk path composes two calls, and the worktree one is
@@ -418,7 +408,7 @@ describe("git.apply_patch (target)", function()
         local model = unstaged_model(root)
         write(root .. "/f.txt", "a\nB\nc\nZZZ\ne\n") -- the D line was rewritten since
 
-        local ok, err = git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree")
+        local ok, err = git_src.revert_patch(root, hunk_patch(model, 2))
         assert.is_false(ok)
         assert.is_not_nil(err)
         assert.are.equal("a\nB\nc\nZZZ\ne\n", git_src.read(WT, root, "f.txt"))
@@ -431,27 +421,28 @@ describe("git.apply_patch (target)", function()
         local model = unstaged_model(root)
         write(root .. "/f.txt", "x1\nx2\nx3\na\nB\nc\nD\ne\n") -- D moves from line 4 to 7
 
-        assert.is_true(git_src.apply_patch(root, hunk_patch(model, 2, true), true, "worktree"))
+        assert.is_true(git_src.revert_patch(root, hunk_patch(model, 2)))
         assert.are.equal("x1\nx2\nx3\na\nB\nc\nd\ne\n", git_src.read(WT, root, "f.txt"))
     end)
 end)
 
 -- the missing-final-newline bug was never that the patch text looked wrong: it looked
--- plausible, git apply reported success, and the index silently gained a joined line.
+-- plausible, git apply reported success, and the file silently gained a joined line.
 -- the unit fixtures pin the text; only real git can pin the bytes it writes, and under
 -- `--unidiff-zero` a side with no lines leaves git trusting the header rather than
--- failing loudly. every shape here round-trips, so an over-eager widening is caught
--- too: unstaging has to land back on the original blob byte-for-byte
-describe("git hunk staging round-trip (real git apply, EOF terminators)", function()
+-- failing loudly. an over-eager widening is caught too: the revert has to land back on
+-- the original file byte-for-byte
+describe("git hunk revert (real git apply, EOF terminators)", function()
     local patch = require("differ.git.patch")
     local INDEX = { kind = "index", label = "INDEX" }
     local WT = { kind = "worktree", label = "WORKTREE" }
 
-    -- raw stdout, no text=true: that collapses the very terminators under test
-    local function indexed(root, path)
-        local res = vim.system({ "git", "cat-file", "blob", ":" .. path }, { cwd = root }):wait()
-        assert(res.code == 0, res.stderr)
-        return res.stdout
+    -- raw bytes, no readfile: that collapses the very terminators under test
+    local function on_disk(root, path)
+        local fd = assert(io.open(root .. "/" .. path, "rb"))
+        local data = fd:read("*a")
+        fd:close()
+        return data
     end
 
     -- committed, so the index starts equal to HEAD, with the worktree carrying the edit
@@ -466,40 +457,35 @@ describe("git hunk staging round-trip (real git apply, EOF terminators)", functi
         return root
     end
 
-    -- stage the hunk, then unstage the same patch, checking the index blob at each
-    -- step. one hunk, so no offset: `reverse` only picks which way git reads it, which
-    -- is exactly what the staging keys do
-    local function round_trip(base, edited)
+    -- X's own path: reverse the hunk against the file, which has to put back the base
+    -- bytes exactly. one hunk, so no offset
+    local function revert_back(base, edited)
         local root = repo_with(base, edited)
         local model = git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
         assert.are.equal(1, #model.hunks)
-        local p = patch.hunk("f.txt", model.hunks[1], model.old_text, model.new_text, 0, "old")
+        local p = patch.hunk("f.txt", model.hunks[1], model.old_text, model.new_text, 0, "new")
 
-        local ok, err = git_src.apply_patch(root, p, false)
-        assert.is_true(ok, "stage failed: " .. tostring(err) .. "\n" .. p)
-        assert.are.equal(edited, indexed(root, "f.txt"))
-
-        ok, err = git_src.apply_patch(root, p, true)
-        assert.is_true(ok, "unstage failed: " .. tostring(err) .. "\n" .. p)
-        assert.are.equal(base, indexed(root, "f.txt"))
+        local ok, err = git_src.revert_patch(root, p)
+        assert.is_true(ok, "revert failed: " .. tostring(err) .. "\n" .. p)
+        assert.are.equal(base, on_disk(root, "f.txt"))
     end
 
-    it("appends past an unterminated last line, giving it its newline", function()
-        round_trip("a\nb", "a\nb\nc\n")
+    it("takes back an append that gave the last line its newline", function()
+        revert_back("a\nb", "a\nb\nc\n")
     end)
 
-    it("deletes the tail, leaving the new last line unterminated", function()
-        round_trip("a\nb\nc\n", "a\nb")
+    it("puts back a deleted tail, with the newline it had", function()
+        revert_back("a\nb\nc\n", "a\nb")
     end)
 
-    it("appends unterminated onto unterminated", function()
-        round_trip("a\nb", "a\nb\nc")
+    it("takes back an unterminated append onto an unterminated file", function()
+        revert_back("a\nb", "a\nb\nc")
     end)
 
     -- the control: an unterminated file whose hunk stops short of EOF must not widen,
     -- and must not quietly acquire a trailing newline on the way through
     it("leaves an unterminated file unterminated when the hunk is mid-file", function()
-        round_trip("a\nb", "a\nX\nb")
+        revert_back("a\nb", "a\nX\nb")
     end)
 end)
 

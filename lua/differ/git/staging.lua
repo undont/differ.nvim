@@ -93,14 +93,14 @@ function M.new(ctx)
     ---@return boolean
     local function revert_worktree(entry, model, hunk, offset, stage_index)
         local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
-        if not gitmod.apply_patch(root, p, true, "worktree", true) then
+        if not gitmod.revert_patch(root, p, true) then
             notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
             return false
         end
         if not stage_index() then
             return false
         end
-        local ok, err = gitmod.apply_patch(root, p, true, "worktree")
+        local ok, err = gitmod.revert_patch(root, p)
         reload_buffer(root, entry.path)
         if not ok then
             notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
