@@ -82,7 +82,7 @@ local armed_view = nil
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
----@field hidden? string  -- union source: why some staged content isn't on screen
+---@field hidden? boolean  -- union source: some staged content isn't on screen
 ---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
 ---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
 ---@field no_local? string  -- why dw does nothing here, in place of the default
@@ -499,7 +499,7 @@ end
 ---@param opened differ.view.OpenedFolds
 function View:_apply_folds(opened)
     local side = anchor_side(opened, self.model)
-    for ci, col in ipairs(self.columns) do
+    for _, col in ipairs(self.columns) do
         local win = col.winid
         if win and vim.api.nvim_win_is_valid(win) then
             set_wo(win, "foldmethod", "manual")

@@ -1553,9 +1553,9 @@ function M.panel(opts)
     local function union_staging(entry)
         local marks = require("differ.model.marks")
         local stage = require("differ.model.stage")
-        local mode_why ---@type string|nil
+        local mode_change = false
         if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry) then
-            mode_why = "the index holds a mode change"
+            mode_change = true -- the index holds a mode change, which no hunk shows
         end
         ---@type differ.view.Staging
         local staging = { marks = { old = {}, new = {} }, refresh = refresh_panel }
@@ -1578,22 +1578,24 @@ function M.panel(opts)
             end
             if held then
                 staging.marks.old, staging.marks.new = held.old, held.new
-                staging.hidden = mode_why
-                if not mode_why and #hidden_in > 0 then
-                    staging.hidden = "the index holds a line neither HEAD nor the worktree has"
+                staging.hidden = nil
+                if mode_change then
+                    staging.hidden = true
+                elseif #hidden_in > 0 then
+                    staging.hidden = true
                     staging.hidden_in = hidden_in
                 end
                 return
             end
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
             staging.marks.old, staging.marks.new = fresh.old, fresh.new
-            local complete, why = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
-            if mode_why then
-                staging.hidden = mode_why
+            local complete = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
+            if mode_change then
+                staging.hidden = true
             elseif complete then
                 staging.hidden = nil
             else
-                staging.hidden = why
+                staging.hidden = true
                 local head = require("differ.util.text").to_lines(union.old_text)
                 staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
             end

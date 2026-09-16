@@ -519,21 +519,23 @@ end
 -- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot
 -- show index content that differs from HEAD and worktree both: stage a change and then
 -- put the worktree back or edit it again, or let the two diffs align a run of repeated
--- lines differently, and the change is real but off-screen. a false puts a notice on
--- the view
+-- lines differently, and the change is real but off-screen. a false puts the note on
+-- the winbar, which says how many hunks hold some of it rather than why
 ---@param union differ.Hunk[]
 ---@param cached differ.Hunk[]
 ---@param unstaged differ.Hunk[]
----@return boolean complete, string|nil reason
+---@return boolean
 function M.complete(union, cached, unstaged)
+    -- the index differs from HEAD and the worktree matches it
     if #union == 0 and (#cached > 0 or #unstaged > 0) then
-        return false, "the index differs from HEAD and the worktree matches it"
+        return false
     end
+    -- unstaged or staged content sitting outside every hunk
     local shows_new = covered(union, "new")
     for _, h in ipairs(unstaged) do
         for l = h.new_start, h.new_start + h.new_count - 1 do
             if not shows_new[l] then
-                return false, "unstaged content sits outside every hunk"
+                return false
             end
         end
     end
@@ -541,7 +543,7 @@ function M.complete(union, cached, unstaged)
     for _, h in ipairs(cached) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if not shows_old[l] then
-                return false, "staged content sits outside every hunk"
+                return false
             end
         end
     end
@@ -552,10 +554,10 @@ function M.complete(union, cached, unstaged)
     for _, h in ipairs(unstaged) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if added[l] then
-                return false, "the index holds a line neither HEAD nor the worktree has"
+                return false -- a line only the index holds
             end
             if not shows_old[head_line(cached, l)] then
-                return false, "a line the worktree replaced sits outside every hunk"
+                return false -- a line the worktree replaced, outside every hunk
             end
         end
     end
@@ -581,9 +583,9 @@ function M.complete(union, cached, unstaged)
         net = net + h.new_count - h.old_count
     end
     if shown ~= net then
-        return false, "the marked lines don't add up to the index"
+        return false -- the marked lines don't add up to the index
     end
-    return true, nil
+    return true
 end
 
 return M

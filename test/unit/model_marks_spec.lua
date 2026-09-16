@@ -75,21 +75,15 @@ describe("union marks", function()
         -- stage an edit, then put the worktree back: git still calls the file MM, both
         -- pairs hold a change, and HEAD↔worktree is empty
         it("catches an edit staged and then undone in the worktree", function()
-            local ok, why = marks.complete({}, { h(2, 1, 2, 1) }, { h(2, 1, 2, 1) })
-            assert.is_false(ok)
-            assert.are.equal("the index differs from HEAD and the worktree matches it", why)
+            assert.is_false(marks.complete({}, { h(2, 1, 2, 1) }, { h(2, 1, 2, 1) }))
         end)
 
         it("catches unstaged content no hunk covers", function()
-            local ok, why = marks.complete({ h(3, 1, 3, 1) }, {}, { h(9, 1, 9, 1) })
-            assert.is_false(ok)
-            assert.are.equal("unstaged content sits outside every hunk", why)
+            assert.is_false(marks.complete({ h(3, 1, 3, 1) }, {}, { h(9, 1, 9, 1) }))
         end)
 
         it("catches staged content no hunk covers", function()
-            local ok, why = marks.complete({ h(3, 1, 3, 1) }, { h(9, 1, 9, 1) }, {})
-            assert.is_false(ok)
-            assert.are.equal("staged content sits outside every hunk", why)
+            assert.is_false(marks.complete({ h(3, 1, 3, 1) }, { h(9, 1, 9, 1) }, {}))
         end)
 
         -- HEAD x,y; index x,ghost,y; worktree X,y. the line the index added and the
@@ -98,9 +92,7 @@ describe("union marks", function()
             local union = { hl(1, { "x" }, 1, { "X" }) }
             local cached = { hl(1, {}, 2, { "ghost" }) }
             local unstaged = { hl(1, { "x", "ghost" }, 1, { "X" }) }
-            local ok, why = marks.complete(union, cached, unstaged)
-            assert.is_false(ok)
-            assert.are.equal("the index holds a line neither HEAD nor the worktree has", why)
+            assert.is_false(marks.complete(union, cached, unstaged))
         end)
 
         -- the pair diffs can align repeated lines differently from the union: here the
@@ -108,9 +100,7 @@ describe("union marks", function()
         it("catches a replaced line the union shows as context", function()
             local union = { h(1, 1, 1, 1) }
             local unstaged = { h(5, 1, 4, 0) }
-            local ok, why = marks.complete(union, {}, unstaged)
-            assert.is_false(ok)
-            assert.are.equal("a line the worktree replaced sits outside every hunk", why)
+            assert.is_false(marks.complete(union, {}, unstaged))
         end)
 
         -- stage an edit, then edit the same line again: the index's version is replaced
@@ -119,9 +109,7 @@ describe("union marks", function()
             local union = { hl(1, { "foo" }, 1, { "FOOD" }) }
             local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
             local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
-            local ok, why = marks.complete(union, cached, unstaged)
-            assert.is_false(ok)
-            assert.are.equal("the index holds a line neither HEAD nor the worktree has", why)
+            assert.is_false(marks.complete(union, cached, unstaged))
         end)
 
         -- HEAD a,a,a,b; index a,a,c,b; worktree b,a,c,b. every range check passes, but
@@ -131,9 +119,7 @@ describe("union marks", function()
             local union = { hl(1, { "a", "a", "a" }, 1, { "b", "a", "c" }) }
             local cached = { hl(3, { "a" }, 3, { "c" }) }
             local unstaged = { hl(1, { "a" }, 1, { "b" }) }
-            local ok, why = marks.complete(union, cached, unstaged)
-            assert.is_false(ok)
-            assert.are.equal("the marked lines don't add up to the index", why)
+            assert.is_false(marks.complete(union, cached, unstaged))
         end)
 
         it("allows a deletion of a line HEAD held too", function()

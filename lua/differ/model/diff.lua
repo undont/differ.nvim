@@ -7,7 +7,6 @@
 ---@field new_count integer
 ---@field old_lines string[]
 ---@field new_lines string[]
----@field pairs differ.LinePair[]|nil
 
 ---@class differ.DiffModel
 ---@field path string
