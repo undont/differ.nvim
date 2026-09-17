@@ -808,7 +808,8 @@ end
 ---@return boolean ok
 local function remove_ok(abs)
     local ok, err = os.remove(abs)
-    if not ok then
+    -- a file already gone from disk is as discarded as one removed here
+    if not ok and (vim.uv or vim.loop).fs_lstat(abs) then
         notify(("discard failed: %s"):format(err or ""), vim.log.levels.ERROR)
         return false
     end
@@ -928,15 +929,21 @@ function M.discard(root, entry, preview)
         return false
     end
     local abs = root .. "/" .. entry.path
+    -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
+    -- but its new path is unknown to HEAD, so it discards by what the index holds
+    local kind = entry.status
+    if entry.x == "A" or entry.x == "C" or entry.x == "R" then
+        kind = entry.x
+    end
     local ok
-    if entry.status == "?" then
+    if kind == "?" then
         ok = remove_ok(abs)
-    elseif entry.status == "A" or entry.status == "C" then
+    elseif kind == "A" or kind == "C" then
         -- unstage the add before dropping the file, and don't drop it if that failed:
         -- the index would keep an add for a file no longer on disk. a copy's source is
         -- untouched, so its new path is an add
         ok = git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard") and remove_ok(abs)
-    elseif entry.status == "R" and entry.previous_path then
+    elseif kind == "R" and entry.previous_path then
         -- undoing a move: the old path comes back from HEAD, the new one goes like an add
         ok = git_ok({ "checkout", "HEAD", "--", entry.previous_path }, root, "discard")
             and git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard")

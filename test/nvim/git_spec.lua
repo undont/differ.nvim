@@ -3305,6 +3305,64 @@ func getDownloadSpeed() {
         assert.are.equal(committed(root, "a.lua"), work)
     end)
 
+    -- an RD: a.lua renamed to b.lua in the index, then b.lua deleted from disk. the row
+    -- is lettered D in the whole list and R in the preview
+    local function renamed_then_deleted()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "z\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-m", "z")
+        git(root, "mv", "a.lua", "b.lua")
+        os.remove(root .. "/b.lua")
+        vim.cmd.edit(root .. "/z.lua")
+        return root
+    end
+    ---@param root string
+    ---@param preview boolean
+    ---@return { complaints: string[], status: string, a: string|nil, b_on_disk: boolean }
+    local function discard_renamed_then_deleted(root, preview)
+        local p = open_panel()
+        if preview then
+            toggle_preview(p)
+        end
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
+        _G.notifs = {}
+        confirming(1, function()
+            p:discard()
+        end)
+        local out = { complaints = {} }
+        for _, n in ipairs(_G.notifs) do
+            if n.msg:find("discard", 1, true) then
+                out.complaints[#out.complaints + 1] = n.msg
+            end
+        end
+        out.status = git(root, "status", "--porcelain=v1")
+        if vim.fn.filereadable(root .. "/a.lua") == 1 then
+            out.a = worktree(root, "a.lua")
+        end
+        out.b_on_disk = vim.fn.filereadable(root .. "/b.lua") == 1
+        p:close()
+        return out
+    end
+
+    it("discards a staged rename whose new path was deleted, from the whole list", function()
+        local root = renamed_then_deleted()
+        local got = discard_renamed_then_deleted(root, false)
+        assert.are.equal("", got.status)
+        assert.are.equal(committed(root, "a.lua"), got.a)
+        assert.is_false(got.b_on_disk)
+        assert.are.same({}, got.complaints)
+    end)
+
+    it("discards a staged rename whose new path was deleted, from the commit preview", function()
+        local root = renamed_then_deleted()
+        local got = discard_renamed_then_deleted(root, true)
+        assert.are.equal("", got.status)
+        assert.are.equal(committed(root, "a.lua"), got.a)
+        assert.is_false(got.b_on_disk)
+        assert.are.same({}, got.complaints)
+    end)
+
     it("returns to the whole list once the commit preview is unstaged", function()
         preview_repo()
         local p = open_panel()
