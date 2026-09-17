@@ -3280,6 +3280,31 @@ func getDownloadSpeed() {
         assert.are.equal(before, after)
     end)
 
+    -- an MD row is lettered D in the whole list but M in the preview
+    it("discards an edit staged and then deleted from the commit preview panel", function()
+        local root = preview_repo()
+        os.remove(root .. "/a.lua")
+        vim.cmd.edit(root .. "/c.lua") -- a buffer on a file still on disk resolves the repo
+        local p = open_panel()
+        toggle_preview(p)
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        _G.notifs = {}
+        confirming(1, function()
+            p:discard()
+        end)
+        local skipped = false
+        for _, n in ipairs(_G.notifs) do
+            skipped = skipped or n.msg:find("discard skipped", 1, true) ~= nil
+        end
+        local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
+        local on_disk = vim.fn.filereadable(root .. "/a.lua") == 1
+        local work = on_disk and worktree(root, "a.lua") or nil
+        p:close()
+        assert.is_false(skipped)
+        assert.are.equal("", status)
+        assert.are.equal(committed(root, "a.lua"), work)
+    end)
+
     it("returns to the whole list once the commit preview is unstaged", function()
         preview_repo()
         local p = open_panel()

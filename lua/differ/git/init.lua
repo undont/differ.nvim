@@ -820,8 +820,9 @@ end
 -- the file the entry came from is the side to re-read
 ---@param root string
 ---@param entry differ.FileEntry
+---@param preview? boolean  -- the entry is lettered by its index side, as the commit preview lists it
 ---@return string|nil status
-local function live_status(root, entry)
+local function live_status(root, entry, preview)
     local args = { "status", "--porcelain=v1", "-z", "-uall", "--", entry.path }
     -- git pairs a rename only with both paths in the pathspec; with one it reports an add
     if entry.previous_path then
@@ -831,6 +832,9 @@ local function live_status(root, entry)
     for _, s in ipairs(rev.parse_status(out or "")) do
         -- a kept deletion's copy on disk is its own `??` line, and not this row's status
         if s.path == entry.path and not (s.x == "?" and entry.kept) then
+            if preview then
+                return s.x
+            end
             return select(2, row_of(s))
         end
     end
@@ -907,9 +911,10 @@ end
 -- no longer matches refuses rather than picking by the stale one
 ---@param root string
 ---@param entry differ.FileEntry
+---@param preview? boolean  -- the entry comes from the commit preview's listing
 ---@return boolean ok
-function M.discard(root, entry)
-    if live_status(root, entry) ~= entry.status then
+function M.discard(root, entry, preview)
+    if live_status(root, entry, preview) ~= entry.status then
         notify(
             ("discard skipped: %s changed since the prompt"):format(entry.path),
             vim.log.levels.WARN
@@ -1148,7 +1153,7 @@ function M.panel(opts)
                 M.unstage_all(root)
             end,
             discard = function(entry)
-                M.discard(root, entry)
+                M.discard(root, entry, preview)
             end,
             reload = function()
                 local live = preview and M.staged_sections(root) or M.status_sections(root)
