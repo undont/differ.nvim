@@ -1330,12 +1330,17 @@ function M.panel(opts)
         last_sig = git_signature()
     end
 
-    -- a row whose staged change the worktree has put back: HEAD↔worktree is empty, so
-    -- the row draws HEAD↔index instead, where the change it still has is
+    -- a row whose staged change the worktree has put back, or a staged add whose file is
+    -- gone: HEAD↔worktree is empty, so the row draws HEAD↔index instead, where the
+    -- change it still has is
     ---@param entry differ.FileEntry
     ---@return differ.DiffModel|nil
     local function staged_model(entry)
-        if preview or not staging_ops.partly_staged(entry) then
+        if preview then
+            return nil
+        end
+        local gone = entry.x == "A" and entry.y == "D"
+        if not (gone or staging_ops.partly_staged(entry)) then
             return nil
         end
         local file = {

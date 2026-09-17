@@ -3368,6 +3368,27 @@ func getDownloadSpeed() {
         assert.are.equal(" D a.lua\n", status)
     end)
 
+    -- an AD: HEAD and the worktree both lack c.lua, so only the index shows the add
+    it("draws a staged add whose file was deleted as HEAD-to-index", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "one\n")
+        git(root, "add", "c.lua")
+        os.remove(root .. "/c.lua")
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        local revs, hunks, badge =
+            { v.model.old_rev, v.model.new_rev }, #v.model.hunks, v.staging.badge
+        v:unstage_hunk()
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.same({ "HEAD", "INDEX" }, revs)
+        assert.are.equal(1, hunks)
+        assert.are.equal("STAGED", badge)
+        assert.are.equal("", status)
+    end)
+
     it("discards a staged rename whose new path was deleted, from the commit preview", function()
         local root = renamed_then_deleted()
         local got = discard_renamed_then_deleted(root, true)
