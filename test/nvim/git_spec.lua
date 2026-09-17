@@ -64,15 +64,19 @@ local function open_panel()
     return p, view_in_origin(p)
 end
 
--- run `fn` with vim.fn.confirm answering `choice`: 1 yes, 2 no
+-- run `fn` with vim.fn.confirm answering `choice` (1 yes, 2 no), returning the prompt
+-- it was shown
+---@return string|nil prompt
 local function confirming(choice, fn)
-    local orig = vim.fn.confirm
-    vim.fn.confirm = function()
+    local orig, prompt = vim.fn.confirm, nil
+    vim.fn.confirm = function(msg)
+        prompt = msg
         return choice
     end
     local ok, err = pcall(fn)
     vim.fn.confirm = orig
     assert(ok, err)
+    return prompt
 end
 
 describe("git.read / changed_files", function()
@@ -5658,19 +5662,6 @@ describe(":Differ diff rename staging", function()
         p:close()
     end)
 
-    -- run `fn` with confirm answering `answer`, returning the prompt it was shown
-    local function under_confirm(answer, fn)
-        local orig, prompt = vim.fn.confirm, nil
-        vim.fn.confirm = function(msg)
-            prompt = msg
-            return answer
-        end
-        local okay, err = pcall(fn)
-        vim.fn.confirm = orig
-        assert(okay, err)
-        return prompt
-    end
-
     it("undoes a rename with X, restoring the old path and dropping the new", function()
         local root = renamed_repo({ 5, 30 })
         vim.cmd.edit(root .. "/new/big.lua")
@@ -5679,7 +5670,7 @@ describe(":Differ diff rename staging", function()
         local p = Panel.current()
         assert.is_true(p:focus_file("new/big.lua"))
 
-        under_confirm(1, function()
+        confirming(1, function()
             p:discard()
         end)
 
@@ -5698,7 +5689,7 @@ describe(":Differ diff rename staging", function()
         local p = Panel.current()
         assert.is_true(p:focus_file("new/big.lua"))
 
-        local prompt = under_confirm(2, function() -- answer No: nothing is discarded
+        local prompt = confirming(2, function() -- answer No: nothing is discarded
             p:discard()
         end)
 
