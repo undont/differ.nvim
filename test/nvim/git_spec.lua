@@ -3358,6 +3358,16 @@ func getDownloadSpeed() {
         assert.are.same({}, got.complaints)
     end)
 
+    it("unstages both ends of a staged rename whose new path was deleted", function()
+        local root = renamed_then_deleted()
+        local p = open_panel()
+        assert.is_true(p:goto_path("b.lua", true))
+        view_in_origin(p):unstage_hunk()
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal(" D a.lua\n", status)
+    end)
+
     it("discards a staged rename whose new path was deleted, from the commit preview", function()
         local root = renamed_then_deleted()
         local got = discard_renamed_then_deleted(root, true)

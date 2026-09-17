@@ -59,11 +59,11 @@ function M.write_index(root, path, text)
 end
 
 -- the paths one entry's staging ops act on: a rename owns both ends of the move, a copy
--- only its new path
+-- only its new path. a staged rename the worktree then deleted is lettered D
 ---@param entry differ.FileEntry
 ---@return string[]
 function M.entry_paths(entry)
-    if entry.status == "R" and entry.previous_path then
+    if (entry.status == "R" or entry.x == "R") and entry.previous_path then
         return { entry.path, entry.previous_path }
     end
     return { entry.path }
