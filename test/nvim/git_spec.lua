@@ -2305,6 +2305,45 @@ func getDownloadSpeed() {
         assert.is_nil(hidden)
     end)
 
+    -- +x staged over HEAD's 644: no hunk shows the mode, and S and U still land the
+    -- index on the mode of the side they take
+    local function with_staged_mode(work_exec)
+        local root, p, v = staged_as(JOINED.head, JOINED.index, JOINED.work)
+        local sha = git(root, "rev-parse", ":0:a.lua"):gsub("%s+$", "")
+        git(root, "update-index", "--cacheinfo", "100755," .. sha .. ",a.lua")
+        if work_exec then
+            vim.fn.system({ "chmod", "+x", root .. "/a.lua" })
+        end
+        return root, p, v
+    end
+    local function index_mode(root)
+        return git(root, "ls-files", "-s", "--", "a.lua"):match("^(%d+)")
+    end
+
+    it("S takes the worktree's mode", function()
+        local root, p, v = with_staged_mode(false)
+        v:stage_all()
+        local mode = index_mode(root)
+        p:close()
+        assert.are.equal("100644", mode)
+    end)
+
+    it("S keeps a mode the worktree has too", function()
+        local root, p, v = with_staged_mode(true)
+        v:stage_all()
+        local mode = index_mode(root)
+        p:close()
+        assert.are.equal("100755", mode)
+    end)
+
+    it("U takes HEAD's mode", function()
+        local root, p, v = with_staged_mode(true)
+        v:unstage_all()
+        local mode = index_mode(root)
+        p:close()
+        assert.are.equal("100644", mode)
+    end)
+
     -- 5x staged and then put back to 5 on disk: no hunk shows it, U still takes it out
     it("U drops staged content no hunk shows", function()
         local ten = {}

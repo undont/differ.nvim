@@ -32,8 +32,9 @@ function M.new(ctx)
     -- the index, and a worktree rename stages with its content; both move the row
     ---@param entry differ.FileEntry
     ---@param text string
+    ---@param mode? string  -- the mode the entry takes; nil keeps the one it has
     ---@return boolean ok
-    local function put_index(entry, text)
+    local function put_index(entry, text, mode)
         if entry.x == "A" and text == "" then
             if not gitmod.unstage(root, entry.path) then
                 return false
@@ -43,7 +44,7 @@ function M.new(ctx)
             end)
             return true
         end
-        if not write_index(root, entry.path, text) then
+        if not write_index(root, entry.path, text, mode) then
             return false
         end
         if entry.y == "R" and entry.previous_path then
@@ -56,6 +57,25 @@ function M.new(ctx)
             end)
         end
         return true
+    end
+
+    -- the mode of the side S (the worktree) or U (HEAD) takes, or nil when the index is
+    -- already there. a `diff --raw` line reads `:<src mode> <dst mode> ...`
+    ---@param entry differ.FileEntry
+    ---@param staged boolean
+    ---@return string|nil
+    local function side_mode(entry, staged)
+        local line = gitmod.raw_line(root, staged and {} or { "--cached" }, entry)
+        if not line then
+            return nil
+        end
+        local index_mode, work_mode = rev.parse_raw_modes(line)
+        local want = staged and work_mode or index_mode
+        local held = staged and index_mode or work_mode
+        if not want or want == held or want:match("^0+$") then
+            return nil
+        end
+        return want
     end
 
     -- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
@@ -249,8 +269,9 @@ function M.new(ctx)
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, work))
             return true
         end
-        -- S and U: the index takes the worktree's or HEAD's text whole, staged content no
-        -- hunk shows included. the entry's mode is left as it is
+        -- S and U: the index takes the worktree's or HEAD's side of the file whole,
+        -- staged content no hunk shows and the mode included. the move a rename made
+        -- stays staged either way; the panel row's keys own that
         staging.set_all = function(model, staged)
             local union, cached = gitmod.union_models(root, entry)
             if not (union and cached) then
@@ -259,11 +280,12 @@ function M.new(ctx)
             if not drawn_current(model, union) then
                 return false
             end
-            local text = union.old_text
-            if staged then
-                text = union.new_text
+            local text = staged and union.new_text or union.old_text
+            local mode = side_mode(entry, staged)
+            if text == cached.new_text and not mode then
+                return false
             end
-            if text == cached.new_text or not put_index(entry, text) then
+            if not put_index(entry, text, mode) then
                 return false
             end
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))

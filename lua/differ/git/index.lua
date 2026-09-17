@@ -32,20 +32,23 @@ function M.unstage_all(root)
     return git_ok({ "reset", "-q", "HEAD" }, root, "unstage all")
 end
 
--- point `path`'s index entry at `text`, keeping its mode: a blob write and an entry
--- move, so there's no header to compute and nothing that can half-apply. `text` must
--- already be in index domain (M.read runs the worktree side through the clean filter)
+-- point `path`'s index entry at `text`: a blob write and an entry move, so there's no
+-- header to compute and nothing that can half-apply. `text` must already be in index
+-- domain (M.read runs the worktree side through the clean filter). the entry keeps the
+-- mode it has unless `mode` names another
 ---@param root string
 ---@param path string
 ---@param text string
+---@param mode? string
 ---@return boolean ok
-function M.write_index(root, path, text)
+function M.write_index(root, path, text, mode)
     local listed = git({ "ls-files", "-s", "--", path }, root)
-    local mode = listed and listed:match("^(%d+)%s")
-    if not mode then
+    local held = listed and listed:match("^(%d+)%s")
+    if not held then
         notify(("%s has no index entry to update"):format(path), vim.log.levels.ERROR)
         return false
     end
+    mode = mode or held
     local hashed = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
         cwd = root,
         stdin = text,
