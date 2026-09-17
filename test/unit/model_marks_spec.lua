@@ -317,6 +317,17 @@ describe("union marks", function()
             assert.are.same({ "unstaged" }, states(m, moved))
             assert.are.same({}, hidden)
         end)
+
+        -- HEAD x a, worktree a y: a block of a alone is x dropped from HEAD, or the
+        -- worktree's a with y still to come. both describe the same index
+        it("reads a partial block's shared line as HEAD's", function()
+            local shared = { hl(1, { "x", "a" }, 1, { "a", "y" }) }
+            local m, hidden = marks.of_blocks(shared, { { "a" } })
+            assert.are.same({ "partial" }, states(m, shared))
+            assert.are.same({ [1] = true, [2] = false }, m.old)
+            assert.are.same({ [1] = false, [2] = false }, m.new)
+            assert.are.same({}, hidden)
+        end)
     end)
 
     -- past MAX_CELLS the block isn't compared line by line, and an uncompared hunk takes
