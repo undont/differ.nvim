@@ -163,7 +163,7 @@ M.defaults = {
         close = "dc", -- diff/panel/history: end the session (merge, pr or local)
         toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
         toggle_layout = "dl", -- diff: flip stacked / split
-        toggle_local = "dw", -- diff: a partly staged file's changes since staging, and back
+        toggle_local = "dw", -- diff/panel: a partly staged file's changes since staging, and back
         -- merge tool, bound on the result buffer. nav + take-this resolution,
         -- the result buffer is the real worktree
         -- file and stays editable, so the whole choose family sits behind <leader>
