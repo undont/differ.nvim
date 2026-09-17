@@ -257,6 +257,23 @@ describe("union marks", function()
             local index = { "a", "b", "c", "D", "e", "f" }
             assert.are.same({ { "b" }, { "D", "e", "f" } }, marks.blocks(union, head, index))
         end)
+
+        -- a blank file with a line rewritten as two every 25 lines, and the index holding
+        -- one of the two: nearly every blank is a place the block could end
+        it("gives nil rather than search a mostly blank file for long", function()
+            local blank_head, blank_index, spread = {}, {}, {}
+            for l = 1, 2000 do
+                local line = ""
+                if l % 25 == 0 then
+                    line = "old" .. l
+                    local n = #spread
+                    spread[n + 1] = hl(l, { line }, l + n, { "x" .. l, "y" .. l })
+                    blank_index[l] = "x" .. l
+                end
+                blank_head[l], blank_index[l] = line, blank_index[l] or line
+            end
+            assert.is_nil(marks.blocks(spread, blank_head, blank_index))
+        end)
     end)
 
     describe("of_blocks", function()

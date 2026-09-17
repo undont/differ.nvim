@@ -102,7 +102,11 @@ local function holds(index, at, lines)
     return true
 end
 
----@alias differ.model.BlockLengths fun(h: differ.Hunk, index: string[], at: integer): integer[]
+-- the block lengths worth trying for hunk `h` at index line `at`. `next_line` is the
+-- HEAD line the block has to be followed by (nil at the end of HEAD), and `where` maps
+-- each index line to the lines it sits at, ascending
+---@alias differ.model.BlockLengths
+---| fun(h: differ.Hunk, index: string[], at: integer, next_line?: string, where: table<string, integer[]>): integer[]
 
 -- lengths for a block that is exactly one of the hunk's sides
 ---@type differ.model.BlockLengths
@@ -117,18 +121,37 @@ local function whole_lengths(h, index, at)
     return out
 end
 
--- every length the rest of the index allows, shortest first
+-- every length that ends where `next_line` sits, shortest first, or the rest of the
+-- index when nothing follows
 ---@type differ.model.BlockLengths
-local function any_lengths(_, index, at)
+local function any_lengths(_, index, at, next_line, where)
+    if next_line == nil then
+        return { #index - at + 1 }
+    end
+    local lines = where[next_line] or {}
+    local lo, hi = 1, #lines + 1 -- the first entry at or after `at`
+    while lo < hi do
+        local mid = math.floor((lo + hi) / 2)
+        if lines[mid] < at then
+            lo = mid + 1
+        else
+            hi = mid
+        end
+    end
     local out = {}
-    for n = 0, #index - at + 1 do
-        out[#out + 1] = n
+    for k = lo, #lines do
+        out[#out + 1] = lines[k] - at
     end
     return out
 end
 
+-- lengths tried and lines compared past which a cut is reported as ambiguous. a file of
+-- mostly repeated lines leaves any_lengths a length to try at nearly every line
+local MAX_STEPS = 1e6
+
 -- the ways to cut the index into a block per union hunk, with HEAD's unchanged lines
--- between them: the first cut, and how many there are (0, 1, or 2 for two or more)
+-- between them: the cut when there is only one, and how many there are (0, 1, or 2 for
+-- two or more, or for a search past MAX_STEPS)
 ---@param union differ.Hunk[]
 ---@param head string[]
 ---@param index string[]
@@ -137,6 +160,12 @@ end
 local function cut(union, head, index, lengths)
     local ways = {} ---@type table<string, integer>  -- "hunk:index line" -> ways through
     local picks = {} ---@type table<string, integer[]>  -- "hunk:index line" -> first block's {at, n}
+    local where = {} ---@type table<string, integer[]>
+    for l, line in ipairs(index) do
+        where[line] = where[line] or {}
+        table.insert(where[line], l)
+    end
+    local steps = 0
     ---@param i integer     -- the next union hunk
     ---@param from integer  -- the next HEAD line
     ---@param at integer    -- the next index line
@@ -152,6 +181,7 @@ local function cut(union, head, index, lengths)
             first, after = old_bounds(h)
         end
         for l = from, first - 1 do
+            steps = steps + 1
             if index[at] ~= head[l] then
                 ways[key] = 0
                 return 0
@@ -166,7 +196,12 @@ local function cut(union, head, index, lengths)
             return ways[key]
         end
         local total = 0
-        for _, n in ipairs(lengths(h, index, at)) do
+        local tried = lengths(h, index, at, head[after], where)
+        steps = steps + #tried
+        if steps > MAX_STEPS then
+            return 2
+        end
+        for _, n in ipairs(tried) do
             -- the unchanged line after the block, when there is one, has to come next
             local fits = after > #head or index[at + n] == head[after]
             local through = 0
@@ -186,8 +221,8 @@ local function cut(union, head, index, lengths)
     end
     local total = count(1, 1, 1)
     local out, at = {}, 1
-    if total == 0 then
-        return out, 0
+    if total ~= 1 then
+        return out, total -- a cut that isn't the only one is never read
     end
     for i in ipairs(union) do
         local pick = picks[i .. ":" .. at]
