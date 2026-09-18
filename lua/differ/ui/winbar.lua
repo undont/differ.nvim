@@ -104,8 +104,8 @@ function M.tally(view)
     return out
 end
 
--- the note on staged content the view can't show: how many hunks it sits in, else that
--- it sits outside them, plus the key to the local view where there is one
+-- the note on staged content the view can't show: how many hunks it sits in, and the
+-- key to the local view where there is one
 ---@param view differ.View
 ---@return string|nil
 function M.hidden_note(view)
@@ -114,12 +114,12 @@ function M.hidden_note(view)
         return nil
     end
     local where = staging.hidden_in or {}
-    local text = #where > 0 and ("%d hidden"):format(#where) or "staged content hidden"
+    local text = #where > 0 and ("%d hidden"):format(#where) or "hidden"
     local key = staging.toggle_local and require("differ.ui.help").fmt(view.keymaps.toggle_local)
     if not key then
         return text
     end
-    return ("%s: %s shows it"):format(text, key)
+    return ("%s (%s)"):format(text, key)
 end
 
 -- panel winbar: a bar plus "file K/N" for the cursor's position in the file list

@@ -1382,9 +1382,9 @@ function M.panel(opts)
             model.notice = notice
         end
         if entry.status == "U" then
-            model.banner = "conflicted: resolve with :Differ mergetool"
+            model.banner = "conflicted (:Differ mergetool)"
         elseif entry.kept then
-            model.banner = "still on disk, untracked: u tracks it again"
+            model.banner = "still on disk (u)"
         end
         local staging ---@type differ.view.Staging|nil
         if preview then

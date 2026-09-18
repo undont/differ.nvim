@@ -535,7 +535,7 @@ function M.new(ctx)
             staging = snapshot_staging(entry)
             staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
         end
-        staging.badge = "STAGED"
+        staging.badge = "INDEX"
         return staging
     end
 
@@ -545,6 +545,7 @@ function M.new(ctx)
     ---@return differ.view.Staging
     local function preview_staging(entry, model)
         local staging = staged_staging(entry, model)
+        staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: gs goes back"
         staging.leave = function()
             ctx.preview_off()

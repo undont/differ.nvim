@@ -913,7 +913,8 @@ function View:show_help()
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
     end
     if self.staging and self.staging.toggle_local then
-        local what = self.staging.badge and "back to the whole change" or "changes since staging"
+        local what = self.staging.badge == "LOCAL" and "back to the whole change"
+            or "changes since staging"
         rows[#rows + 1] = { fmt(km.toggle_local), what }
     end
     if self.commit_preview then

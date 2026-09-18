@@ -2696,7 +2696,7 @@ func getDownloadSpeed() {
         v:toggle_local()
         local local_gutter = gutter_of(v, hunk_line(v, 1))
         p:close()
-        assert.is_truthy(text:find("1 hidden: dw shows it", 1, true))
+        assert.is_truthy(text:find("1 hidden (dw)", 1, true))
         assert.is_truthy(gutter:find("!", 1, true)) -- the hunk it's hidden in
         assert.is_truthy(local_gutter:find("!", 1, true)) -- the local hunk that rewrote it
     end)
@@ -2712,7 +2712,7 @@ func getDownloadSpeed() {
         local p = open_panel()
         local text = winbar_of(view_in_origin(p))
         p:close()
-        assert.is_truthy(text:find("staged content hidden: dw shows it", 1, true))
+        assert.is_truthy(text:find("hidden (dw)", 1, true))
     end)
 
     it("names a kept deletion's copy on disk in the winbar", function()
@@ -2729,7 +2729,7 @@ func getDownloadSpeed() {
         local new_rev, text = v.model.new_rev, winbar_of(v)
         p:close()
         assert.are.equal("INDEX", new_rev) -- the removal, not the copy on disk
-        assert.is_truthy(text:find("still on disk, untracked", 1, true))
+        assert.is_truthy(text:find("still on disk (u)", 1, true))
     end)
 
     -- git reset on an added file drops it from the index, and u taking the last staged
@@ -2916,7 +2916,7 @@ func getDownloadSpeed() {
         assert.are.same({ "HEAD", "INDEX" }, revs)
         assert.are.equal(1, hunks)
         assert.is_nil(notice)
-        assert.are.equal("STAGED", badge)
+        assert.are.equal("INDEX", badge)
         assert.are.equal("staged", state)
         assert.are.equal(committed(root, "a.lua"), index)
     end)
@@ -3424,7 +3424,7 @@ func getDownloadSpeed() {
         p:close()
         assert.are.same({ "HEAD", "INDEX" }, revs)
         assert.are.equal(1, hunks)
-        assert.are.equal("STAGED", badge)
+        assert.are.equal("INDEX", badge)
         assert.are.equal("", status)
     end)
 
