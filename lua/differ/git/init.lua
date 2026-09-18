@@ -1205,6 +1205,19 @@ function M.panel(opts)
     -- refreshes act only when it moved, so a stray event doesn't re-source over an
     -- in-progress in-differ staging session, and a differ stage records it so the index
     -- write it caused doesn't read as outside
+    -- one row's part of it: its index blobs, and its file's mtime and size. a partial
+    -- stage that leaves the row MM moves only the blob
+    ---@param entry differ.FileEntry
+    ---@return string
+    local function row_signature(entry)
+        local blobs = { "ls-files", "-s", "--", entry.path, entry.previous_path }
+        local sig = git(blobs, root) or ""
+        local st = (vim.uv or vim.loop).fs_stat(root .. "/" .. entry.path)
+        if st and st.mtime then
+            sig = sig .. "\0" .. st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size
+        end
+        return sig
+    end
     local function git_signature()
         if not stageable then
             return ""
@@ -1213,16 +1226,43 @@ function M.panel(opts)
             .. "\0"
             .. (git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
         if active_entry then
-            -- a partial stage that leaves the row MM moves only the blob
-            local blobs = { "ls-files", "-s", "--", active_entry.path, active_entry.previous_path }
-            sig = sig .. "\0" .. (git(blobs, root) or "")
-            local st = (vim.uv or vim.loop).fs_stat(root .. "/" .. active_entry.path)
-            if st and st.mtime then
-                sig = sig .. "\0" .. st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size
-            end
+            sig = sig .. "\0" .. row_signature(active_entry)
         end
         return sig
     end
+
+    -- rows the review walk stepped off with nothing left for its key, by walk (false: s)
+    -- then path, each with HEAD and the row's signature as they were. any change to
+    -- either puts the row back in the walk
+    local passed = { [false] = {}, [true] = {} } ---@type table<boolean, table<string, string>>
+    ---@param entry differ.FileEntry
+    ---@return string
+    local function passed_key(entry)
+        return (git({ "rev-parse", "HEAD" }, root) or "") .. "\0" .. row_signature(entry)
+    end
+    ---@type differ.panel.ReviewHooks
+    local review_hooks = {
+        accept = function(entry, staged)
+            -- the preview and the local view aren't the whole change: what they show done
+            -- says nothing about the row
+            local badge = view and view.staging and view.staging.badge
+            if preview or badge == "LOCAL" then
+                return
+            end
+            passed[staged][entry.path] = passed_key(entry)
+        end,
+        accepted = function(entry, staged)
+            local was = passed[staged][entry.path]
+            if not was then
+                return false
+            end
+            if was == passed_key(entry) then
+                return true
+            end
+            passed[staged][entry.path] = nil
+            return false
+        end,
+    }
     local last_sig = git_signature()
     -- record the state the list now reflects, so the next external event doesn't read an
     -- in-differ op as an outside change and re-source over the in-place staged marks.
@@ -1544,6 +1584,7 @@ function M.panel(opts)
             end
         end,
         keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
+        review = stageable and review_hooks or nil,
         extra_keymaps = stageable and {
             {
                 spec = panel_keys.commit_preview,

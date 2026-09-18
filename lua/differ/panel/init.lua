@@ -91,6 +91,8 @@ local STATUS_HL = {
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil
 -- fired after a ]f/[f step, for an optional session hook (the pr forward-auto-mark)
 ---@field on_step fun(direction: "next"|"prev", left: differ.FileEntry|nil, new: differ.FileEntry)|nil
+---@field review differ.panel.ReviewHooks|nil
+---@field walk_order string[]|nil  -- the file rows' keys, in list order, when the open file opened
 ---@field icon_for nil|fun(path: string): string|nil, string|nil
 ---@field position string
 ---@field height integer
@@ -133,12 +135,19 @@ Panel.__index = Panel
 ---@field keymaps? table<string, string|string[]|false> -- resolved panel action -> lhs
 ---@field extra_keymaps? differ.panel.ExtraMap[] -- session maps (pr viewed nav)
 ---@field on_step? fun(direction: "next"|"prev", left: differ.FileEntry|nil, new: differ.FileEntry)
+---@field review? differ.panel.ReviewHooks -- the staging walk's memory of rows passed as they are
 ---@field icons? boolean -- filetype devicons (default true when available)
 ---@field listing? "tree"|"name"
 ---@field position? "bottom"|"top"|"left"|"right"
 ---@field height? integer
 ---@field width? integer
 ---@field progress? boolean -- file-position meter in the panel winbar (default on)
+
+-- rows the review walk has stepped off with nothing left for its key, remembered by the
+-- session until the file or its index entry changes. `staged` is the walk: false for s
+---@class differ.panel.ReviewHooks
+---@field accept fun(entry: differ.FileEntry, staged: boolean)
+---@field accepted fun(entry: differ.FileEntry, staged: boolean): boolean
 
 ---@class differ.panel.ExtraMap
 ---@field spec string|string[]|false  -- resolved lhs (a keymaps value)
@@ -178,6 +187,7 @@ function Panel.new(opts)
         actions = opts.actions,
         extra_keymaps = opts.extra_keymaps,
         on_step = opts.on_step,
+        review = opts.review,
         keymaps = vim.tbl_extend(
             "force",
             require("differ.config").defaults.keymaps,
@@ -647,6 +657,7 @@ function Panel:_open(entry, keep_focus)
         -- every selection path sets selected_row then lands here, so this is the one
         -- place the opened file's identity has to be recorded for render to re-derive it
         self.selected_key = entry_key(entry)
+        self.walk_order = self:_file_keys()
     end
     if not keep_focus and self.winid and vim.api.nvim_win_is_valid(self.winid) then
         vim.api.nvim_set_current_win(self.winid)
@@ -979,34 +990,111 @@ local function has_review_work(e, staged)
     return has_unstaged(e)
 end
 
--- the review flow's file step: the nearest row in `direction` with something left to do,
--- wrapping past the list ends. the open file is skipped, since re-opening it would
+-- every file row's key, in list order
+---@return string[]
+function Panel:_file_keys()
+    local out = {}
+    for _, m in ipairs(self.meta) do
+        if m.kind == "file" then
+            out[#out + 1] = entry_key(m.entry)
+        end
+    end
+    return out
+end
+
+-- the keys the walk tries from the open file, in `direction`: the rest of the list as
+-- it stood when the file opened, then round from the other end, then any file listed
+-- since. staging moves a finished file up into Staged, and stepping from where it
+-- landed would restart the walk at the top. the second value is where the wrap starts
+---@param direction "next"|"prev"
+---@return string[] keys, integer wrap_at
+function Panel:_walk_keys(direction)
+    local order = self.walk_order or self:_file_keys()
+    local at = 0
+    for i, key in ipairs(order) do
+        if key == self.selected_key then
+            at = i
+        end
+    end
+    local out, seen = {}, {}
+    local function add(key)
+        if not seen[key] then
+            seen[key] = true
+            out[#out + 1] = key
+        end
+    end
+    local n, step = #order, direction == "prev" and -1 or 1
+    local ahead = direction == "prev" and at - 1 or n - at
+    for k = 1, n do
+        add(order[((at - 1 + step * k) % n) + 1])
+    end
+    local wrap_at = ahead + 1
+    for _, key in ipairs(self:_file_keys()) do
+        add(key)
+    end
+    return out, wrap_at
+end
+
+-- whether the walk still has something for its key on `e`: its status says so, and
+-- the walk hasn't already stepped off it with nothing left
+---@param e differ.FileEntry
+---@param staged boolean
+---@return boolean
+function Panel:_walk_wants(e, staged)
+    if not has_review_work(e, staged) then
+        return false
+    end
+    return not (self.review and self.review.accepted(e, staged))
+end
+
+-- the open file has nothing left for the walk's key: remember it as passed
+---@param staged boolean
+function Panel:accept_review(staged)
+    local row = self:_row_of_key(self.selected_key)
+    local e = row and self.meta[row].entry
+    if e and self.review and has_review_work(e, staged) then
+        self.review.accept(e, staged)
+    end
+end
+
+-- how many listed rows the walk has passed with work its key couldn't take
+---@param staged boolean
+---@return integer
+function Panel:review_leftover(staged)
+    local n = 0
+    for _, m in ipairs(self.meta) do
+        if
+            m.kind == "file"
+            and has_review_work(m.entry, staged)
+            and not self:_walk_wants(m.entry, staged)
+        then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+-- the review flow's file step: the next file in `direction` with something left to do,
+-- in the order _walk_keys gives. the open file is skipped, since re-opening it would
 -- re-source its frozen diff and drop the staging marks
 ---@param direction "next"|"prev"
 ---@param staged boolean  -- the pair hunted: false for a file with hunks left to stage
 ---@param keep_focus boolean|nil
 ---@return boolean moved
 function Panel:step_review(direction, staged, keep_focus)
-    -- from the selection rather than the panel cursor: this flow is driven from the
-    -- diff window, so where the review sits beats where the sidebar is parked
-    local from = self.selected_row or self:_first_file_line()
-    local row, wrapped = from, false
-    for _ = 1, #self.meta do
-        local next_row, crossed = self:_file_row(row, direction, true)
-        if not next_row or next_row == from then
-            break -- the list holds no file rows, or we're back where we started
-        end
-        wrapped = wrapped or crossed
-        local e = self.meta[next_row].entry
-        if e and has_review_work(e, staged) and entry_key(e) ~= self.selected_key then
-            self.selected_row = next_row
+    local keys, wrap_at = self:_walk_keys(direction)
+    for i, key in ipairs(keys) do
+        local row = self:_row_of_key(key)
+        local e = row and self.meta[row].entry
+        if e and key ~= self.selected_key and self:_walk_wants(e, staged) then
+            self.selected_row = row
             if self:is_open() then
-                vim.api.nvim_win_set_cursor(self.winid, { next_row, 0 })
+                vim.api.nvim_win_set_cursor(self.winid, { row, 0 })
             end
             if self:_open(e, keep_focus) then
                 -- the review flow's own wrap notice: `goto_file`'s would claim the first
                 -- file, and this landed on the first one with anything left to do
-                if wrapped then
+                if i >= wrap_at then
                     vim.notify(
                         direction == "next" and "differ: wrapped to the first file left to stage"
                             or "differ: wrapped to the last file left to unstage",
@@ -1015,14 +1103,8 @@ function Panel:step_review(direction, staged, keep_focus)
                 end
                 return true
             end
-            -- the entry was stale, and opening it refreshed the list out from under the
-            -- walk: the rows behind us name different files now, so start again from the
-            -- selection, which a failed open left on the file we came from. the stale
-            -- entry is gone from the rebuilt list, so each retry has one less to meet
-            from = self.selected_row or self:_first_file_line()
-            row = from
-        else
-            row = next_row
+            -- the entry was stale, and opening it refreshed the list: the keys still
+            -- name files, so the walk goes on through them, skipping any that left
         end
     end
     return false
@@ -1472,29 +1554,21 @@ function Panel:is_alive()
     return vim.api.nvim_buf_is_valid(self.bufnr)
 end
 
--- the meta row holding `key`, preferring its own pair and falling back to the same
--- path's other pair: staging a file's last unstaged hunk moves its row from Unstaged
--- to Staged, and the cursor should follow the file rather than sit on whatever row
--- slid into its place. nil when the path left the list entirely
+-- the meta row holding `key`: staging can move a file's row to another section, and
+-- the cursor should follow the file rather than sit on whatever row slid into its
+-- place. nil when the path left the list entirely
 ---@param key string|nil
 ---@return integer|nil
 function Panel:_row_of_key(key)
     if not key then
         return nil
     end
-    local path = key:sub(3)
-    local same_path
     for i, m in ipairs(self.meta) do
-        if m.kind == "file" then
-            local k = entry_key(m.entry)
-            if k == key then
-                return i
-            elseif not same_path and m.entry.path == path then
-                same_path = i
-            end
+        if m.kind == "file" and entry_key(m.entry) == key then
+            return i
         end
     end
-    return same_path
+    return nil
 end
 
 -- the cursor's restorable position: the file entry under it (by identity, so it

@@ -3430,6 +3430,77 @@ func getDownloadSpeed() {
         assert.are.equal("", status)
     end)
 
+    -- the s walk shows a row it can't stage once, then counts it at the end rather than
+    -- landing back on it: c.lua was added and then deleted, which only u can act on
+    it("walks s onto a row it can't stage once, then ends there", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "one\n")
+        git(root, "add", "c.lua")
+        os.remove(root .. "/c.lua")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local landed = {}
+        for _ = 1, 5 do
+            view_in_origin(p):stage_hunk()
+            landed[#landed + 1] = view_in_origin(p).model.path
+        end
+        local said = _G.notifs[#_G.notifs].msg
+        p:close()
+        assert.is_not_nil(v)
+        assert.are.same({ "a.lua", "c.lua", "c.lua", "c.lua", "c.lua" }, landed)
+        assert.are.equal("differ: nothing left to stage (1 file differs locally: dw)", said)
+    end)
+
+    -- b.lua staged then put back on disk: passed once, and back in the walk once it changes
+    it("puts a passed row back in the walk when its file changes", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        write(root .. "/b.lua", "two\n")
+        git(root, "add", "b.lua")
+        write(root .. "/b.lua", "one\n")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        view_in_origin(p):stage_hunk() -- a.lua staged
+        view_in_origin(p):stage_hunk() -- onto b.lua
+        view_in_origin(p):stage_hunk() -- b.lua passed: nothing left
+        write(root .. "/b.lua", "three\n")
+        p:refresh()
+        assert.is_true(p:goto_path("a.lua", true))
+        view_in_origin(p):stage_hunk() -- a.lua is done: the walk looks again
+        local landed = view_in_origin(p).model.path
+        p:close()
+        assert.are.equal("b.lua", landed)
+    end)
+
+    -- a.lua and c.lua half staged, d.lua not at all: finishing c.lua moves it up into
+    -- Staged, and the walk goes on to d.lua below it rather than back up to a.lua
+    it("walks on from where a finished file sat, not from where it moved", function()
+        local root = fresh_repo()
+        for _, name in ipairs({ "c.lua", "d.lua" }) do
+            write(root .. "/" .. name, "one\n")
+        end
+        git(root, "add", "c.lua", "d.lua")
+        git(root, "commit", "-q", "-m", "c d")
+        write(root .. "/a.lua", "staged\n")
+        write(root .. "/c.lua", "staged\n")
+        git(root, "add", "a.lua", "c.lua")
+        write(root .. "/a.lua", "staged\nand more\n")
+        write(root .. "/c.lua", "staged\nand more\n")
+        write(root .. "/d.lua", "two\n")
+        vim.cmd.edit(root .. "/c.lua")
+        local p = open_panel()
+        assert.are.equal("c.lua", view_in_origin(p).model.path)
+        view_in_origin(p):stage_hunk() -- c.lua's rest: the file moves to Staged
+        view_in_origin(p):stage_hunk() -- on to the next file
+        local landed = view_in_origin(p).model.path
+        p:close()
+        assert.are.equal("d.lua", landed)
+    end)
+
     it("discards a staged rename whose new path was deleted, from the commit preview", function()
         local root = renamed_then_deleted()
         local got = discard_renamed_then_deleted(root, true)

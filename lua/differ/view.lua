@@ -1321,7 +1321,42 @@ end
 ---@return boolean moved
 function View:_step_review_file(direction, staged)
     local panel = require("differ.panel").current()
-    return panel ~= nil and panel:step_review(direction, staged, true)
+    if not panel then
+        return false
+    end
+    if self:_review_done(staged) then
+        panel:accept_review(staged)
+    end
+    return panel:step_review(direction, staged, true)
+end
+
+-- whether no hunk here has anything left for the walk's key: stepping off leaves the
+-- rest of the file as it is shown
+---@param staged boolean
+---@return boolean
+function View:_review_done(staged)
+    local want = self:_review_filter(staged)
+    for i = 1, self:_slot_count() do
+        if want(i) then
+            return false
+        end
+    end
+    return true
+end
+
+-- the walk's end: nothing left for the key, plus how many files it passed with changes
+-- only the local view shows
+---@param staged boolean
+function View:_walk_done(staged)
+    local msg = staged and "differ: nothing left to unstage" or "differ: nothing left to stage"
+    local panel = require("differ.panel").current()
+    local left = panel and panel:review_leftover(staged) or 0
+    if left > 0 then
+        local files = left == 1 and "1 file differs" or ("%d files differ"):format(left)
+        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        msg = ("%s (%s locally: %s)"):format(msg, files, key)
+    end
+    vim.notify(msg, vim.log.levels.INFO)
 end
 
 -- the second tap of s / u: move to the next hunk that still has work left on it,
@@ -1369,10 +1404,7 @@ function View:_step_review(direction)
         return
     end
 
-    vim.notify(
-        forward and "differ: no more hunks to stage" or "differ: no more hunks to unstage",
-        vim.log.levels.INFO
-    )
+    self:_walk_done(staged)
 end
 
 -- toggle the staged state of the hunk under the cursor, marking it in place
@@ -1417,7 +1449,7 @@ end
 function View:stage_all()
     if not self:_toggle_all(true) and self:_can_stage_hunk() then
         if not self:_step_review_file("next", false) then
-            vim.notify("differ: no more files to stage", vim.log.levels.INFO)
+            self:_walk_done(false)
         end
     end
 end
@@ -1429,7 +1461,7 @@ function View:unstage_all()
         if self:_step_review_file("prev", true) then
             self:_focus_last_hunk() -- only when a previous file actually opened
         else
-            vim.notify("differ: no more files to unstage", vim.log.levels.INFO)
+            self:_walk_done(true)
         end
     end
 end
