@@ -5718,6 +5718,28 @@ describe(":Differ diff rename staging", function()
         p:close()
     end)
 
+    -- an RM: the old path is in neither the index nor the worktree, so git add refuses it
+    it("stages the rest of a staged rename from the panel row without an error", function()
+        local root = renamed_repo({ 5 })
+        local text = table.concat(vim.fn.readfile(root .. "/new/big.lua"), "\n") .. "\n"
+        write(root .. "/new/big.lua", (text:gsub("line 30\n", "line 30 unstaged\n")))
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+        _G.notifs = {}
+        p:stage_op("stage")
+        local failed = false
+        for _, n in ipairs(_G.notifs) do
+            failed = failed or n.msg:find("failed", 1, true) ~= nil
+        end
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.is_false(failed)
+        assert.are.equal("R  old/big.lua -> new/big.lua\n", status)
+    end)
+
     it("unstages both of a rename's paths from the panel row, as the diff keys do", function()
         local root = renamed_repo({ 5 })
         vim.cmd.edit(root .. "/new/big.lua")

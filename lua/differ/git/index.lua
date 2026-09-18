@@ -81,10 +81,15 @@ end
 function M.set_staged(root, entry, staged)
     local ok = true
     for _, p in ipairs(M.entry_paths(entry)) do
-        if staged then
-            ok = M.stage(root, p) and ok
-        else
+        if not staged then
             ok = M.unstage(root, p) and ok
+        elseif p == entry.previous_path then
+            -- a staged move's old path is in neither the index nor the worktree, which
+            -- `git add` refuses as a pathspec that matches nothing
+            local drop = { "rm", "-q", "--cached", "--ignore-unmatch", "--", p }
+            ok = git_ok(drop, root, "stage") and ok
+        else
+            ok = M.stage(root, p) and ok
         end
     end
     return ok
