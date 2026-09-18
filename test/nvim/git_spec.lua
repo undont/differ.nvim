@@ -611,7 +611,9 @@ describe("git.status_sections", function()
         for _, sec in ipairs(git_src.status_sections(root)) do
             entry = entry or sec.entries[1]
         end
+        _G.notifs = {}
         assert.is_false(git_src.discard(root, entry))
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("untracked copy of a.lua", 1, true))
         assert.are.equal("mine\n", table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
     end)
 
@@ -2729,7 +2731,7 @@ func getDownloadSpeed() {
         local new_rev, text = v.model.new_rev, winbar_of(v)
         p:close()
         assert.are.equal("INDEX", new_rev) -- the removal, not the copy on disk
-        assert.is_truthy(text:find("still on disk (u)", 1, true))
+        assert.is_truthy(text:find("untracked copy on disk", 1, true))
     end)
 
     -- git reset on an added file drops it from the index, and u taking the last staged

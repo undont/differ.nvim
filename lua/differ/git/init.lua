@@ -924,7 +924,7 @@ function M.discard(root, entry, preview)
     end
     -- restoring a staged deletion from HEAD would overwrite the copy still on disk
     if entry.kept then
-        local msg = "discard skipped: %s is on disk untracked; u tracks it again"
+        local msg = "discard skipped: X would overwrite the untracked copy of %s on disk"
         notify(msg:format(entry.path), vim.log.levels.WARN)
         return false
     end
@@ -1384,7 +1384,7 @@ function M.panel(opts)
         if entry.status == "U" then
             model.banner = "conflicted (:Differ mergetool)"
         elseif entry.kept then
-            model.banner = "still on disk (u)"
+            model.banner = "untracked copy on disk"
         end
         local staging ---@type differ.view.Staging|nil
         if preview then

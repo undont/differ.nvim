@@ -109,7 +109,7 @@ end
 ---@return boolean
 function M.restore_deleted(root, entry)
     if entry.kept then
-        local msg = "%s is on disk untracked; u tracks it again"
+        local msg = "X would overwrite the untracked copy of %s on disk"
         notify(msg:format(entry.path), vim.log.levels.WARN)
         return false
     end
