@@ -92,4 +92,28 @@ describe("next_index", function()
         assert.is_nil(text)
         assert.are.equal(2, reaches)
     end)
+
+    -- HEAD 1 2 x x 5, index 1 x x 5x, worktree 1 2x x 5x: the index drops a line the
+    -- union shows under hunk 1, so the pair hunks leave hunk 2 nothing of its own. the
+    -- op has to say so rather than hand back the index's own text
+    it("gives no text and no reaches for a hunk neither pair sits at", function()
+        local head = "1\n2\nx\nx\n5\n"
+        local index = "1\nx\nx\n5x\n"
+        local work = "1\n2x\nx\n5x\n"
+        local union = model(head, work, {
+            h(2, { "2" }, 2, { "2x" }),
+            h(4, { "x", "5" }, 4, { "5x" }),
+        })
+        local cached = model(head, index, { h(2, { "2" }, 2, {}), h(5, { "5" }, 4, { "5x" }) })
+        local unstaged = model(index, work, { h(2, {}, 2, { "2x" }) })
+        local text, reaches = stage.next_index(union, cached, unstaged, union.hunks[2], true)
+        assert.is_nil(text)
+        assert.is_nil(reaches)
+    end)
+
+    it("never hands back the text the index already holds", function()
+        local union, cached, unstaged = pairs_of(HEAD)
+        -- both hunks are unstaged, so unstaging one has nothing to write
+        assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
+    end)
 end)

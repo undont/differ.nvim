@@ -2562,13 +2562,27 @@ func getDownloadSpeed() {
                 v[case.op](v)
             end)
             local after = { worktree(root, "a.lua"), indexed(root, "a.lua") }
-            local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+            -- the first thing said, since s and u go on to step the walk and may
+            -- announce a wrap after the refusal
+            local said = (_G.notifs[1] or {}).msg or ""
             p:close()
             assert.are.equal(2, hunks)
             assert.are.same(before, after)
             assert.is_truthy(said:find("this hunk's " .. case.what, 1, true))
         end)
     end
+
+    -- the same refusal as above: s can't take hunk 1 without hunk 2, so it says where
+    -- both can be taken and carries the walk on rather than parking on hunk 1
+    it("steps s off a hunk sharing a change with the next", function()
+        local root = fresh_repo()
+        local p, v = shared_change(root)
+        assert.are.equal(1, v:_hunk_index_under_cursor())
+        v:stage_hunk()
+        assert.are_not.equal(1, v:_hunk_index_under_cursor())
+        assert.is_true(v.stuck.staged[1])
+        p:close()
+    end)
 
     -- the file is edited under the open view: X refuses before either side moves, so the
     -- index keeps its half too rather than dropping it alone
@@ -5161,6 +5175,60 @@ func getDownloadSpeed() {
         assert.is_nil(keymaps(v2.columns[1].bufnr)["df"])
         assert.is_false(v2:_editable_source())
         p2:close()
+    end)
+
+    -- HEAD's "x x" pair loses one line in the worktree, which the union shows under the
+    -- first hunk: the second hunk reads partial, but neither pair holds anything of it
+    -- on its own, so s has no text to write and has to say where the change can be taken
+    local function stuck_repo()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\nx\nx\n5\n")
+        git(root, "commit", "-q", "-am", "five")
+        write(root .. "/a.lua", "1\nx\nx\n5x\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2x\nx\n5x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+
+    it("refuses a hunk neither pair holds alone rather than rewriting the index", function()
+        local root = stuck_repo()
+        local p, v = open_panel()
+        local before = indexed(root, "a.lua")
+        local stuck
+        for i = 1, #v.model.hunks do
+            if v:_hunk_state(i) == "partial" then
+                stuck = i
+            end
+        end
+        assert.is_not_nil(stuck)
+        local changed, refused = v:_apply_hunk(stuck, true)
+        assert.is_false(changed)
+        assert.is_true(refused)
+        assert.are.equal(before, indexed(root, "a.lua")) -- no identical blob written
+        local said = _G.notifs[#_G.notifs].msg
+        assert.is_truthy(said:find("sits under another hunk", 1, true))
+        assert.is_truthy(said:find("dw", 1, true))
+        p:close()
+    end)
+
+    it("steps s off a hunk it refused instead of parking on it", function()
+        local root = stuck_repo()
+        local p, v = open_panel()
+        local stuck
+        for i = 1, #v.model.hunks do
+            if v:_hunk_state(i) == "partial" then
+                stuck = i
+            end
+        end
+        vim.api.nvim_win_set_cursor(v.columns[1].winid, { hunk_line(v, stuck), 0 })
+        v:stage_hunk() -- refuses, and the walk carries on past it
+        assert.are_not.equal(stuck, v:_hunk_index_under_cursor())
+        assert.is_true(v.stuck.staged[stuck])
+        -- the hunk it wrapped to does move, and takes the refused one with it
+        v:stage_hunk()
+        assert.are.equal(indexed(root, "a.lua"), worktree(root, "a.lua"))
+        p:close()
     end)
 end)
 

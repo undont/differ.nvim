@@ -77,7 +77,9 @@ local armed_view = nil
 -- staged-state slot
 ---@field whole_file? boolean
 -- `apply` takes a nil hunk on a whole-file source, which ignores it
----@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean
+-- the second return says the op refused because this hunk can't move on its own, as
+-- against a failure: the source has named the view that can take it whole
+---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field refresh fun()
@@ -107,6 +109,7 @@ local armed_view = nil
 ---@field commit_preview fun()|nil  -- session-level: gs flips the panel's listing
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
+---@field stuck table<string, table<integer, boolean>>  -- hunks a key refused to move, by the state it wanted
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
 ---@field on_cursor fun()|nil  -- session hook on cursor move in a diff window (pr thread cursor-expand)
@@ -171,6 +174,7 @@ function View.new(model, opts)
         on_repurpose = opts.on_repurpose,
         fold_memory = {},
         marks = { old = {}, new = {} },
+        stuck = { staged = {}, unstaged = {} },
         id = next_id(),
         _suppress_close = false,
         _closing = false,
@@ -183,6 +187,7 @@ end
 -- seed staged state for the current source. a hunk-level source hands over its marks
 -- and keeps them current itself; a whole-file one starts from `initial`
 function View:_init_staged()
+    self:_forget_stuck()
     local staging = self.staging
     if staging and staging.marks then
         self.marks = staging.marks
@@ -192,6 +197,12 @@ function View:_init_staged()
     if staging and self:_whole_file() then
         self.marks.whole = staging.initial
     end
+end
+
+-- drop the record of hunks a key has refused to move. any op moves what the index
+-- holds, so what was unreachable before it may not be after
+function View:_forget_stuck()
+    self.stuck = { staged = {}, unstaged = {} }
 end
 
 -- a stable, file-shaped buffer name so the statusline/winbar shows the file path
@@ -1000,12 +1011,17 @@ end
 
 -- a hunk filter for the review scans: `staged` picks the side, so false matches every
 -- hunk with something left to stage and true every one with something left to unstage.
--- a partial hunk matches both
+-- a partial hunk matches both; one the key has already refused to move matches neither,
+-- so the walk reads the file as done rather than circling the hunk it can't take
 ---@param staged boolean
 ---@return fun(hunk: integer): boolean
 function View:_review_filter(staged)
     local done = staged and "unstaged" or "staged"
+    local refused = self.stuck[done]
     return function(hunk)
+        if refused[hunk] then
+            return false
+        end
         return self:_hunk_state(hunk) ~= done
     end
 end
@@ -1228,10 +1244,11 @@ end
 
 -- move hunk `idx` to `want_staged` in the index from the hunk model (never buffer
 -- text), and mark it. no panel refresh / repaint, so callers can batch. returns
--- whether it changed
+-- whether it changed, and whether the source refused because this hunk can't move on
+-- its own (as against a failure, which leaves the cursor where it is)
 ---@param idx integer
 ---@param want_staged boolean
----@return boolean
+---@return boolean changed, boolean|nil stuck
 function View:_apply_hunk(idx, want_staged)
     local apply = self.staging and self.staging.apply
     local want = want_staged and "staged" or "unstaged"
@@ -1239,8 +1256,9 @@ function View:_apply_hunk(idx, want_staged)
         return false
     end
     -- reverse unstages: the change leaves the index
-    if not apply(self.model, self.model.hunks[idx], not want_staged) then
-        return false
+    local changed, stuck = apply(self.model, self.model.hunks[idx], not want_staged)
+    if not changed then
+        return false, stuck
     end
     if self:_whole_file() then
         self.marks.whole = want
@@ -1428,14 +1446,22 @@ function View:_toggle_hunk(want_staged)
             vim.log.levels.INFO
         )
     end
-    if self:_apply_hunk(idx, want_staged) then
-        self:_after_staging()
+    local changed, stuck = self:_apply_hunk(idx, want_staged)
+    if changed then
+        return self:_after_staging()
+    end
+    -- the source has said where this hunk's change can be taken whole, so carry the
+    -- walk on rather than parking on a hunk this key can never move
+    if stuck then
+        self.stuck[want_staged and "staged" or "unstaged"][idx] = true
+        self:_step_review(want_staged and "next" or "prev")
     end
 end
 
 -- repaint after a staging op: the panel counts, the staged shade, and the winbar
 -- tally, which a `%!` winbar only redraws on its own when the cursor moves
 function View:_after_staging()
+    self:_forget_stuck()
     self.staging.refresh()
     self:_paint_staged()
     self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
@@ -1591,6 +1617,7 @@ function View:revert_hunk()
     end
 
     local opened = self:_opened_folds() -- before rerender replaces col.folds
+    self:_forget_stuck() -- the hunks renumber around the one that just left
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)

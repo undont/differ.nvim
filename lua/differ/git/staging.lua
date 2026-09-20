@@ -185,26 +185,28 @@ function M.new(ctx)
             end
         end
 
-        -- the text the index takes when `hunk` is staged (`take`) or unstaged, or nil
-        -- when the pair hunk carrying its change covers another union hunk too
-        ---@param union differ.DiffModel
-        ---@param cached differ.DiffModel
-        ---@param unstaged differ.DiffModel
-        ---@param hunk differ.Hunk
+        -- why `hunk` can't move on its own, either way naming the view where its change
+        -- is a hunk of its own and can be taken whole. `reaches` names another union
+        -- hunk a pair hunk would carry the op into; without one the two pairs line this
+        -- hunk's change up under a different one, leaving nothing here to write
         ---@param take boolean
-        ---@return string|nil
-        local function next_index(union, cached, unstaged, hunk, take)
-            local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+        ---@param reaches integer|nil
+        ---@return string
+        local function refusal(take, reaches)
             if not reaches then
-                return text
+                if take then
+                    return "this hunk's unstaged change sits under another hunk: "
+                        .. "s in dw stages it whole"
+                end
+                return "this hunk's staged change sits under another hunk: "
+                    .. "u in gs unstages it whole"
             end
             local msg = "this hunk's staged change also covers hunk %d: "
                 .. "u on the ! hunk in dw, or in gs, unstages it whole"
             if take then
                 msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
             end
-            notify(msg:format(reaches), vim.log.levels.WARN)
-            return nil
+            return msg:format(reaches)
         end
 
         -- whether the diff still shows the file as it is. one drawn before the file or
@@ -236,8 +238,15 @@ function M.new(ctx)
             if not drawn_current(model, union) then
                 return false
             end
-            local text = next_index(union, cached, unstaged, hunk, not reverse)
-            if not text or not put_index(entry, text) then
+            local take = not reverse
+            local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+            if not text then
+                -- neither refusal is a failure: the key moves on, and the message says
+                -- where this hunk's change can be taken whole
+                notify(refusal(take, reaches), vim.log.levels.WARN)
+                return false, true
+            end
+            if not put_index(entry, text) then
                 return false
             end
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
@@ -254,19 +263,23 @@ function M.new(ctx)
                 return false
             end
             local hunk = model.hunks[idx]
-            local text = next_index(union, cached, unstaged, hunk, false)
-            if not text then
+            local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
+            if reaches then
+                notify(refusal(false, reaches), vim.log.levels.WARN)
                 return false
             end
+            -- a hunk the index holds nothing of on its own leaves the index where it is,
+            -- and the worktree still has the whole change to give back
+            local index_text = text or cached.new_text
             local ok = revert_worktree(entry, model, hunk, 0, function()
-                return text == cached.new_text or put_index(entry, text)
+                return index_text == cached.new_text or put_index(entry, index_text)
             end)
             if not ok then
                 remark(gitmod.union_models(root, entry))
                 return false
             end
             local work = require("differ.model.diff").revert_hunk(model, idx).new_text
-            remark(gitmod.union_pairs(root, entry.path, union.old_text, text, work))
+            remark(gitmod.union_pairs(root, entry.path, union.old_text, index_text, work))
             return true
         end
         -- S and U: the index takes the worktree's or HEAD's side of the file whole,

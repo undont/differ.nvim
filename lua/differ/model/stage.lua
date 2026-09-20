@@ -59,11 +59,32 @@ function M.hunk_index(union, hunk)
     return nil
 end
 
+-- the index's lines at each union hunk with `hunk`'s own replaced by the side the op
+-- takes, or nil where the index can't be cut into blocks
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@return string|nil
+local function by_blocks(union, cached, hunk, take)
+    local blocks, ended = M.index_blocks(union, cached.new_text)
+    local i = M.hunk_index(union, hunk)
+    if not (blocks and i) then
+        return nil
+    end
+    blocks[i] = ended.hunks[i].old_lines
+    if take then
+        blocks[i] = ended.hunks[i].new_lines
+    end
+    return apply.join(ended, blocks)
+end
+
 -- the text the index takes when `hunk` is staged (`take`) or unstaged. the index's lines
 -- at the hunk become the hunk's new or old lines; an index that changes a line between
 -- hunks moves by the pair hunks meeting it on the side that pair shares. `reaches` names
 -- another union hunk such a pair hunk covers too, and then there is no text: staging by
--- hunk can't take one without the other
+-- hunk can't take one without the other. no text and no `reaches` is a hunk the pair the
+-- op reads for lines up under a different union hunk, leaving the index where it is
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
@@ -71,24 +92,22 @@ end
 ---@param take boolean
 ---@return string|nil text, integer|nil reaches
 function M.next_index(union, cached, unstaged, hunk, take)
-    local blocks, ended = M.index_blocks(union, cached.new_text)
-    local i = M.hunk_index(union, hunk)
-    if blocks and i then
-        blocks[i] = ended.hunks[i].old_lines
-        if take then
-            blocks[i] = ended.hunks[i].new_lines
+    local text = by_blocks(union, cached, hunk, take)
+    if not text then
+        local from, side = unstaged, "new"
+        if not take then
+            from, side = cached, "old"
         end
-        return apply.join(ended, blocks)
+        local reaches = marks.shared_with(union.hunks, hunk, from.hunks, side)
+        if reaches then
+            return nil, reaches
+        end
+        text = apply.splice(from, M.select_hunks(from.hunks, side, hunk, side, take))
     end
-    local from, side = unstaged, "new"
-    if not take then
-        from, side = cached, "old"
+    if text == cached.new_text then
+        return nil -- the op has nothing of this hunk to move on its own
     end
-    local reaches = marks.shared_with(union.hunks, hunk, from.hunks, side)
-    if reaches then
-        return nil, reaches
-    end
-    return apply.splice(from, M.select_hunks(from.hunks, side, hunk, side, take))
+    return text
 end
 
 return M
