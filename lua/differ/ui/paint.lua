@@ -42,13 +42,6 @@ function M.apply(bufnr, ns, column)
                 priority = 100,
             })
         end
-        if line.no_eol then
-            vim.api.nvim_buf_set_extmark(bufnr, ns, row, 0, {
-                virt_text = { { "  no newline at end of file", "differNoEol" } },
-                virt_text_pos = "eol",
-                priority = 100,
-            })
-        end
         local word_hl = WORD_HL[line.kind]
         if word_hl and line.spans then
             for _, span in ipairs(line.spans) do

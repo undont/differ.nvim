@@ -2699,6 +2699,25 @@ func getDownloadSpeed() {
         return vim.api.nvim_eval_statusline(fmt, { winid = win, use_statuscol_lnum = lnum }).str
     end
 
+    -- git's `\ No newline at end of file`, as a gutter glyph beside the line it belongs to
+    it("marks a line its side ends on without a newline in the gutter", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "one\ntwo\n")
+        git(root, "commit", "-q", "-am", "two lines")
+        write(root .. "/a.lua", "one\ntwo")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local marked, plain = {}, gutter_of(v, 1)
+        for lnum, line in ipairs(v.columns[#v.columns].map.lines) do
+            if gutter_of(v, lnum):find("¬", 1, true) then
+                marked[#marked + 1] = line.kind
+            end
+        end
+        p:close()
+        assert.are.same({ "new" }, marked) -- only the side that lost the newline
+        assert.is_nil(plain:find("¬", 1, true))
+    end)
+
     -- the staged line edited again: the index's version reaches neither side of the diff
     it("says in the winbar when staged content isn't on screen", function()
         local root = fresh_repo()

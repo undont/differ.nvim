@@ -320,6 +320,7 @@ function View:rerender(opts)
         paint.apply(bufnr, ns, col)
         syntax.apply(bufnr, col, self.model)
         statuscolumn.set(bufnr, statuscolumn.format(col))
+        statuscolumn.set_no_eol(bufnr, col.map)
         self.columns[i] = {
             bufnr = bufnr,
             winid = existing and existing.winid or nil,

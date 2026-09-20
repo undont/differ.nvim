@@ -23,8 +23,6 @@ local LINKS = {
     -- a dashed fill marks the side that has no line here, the native-vimdiff look, so
     -- the gap reads as "absent on this side" rather than an empty void. dim like NonText
     differFiller = { link = "NonText" },
-    -- the note after a changed last line with no newline after it
-    differNoEol = { link = "NonText" },
     -- neutral fallback for a staged line with no add/delete kind; kinded staged lines
     -- use the dimmed deep-diff groups (differStagedLine{Add,Delete}/Word*) instead
     differStagedLine = { link = "CursorLine" },
@@ -125,6 +123,9 @@ local function status_groups(p)
         differStagedSign = { fg = p.green },
         -- a hunk touching staged content the whole change can't show, in the staged cell
         differHiddenSign = { fg = p.orange, bold = true },
+        -- the gutter glyph on a line its side ends on with no newline after it: the
+        -- changed colour, since that ending is what changed
+        differNoEol = { fg = p.yellow },
         -- the winbar badge on a view that isn't the whole change
         differViewBadge = { fg = p.green, bold = true, reverse = true },
     }
