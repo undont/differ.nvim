@@ -148,6 +148,8 @@ Panel.__index = Panel
 ---@class differ.panel.ReviewHooks
 ---@field accept fun(entry: differ.FileEntry, staged: boolean)
 ---@field accepted fun(entry: differ.FileEntry, staged: boolean): boolean
+---@field has_local fun(entry: differ.FileEntry): boolean  -- the row has a local view to send it to
+---@field local_paths fun(): table<string, boolean>  -- the paths whose local view has lines to show
 
 ---@class differ.panel.ExtraMap
 ---@field spec string|string[]|false  -- resolved lhs (a keymaps value)
@@ -1024,15 +1026,20 @@ function Panel:_walk_keys(direction)
         end
     end
     local n, step = #order, direction == "prev" and -1 or 1
-    local ahead = direction == "prev" and at - 1 or n - at
     for k = 1, n do
         add(order[((at - 1 + step * k) % n) + 1])
     end
-    local wrap_at = ahead + 1
+    -- where the walk comes round the end of the remembered order. the open row isn't in
+    -- it when `at` is 0, and then there is no place in it to have come round from, so
+    -- the wrap sits past every key and nothing the walk reaches claims one
+    local wrap_at
+    if at > 0 then
+        wrap_at = (direction == "prev" and at - 1 or n - at) + 1
+    end
     for _, key in ipairs(self:_file_keys()) do
         add(key)
     end
-    return out, wrap_at
+    return out, wrap_at or #out + 1
 end
 
 -- whether the walk still has something for its key on `e`: its status says so, and
@@ -1057,16 +1064,25 @@ function Panel:accept_review(staged)
     end
 end
 
--- how many listed rows the walk has passed with work its key couldn't take
+-- how many listed rows the walk has passed with work its key couldn't take and a local
+-- view with something to show for it. a row whose local view would open empty is left
+-- out: the count is read as where to go next, and a row left with only a staged mode
+-- change or a move has nothing for dw to answer with
 ---@param staged boolean
 ---@return integer
 function Panel:review_leftover(staged)
+    if not self.review then
+        return 0
+    end
+    local shows = self.review.local_paths()
     local n = 0
     for _, m in ipairs(self.meta) do
         if
             m.kind == "file"
             and has_review_work(m.entry, staged)
             and not self:_walk_wants(m.entry, staged)
+            and self.review.has_local(m.entry)
+            and shows[m.entry.path]
         then
             n = n + 1
         end

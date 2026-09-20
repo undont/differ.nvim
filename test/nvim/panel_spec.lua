@@ -671,6 +671,31 @@ describe("panel selection identity", function()
         p:close()
     end)
 
+    -- the walk follows the list order the open file opened on. a row that isn't in it
+    -- has nowhere in it to have come round from, so nothing it reaches is a wrap
+    it("claims no wrap stepping back from a row the remembered order doesn't hold", function()
+        vim.cmd("silent! only")
+        local function staged_row(path)
+            return { path = path, status = "M", additions = 1, deletions = 0, review = "staged" }
+        end
+        local p = Panel.new({
+            sections = {
+                { title = "Staged", entries = { staged_row("a.lua"), staged_row("z.lua") } },
+            },
+            on_select = function()
+                return true
+            end,
+        })
+        p:open()
+        p:goto_path("z.lua")
+        p.walk_order = { "gone.lua" } -- the order was taken before this row was listed
+        local before = #_G.notifs
+        assert.is_true(p:step_review("prev", true, true))
+        local said = #_G.notifs > before and _G.notifs[#_G.notifs].msg or ""
+        p:close()
+        assert.is_nil(said:find("wrapped", 1, true))
+    end)
+
     it("step_review reports the walk over when every candidate is stale", function()
         vim.cmd("silent! only")
         local p = Panel.new({

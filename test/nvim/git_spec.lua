@@ -3444,8 +3444,9 @@ func getDownloadSpeed() {
         assert.are.equal("", status)
     end)
 
-    -- the s walk shows a row it can't stage once, then counts it at the end rather than
-    -- landing back on it: c.lua was added and then deleted, which only u can act on
+    -- the s walk shows a row it can't stage once, then ends there rather than landing
+    -- back on it: c.lua was added and then deleted, which only u can act on. it has no
+    -- local view either, so the end names no file to go and look at
     it("walks s onto a row it can't stage once, then ends there", function()
         local root = fresh_repo()
         write(root .. "/c.lua", "one\n")
@@ -3463,7 +3464,7 @@ func getDownloadSpeed() {
         p:close()
         assert.is_not_nil(v)
         assert.are.same({ "a.lua", "c.lua", "c.lua", "c.lua", "c.lua" }, landed)
-        assert.are.equal("differ: nothing left to stage (1 file differs locally: dw)", said)
+        assert.are.equal("differ: nothing left to stage", said)
     end)
 
     -- b.lua staged then put back on disk: passed once, and back in the walk once it changes
@@ -5229,6 +5230,51 @@ func getDownloadSpeed() {
         v:stage_hunk()
         assert.are.equal(indexed(root, "a.lua"), worktree(root, "a.lua"))
         p:close()
+    end)
+
+    it("counts a leftover row with a local view in the walk's last word", function()
+        local root = fresh_repo()
+        -- b.lua: staged, then the worktree puts it back, so only dw can reach the change
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        write(root .. "/b.lua", "two\n")
+        git(root, "add", "b.lua")
+        write(root .. "/b.lua", "one\n")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        for _ = 1, 6 do
+            view_in_origin(p):stage_hunk()
+        end
+        local said = _G.notifs[#_G.notifs].msg
+        p:close()
+        assert.are.equal("differ: nothing left to stage (1 file differs locally: dw)", said)
+    end)
+
+    -- b.lua's content is staged and its index entry carries a mode the worktree doesn't:
+    -- the walk can't take that, and dw opens on nothing there, so the last word leaves
+    -- it out rather than sending anyone to it
+    it("leaves a row whose local view has nothing to show out of the walk's last word", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        write(root .. "/b.lua", "two\n")
+        git(root, "add", "b.lua")
+        local sha = git(root, "rev-parse", ":0:b.lua"):gsub("%s+$", "")
+        git(root, "update-index", "--cacheinfo", "100755," .. sha .. ",b.lua")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        for _ = 1, 6 do
+            view_in_origin(p):stage_hunk()
+        end
+        local said = _G.notifs[#_G.notifs].msg
+        local status = git(root, "status", "--porcelain=v1", "--", "b.lua")
+        p:close()
+        assert.are.equal("MM b.lua\n", status) -- still a leftover, just not one dw answers
+        assert.are.equal("differ: nothing left to stage", said)
     end)
 end)
 

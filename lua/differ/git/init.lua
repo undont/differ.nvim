@@ -1194,6 +1194,7 @@ function M.panel(opts)
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local retarget_view ---@type fun(outside: boolean): boolean -- assigned below
     local set_preview ---@type fun(on: boolean) -- assigned below
+    local staging_ops ---@type table -- assigned below; the review hooks read it at call time
 
     -- hunk-level staging. content edits stage by hunk; anything with no lines to stage
     -- sets `whole_file`. `apply` stages one hunk, or unstages it with `reverse`
@@ -1262,6 +1263,21 @@ function M.panel(opts)
             passed[staged][entry.path] = nil
             return false
         end,
+        has_local = function(entry)
+            return staging_ops.partly_staged(entry)
+        end,
+        -- the paths index↔worktree changes by line, in one read for the whole list: a
+        -- row left with only a staged mode change counts 0/0 there, and one left with
+        -- only a move isn't listed at all, so dw opens empty on both
+        local_paths = function()
+            local out = {}
+            for path, c in pairs(numstat({}, root)) do
+                if (c.additions or 0) > 0 or (c.deletions or 0) > 0 then
+                    out[path] = true
+                end
+            end
+            return out
+        end,
     }
     local last_sig = git_signature()
     -- record the state the list now reflects, so the next external event doesn't read an
@@ -1282,7 +1298,7 @@ function M.panel(opts)
 
     -- the row-level staging ops. they read and write git, and call back here to reload
     -- the list and re-source the view
-    local staging_ops = require("differ.git.staging").new({
+    staging_ops = require("differ.git.staging").new({
         root = root,
         stageable = stageable,
         refresh = function()
