@@ -226,6 +226,12 @@ The highlight groups differ defines are listed in [recipes](RECIPES.md#highlight
 
 Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>...`) also list untracked files. `git diff` can't see them whatever refs you pass it, so differ unions in `git ls-files --others --exclude-standard` to bring them in with the other changes.
 
+### Staging
+
+Every changed path takes only one row. Its diff spans `HEAD` to the worktree, with the lines already in the index shaded, and each row can either be `Conflicts`, `Staged`, `Unstaged`, `Partial` (not fully staged file) or `Untracked`. In the diff, `s` and `u` stage and unstage a hunk respectively, with repeated presses walking through/back your hunks; `X` discards a hunk on both sides (effectively hard resetting the hunk). Similarly in the panel, `s` and `u` stage and unstage entire rows/files (works on sections, directories and individual rows). `S` and `U` are available in both contexts as stage/unstage-all.
+
+Certain changes can't be displayed in that span, e.g. a change staged and then put back on disk, or a staged and then further modified hunk. Those hunks carry a `!` in the gutter and the winbar says how many exist in the current file. `dw` opens a view to show what changed since staging, where they show as hunks of their own. `gs` opens a view of **only** the files with staged changes, each diffed against the index, i.e. what is about to be committed, where `u` takes one back out.
+
 ### Runtime controls
 
 | Command | Effect |

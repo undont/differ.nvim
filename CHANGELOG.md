@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `dw` in the diff or the panel shows a partly staged file's changes since staging, works as a toggle
+- `gs` in the panel or the diff previews the commit: only the staged changes, each diffed against `HEAD`, also works as a toggle
+- `s` and `u` act on a hunk the index holds only part of, and the diff winbar tallies staged and partial hunks
+
+### Changed
+
+- A file changed in both the index and the worktree lists once now, under a new `Partial` section, and its diff shows the whole change with the staged lines shaded. 
+- Staged content that can't be shown in the standard diff is marked `!`, openable by `dw`
+- `X` on a hunk discards it from the index and the file together, instead of asking you to unstage it first
+- `s` and `u` walk the change set once and end with what is left, rather than looping back into files they can't act on
+
+### Fixed
+
+- A change to a file's final newline showed only a notice. It now shows as a hunk on the last line, with a `¬` in the gutter on whichever side ends without one
+- A file whose name holds glob characters, or starts with a digit and a colon, could stage or diff the wrong content, and a symlink diffed the content it points at
+- Staging a renamed file from the panel reported "stage failed" although the rename was staged
+- Discarding a staged rename or add whose file had been deleted from disk failed
+- A file swapped for a symlink refused every staging key in the diff
+
+## [0.1.45] — 2026-09-12
+
+### Added
+
 - `context` accepts `"full"` in config, matching `:Differ context full`, and it is now the default (`math.huge` still works)
 - A fold you open in the diff view stays open for the rest of the session, including when you come back to its file
 
