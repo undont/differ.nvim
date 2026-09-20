@@ -13,6 +13,11 @@ local set_staged, index_path = index_ops.set_staged, index_ops.index_path
 
 local M = {}
 
+-- the whole-file rows X acts on: a file that came, went, or changed kind altogether.
+-- `T` is a path swapped for a symlink or the other way round, which has no hunk to take
+---@type table<string, boolean>
+local REVERTABLE_WHOLE = { ["?"] = true, A = true, D = true, T = true }
+
 ---@class differ.git.StagingCtx
 ---@field root string
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
@@ -308,19 +313,26 @@ function M.new(ctx)
     end
 
     -- X on a whole-file row, and what it does to the file. `letter` owns the change the
-    -- row shows: its status for a worktree row, the index's (x) in the commit preview
+    -- row shows: its status for a worktree row, the index's (x) in the commit preview.
+    -- a row X can't act on has no revert and says why instead, so the key refuses
+    -- before the prompt rather than after it
     ---@param entry differ.FileEntry
     ---@param letter string
-    ---@return fun(): boolean revert, string label
-    local function whole_file_revert(entry, letter)
+    ---@param preview boolean  -- the entry is lettered by its index side
+    ---@return (fun(): boolean)|nil revert, string|nil label, string|nil no_revert
+    local function whole_file_revert(entry, letter, preview)
         if letter == "D" then
+            if entry.kept then
+                local why = "X would overwrite the untracked copy of %s on disk"
+                return nil, nil, why:format(entry.path)
+            end
             return function()
                 return index_ops.restore_deleted(root, entry)
             end,
                 "restores the file"
         end
         local discard = function()
-            return gitmod.discard(root, entry)
+            return gitmod.discard(root, entry, preview)
         end
         if letter == "A" or letter == "?" then
             return discard, "deletes the file"
@@ -358,12 +370,14 @@ function M.new(ctx)
             local staging = union_staging(entry)
             if added then
                 -- throwing away an add is deleting the file, not reverting a hunk of it
-                staging.revert, staging.revert_label = whole_file_revert(entry, "A")
+                staging.revert, staging.revert_label, staging.no_revert =
+                    whole_file_revert(entry, "A", false)
             end
             return staging
         end
         -- whole-file from here: nothing to stage by line (a mode change, a submodule, a
-        -- binary file, a bare rename), or a file added, untracked or deleted as one unit
+        -- binary file, a bare rename, a file swapped for a symlink), or a file added,
+        -- untracked or deleted as one unit
         ---@type differ.view.Staging
         local staging = {
             initial = row_state(entry),
@@ -376,9 +390,11 @@ function M.new(ctx)
         if content then
             return staging
         end
-        -- an add's discard drops the staged entry before removing the file
-        if entry.status == "?" or entry.status == "A" or entry.status == "D" then
-            staging.revert, staging.revert_label = whole_file_revert(entry, entry.status)
+        -- an add's discard drops the staged entry before removing the file; a
+        -- typechange's puts HEAD's own kind of file back over the one on disk
+        if REVERTABLE_WHOLE[entry.status] then
+            staging.revert, staging.revert_label, staging.no_revert =
+                whole_file_revert(entry, entry.status, false)
             return staging
         end
         return nil
@@ -523,8 +539,9 @@ function M.new(ctx)
     -- and goes, so it stages as a file
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel  -- HEAD↔index
+    ---@param preview boolean  -- the row comes from the commit preview's listing
     ---@return differ.view.Staging
-    local function staged_staging(entry, model)
+    local function staged_staging(entry, model, preview)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
             staging = frozen_staging(entry, model, true, function()
@@ -546,7 +563,8 @@ function M.new(ctx)
             end
         else
             staging = snapshot_staging(entry)
-            staging.revert, staging.revert_label = whole_file_revert(entry, entry.x)
+            staging.revert, staging.revert_label, staging.no_revert =
+                whole_file_revert(entry, entry.x, preview)
         end
         staging.badge = "INDEX"
         return staging
@@ -557,7 +575,7 @@ function M.new(ctx)
     ---@param model differ.DiffModel  -- HEAD↔index
     ---@return differ.view.Staging
     local function preview_staging(entry, model)
-        local staging = staged_staging(entry, model)
+        local staging = staged_staging(entry, model, true)
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: gs goes back"
         staging.leave = function()

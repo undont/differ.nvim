@@ -82,6 +82,7 @@ local armed_view = nil
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
 ---@field revert_label? string  -- e.g. "deletes the file"
+---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
 ---@field hidden? boolean  -- union source: some staged content isn't on screen
@@ -1568,9 +1569,12 @@ function View:revert_hunk()
     end
     local revert = self.staging.revert
     if not revert then
-        return vim.notify("differ: this hunk can't be reverted", vim.log.levels.WARN)
+        local why = self.staging.no_revert or "this hunk can't be reverted"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
+    -- a whole-file source reverts as one unit, so it takes slot 1 even where the diff
+    -- draws a notice rather than hunks (a mode change, a bare rename, a submodule)
+    local idx = self:_target_index()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
