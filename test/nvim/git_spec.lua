@@ -625,7 +625,12 @@ describe("git.status_sections", function()
         git(root, "checkout", "-q", "main")
         write(root .. "/a.lua", "main\n")
         git(root, "commit", "-q", "-am", "main")
-        vim.system({ "git", "merge", "-q", "side" }, { cwd = root }):wait() -- conflicts
+        -- conflicts, so the asserting helper can't run it; the identity is pinned inline
+        -- or a runner with no global gitconfig aborts the merge before it conflicts
+        vim.system(
+            { "git", "-c", "user.email=t@t", "-c", "user.name=t", "merge", "-q", "side" },
+            { cwd = root }
+        ):wait()
         write(root .. "/b.lua", "b\n")
 
         assert.are.same({
