@@ -165,6 +165,7 @@ require("differ").setup({
 
     -- diffs
     toggle_layout = "dl",        -- flip between stacked / split
+    toggle_local = "dw",         -- diff/panel: a partly staged file's changes since staging, and back
     more_context = "d=", less_context = "d-",
     stage = "s", unstage = "u",  -- stage/unstage[all] work on hunks/files (diff buffer/panel)
     stage_all = "S", unstage_all = "U",
@@ -173,6 +174,7 @@ require("differ").setup({
     goto_file = "de",            -- open the real file and close the session; in a pr it opens
                                  -- the real file in a new tab
     toggle_listing = "i",        -- tree/flat list
+    commit_preview = "gs",       -- panel/diff: only the staged changes, each as HEAD↔index, and back
     close_node = "c",
     close_all = "C",
     open_all = "O",
@@ -223,6 +225,12 @@ The highlight groups differ defines are listed in [recipes](RECIPES.md#highlight
 | `:Differ log base` | branch-range history of `<base>...HEAD` |
 
 Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>...`) also list untracked files. `git diff` can't see them whatever refs you pass it, so differ unions in `git ls-files --others --exclude-standard` to bring them in with the other changes.
+
+### Staging
+
+Every changed path takes only one row. Its diff spans `HEAD` to the worktree, with the lines already in the index shaded, and each row can either be `Conflicts`, `Staged`, `Unstaged`, `Partial` (not fully staged file) or `Untracked`. In the diff, `s` and `u` stage and unstage a hunk respectively, with repeated presses walking through/back your hunks; `X` discards a hunk on both sides (effectively hard resetting the hunk). Similarly in the panel, `s` and `u` stage and unstage entire rows/files (works on sections, directories and individual rows). `S` and `U` are available in both contexts as stage/unstage-all.
+
+Certain changes can't be displayed in that span, e.g. a change staged and then put back on disk, or a staged and then further modified hunk. Those hunks carry a `!` in the gutter and the winbar says how many exist in the current file. `dw` opens a view to show what changed since staging, where they show as hunks of their own. `gs` opens a view of **only** the files with staged changes, each diffed against the index, i.e. what is about to be committed, where `u` takes one back out.
 
 ### Runtime controls
 

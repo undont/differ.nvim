@@ -62,6 +62,37 @@ describe("winbar.hunk_at", function()
     end)
 end)
 
+describe("winbar.tally", function()
+    -- a view is only read through hunk_tally here
+    local function view(states)
+        return {
+            hunk_tally = function()
+                local counts = { staged = 0, partial = 0, total = #states }
+                for _, state in ipairs(states) do
+                    if state ~= "unstaged" then
+                        counts[state] = counts[state] + 1
+                    end
+                end
+                return counts
+            end,
+        }
+    end
+
+    it("counts staged and partial hunks, leaving zero counts out", function()
+        assert.are.equal("1 staged · 1 partial · ", winbar.tally(view({ "staged", "partial" })))
+        assert.are.equal("1 partial · ", winbar.tally(view({ "partial", "unstaged" })))
+        assert.are.equal("", winbar.tally(view({ "unstaged" })))
+    end)
+
+    it("is empty once every hunk is staged", function()
+        assert.are.equal("", winbar.tally(view({ "staged", "staged" })))
+    end)
+
+    it("is empty off a hunk-staging source", function()
+        assert.are.equal("", winbar.tally({ hunk_tally = function() end }))
+    end)
+end)
+
 describe("winbar.hunk_at with no hunks", function()
     it("is always 0", function()
         local map = stacked.render({

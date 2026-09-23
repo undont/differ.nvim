@@ -7,7 +7,6 @@
 ---@field new_count integer
 ---@field old_lines string[]
 ---@field new_lines string[]
----@field pairs differ.LinePair[]|nil
 
 ---@class differ.DiffModel
 ---@field path string
@@ -20,10 +19,10 @@
 ---@field root string|nil  -- repo root (absolute), so jump-to-file can resolve the real file (set by the frontend)
 ---@field binary boolean|nil  -- either side is binary: no hunks, renderers show a placeholder
 ---@field notice string|nil  -- why a zero-hunk diff has nothing to show; rendered in place of the diff
+---@field banner string|nil  -- a note the winbar carries over the diff
 
 local text_util = require("differ.util.text")
 local to_lines = text_util.to_lines
-local ensure_trailing_nl = text_util.ensure_trailing_nl
 local is_binary = text_util.is_binary
 
 local M = {}
@@ -75,11 +74,11 @@ function M.build(opts)
     local old_lines = to_lines(opts.old_text)
     local new_lines = to_lines(opts.new_text)
 
-    local raw =
-        vim.text.diff(ensure_trailing_nl(opts.old_text), ensure_trailing_nl(opts.new_text), {
-            result_type = "indices",
-            algorithm = "histogram",
-        })
+    -- a last line with and without its newline differ, as in git
+    local raw = vim.text.diff(opts.old_text, opts.new_text, {
+        result_type = "indices",
+        algorithm = "histogram",
+    })
 
     ---@cast raw integer[][]
     local hunks = {}
@@ -107,52 +106,15 @@ function M.build(opts)
     }
 end
 
--- why a zero-hunk model has nothing to show, from its two texts alone. build
--- ensures a trailing newline on both sides, so that's the only way two differing
--- texts reach zero hunks. nil when only the frontend knows (a mode change, a rename)
+-- why a zero-hunk model has nothing to show, from its two texts alone. nil when only
+-- the frontend knows (a mode change, a rename)
 ---@param model differ.DiffModel
----@return "empty"|"eol_added"|"eol_removed"|"identical"|nil
+---@return "empty"|"identical"|nil
 function M.empty_reason(model)
-    if #model.hunks > 0 or model.binary then
+    if #model.hunks > 0 or model.binary or model.old_text ~= model.new_text then
         return nil
     end
-    if model.old_text ~= model.new_text then
-        return model.new_text:sub(-1) == "\n" and "eol_added" or "eol_removed"
-    end
     return model.old_text == "" and "empty" or "identical"
-end
-
--- the new side's text with hunk `idx` undone: its old lines put back where its new
--- lines sit. only the new side ever moves, in both diff directions (a revert rewrites
--- the worktree on an index↔worktree diff, the index on a head↔index one), so there's
--- one case here rather than two
----@param model differ.DiffModel
----@param h differ.Hunk
----@return string
-local function reverted_text(model, h)
-    local lines = to_lines(model.new_text)
-    -- a zero-count hunk occupies nothing on the new side, and `new_start` names the
-    -- line it sits *after*, so the restored lines go in after it rather than over it
-    local at = h.new_count > 0 and h.new_start or h.new_start + 1
-    local out = {}
-    for i = 1, at - 1 do
-        out[#out + 1] = lines[i]
-    end
-    vim.list_extend(out, h.old_lines)
-    for i = at + h.new_count, #lines do
-        out[#out + 1] = lines[i]
-    end
-
-    -- whichever side supplies the result's last line supplies its terminator too:
-    -- a hunk reaching the end of the new side leaves no tail behind it, so the old
-    -- side's ending wins. getting this wrong would re-diff as a phantom eof hunk
-    local last = h.new_count > 0 and (h.new_start + h.new_count - 1) or h.new_start
-    local source = last == #lines and model.old_text or model.new_text
-    local text = table.concat(out, "\n")
-    if #out > 0 and source:sub(-1) == "\n" then
-        text = text .. "\n"
-    end
-    return text
 end
 
 -- a model with hunk `idx` reverted on the new side. rebuilt from the spliced text
@@ -164,13 +126,19 @@ end
 ---@param idx integer
 ---@return differ.DiffModel
 function M.revert_hunk(model, idx)
-    local h = assert(model.hunks[idx], "revert_hunk: no hunk at index " .. tostring(idx))
+    assert(model.hunks[idx], "revert_hunk: no hunk at index " .. tostring(idx))
+    -- only the new side moves: the worktree on an index↔worktree diff, the index on a
+    -- HEAD↔index one
+    local applied = {}
+    for i in ipairs(model.hunks) do
+        applied[i] = i ~= idx
+    end
     return M.build({
         path = model.path,
         old_rev = model.old_rev,
         new_rev = model.new_rev,
         old_text = model.old_text,
-        new_text = reverted_text(model, h),
+        new_text = require("differ.model.apply").splice(model, applied, "new"),
         head = model.head,
         root = model.root,
     })

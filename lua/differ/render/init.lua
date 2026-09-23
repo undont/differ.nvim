@@ -34,6 +34,28 @@ local RENDERERS = {
     split = "differ.render.split",
 }
 
+-- flag the changed line a side ends on without a newline, the line git follows with
+-- `\ No newline at end of file`
+---@param model differ.DiffModel
+---@param result differ.RenderResult
+local function flag_no_eol(model, result)
+    local to_lines = require("differ.util.text").to_lines
+    local last = {} ---@type table<differ.RailKind, integer>
+    for _, side in ipairs({ "old", "new" }) do
+        local text = model[side .. "_text"]
+        if text ~= "" and text:sub(-1) ~= "\n" then
+            last[side] = #to_lines(text)
+        end
+    end
+    for _, col in ipairs(result.columns) do
+        for _, line in ipairs(col.map.lines) do
+            if last[line.kind] and line[line.kind] == last[line.kind] then
+                line.no_eol = true
+            end
+        end
+    end
+end
+
 -- render a model under the given layout
 ---@param model differ.DiffModel
 ---@param opts { layout: differ.Layout, context: number, deep_diff: table }
@@ -45,7 +67,9 @@ function M.render(model, opts)
     end
     ---@type differ.Renderer
     local renderer = require(mod).render
-    return renderer(model, opts)
+    local result = renderer(model, opts)
+    flag_no_eol(model, result)
+    return result
 end
 
 return M

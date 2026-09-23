@@ -142,6 +142,7 @@ M.defaults = {
         details = "K", -- history: float the full commit message (subject + body)
         help = "g?", -- panel, history
         toggle_listing = "i", -- panel: toggle tree / name
+        commit_preview = "gs", -- panel/diff: list only what a commit would take, HEAD↔index rows
         close_node = "c", -- panel: collapse the dir under the cursor; history: the commit
         close_all = "C", -- panel/history: collapse every dir / commit
         open_all = "O", -- panel/history: expand every dir / commit
@@ -162,6 +163,7 @@ M.defaults = {
         close = "dc", -- diff/panel/history: end the session (merge, pr or local)
         toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
         toggle_layout = "dl", -- diff: flip stacked / split
+        toggle_local = "dw", -- diff/panel: a partly staged file's changes since staging, and back
         -- merge tool, bound on the result buffer. nav + take-this resolution,
         -- the result buffer is the real worktree
         -- file and stays editable, so the whole choose family sits behind <leader>
