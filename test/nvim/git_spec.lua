@@ -3242,6 +3242,40 @@ func getDownloadSpeed() {
         assert.are.equal("INDEX", rev_after)
     end)
 
+    -- the first s turns a.lua Partial and the last makes it Staged, with no re-source
+    -- between: dw follows the row rather than the state the diff opened on
+    it("offers dw once the first s leaves a row partly staged, and not after the last", function()
+        local root = fresh_repo()
+        local ten = {}
+        for i = 1, 10 do
+            ten[i] = tostring(i)
+        end
+        write(root .. "/a.lua", table.concat(ten, "\n") .. "\n")
+        git(root, "commit", "-q", "-am", "ten")
+        ten[2], ten[9] = "2x", "9x"
+        write(root .. "/a.lua", table.concat(ten, "\n") .. "\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local col = v.columns[1]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        v:toggle_local()
+        local partial_badge = view_in_origin(p).staging.badge
+        view_in_origin(p):toggle_local() -- back to the whole change
+        v = view_in_origin(p)
+        col = v.columns[1]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        _G.notifs = {}
+        v:toggle_local()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        p:close()
+        assert.are.equal("LOCAL", partial_badge)
+        assert.are.equal("differ: only a partly staged file has a local view", said)
+    end)
+
     it("dw in the panel refuses a row with nothing staged", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "one\ntwo\n")

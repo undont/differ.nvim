@@ -1521,6 +1521,40 @@ function M.panel(opts)
         return false
     end
 
+    -- the refreshed list's row for `path`, or nil once it has left the change set
+    ---@param path string
+    ---@return differ.FileEntry|nil
+    local function listed(path)
+        for _, sec in ipairs(panel and panel.sections or {}) do
+            for _, e in ipairs(sec.entries) do
+                if e.path == path then
+                    return e
+                end
+            end
+        end
+        return nil
+    end
+
+    -- keep the open row's dw in step with the list: the first s can turn an Unstaged row
+    -- Partial, and the last a Partial row Staged, without the diff re-sourcing. the
+    -- LOCAL, INDEX and STAGED views keep the keys they opened with
+    local function sync_local()
+        local staging = view and view:is_open() and view.staging
+        if preview or not (staging and active_entry) or staging.badge then
+            return
+        end
+        local live = listed(active_entry.path)
+        if not live then
+            return
+        end
+        staging.toggle_local = nil
+        if staging_ops.partly_staged(live) then
+            staging.toggle_local = function()
+                show_local(live)
+            end
+        end
+    end
+
     -- gs: flip the panel between every change and the commit preview, then reopen the
     -- file on screen in the new listing, else the nearest one
     set_preview = function(on)
@@ -1591,7 +1625,10 @@ function M.panel(opts)
         footer = footer_label(args, root),
         actions = actions,
         on_external_change = refresh_external,
-        on_refresh = record_state,
+        on_refresh = function()
+            sync_local()
+            record_state()
+        end,
         -- the panel's keys move the pair the diff was built from, so the window follows.
         -- only for the file on screen: another row's diff keeps its frozen marks
         on_staged = function(paths)
