@@ -18,6 +18,10 @@ local M = {}
 ---@type table<string, boolean>
 local REVERTABLE_WHOLE = { ["?"] = true, A = true, D = true, T = true }
 
+-- the `update-index --chmod` flag that gives a file a mode
+---@type table<string, string>
+local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
+
 ---@class differ.git.StagingCtx
 ---@field root string
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
@@ -632,6 +636,46 @@ function M.new(ctx)
         return true
     end
 
+    -- u in a whole-file local view: the index takes HEAD's side where it holds what the
+    -- worktree doesn't. an add goes, a binary takes HEAD's blob, and a mode HEAD's mode,
+    -- keeping the staged content. nil when the index holds nothing of the kind
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- index↔worktree
+    ---@return (fun(): boolean)|nil
+    local function whole_drop(entry, model)
+        if entry.x == "A" then
+            return function()
+                return git_ok({ "rm", "-q", "--cached", "--", entry.path }, root, "unstage")
+            end
+        end
+        if model.binary then
+            return function()
+                return index_ops.unstage(root, entry.path)
+            end
+        end
+        local head_mode, index_mode =
+            rev.parse_raw_modes(gitmod.raw_line(root, { "--cached" }, entry) or "")
+        local flag = CHMOD[head_mode]
+        if not flag or head_mode == index_mode then
+            return nil
+        end
+        return function()
+            return git_ok({ "update-index", "--chmod=" .. flag, "--", entry.path }, root, "unstage")
+        end
+    end
+
+    -- X in a whole-file local view: the worktree takes the index's side, its mode, its
+    -- blob, or a deleted file back as the index holds it
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function whole_restore(entry)
+        if not git_ok({ "checkout", "--", entry.path }, root, "revert") then
+            return false
+        end
+        reload_buffer(root, entry.path)
+        return true
+    end
+
     return {
         for_entry = stage_for,
         preview = preview_staging,
@@ -639,6 +683,8 @@ function M.new(ctx)
         frozen = frozen_staging,
         revert_frozen = revert_frozen,
         drop_hidden = drop_hidden,
+        whole_drop = whole_drop,
+        whole_restore = whole_restore,
         partly_staged = partly_staged,
     }
 end

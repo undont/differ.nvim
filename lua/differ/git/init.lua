@@ -1413,6 +1413,22 @@ function M.panel(opts)
                     return true
                 end,
             }
+            staging.revert = function()
+                return staging_ops.whole_restore(entry)
+            end
+            staging.revert_label = "puts it back as the index has it"
+            local drop = staging_ops.whole_drop(entry, model)
+            if drop then
+                staging.hidden_in = { 1 }
+                staging.unstage_hidden = function()
+                    if not drop() then
+                        return false
+                    end
+                    refresh_panel()
+                    retarget_view(false)
+                    return true
+                end
+            end
         end
         local function back()
             retarget_view(false)

@@ -1315,6 +1315,9 @@ function View:_drop_hidden(idx)
         #self.model.hunks,
         self.model.path
     )
+    if self:_whole_file() then
+        prompt = ("Drop the staged change to %s? Nothing else holds it."):format(self.model.path)
+    end
     local asked_on = self.model
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
         return
