@@ -1064,18 +1064,18 @@ function Panel:accept_review(staged)
     end
 end
 
--- how many listed rows the walk has passed with work its key couldn't take and a local
--- view with something to show for it. a row whose local view would open empty is left
--- out: the count is read as where to go next, and a row left with only a staged mode
--- change or a move has nothing for dw to answer with
+-- the listed rows the walk has passed with work its key couldn't take and a local view
+-- with something to show for it, in list order. a row whose local view would open empty
+-- is left out: the list is read as where to go next, and a row left with only a move
+-- has nothing for dw to answer with
 ---@param staged boolean
----@return integer
+---@return differ.FileEntry[]
 function Panel:review_leftover(staged)
+    local out = {}
     if not self.review then
-        return 0
+        return out
     end
     local shows = self.review.local_paths()
-    local n = 0
     for _, m in ipairs(self.meta) do
         if
             m.kind == "file"
@@ -1084,10 +1084,25 @@ function Panel:review_leftover(staged)
             and self.review.has_local(m.entry)
             and shows[m.entry.path]
         then
-            n = n + 1
+            out[#out + 1] = m.entry
         end
     end
-    return n
+    return out
+end
+
+-- whether the open row's local view has something left to show: the s walk stops there
+-- rather than stepping past it, unless ]f has already left the row
+---@return boolean
+function Panel:has_local_work()
+    local row = self:_row_of_key(self.selected_key)
+    local e = row and self.meta[row].entry
+    if not (e and self.review and self.review.has_local(e)) then
+        return false
+    end
+    if self.review.accepted(e, false) then
+        return false
+    end
+    return self.review.local_paths()[e.path] == true
 end
 
 -- the review flow's file step: the next file in `direction` with something left to do,

@@ -26,6 +26,8 @@ local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
 -- where the first narrow step lands when coming down from whole-file, which has no
 -- finite neighbour to decrement
 local FULL_STEP_DOWN = 10
+-- the display width the walk's last word gives to naming leftover files
+local LEFTOVER_WIDTH = 40
 
 local set_wo = require("differ.util.win").set_local
 
@@ -860,6 +862,10 @@ end
 ---@return boolean moved
 function View:step_file(direction, wrap)
     local panel = require("differ.panel").current()
+    -- stepping off a file the s walk stopped on leaves it: the walk doesn't come back
+    if panel and self:_can_stage_hunk() and self:_review_done(false) then
+        panel:accept_review(false)
+    end
     if panel and panel:is_open() then
         return panel:goto_file(direction, true, wrap) -- keep focus in the diff window
     end
@@ -1333,16 +1339,25 @@ function View:_drops_hidden(idx)
 end
 
 -- hand the file-level half of the review walk to the panel: the next file with work
--- left on the `staged` pair, cycling past the list ends. not View:step_file, which also
+-- left on the `staged` pair, cycling past the list ends. s stops instead on a file whose
+-- local view has something left, until dw finishes it or ]f leaves it. not View:step_file, which also
 -- serves ]f / [f and file history; the review flow needs a worktree-status panel (it's
 -- the only source that stages) and the state-aware step only that panel can make
 ---@param direction "next"|"prev"
 ---@param staged boolean
----@return boolean moved
+---@return boolean handled  -- moved, or stopped on this file
 function View:_step_review_file(direction, staged)
     local panel = require("differ.panel").current()
     if not panel then
         return false
+    end
+    local st = self.staging
+    local offers_local = st ~= nil and st.toggle_local ~= nil and st.badge ~= "LOCAL"
+    if not staged and offers_local and panel:has_local_work() then
+        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        local msg = ("differ: %s differs locally: %s"):format(vim.fs.basename(self.model.path), key)
+        vim.notify(msg, vim.log.levels.INFO)
+        return true
     end
     if self:_review_done(staged) then
         panel:accept_review(staged)
@@ -1364,17 +1379,54 @@ function View:_review_done(staged)
     return true
 end
 
--- the walk's end: nothing left for the key, plus how many files it passed with changes
+-- a label per leftover row: its basename, or its path where two rows share one
+---@param entries differ.FileEntry[]
+---@return string[]
+local function leftover_labels(entries)
+    local names, taken = {}, {}
+    for i, e in ipairs(entries) do
+        names[i] = vim.fs.basename(e.path)
+        taken[names[i]] = (taken[names[i]] or 0) + 1
+    end
+    for i, e in ipairs(entries) do
+        if taken[names[i]] > 1 then
+            names[i] = e.path
+        end
+    end
+    return names
+end
+
+-- `names` joined while they fit LEFTOVER_WIDTH, the first always and whole, and the rest
+-- as a count
+---@param names string[]
+---@return string
+local function fit_names(names)
+    local shown, width = { names[1] }, vim.api.nvim_strwidth(names[1])
+    for i = 2, #names do
+        width = width + 2 + vim.api.nvim_strwidth(names[i])
+        if width > LEFTOVER_WIDTH then
+            break
+        end
+        shown[i] = names[i]
+    end
+    local out = table.concat(shown, ", ")
+    if #shown < #names then
+        out = ("%s +%d"):format(out, #names - #shown)
+    end
+    return out
+end
+
+-- the walk's end: nothing left for the key, naming any rows it passed with changes
 -- only the local view shows
 ---@param staged boolean
 function View:_walk_done(staged)
     local msg = staged and "differ: nothing left to unstage" or "differ: nothing left to stage"
     local panel = require("differ.panel").current()
-    local left = panel and panel:review_leftover(staged) or 0
-    if left > 0 then
-        local files = left == 1 and "1 file differs" or ("%d files differ"):format(left)
+    local left = panel and panel:review_leftover(staged) or {}
+    if #left > 0 then
+        local verb = #left == 1 and "differs" or "differ"
         local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
-        msg = ("%s (%s locally: %s)"):format(msg, files, key)
+        msg = ("%s (%s %s locally: %s)"):format(msg, fit_names(leftover_labels(left)), verb, key)
     end
     vim.notify(msg, vim.log.levels.INFO)
 end

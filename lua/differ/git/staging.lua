@@ -400,11 +400,16 @@ function M.new(ctx)
         return nil
     end
 
-    -- a row with a staged change and more on top of it: the one kind with a local view
+    -- a row with a staged change and more on top of it: the one kind with a local view.
+    -- of the rows whose file is then deleted, only an add has one: the others stage the
+    -- deletion from their whole change, and an add's whole change is HEAD↔index
     ---@param entry differ.FileEntry
     ---@return boolean
     local function partly_staged(entry)
-        if entry.status == "U" or entry.x == "?" or entry.y == "D" then
+        if entry.status == "U" or entry.x == "?" then
+            return false
+        end
+        if entry.y == "D" and entry.x ~= "A" then
             return false
         end
         return entry.x ~= " " and entry.y ~= " "

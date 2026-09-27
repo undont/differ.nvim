@@ -816,14 +816,13 @@ local function remove_ok(abs)
     return true
 end
 
--- the entry's status as git reports it now, or nil when the path has no changes left.
--- the panel's entries are a snapshot taken before the confirm, and the same side of
--- the file the entry came from is the side to re-read
+-- the entry's porcelain line as git reports it now, or nil when the path has no changes
+-- left. the panel's entries are a snapshot, which an op or the confirm before it can
+-- leave behind
 ---@param root string
 ---@param entry differ.FileEntry
----@param preview? boolean  -- the entry is lettered by its index side, as the commit preview lists it
----@return string|nil status
-local function live_status(root, entry, preview)
+---@return differ.git.StatusEntry|nil
+local function live_row(root, entry)
     local args = { "status", "--porcelain=v1", "-z", "-uall", "--", entry.path }
     -- git pairs a rename only with both paths in the pathspec; with one it reports an add
     if entry.previous_path then
@@ -833,13 +832,27 @@ local function live_status(root, entry, preview)
     for _, s in ipairs(rev.parse_status(out or "")) do
         -- a kept deletion's copy on disk is its own `??` line, and not this row's status
         if s.path == entry.path and not (s.x == "?" and entry.kept) then
-            if preview then
-                return s.x
-            end
-            return select(2, row_of(s))
+            return s
         end
     end
     return nil
+end
+
+-- the entry's status as git reports it now, read from the side of the file the entry
+-- came from, or nil when the path has no changes left
+---@param root string
+---@param entry differ.FileEntry
+---@param preview? boolean  -- the entry is lettered by its index side, as the commit preview lists it
+---@return string|nil status
+local function live_status(root, entry, preview)
+    local s = live_row(root, entry)
+    if not s then
+        return nil
+    end
+    if preview then
+        return s.x
+    end
+    return select(2, row_of(s))
 end
 
 -- the entry's `diff --raw` line under `args`'s pair, or nil when the pair no longer
@@ -1266,15 +1279,12 @@ function M.panel(opts)
         has_local = function(entry)
             return staging_ops.partly_staged(entry)
         end,
-        -- the paths index↔worktree changes by line, in one read for the whole list: a
-        -- row left with only a staged mode change counts 0/0 there, and one left with
-        -- only a move isn't listed at all, so dw opens empty on both
+        -- the paths index↔worktree lists, in one read for the whole list. a row left
+        -- with only a move isn't listed, so dw opens empty on it
         local_paths = function()
             local out = {}
-            for path, c in pairs(numstat({}, root)) do
-                if (c.additions or 0) > 0 or (c.deletions or 0) > 0 then
-                    out[path] = true
-                end
+            for _, path in ipairs(rev.parse_paths(git({ "diff", "--name-only", "-z" }, root) or "")) do
+                out[path] = true
             end
             return out
         end,
@@ -1325,6 +1335,16 @@ function M.panel(opts)
         if not (view and view:is_open()) then
             return
         end
+        -- a reopen after an op here reads a row the op may have finished: with nothing
+        -- staged or nothing on top any more, the whole change takes over
+        local live = live_row(root, entry)
+        if live then
+            entry = vim.tbl_extend("force", entry, { x = live.x, y = live.y })
+        end
+        if not (live and staging_ops.partly_staged(entry)) then
+            retarget_view(false)
+            return
+        end
         local focus_line, focus_col = view:cursor_new_line()
         local at_index = index_path(entry)
         local prev = nil ---@type string|nil
@@ -1334,7 +1354,7 @@ function M.panel(opts)
         local file = { path = entry.path, status = entry.status, previous_path = prev }
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
         local staging ---@type differ.view.Staging
-        if #model.hunks > 0 then
+        if #model.hunks > 0 and entry.y ~= "D" then
             staging = staging_ops.frozen(entry, model, false, function()
                 show_local(entry)
             end)
@@ -1372,10 +1392,27 @@ function M.panel(opts)
                 return true
             end
         else
-            if not model.binary then
+            if #model.hunks == 0 and not model.binary then
                 model.notice = empty_notice(root, entry, model, {}) or "No local content change"
             end
-            staging = { refresh = refresh_panel }
+            -- s stages the file whole: what's left has no lines to take, or is the file's
+            -- deletion, which a hunk would stage as an empty file. that leaves this view
+            -- nothing to show. u has no reverse here: unstaging the row would take its
+            -- staged content with it
+            staging = {
+                initial = "unstaged",
+                whole_file = true,
+                refresh = refresh_panel,
+                apply = function(_, _, reverse)
+                    if reverse or not set_staged(root, entry, true) then
+                        return false
+                    end
+                    vim.schedule(function()
+                        retarget_view(false)
+                    end)
+                    return true
+                end,
+            }
         end
         local function back()
             retarget_view(false)
@@ -1987,5 +2024,6 @@ end
 -- what git/staging.lua reads back: the pair models it re-marks from, a row's raw diff
 -- line, and the index ref
 M.raw_line, M.union_pairs, M.INDEX = raw_line, union_pairs, INDEX
+M.live_row = live_row
 
 return M
