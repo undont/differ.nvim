@@ -585,6 +585,25 @@ function M.new(ctx)
             staging = snapshot_staging(entry)
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(entry, entry.x, preview)
+            -- a whole-file discard takes the worktree too, and this view shows none of it.
+            -- read again at X: an edit since the view opened counts as well
+            local why = ("X would also discard the unstaged changes to %s"):format(entry.path)
+            local function unstaged_on_top(y)
+                return y ~= " " and y ~= "D"
+            end
+            local discard = staging.revert
+            if unstaged_on_top(entry.y) then
+                staging.revert, staging.revert_label, staging.no_revert = nil, nil, why
+            elseif discard then
+                staging.revert = function(...)
+                    local live = gitmod.live_row(root, entry)
+                    if live and unstaged_on_top(live.y) then
+                        notify(why, vim.log.levels.WARN)
+                        return false
+                    end
+                    return discard(...)
+                end
+            end
         end
         staging.badge = "INDEX"
         return staging

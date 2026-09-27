@@ -3162,6 +3162,62 @@ func getDownloadSpeed() {
         assert.are.equal("", status)
     end)
 
+    -- the index holds +x, the worktree +x and an edit on top that the preview doesn't show
+    it("X in the commit preview refuses a whole-file row with unstaged changes on top", function()
+        local root = fresh_repo()
+        vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "edited\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        v = view_in_origin(p)
+        _G.notifs = {}
+        v:revert_hunk()
+        local said = _G.notifs[#_G.notifs].msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal("differ: X would also discard the unstaged changes to a.lua", said)
+        assert.are.equal("MM a.lua\n", status)
+        assert.are.equal("edited\n", worktree(root, "a.lua"))
+    end)
+
+    it("X in the commit preview reads the file again before discarding it", function()
+        local root = fresh_repo()
+        vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+        git(root, "add", "a.lua")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        write(root .. "/a.lua", "edited\n") -- before the watcher has re-read it
+        _G.notifs = {}
+        confirming(1, function()
+            view_in_origin(p):revert_hunk()
+        end)
+        local said = _G.notifs[#_G.notifs].msg
+        p:close()
+        assert.is_truthy(
+            said:find("X would also discard the unstaged changes to a.lua", 1, true),
+            said
+        )
+        assert.are.equal("edited\n", worktree(root, "a.lua"))
+    end)
+
+    it("X in the commit preview still discards a whole-file row with nothing on top", function()
+        local root = fresh_repo()
+        vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+        git(root, "add", "a.lua")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        confirming(1, function()
+            view_in_origin(p):revert_hunk()
+        end)
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal("", status)
+    end)
+
     -- 1x staged and then put back to 1 in the worktree: the local hunk undoing it is `!`
     it("u on a ! hunk in the local view drops the staged change it undoes", function()
         local root = staged_then(twelve({ [12] = "12x" }))
@@ -3918,6 +3974,7 @@ func getDownloadSpeed() {
 
     it("X in the commit preview deletes a staged add", function()
         local root = preview_repo()
+        git(root, "add", "c.lua") -- nothing unstaged on top, which X would refuse
         local p = open_panel()
         toggle_preview(p)
         assert.is_true(p:goto_path("c.lua", true))
