@@ -528,10 +528,11 @@ function M.new(ctx)
     ---@param idx integer
     ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
     ---@param reopen fun()
+    ---@param index_only? boolean  -- the file already holds the hunk's old lines
     ---@return boolean
-    local function revert_frozen(entry, model, staging, idx, offset, reopen)
+    local function revert_frozen(entry, model, staging, idx, offset, reopen, index_only)
         local hunk = model.hunks[idx]
-        local ok = revert_worktree(entry, model, hunk, offset, function()
+        local function stage_index()
             if require("differ.model.marks").state(staging.marks, hunk) ~= "staged" then
                 return true
             end
@@ -539,7 +540,13 @@ function M.new(ctx)
                 return false
             end
             return staging.apply(model, hunk, true)
-        end)
+        end
+        local ok
+        if index_only then
+            ok = stage_index()
+        else
+            ok = revert_worktree(entry, model, hunk, offset, stage_index)
+        end
         if not ok then
             return false
         end
@@ -552,6 +559,40 @@ function M.new(ctx)
             end)
         end
         return true
+    end
+
+    -- where the file stands on hunk `h` of a HEAD↔index model, from `drift`, the index's
+    -- lines against the file's: "put_back" when a drift hunk replaces exactly h's index
+    -- lines with its HEAD lines, "touched" when one overlaps them otherwise, nil when the
+    -- file leaves them alone. a zero-line side sits between two lines
+    ---@param drift differ.Hunk[]
+    ---@param m differ.DiffModel
+    ---@param h differ.Hunk
+    ---@param work string
+    ---@return "put_back"|"touched"|nil
+    local function placed_on(drift, m, h, work)
+        local to_lines = require("differ.util.text").to_lines
+        local function span(start, count)
+            if count == 0 then
+                return start + 0.5, start + 0.5
+            end
+            return start, start + count - 1
+        end
+        local lo, hi = span(h.new_start, h.new_count)
+        for _, w in ipairs(drift) do
+            local wlo, whi = span(w.old_start, w.old_count)
+            if w.old_start == h.new_start and w.old_count == h.new_count then
+                local head =
+                    vim.list_slice(to_lines(m.old_text), h.old_start, h.old_start + h.old_count - 1)
+                local file =
+                    vim.list_slice(to_lines(work), w.new_start, w.new_start + w.new_count - 1)
+                return vim.deep_equal(head, file) and "put_back" or "touched"
+            end
+            if wlo <= hi and lo <= whi then
+                return "touched"
+            end
+        end
+        return nil
     end
 
     -- staging for a row drawn HEAD↔index, in the commit preview or where that is the
@@ -567,19 +608,38 @@ function M.new(ctx)
             staging = frozen_staging(entry, model, true, function()
                 retarget_view(false)
             end)
-            -- the model's new side is the index, so its lines move by whatever the
-            -- worktree has added or dropped above them since
             staging.revert = function(m, idx)
                 local h = m.hunks[idx]
-                local _, _, unstaged = gitmod.union_models(root, entry)
-                if not unstaged then
+                local union = gitmod.union_models(root, entry)
+                if not union then
                     return index_unreadable(entry)
                 end
-                local at = h.new_count > 0 and h.new_start or h.new_start + 1
-                local offset = require("differ.model.marks").shift(unstaged.hunks, at, "old")
-                return revert_frozen(entry, m, staging, idx, offset, function()
+                -- the file against the index this view opened on: s and u move the index
+                -- since, never the file
+                local drift = require("differ.model.diff").build({
+                    path = entry.path,
+                    old_rev = "INDEX",
+                    new_rev = "WORKTREE",
+                    old_text = m.new_text,
+                    new_text = union.new_text,
+                }).hunks
+                local function reopen()
                     retarget_view(false)
-                end)
+                end
+                local placed = placed_on(drift, m, h, union.new_text)
+                if placed == "put_back" then
+                    return revert_frozen(entry, m, staging, idx, 0, reopen, true)
+                end
+                if placed == "touched" then
+                    notify(
+                        "the file has changed these lines: nothing reverted",
+                        vim.log.levels.WARN
+                    )
+                    return false
+                end
+                local at = h.new_count > 0 and h.new_start or h.new_start + 1
+                local offset = require("differ.model.marks").shift(drift, at, "old")
+                return revert_frozen(entry, m, staging, idx, offset, reopen)
             end
         else
             staging = snapshot_staging(entry)
