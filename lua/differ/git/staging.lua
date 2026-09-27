@@ -22,6 +22,8 @@ local REVERTABLE_WHOLE = { ["?"] = true, A = true, D = true, T = true }
 ---@type table<string, string>
 local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
 
+local GITLINK = "160000"
+
 ---@class differ.git.StagingCtx
 ---@field root string
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
@@ -391,6 +393,15 @@ function M.new(ctx)
             end,
             refresh = refresh_panel,
         }
+        -- X puts a mode change or a binary file back as HEAD has it. a move stays with the
+        -- panel row's keys, and a submodule has no X
+        if entry.status == "M" then
+            local head_mode, work_mode =
+                rev.parse_raw_modes(gitmod.raw_line(root, { "HEAD" }, entry) or "")
+            if head_mode ~= GITLINK and work_mode ~= GITLINK then
+                staging.revert, staging.revert_label = whole_file_revert(entry, "M", false)
+            end
+        end
         if content then
             return staging
         end
