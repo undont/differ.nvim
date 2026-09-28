@@ -299,10 +299,10 @@ function M.new(ctx)
         staging.set_all = function(model, staged)
             local union, cached = gitmod.union_models(root, entry)
             if not (union and cached) then
-                return index_unreadable(entry)
+                return index_unreadable(entry), true
             end
             if not drawn_current(model, union) then
-                return false
+                return false, true
             end
             local text = staged and union.new_text or union.old_text
             local mode = side_mode(entry, staged)
@@ -310,7 +310,7 @@ function M.new(ctx)
                 return false
             end
             if not put_index(entry, text, mode) then
-                return false
+                return false, true
             end
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true

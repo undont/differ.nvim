@@ -3548,6 +3548,17 @@ func getDownloadSpeed() {
         assert.are.equal("AM c.lua\n", status)
     end)
 
+    -- 1x staged and then put back, 12x unstaged: u from 12x walks back onto the ! hunk
+    it("u walks back onto a ! hunk in the local view rather than off the file", function()
+        staged_then(twelve({ [12] = "12x" }))
+        local p, v = local_view_at(2)
+        v:unstage_hunk()
+        local at, badge = v:_hunk_index_under_cursor(), v.staging.badge
+        p:close()
+        assert.are.equal(1, at)
+        assert.are.equal("LOCAL", badge)
+    end)
+
     -- 1x staged and then edited to 1y: u gives the index HEAD's line, where s gives 1y
     it("u on a ! hunk takes HEAD's lines, not the worktree's", function()
         local root = staged_then(twelve({ "1y", [12] = "12x" }))
@@ -5934,6 +5945,77 @@ func getDownloadSpeed() {
             "differ: nothing left to stage (b.lua differs locally: dw)",
             walk_leaving(root)
         )
+    end)
+
+    -- c.lua moved to d.lua with an edit, all staged: U leaves the move staged
+    it("ends the u walk without naming rows only a move keeps staged", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", twelve({}))
+        git(root, "add", "c.lua")
+        git(root, "commit", "-q", "-m", "c")
+        git(root, "mv", "c.lua", "d.lua")
+        write(root .. "/d.lua", twelve({ [3] = "3x" }))
+        git(root, "add", "d.lua")
+        vim.cmd.edit(root .. "/d.lua")
+        local p = open_panel()
+        _G.notifs = {}
+        local said
+        for _ = 1, 10 do
+            view_in_origin(p):unstage_all()
+            vim.wait(20)
+            said = (_G.notifs[#_G.notifs] or {}).msg
+            if said and said:find("^differ: nothing left") then
+                break
+            end
+        end
+        p:close()
+        assert.are.equal("differ: nothing left to unstage", said)
+    end)
+
+    it("stays on the file when U refuses a drawing the file has since changed", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "one\n")
+        git(root, "add", "a.lua")
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        write(root .. "/a.lua", "one\ntwo\n") -- before the watcher has re-read it
+        _G.notifs = {}
+        v:unstage_all()
+        vim.wait(20)
+        local path = view_in_origin(p).model.path
+        local said = vim.tbl_map(function(n)
+            return n.msg
+        end, _G.notifs)
+        p:close()
+        assert.are.equal("a.lua", path)
+        assert.is_nil(table.concat(said, "\n"):find("differs locally", 1, true))
+    end)
+
+    -- b, c and d staged and then put back on disk: u on b empties its row
+    it("]f after the open row leaves the list opens the row that took its place", function()
+        local root = fresh_repo()
+        for _, f in ipairs({ "b.lua", "c.lua", "d.lua" }) do
+            write(root .. "/" .. f, "one\n")
+        end
+        git(root, "add", "b.lua", "c.lua", "d.lua")
+        git(root, "commit", "-q", "-m", "bcd")
+        for _, f in ipairs({ "b.lua", "c.lua", "d.lua" }) do
+            write(root .. "/" .. f, "two\n")
+            git(root, "add", f)
+            write(root .. "/" .. f, "one\n")
+        end
+        vim.cmd.edit(root .. "/b.lua")
+        local p, v = open_panel()
+        confirming(1, function()
+            v:unstage_hunk()
+        end)
+        vim.wait(20)
+        view_in_origin(p):step_file("next")
+        local path = view_in_origin(p).model.path
+        p:close()
+        assert.are.equal("c.lua", path)
     end)
 
     it("ends the walk once ]f has left the only file it stops on", function()

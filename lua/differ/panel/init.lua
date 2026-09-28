@@ -109,6 +109,7 @@ local STATUS_HL = {
 ---  and the show() cursor while the sidebar is hidden (no window to read from)
 ---@field selected_key string|nil  -- that file's identity, so render can re-derive the
 ---  row after a rebuild shuffles it
+---@field left_at integer|nil  -- the row the opened file sat at when a rebuild dropped it
 local Panel = {}
 Panel.__index = Panel
 
@@ -357,7 +358,11 @@ function Panel:render()
     -- left the change set outright clears it: keeping the number would leave it naming
     -- whatever slid into that row, or pointing past the end of a shorter list
     if self.selected_key then
+        local was = self.selected_row
         self.selected_row = self:_row_of_key(self.selected_key)
+        if not self.selected_row then
+            self.left_at = was or self.left_at
+        end
     end
 
     vim.bo[self.bufnr].modifiable = true
@@ -659,6 +664,7 @@ function Panel:_open(entry, keep_focus)
         -- every selection path sets selected_row then lands here, so this is the one
         -- place the opened file's identity has to be recorded for render to re-derive it
         self.selected_key = entry_key(entry)
+        self.left_at = nil
         self.walk_order = self:_file_keys()
     end
     if not keep_focus and self.winid and vim.api.nvim_win_is_valid(self.winid) then
@@ -915,7 +921,13 @@ function Panel:goto_file(direction, keep_focus, wrap)
     -- opened row so ]f/[f keeps working with the panel hidden
     local from = self:is_open() and vim.api.nvim_win_get_cursor(self.winid)[1]
         or self.selected_row
+        or self.left_at
         or self:_first_file_line()
+    -- the opened file left the list and the cursor hasn't moved off where it was: the
+    -- row that slid into its place is the next one
+    if direction == "next" and not self.selected_row and from == self.left_at then
+        from = from - 1
+    end
     local i, wrapped = self:_file_row(from, direction, wrap)
     if not i then
         return false
@@ -1064,13 +1076,12 @@ function Panel:accept_review(staged)
     end
 end
 
--- the listed rows the walk has passed with work its key couldn't take and a local view
+-- the listed rows the s walk has passed with work it couldn't take and a local view
 -- with something to show for it, in list order. a row whose local view would open empty
 -- is left out: the list is read as where to go next, and a row left with only a move
 -- has nothing for dw to answer with
----@param staged boolean
 ---@return differ.FileEntry[]
-function Panel:review_leftover(staged)
+function Panel:review_leftover()
     local out = {}
     if not self.review then
         return out
@@ -1079,8 +1090,8 @@ function Panel:review_leftover(staged)
     for _, m in ipairs(self.meta) do
         if
             m.kind == "file"
-            and has_review_work(m.entry, staged)
-            and not self:_walk_wants(m.entry, staged)
+            and has_review_work(m.entry, false)
+            and not self:_walk_wants(m.entry, false)
             and self.review.has_local(m.entry)
             and shows[m.entry.path]
         then

@@ -101,7 +101,9 @@ local armed_view = nil
 -- `drop_scope` names the lines u on `!` hunk `idx` takes back, when wider than the hunk
 ---@field drop_scope? fun(idx: integer): string|nil
 -- `set_all` runs S / U on the whole file at once, and says whether the index moved
----@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean
+-- the second return says the op refused (a stale drawing, an unreadable index), as
+-- against there being nothing to move
+---@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean, boolean|nil
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -1026,7 +1028,8 @@ end
 -- a hunk filter for the review scans: `staged` picks the side, so false matches every
 -- hunk with something left to stage and true every one with something left to unstage.
 -- a partial hunk matches both; one the key has already refused to move matches neither,
--- so the walk reads the file as done rather than circling the hunk it can't take
+-- so the walk reads the file as done rather than circling the hunk it can't take. a `!`
+-- hunk u can drop counts as something left to unstage
 ---@param staged boolean
 ---@return fun(hunk: integer): boolean
 function View:_review_filter(staged)
@@ -1035,6 +1038,9 @@ function View:_review_filter(staged)
     return function(hunk)
         if refused[hunk] then
             return false
+        end
+        if staged and self:_drops_hidden(hunk) then
+            return true
         end
         return self:_hunk_state(hunk) ~= done
     end
@@ -1382,7 +1388,7 @@ end
 ---@param idx integer
 ---@return boolean
 function View:_drops_hidden(idx)
-    if not self.staging.unstage_hidden then
+    if not (self.staging and self.staging.unstage_hidden) then
         return false
     end
     return vim.tbl_contains(self.staging.hidden_in or {}, idx)
@@ -1466,13 +1472,13 @@ local function fit_names(names)
     return out
 end
 
--- the walk's end: nothing left for the key, naming any rows it passed with changes
--- only the local view shows
+-- the walk's end: nothing left for the key. s names the rows it passed with changes
+-- only the local view shows; what u leaves staged there (a move, a mode) isn't dw's
 ---@param staged boolean
 function View:_walk_done(staged)
     local msg = staged and "differ: nothing left to unstage" or "differ: nothing left to stage"
     local panel = require("differ.panel").current()
-    local left = panel and panel:review_leftover(staged) or {}
+    local left = (panel and not staged) and panel:review_leftover() or {}
     if #left > 0 then
         local verb = #left == 1 and "differs" or "differ"
         local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
@@ -1580,7 +1586,8 @@ function View:stage_all()
     if self:_can_stage_hunk() and not self:_review_done(false) and not self:_stage_confirmed() then
         return
     end
-    if not self:_toggle_all(true) and self:_can_stage_hunk() then
+    local changed, refused = self:_toggle_all(true)
+    if not changed and not refused and self:_can_stage_hunk() then
         if not self:_step_review_file("next", false) then
             self:_walk_done(false)
         end
@@ -1596,7 +1603,8 @@ function View:unstage_all()
             return
         end
     end
-    if not self:_toggle_all(false) and self:_can_stage_hunk() then
+    local changed, refused = self:_toggle_all(false)
+    if not changed and not refused and self:_can_stage_hunk() then
         if self:_step_review_file("prev", true) then
             self:_focus_last_hunk() -- only when a previous file actually opened
         else
@@ -1607,28 +1615,36 @@ end
 
 -- stage / unstage every hunk, through the source's whole-file op when it has one; the
 -- panel refreshes once after the batch. returns whether anything changed (false when
--- already wholly in the target state), so S/U can fall through to file stepping
+-- already wholly in the target state), so S/U can fall through to file stepping, and
+-- whether the source refused, which stays put instead
 ---@param want_staged boolean
----@return boolean changed
+---@return boolean changed, boolean refused
 function View:_toggle_all(want_staged)
     if not self:_can_stage_hunk() then
         vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
-        return false
+        return false, false
     end
-    local changed = false
+    local changed, refused = false, false ---@type boolean, boolean|nil
     if self.staging.set_all then
-        changed = self.staging.set_all(self.model, want_staged)
+        changed, refused = self.staging.set_all(self.model, want_staged)
     else
+        local want = want_staged and "staged" or "unstaged"
         for i = 1, self:_slot_count() do
-            if self:_apply_hunk(i, want_staged) then
-                changed = true
+            if self:_hunk_state(i) ~= want then
+                local moved, stuck = self:_apply_hunk(i, want_staged)
+                if moved then
+                    changed = true
+                elseif not stuck then
+                    refused = true
+                    break
+                end
             end
         end
     end
     if changed then
         self:_after_staging()
     end
-    return changed
+    return changed, refused == true
 end
 
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
