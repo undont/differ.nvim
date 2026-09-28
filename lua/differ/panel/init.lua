@@ -66,6 +66,7 @@ local STATUS_HL = {
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
+---@field discard_prompt? fun(entry: differ.FileEntry): string|nil  -- X's confirm where it isn't a discard
 ---@field reload fun(): differ.panel.Section[] -- recompute sections after an op
 
 ---@class differ.Panel
@@ -832,7 +833,11 @@ function Panel:discard()
     end
     local what = #entries == 1 and discard_label(entries[1])
         or ("%s (%d files)"):format(label, #entries)
-    local choice = vim.fn.confirm(("Discard changes to %s?"):format(what), "&Yes\n&No", 2)
+    local prompt = ("Discard changes to %s?"):format(what)
+    if #entries == 1 and self.actions.discard_prompt then
+        prompt = self.actions.discard_prompt(entries[1]) or prompt
+    end
+    local choice = vim.fn.confirm(prompt, "&Yes\n&No", 2)
     if choice == 1 then
         local paths = {}
         for _, e in ipairs(entries) do

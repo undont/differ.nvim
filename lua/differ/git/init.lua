@@ -917,8 +917,17 @@ local function empty_notice(root, entry, model, args)
     return empty_or_not
 end
 
+-- whether X on a worktree row brings the file back as staged: an edit or move staged
+-- and then deleted on disk, whose staged version nothing else holds
+---@param entry differ.FileEntry
+---@return boolean
+local function restores_staged(entry)
+    return entry.y == "D" and (entry.x == "M" or entry.x == "R")
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
--- first if needed); anything tracked in HEAD reverts index + worktree to HEAD.
+-- first if needed); a staged edit or move then deleted on disk comes back as staged;
+-- anything else tracked in HEAD reverts index + worktree to HEAD.
 -- destructive, so the panel confirms before calling this. confirm() drains scheduled
 -- callbacks while it blocks, so the status the caller holds can have moved under the
 -- prompt: the three branches differ in whether they delete the file, so a status that
@@ -940,6 +949,18 @@ function M.discard(root, entry, preview)
         local msg = "discard skipped: X would overwrite the untracked copy of %s on disk"
         notify(msg:format(entry.path), vim.log.levels.WARN)
         return false
+    end
+    if not preview then
+        if restores_staged(entry) then
+            return index_ops.restore_deleted(root, entry)
+        end
+        -- checkout moves the commit a submodule records, never the checkout inside it
+        local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
+        if old_mode == GITLINK or new_mode == GITLINK then
+            local msg = "discard skipped: X can't move the checkout inside the submodule %s"
+            notify(msg:format(entry.path), vim.log.levels.WARN)
+            return false
+        end
     end
     local abs = root .. "/" .. entry.path
     -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
@@ -1157,6 +1178,11 @@ function M.panel(opts)
                     notify("the commit preview only unstages: gs goes back", vim.log.levels.WARN)
                     return false
                 end
+                -- a Staged row has nothing on disk to take; a deletion kept on disk
+                -- would take its untracked copy back in
+                if entry.y == " " then
+                    return false
+                end
                 set_staged(root, entry, true)
             end,
             unstage = function(entry)
@@ -1174,6 +1200,11 @@ function M.panel(opts)
             end,
             discard = function(entry)
                 M.discard(root, entry, preview)
+            end,
+            discard_prompt = function(entry)
+                if not preview and restores_staged(entry) then
+                    return ("Restore %s as staged?"):format(entry.path)
+                end
             end,
             reload = function()
                 local live = preview and M.staged_sections(root) or M.status_sections(root)
