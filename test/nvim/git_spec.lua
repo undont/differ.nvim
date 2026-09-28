@@ -2711,16 +2711,28 @@ func getDownloadSpeed() {
     end
 
     for _, case in ipairs({
-        { key = "s", op = "stage_hunk", what = "unstaged change also covers hunk 2: s in dw" },
-        { key = "u", op = "unstage_hunk", what = "staged change also covers hunk 2: u on the !" },
-        { key = "X", op = "revert_hunk", what = "staged change also covers hunk 2: u on the !" },
+        {
+            key = "s",
+            op = "stage_hunk",
+            what = "this hunk's unstaged change also covers hunk 2: s in dw",
+        },
+        {
+            key = "u",
+            op = "unstage_hunk",
+            what = "this hunk's staged change also covers hunk 2: u on the !",
+        },
+        {
+            key = "X",
+            op = "revert_hunk",
+            what = "X can't revert hunk 1 alone: its staged change also covers hunk 2",
+        },
     }) do
         it(("refuses %s on a hunk sharing a change with the next"):format(case.key), function()
             local root = fresh_repo()
             local p, v = shared_change(root)
             local before = { worktree(root, "a.lua"), indexed(root, "a.lua") }
             local hunks = #v.model.hunks
-            confirming(1, function()
+            local prompt = confirming(1, function()
                 v[case.op](v)
             end)
             local after = { worktree(root, "a.lua"), indexed(root, "a.lua") }
@@ -2730,7 +2742,8 @@ func getDownloadSpeed() {
             p:close()
             assert.are.equal(2, hunks)
             assert.are.same(before, after)
-            assert.is_truthy(said:find("this hunk's " .. case.what, 1, true))
+            assert.is_truthy(said:find(case.what, 1, true), said)
+            assert.is_nil(prompt) -- refused before anything is asked
         end)
     end
 
@@ -3358,6 +3371,96 @@ func getDownloadSpeed() {
         assert.are.equal("RD a.lua -> b.lua\n", row)
         assert.are.same({}, failed)
         assert.are.equal("D  a.lua\n", status)
+    end)
+
+    it("says where X undoes a bare move instead of calling it a hunk", function()
+        local root = fresh_repo()
+        git(root, "mv", "a.lua", "b.lua")
+        write(root .. "/c.lua", "c\n")
+        vim.cmd.edit(root .. "/c.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("b.lua", true))
+        _G.notifs = {}
+        view_in_origin(p):revert_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        p:close()
+        assert.are.equal("differ: X on the panel row undoes the move", said)
+    end)
+
+    it("says why a staged edit deleted on disk has no local view", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "edited\n")
+        git(root, "add", "a.lua")
+        os.remove(root .. "/a.lua")
+        write(root .. "/b.lua", "b\n")
+        vim.cmd.edit(root .. "/b.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("a.lua", true))
+        _G.notifs = {}
+        view_in_origin(p):toggle_local()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        p:close()
+        assert.are.equal(
+            "differ: a.lua's only local change is its deletion, which s stages here",
+            said
+        )
+    end)
+
+    it("names what X drops on a staged add whose file was deleted", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "one\n")
+        git(root, "add", "c.lua")
+        os.remove(root .. "/c.lua")
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("c.lua", true))
+        local prompt = confirming(2, function()
+            view_in_origin(p):revert_hunk()
+        end)
+        p:close()
+        assert.are.equal(
+            "Revert all of c.lua? This drops the staged add, which nothing else holds.",
+            prompt
+        )
+    end)
+
+    it("says so when the commit preview empties and hands back every change", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "staged\n")
+        git(root, "add", "a.lua")
+        write(root .. "/b.lua", "b\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        _G.notifs = {}
+        view_in_origin(p):unstage_all()
+        vim.wait(30)
+        local said = vim.tbl_map(function(n)
+            return n.msg
+        end, _G.notifs)
+        p:close()
+        assert.is_true(vim.tbl_contains(said, "differ: nothing staged: back to every change"))
+    end)
+
+    it("says nothing is staged when X in the commit preview follows u on it", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "one\n")
+        git(root, "add", "c.lua")
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        vim.cmd.edit(root .. "/c.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        v = view_in_origin(p)
+        v:unstage_hunk()
+        _G.notifs = {}
+        confirming(1, function()
+            view_in_origin(p):revert_hunk()
+        end)
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        p:close()
+        assert.are.equal("differ: c.lua has nothing staged now: s stages it back", said)
+        assert.are.equal(1, vim.fn.filereadable(root .. "/c.lua"))
     end)
 
     it("X on a file whose only change is its mode puts HEAD's mode back", function()

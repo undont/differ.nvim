@@ -263,6 +263,26 @@ function M.new(ctx)
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true
         end
+        -- X on a hunk whose staged change reaches another can't take it alone, and a
+        -- drawing the file has moved on from places it by stale lines: both said before
+        -- the prompt, which says as much itself
+        staging.refuses_revert = function(model, idx)
+            local union, cached, unstaged = gitmod.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                index_unreadable(entry)
+                return true
+            end
+            if not drawn_current(model, union) then
+                return true
+            end
+            local _, reaches = stage.next_index(union, cached, unstaged, model.hunks[idx], false)
+            if reaches then
+                local msg = "X can't revert hunk %d alone: its staged change also covers hunk %d"
+                notify(msg:format(idx, reaches), vim.log.levels.WARN)
+                return true
+            end
+            return false
+        end
         -- X throws the hunk away on both sides at once: the index gives up whatever of
         -- it it holds and the worktree gives up the rest
         staging.revert = function(model, idx)
@@ -276,7 +296,8 @@ function M.new(ctx)
             local hunk = model.hunks[idx]
             local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
             if reaches then
-                notify(refusal(false, reaches), vim.log.levels.WARN)
+                local msg = "X can't revert hunk %d alone: its staged change also covers hunk %d"
+                notify(msg:format(idx, reaches), vim.log.levels.WARN)
                 return false
             end
             -- a hunk the index holds nothing of on its own leaves the index where it is,
@@ -315,12 +336,20 @@ function M.new(ctx)
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true
         end
-        -- the `!` hunks hold staged content neither side shows, and U takes all of it
-        staging.unheld = function(_, idx)
-            if idx then
-                return vim.tbl_contains(staging.hidden_in or {}, idx)
+        -- the `!` hunks hold staged content neither side shows, and U takes all of it. a
+        -- hunk u can't move on its own drops nothing: its refusal needs no prompt first
+        staging.unheld = function(model, idx)
+            if not idx then
+                return staging.hidden == true
             end
-            return staging.hidden == true
+            if not vim.tbl_contains(staging.hidden_in or {}, idx) then
+                return false
+            end
+            local union, cached, unstaged = gitmod.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                return true
+            end
+            return stage.next_index(union, cached, unstaged, model.hunks[idx], false) ~= nil
         end
         return staging
     end
@@ -444,9 +473,15 @@ function M.new(ctx)
                 rev.parse_raw_modes(gitmod.raw_line(root, { "HEAD" }, entry) or "")
             if head_mode ~= GITLINK and work_mode ~= GITLINK then
                 staging.revert, staging.revert_label = whole_file_revert(entry, "M", false)
+            else
+                local why = "X can't move the checkout inside the submodule %s"
+                staging.no_revert = why:format(entry.path)
             end
         end
         if content then
+            if entry.status == "R" or entry.status == "C" then
+                staging.no_revert = "X on the panel row undoes the move"
+            end
             return staging
         end
         -- an add's discard drops the staged entry before removing the file; a
@@ -720,6 +755,9 @@ function M.new(ctx)
             staging = snapshot_staging(entry)
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(entry, entry.x, preview)
+            if entry.x == "A" and entry.y == "D" then
+                staging.revert_label = "drops the staged add, which nothing else holds"
+            end
             -- a whole-file discard takes the worktree too, and this view shows none of it.
             -- read again at X: an edit since the view opened counts as well
             local why = ("X would also discard the unstaged changes to %s"):format(entry.path)
@@ -732,6 +770,12 @@ function M.new(ctx)
             elseif discard then
                 staging.revert = function(...)
                     local live = gitmod.live_row(root, entry)
+                    -- u here took the change out of the index: X has nothing staged to
+                    -- discard, and s puts it back
+                    if live and (live.x == " " or live.x == "?") then
+                        notify(("%s has nothing staged now: s stages it back"):format(entry.path))
+                        return false
+                    end
                     if live and unstaged_on_top(live.y) then
                         notify(why, vim.log.levels.WARN)
                         return false

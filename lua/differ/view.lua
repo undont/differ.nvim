@@ -83,6 +83,7 @@ local armed_view = nil
 -- against a failure: the source has named the view that can take it whole
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
+---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field refresh fun()
@@ -1705,6 +1706,9 @@ function View:revert_hunk()
     local idx = self:_target_index()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
+    end
+    if self.staging.refuses_revert and self.staging.refuses_revert(self.model, idx) then
+        return
     end
     -- a whole-file revert isn't partial, so it says so rather than counting hunks
     local label = self.staging.revert_label

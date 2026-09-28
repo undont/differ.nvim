@@ -917,6 +917,17 @@ local function empty_notice(root, entry, model, args)
     return empty_or_not
 end
 
+-- why dw has no local view for `entry`: a staged edit or move then deleted on disk has
+-- one change on top, its deletion, which the whole change already stages
+---@param entry differ.FileEntry
+---@return string
+local function no_local_reason(entry)
+    if entry.y == "D" and (entry.x == "M" or entry.x == "R") then
+        return ("%s's only local change is its deletion, which s stages here"):format(entry.path)
+    end
+    return "only a partly staged file has a local view"
+end
+
 -- whether X on a worktree row brings the file back as staged: an edit or move staged
 -- and then deleted on disk, whose staged version nothing else holds
 ---@param entry differ.FileEntry
@@ -939,7 +950,7 @@ end
 function M.discard(root, entry, preview)
     if live_status(root, entry, preview) ~= entry.status then
         notify(
-            ("discard skipped: %s changed since the prompt"):format(entry.path),
+            ("discard skipped: %s isn't as the list showed it any more"):format(entry.path),
             vim.log.levels.WARN
         )
         return false
@@ -1542,9 +1553,13 @@ function M.panel(opts)
         else
             staging = staging_ops.for_entry(entry, model)
         end
-        if staging and not preview and staging_ops.partly_staged(entry) then
-            staging.toggle_local = function()
-                show_local(entry)
+        if staging and not preview then
+            if staging_ops.partly_staged(entry) then
+                staging.toggle_local = function()
+                    show_local(entry)
+                end
+            else
+                staging.no_local = staging.no_local or no_local_reason(entry)
             end
         end
         if view and view:is_open() then
@@ -1639,7 +1654,7 @@ function M.panel(opts)
         if not live then
             return
         end
-        staging.toggle_local = nil
+        staging.toggle_local, staging.no_local = nil, no_local_reason(live)
         if staging_ops.partly_staged(live) then
             staging.toggle_local = function()
                 show_local(live)
@@ -1751,7 +1766,7 @@ function M.panel(opts)
                         return notify("the commit preview has no local view: gs goes back")
                     end
                     if not staging_ops.partly_staged(entry) then
-                        return notify("only a partly staged file has a local view")
+                        return notify(no_local_reason(entry))
                     end
                     local on_row = active_entry ~= nil and active_entry.path == entry.path
                     local local_view = view ~= nil
@@ -1795,7 +1810,8 @@ function M.panel(opts)
         -- source can reach this; a rev-pair list never reloads
         on_empty = function()
             if preview then
-                return set_preview(false) -- everything unstaged: back to the whole list
+                notify("nothing staged: back to every change")
+                return set_preview(false)
             end
             notify("no changes left")
             local back = panel and panel.return_tab
