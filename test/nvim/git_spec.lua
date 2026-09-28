@@ -3924,7 +3924,7 @@ func getDownloadSpeed() {
         assert.are.equal(twelve({ "1x" }), index)
     end)
 
-    -- gs, from the panel
+    -- ds, from the panel
     local function toggle_preview(p)
         p.extra_keymaps[1].fn()
     end
@@ -3958,7 +3958,7 @@ func getDownloadSpeed() {
         return root
     end
 
-    -- dw, from the panel: extra_keymaps[2], where [1] is gs
+    -- dw, from the panel: extra_keymaps[2], where [1] is ds
     local function toggle_local_key(p)
         p.extra_keymaps[2].fn()
     end
@@ -3987,7 +3987,7 @@ func getDownloadSpeed() {
         toggle_local_key(p)
         local said, rev_after = (_G.notifs[#_G.notifs] or {}).msg, view_in_origin(p).model.new_rev
         p:close()
-        assert.are.equal("differ: the commit preview has no local view: gs goes back", said)
+        assert.are.equal("differ: the commit preview has no local view: ds goes back", said)
         assert.are.equal("INDEX", rev_after)
     end)
 
@@ -4041,13 +4041,13 @@ func getDownloadSpeed() {
         assert.are.equal("HEAD", rev_after)
     end)
 
-    it("gs in the diff flips the listing the same way the panel's does", function()
+    it("ds in the diff flips the listing the same way the panel's does", function()
         preview_repo()
         local p, v = open_panel()
         local before = titles(p)
         local bound = false
         for _, map in ipairs(vim.api.nvim_buf_get_keymap(v.columns[#v.columns].bufnr, "n")) do
-            bound = bound or map.lhs == "gs"
+            bound = bound or map.lhs == "ds"
         end
         v:toggle_commit_preview()
         local in_titles, in_badge = titles(p), view_in_origin(p).staging.badge
@@ -4061,7 +4061,7 @@ func getDownloadSpeed() {
         assert.is_nil(out_badge)
     end)
 
-    it("gs lists only the staged changes, each diffing HEAD-to-index, and back", function()
+    it("ds lists only the staged changes, each diffing HEAD-to-index, and back", function()
         preview_repo()
         local p = open_panel()
         local before = titles(p)
@@ -4139,7 +4139,7 @@ func getDownloadSpeed() {
         p:stage_op("stage_all")
         local msg, after = _G.notifs[#_G.notifs].msg, indexed(root, "a.lua")
         p:close()
-        assert.are.equal("differ: the commit preview only unstages: gs goes back", msg)
+        assert.are.equal("differ: the commit preview only unstages: ds goes back", msg)
         assert.are.equal(before, after)
     end)
 
@@ -4466,7 +4466,7 @@ func getDownloadSpeed() {
         assert.are.equal("", status)
     end)
 
-    it("dw and gs say why they do nothing", function()
+    it("dw and ds say why they do nothing", function()
         preview_repo()
         local p = open_panel()
         toggle_preview(p)
@@ -4483,10 +4483,10 @@ func getDownloadSpeed() {
         p = Panel.current()
         _G.notifs = {}
         toggle_preview(p)
-        local gs_msg, got = _G.notifs[#_G.notifs].msg, titles(p)
+        local ds_msg, got = _G.notifs[#_G.notifs].msg, titles(p)
         p:close()
-        assert.are.equal("differ: the commit preview has no local view: gs goes back", dw_msg)
-        assert.are.equal("differ: nothing staged to preview", gs_msg)
+        assert.are.equal("differ: the commit preview has no local view: ds goes back", dw_msg)
+        assert.are.equal("differ: nothing staged to preview", ds_msg)
         assert.are.same({ "Unstaged" }, got)
     end)
 

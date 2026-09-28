@@ -210,10 +210,10 @@ function M.new(ctx)
                         .. "s in dw stages it whole"
                 end
                 return "this hunk's staged change sits under another hunk: "
-                    .. "u in gs unstages it whole"
+                    .. "u in ds unstages it whole"
             end
             local msg = "this hunk's staged change also covers hunk %d: "
-                .. "u on the ! hunk in dw, or in gs, unstages it whole"
+                .. "u on the ! hunk in dw, or in ds, unstages it whole"
             if take then
                 msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
             end
@@ -795,7 +795,7 @@ function M.new(ctx)
     local function preview_staging(entry, model)
         local staging = staged_staging(entry, model, true)
         staging.badge = "STAGED"
-        staging.no_local = "the commit preview has no local view: gs goes back"
+        staging.no_local = "the commit preview has no local view: ds goes back"
         staging.leave = function()
             ctx.preview_off()
         end

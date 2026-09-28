@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `dw` in the diff or the panel shows a partly staged file's changes since staging, works as a toggle
-- `gs` in the panel or the diff previews the commit: only the staged changes, each diffed against `HEAD`, also works as a toggle
+- `ds` in the panel or the diff previews the commit: only the staged changes, each diffed against `HEAD`, also works as a toggle
 - `s` and `u` act on a hunk the index holds only part of, and the diff winbar tallies staged and partial hunks
 
 ### Changed

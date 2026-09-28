@@ -1168,7 +1168,7 @@ function M.panel(opts)
     -- against the one resolved source. a staged deletion diffs HEAD↔index, since its
     -- worktree copy is a row of its own. `actions` (file-level staging) is only
     -- meaningful for the worktree-status source
-    local preview = false -- gs: the panel lists only what a commit would take
+    local preview = false -- ds: the panel lists only what a commit would take
     local sections, model_for, raw_args_for, actions
     local list_err ---@type string|nil -- git's own words when the listing failed
     if is_worktree_status(source) then
@@ -1186,7 +1186,7 @@ function M.panel(opts)
         actions = {
             stage = function(entry)
                 if preview then
-                    notify("the commit preview only unstages: gs goes back", vim.log.levels.WARN)
+                    notify("the commit preview only unstages: ds goes back", vim.log.levels.WARN)
                     return false
                 end
                 -- a Staged row has nothing on disk to take; a deletion kept on disk
@@ -1201,7 +1201,7 @@ function M.panel(opts)
             end,
             stage_all = function()
                 if preview then
-                    notify("the commit preview only unstages: gs goes back", vim.log.levels.WARN)
+                    notify("the commit preview only unstages: ds goes back", vim.log.levels.WARN)
                     return false
                 end
                 M.stage_all(root)
@@ -1662,7 +1662,7 @@ function M.panel(opts)
         end
     end
 
-    -- gs: flip the panel between every change and the commit preview, then reopen the
+    -- ds: flip the panel between every change and the commit preview, then reopen the
     -- file on screen in the new listing, else the nearest one
     set_preview = function(on)
         if on then
@@ -1763,7 +1763,7 @@ function M.panel(opts)
                         return
                     end
                     if preview then
-                        return notify("the commit preview has no local view: gs goes back")
+                        return notify("the commit preview has no local view: ds goes back")
                     end
                     if not staging_ops.partly_staged(entry) then
                         return notify(no_local_reason(entry))

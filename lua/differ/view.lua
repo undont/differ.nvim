@@ -118,7 +118,7 @@ local armed_view = nil
 ---@field keymaps table
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
----@field commit_preview fun()|nil  -- session-level: gs flips the panel's listing
+---@field commit_preview fun()|nil  -- session-level: ds flips the panel's listing
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
 ---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
 ---@field stuck table<string, table<integer, boolean>>  -- hunks a key refused to move, by the state it wanted
@@ -147,7 +147,7 @@ View.__index = View
 ---@field keymaps? table
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
----@field commit_preview? fun()  -- session-level: gs flips the panel's listing
+---@field commit_preview? fun()  -- session-level: ds flips the panel's listing
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -177,7 +177,7 @@ function View.new(model, opts)
         ),
         can_stage = opts.can_stage or false,
         staging = opts.staging,
-        -- the session's own listing flip, so gs reads the same either side of the diff
+        -- the session's own listing flip, so ds reads the same either side of the diff
         commit_preview = opts.commit_preview,
         -- session-supplied maps the generic diff surface doesn't own (pr unviewed nav)
         extra_keymaps = opts.extra_keymaps,
@@ -667,7 +667,7 @@ end
 
 -- dw: swap a partly staged file between its whole change (HEAD↔worktree) and what
 -- changed since staging (index↔worktree)
--- gs: the same flip the panel's key does. the session owns the listing, so the view
+-- ds: the same flip the panel's key does. the session owns the listing, so the view
 -- only asks for it
 function View:toggle_commit_preview()
     if not self.commit_preview then
