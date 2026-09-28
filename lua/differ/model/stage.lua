@@ -110,4 +110,53 @@ function M.next_index(union, cached, unstaged, hunk, take)
     return text
 end
 
+-- the index text with its lines `first`..`last` back to HEAD's, where they sit inside
+-- HEAD↔index hunk `ci` and that hunk's two sides are the same length, so each index line
+-- has one HEAD line at the same place in it. every other hunk stays applied
+---@param cached differ.DiffModel  -- HEAD↔index
+---@param ci integer
+---@param first integer  -- index lines
+---@param last integer
+---@return string
+function M.drop_lines(cached, ci, first, last)
+    local hunks, applied = {}, {} ---@type differ.Hunk[], table<integer, boolean>
+    local function slice(lines, from, count)
+        local out = {}
+        for i = from, from + count - 1 do
+            out[#out + 1] = lines[i]
+        end
+        return out
+    end
+    for i, h in ipairs(cached.hunks) do
+        if i ~= ci then
+            hunks[#hunks + 1] = h
+            applied[#hunks] = true
+        else
+            ---@param from integer
+            ---@param to integer
+            ---@param take boolean
+            local function piece(from, to, take)
+                if to < from then
+                    return
+                end
+                local at, count = from - h.new_start + 1, to - from + 1
+                hunks[#hunks + 1] = {
+                    old_start = h.old_start + at - 1,
+                    old_count = count,
+                    old_lines = slice(h.old_lines, at, count),
+                    new_start = from,
+                    new_count = count,
+                    new_lines = slice(h.new_lines, at, count),
+                }
+                applied[#hunks] = take
+            end
+            piece(h.new_start, first - 1, true)
+            piece(first, last, false)
+            piece(last + 1, h.new_start + h.new_count - 1, true)
+        end
+    end
+    local split = { old_text = cached.old_text, new_text = cached.new_text, hunks = hunks }
+    return apply.splice(split --[[@as differ.DiffModel]], applied)
+end
+
 return M

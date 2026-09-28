@@ -98,6 +98,8 @@ local armed_view = nil
 -- nor the file holds, so the key confirms first
 ---@field unheld? fun(model: differ.DiffModel, idx: integer|nil): boolean
 ---@field confirm_stage? string  -- s and S ask this first, `%s` the path: they drop content too
+-- `drop_scope` names the lines u on `!` hunk `idx` takes back, when wider than the hunk
+---@field drop_scope? fun(idx: integer): string|nil
 -- `set_all` runs S / U on the whole file at once, and says whether the index moved
 ---@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean
 
@@ -1346,6 +1348,10 @@ end
 ---@param idx integer|nil
 ---@return string
 function View:_drop_prompt(idx)
+    local scope = idx and self.staging.drop_scope and self.staging.drop_scope(idx)
+    if scope then
+        return ("Drop %s in %s? Nothing else holds them."):format(scope, self.model.path)
+    end
     if idx and not self:_whole_file() then
         return ("Drop the staged change under hunk %d/%d in %s? Nothing else holds it."):format(
             idx,

@@ -1359,7 +1359,8 @@ function M.panel(opts)
                 show_local(entry)
             end)
             local _, cached = M.union_models(root, entry)
-            if cached then
+            -- an add has no HEAD lines for a rewritten line to go back to
+            if cached and entry.x ~= "A" then
                 staging.hidden_in =
                     require("differ.model.marks").restaged(model.hunks, cached.hunks)
             end
@@ -1367,6 +1368,9 @@ function M.panel(opts)
                 return staging_ops.drop_hidden(entry, model, staging, idx, function()
                     show_local(entry)
                 end)
+            end
+            staging.drop_scope = function(idx)
+                return staging_ops.drop_scope(entry, model, staging, idx)
             end
             staging.revert = function(m, idx)
                 return staging_ops.revert_frozen(entry, m, staging, idx, 0, function()

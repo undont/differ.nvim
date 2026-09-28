@@ -751,15 +751,18 @@ function M.new(ctx)
         return staging
     end
 
-    -- u on a `!` hunk in the local view: the index takes HEAD's lines there, dropping the
-    -- staged change the worktree undid. its lines are the index's at open, moved by
-    -- whatever s has staged since
+    -- what u on `!` hunk `idx` of the local view writes: the index takes HEAD's lines
+    -- there, dropping the staged change the worktree undid. only the lines the hunk
+    -- rewrote go back where the staged block they sit in maps line for line; otherwise the
+    -- whole block does, and `scope` names the index lines it reaches. the hunk's lines are
+    -- the index's at open, moved by whatever s has staged since. no text, and why, when
+    -- the index can't be read or has changed outside differ
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel  -- index↔worktree, as the view opened on it
     ---@param staging differ.view.Staging
     ---@param idx integer
-    ---@return boolean
-    local function drop_hidden(entry, model, staging, idx, reopen)
+    ---@return string|nil text, string|nil scope, "unreadable"|"changed"|nil why
+    local function drop_index(entry, model, staging, idx)
         local marks = require("differ.model.marks")
         local stage = require("differ.model.stage")
         local splice = require("differ.model.apply").splice
@@ -772,26 +775,82 @@ function M.new(ctx)
         end
         local _, cached = gitmod.union_models(root, entry)
         if not cached then
-            return index_unreadable(entry)
+            return nil, nil, "unreadable"
         end
         if cached.new_text ~= splice(model, applied) then
+            return nil, nil, "changed"
+        end
+        local hunk = model.hunks[idx]
+        local placed = vim.tbl_extend("force", hunk, {
+            old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
+        })
+        local meets = stage.select_hunks(cached.hunks, "new", placed, "old", true)
+        local first, last = placed.old_start, placed.old_start + placed.old_count - 1
+        local met, lo, hi = {}, math.huge, -math.huge ---@type integer[], number, number
+        for i, c in ipairs(cached.hunks) do
+            if meets[i] then
+                met[#met + 1] = i
+                if c.new_count > 0 then
+                    lo, hi = math.min(lo, c.new_start), math.max(hi, c.new_start + c.new_count - 1)
+                end
+            end
+        end
+        local c = #met == 1 and cached.hunks[met[1]] or nil
+        if
+            c
+            and placed.old_count > 0
+            and c.old_count == c.new_count
+            and first >= c.new_start
+            and last <= c.new_start + c.new_count - 1
+        then
+            return stage.drop_lines(cached, met[1], first, last)
+        end
+        local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
+        local text = splice(cached, keep)
+        if lo >= first and hi <= last then
+            return text
+        end
+        if lo == hi then
+            return text, ("the staged line %d"):format(lo)
+        end
+        return text, ("the staged lines %d-%d"):format(lo, hi)
+    end
+
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel
+    ---@param staging differ.view.Staging
+    ---@param idx integer
+    ---@param reopen fun()
+    ---@return boolean
+    local function drop_hidden(entry, model, staging, idx, reopen)
+        local text, _, why = drop_index(entry, model, staging, idx)
+        if why == "unreadable" then
+            return index_unreadable(entry)
+        end
+        if not text then
             notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
             vim.schedule(function()
                 reopen()
             end)
             return false
         end
-        local hunk = model.hunks[idx]
-        local placed = vim.tbl_extend("force", hunk, {
-            old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
-        })
-        local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
-        if not put_index(entry, splice(cached, keep)) then
+        if not put_index(entry, text) then
             return false
         end
         refresh_panel()
         reopen()
         return true
+    end
+
+    -- the index lines u on `!` hunk `idx` takes back when they reach past its own
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel
+    ---@param staging differ.view.Staging
+    ---@param idx integer
+    ---@return string|nil
+    local function drop_scope(entry, model, staging, idx)
+        local _, scope = drop_index(entry, model, staging, idx)
+        return scope
     end
 
     -- u in a whole-file local view: the index takes HEAD's side where it holds what the
@@ -841,6 +900,7 @@ function M.new(ctx)
         frozen = frozen_staging,
         revert_frozen = revert_frozen,
         drop_hidden = drop_hidden,
+        drop_scope = drop_scope,
         whole_drop = whole_drop,
         whole_restore = whole_restore,
         partly_staged = partly_staged,

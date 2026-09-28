@@ -3422,6 +3422,62 @@ func getDownloadSpeed() {
         end
     )
 
+    -- 10-12 staged as ten eleven twelve, then only eleven rewritten on disk
+    it("u on a ! hunk takes back only the lines it rewrote", function()
+        local head = twelve({})
+        local index = twelve({ [10] = "ten", [11] = "eleven", [12] = "twelve" })
+        local root, p, v =
+            staged_as(head, index, twelve({ [10] = "ten", [11] = "ELEVEN", [12] = "twelve" }))
+        v:toggle_local()
+        local win = v.columns[#v.columns].winid
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_cursor(win, { hunk_line(v, 1), 0 })
+        local prompt = confirming(1, function()
+            v:unstage_hunk()
+        end)
+        local written = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(
+            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
+            prompt
+        )
+        assert.are.equal(twelve({ [10] = "ten", [12] = "twelve" }), written)
+    end)
+
+    -- 10-12 staged as two lines, so no index line has one HEAD line of its own to go back to
+    it("u on a ! hunk names the whole staged block it takes back", function()
+        local head = twelve({})
+        local index = lines_of({ "1", "2", "3", "4", "5", "6", "7", "8", "9", "ten", "eleven" })
+        local work = lines_of({ "1", "2", "3", "4", "5", "6", "7", "8", "9", "ten", "ELEVEN" })
+        local root, p, v = staged_as(head, index, work)
+        v:toggle_local()
+        local win = v.columns[#v.columns].winid
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_cursor(win, { hunk_line(v, 1), 0 })
+        local prompt = confirming(1, function()
+            v:unstage_hunk()
+        end)
+        local written = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("Drop the staged lines 10-11 in a.lua? Nothing else holds them.", prompt)
+        assert.are.equal(head, written)
+    end)
+
+    it("doesn't mark an edit to a staged add as ! in the local view", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", twelve({}))
+        git(root, "add", "c.lua")
+        write(root .. "/c.lua", twelve({ [5] = "five" }))
+        vim.cmd.edit(root .. "/c.lua")
+        local p, v = open_panel()
+        v:toggle_local()
+        local marked = v.staging.hidden_in
+        local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
+        p:close()
+        assert.are.same({}, marked or {})
+        assert.are.equal("AM c.lua\n", status)
+    end)
+
     -- 1x staged and then edited to 1y: u gives the index HEAD's line, where s gives 1y
     it("u on a ! hunk takes HEAD's lines, not the worktree's", function()
         local root = staged_then(twelve({ "1y", [12] = "12x" }))

@@ -117,3 +117,25 @@ describe("next_index", function()
         assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
     end)
 end)
+
+describe("model.stage.drop_lines", function()
+    it("takes back only the lines asked for inside a block of the same length", function()
+        local cached = model("1\n2\n3\n4\n5\n", "1\nB\nC\nD\n5\n", {
+            h(2, { "2", "3", "4" }, 2, { "B", "C", "D" }),
+        })
+        assert.are.equal("1\nB\n3\nD\n5\n", stage.drop_lines(cached, 1, 3, 3))
+    end)
+
+    it("keeps every other staged hunk", function()
+        local cached = model("1\n2\n3\n4\n5\n", "X\n2\nC\nD\n5\n", {
+            h(1, { "1" }, 1, { "X" }),
+            h(3, { "3", "4" }, 3, { "C", "D" }),
+        })
+        assert.are.equal("X\n2\n3\nD\n5\n", stage.drop_lines(cached, 2, 3, 3))
+    end)
+
+    it("takes back a block's last line and keeps the file's ending", function()
+        local cached = model("1\n2", "1\nB", { h(2, { "2" }, 2, { "B" }) })
+        assert.are.equal("1\n2", stage.drop_lines(cached, 1, 2, 2))
+    end)
+end)
