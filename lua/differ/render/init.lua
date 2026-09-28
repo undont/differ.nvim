@@ -34,16 +34,25 @@ local RENDERERS = {
     split = "differ.render.split",
 }
 
--- flag the changed line a side ends on without a newline, the line git follows with
--- `\ No newline at end of file`
+-- flag the changed line a side ends on without a newline, where the other side's
+-- ending differs: that's when two lines of the same text make a hunk. a file missing
+-- its newline on both sides has a hunk for its content, and no flag
 ---@param model differ.DiffModel
 ---@param result differ.RenderResult
 local function flag_no_eol(model, result)
     local to_lines = require("differ.util.text").to_lines
+    ---@param text string
+    ---@return boolean
+    local function unterminated(text)
+        return text ~= "" and text:sub(-1) ~= "\n"
+    end
     local last = {} ---@type table<differ.RailKind, integer>
+    if unterminated(model.old_text) == unterminated(model.new_text) then
+        return
+    end
     for _, side in ipairs({ "old", "new" }) do
         local text = model[side .. "_text"]
-        if text ~= "" and text:sub(-1) ~= "\n" then
+        if unterminated(text) then
             last[side] = #to_lines(text)
         end
     end

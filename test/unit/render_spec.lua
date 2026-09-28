@@ -63,4 +63,26 @@ describe("render no_eol", function()
         local r = render.render(context, { layout = "stacked", context = math.huge })
         assert.are.same({}, flagged(r.columns[1]))
     end)
+
+    it("leaves both last lines alone when neither side ends in a newline", function()
+        local both = {
+            path = "x",
+            old_rev = "A",
+            new_rev = "B",
+            old_text = "a\nb",
+            new_text = "a\nB",
+            hunks = {
+                {
+                    old_start = 2,
+                    old_count = 1,
+                    new_start = 2,
+                    new_count = 1,
+                    old_lines = { "b" },
+                    new_lines = { "B" },
+                },
+            },
+        }
+        local r = render.render(both, { layout = "stacked", context = math.huge })
+        assert.are.same({}, flagged(r.columns[1]))
+    end)
 end)
