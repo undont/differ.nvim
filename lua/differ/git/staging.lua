@@ -423,7 +423,14 @@ function M.new(ctx)
             initial = row_state(entry),
             whole_file = true,
             apply = function(_, _, reverse)
-                return set_staged(root, entry, not reverse)
+                if not set_staged(root, entry, not reverse) then
+                    return false
+                end
+                -- the op moves the row's letters, which X and the next s or u act on
+                vim.schedule(function()
+                    retarget_view(false)
+                end)
+                return true
             end,
             unheld = function()
                 return unheld_blob(entry)
