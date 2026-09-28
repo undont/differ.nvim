@@ -1413,6 +1413,10 @@ function M.panel(opts)
                     return true
                 end,
             }
+            if entry.x == "A" and entry.y == "D" then
+                staging.confirm_stage =
+                    "Stage the deletion of %s? Nothing else holds its staged content."
+            end
             staging.revert = function()
                 return staging_ops.whole_restore(entry)
             end

@@ -315,6 +315,13 @@ function M.new(ctx)
             remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true
         end
+        -- the `!` hunks hold staged content neither side shows, and U takes all of it
+        staging.unheld = function(_, idx)
+            if idx then
+                return vim.tbl_contains(staging.hidden_in or {}, idx)
+            end
+            return staging.hidden == true
+        end
         return staging
     end
 
@@ -360,6 +367,33 @@ function M.new(ctx)
         return "unstaged"
     end
 
+    -- whether the index holds a blob for the row that neither HEAD nor the file on disk
+    -- has, so taking it out of the index loses it
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function unheld_blob(entry)
+        local listed = git({ "ls-files", "-s", "--", index_path(entry) }, root) or ""
+        local sha = listed:match("^%d+ (%x+)")
+        if not sha then
+            return false
+        end
+        local head = git(
+            { "rev-parse", "-q", "--verify", "HEAD:" .. (entry.previous_path or entry.path) },
+            root
+        )
+        if head and vim.trim(head) == sha then
+            return false
+        end
+        local abs = root .. "/" .. entry.path
+        if vim.uv.fs_lstat(abs) then
+            local work = git({ "hash-object", "--path=" .. entry.path, abs }, root)
+            if work and vim.trim(work) == sha then
+                return false
+            end
+        end
+        return true
+    end
+
     ---@param entry differ.FileEntry
     ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
@@ -390,6 +424,9 @@ function M.new(ctx)
             whole_file = true,
             apply = function(_, _, reverse)
                 return set_staged(root, entry, not reverse)
+            end,
+            unheld = function()
+                return unheld_blob(entry)
             end,
             refresh = refresh_panel,
         }
@@ -502,6 +539,9 @@ function M.new(ctx)
             initial = "staged",
             whole_file = true,
             refresh = refresh_panel,
+            unheld = function()
+                return unheld_blob(entry)
+            end,
             apply = function(_, _, reverse)
                 if reverse then
                     return set_staged(root, entry, false)
@@ -608,14 +648,15 @@ function M.new(ctx)
             staging = frozen_staging(entry, model, true, function()
                 retarget_view(false)
             end)
-            staging.revert = function(m, idx)
-                local h = m.hunks[idx]
+            -- the file against the index this view opened on: s and u move the index
+            -- since, never the file
+            ---@param m differ.DiffModel
+            ---@return differ.Hunk[]|nil drift, string|nil work
+            local function drift_of(m)
                 local union = gitmod.union_models(root, entry)
                 if not union then
-                    return index_unreadable(entry)
+                    return nil
                 end
-                -- the file against the index this view opened on: s and u move the index
-                -- since, never the file
                 local drift = require("differ.model.diff").build({
                     path = entry.path,
                     old_rev = "INDEX",
@@ -623,10 +664,37 @@ function M.new(ctx)
                     old_text = m.new_text,
                     new_text = union.new_text,
                 }).hunks
+                return drift, union.new_text
+            end
+            -- a staged hunk whose index lines the file doesn't hold goes with u
+            staging.unheld = function(m, idx)
+                local drift, work = drift_of(m)
+                if not (drift and work) then
+                    return false
+                end
+                local state = require("differ.model.marks").state
+                for i, h in ipairs(m.hunks) do
+                    local wanted = idx == nil or i == idx
+                    if
+                        wanted
+                        and state(staging.marks, h) == "staged"
+                        and placed_on(drift, m, h, work)
+                    then
+                        return true
+                    end
+                end
+                return false
+            end
+            staging.revert = function(m, idx)
+                local h = m.hunks[idx]
+                local drift, work = drift_of(m)
+                if not (drift and work) then
+                    return index_unreadable(entry)
+                end
                 local function reopen()
                     retarget_view(false)
                 end
-                local placed = placed_on(drift, m, h, union.new_text)
+                local placed = placed_on(drift, m, h, work)
                 if placed == "put_back" then
                     return revert_frozen(entry, m, staging, idx, 0, reopen, true)
                 end

@@ -94,6 +94,10 @@ local armed_view = nil
 ---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
 ---@field badge? string  -- winbar tag naming a view that isn't the whole change
 ---@field unstage_hidden? fun(idx: integer): boolean  -- u on a `!` hunk: drop the staged change it undoes
+-- `unheld` says u on slot `idx`, or U when it's nil, drops staged content neither HEAD
+-- nor the file holds, so the key confirms first
+---@field unheld? fun(model: differ.DiffModel, idx: integer|nil): boolean
+---@field confirm_stage? string  -- s and S ask this first, `%s` the path: they drop content too
 -- `set_all` runs S / U on the whole file at once, and says whether the index moved
 ---@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean
 
@@ -1284,10 +1288,20 @@ function View:stage_hunk()
     end
     local idx = self:_target_index()
     if idx and self:_hunk_state(idx) ~= "staged" then
+        if not self:_stage_confirmed() then
+            return
+        end
         self:_toggle_hunk(true)
     else
         self:_step_review("next")
     end
+end
+
+-- whether s / S may go ahead where staging drops content too
+---@return boolean
+function View:_stage_confirmed()
+    local prompt = self.staging and self.staging.confirm_stage
+    return not prompt or self:_confirmed(prompt:format(self.model.path))
 end
 
 -- u: the mirror of s. unstage the staged hunk under the cursor, or retreat to the
@@ -1298,6 +1312,9 @@ function View:unstage_hunk()
     end
     local idx = self:_target_index()
     if idx and self:_hunk_state(idx) ~= "unstaged" then
+        if self:_drops_unheld(idx) and not self:_confirmed(self:_drop_prompt(idx)) then
+            return
+        end
         self:_toggle_hunk(false)
     elseif idx and self:_drops_hidden(idx) then
         self:_drop_hidden(idx)
@@ -1306,29 +1323,53 @@ function View:unstage_hunk()
     end
 end
 
--- u on a `!` hunk drops staged content no other side holds, so it confirms like X does.
--- the prompt drains scheduled callbacks, so the model is checked again after it
----@param idx integer
-function View:_drop_hidden(idx)
-    local prompt = ("Drop the staged change under hunk %d/%d in %s? Nothing else holds it."):format(
-        idx,
-        #self.model.hunks,
-        self.model.path
-    )
-    if self:_whole_file() then
-        prompt = ("Drop the staged change to %s? Nothing else holds it."):format(self.model.path)
-    end
+-- ask `prompt` before an op that drops content, and whether to go ahead. the prompt
+-- drains scheduled callbacks, so the model is checked again after it
+---@param prompt string
+---@return boolean
+function View:_confirmed(prompt)
     local asked_on = self.model
     if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
-        return
+        return false
     end
     if self.model ~= asked_on then
-        return vim.notify(
+        vim.notify(
             "differ: the diff changed while the prompt was up; nothing was dropped",
             vim.log.levels.WARN
         )
+        return false
     end
-    self.staging.unstage_hidden(idx)
+    return true
+end
+
+-- the confirm for dropping the staged change in slot `idx`, or in the whole file
+---@param idx integer|nil
+---@return string
+function View:_drop_prompt(idx)
+    if idx and not self:_whole_file() then
+        return ("Drop the staged change under hunk %d/%d in %s? Nothing else holds it."):format(
+            idx,
+            #self.model.hunks,
+            self.model.path
+        )
+    end
+    return ("Drop the staged change to %s? Nothing else holds it."):format(self.model.path)
+end
+
+-- u on a `!` hunk drops staged content no other side holds, so it confirms like X does
+---@param idx integer
+function View:_drop_hidden(idx)
+    if self:_confirmed(self:_drop_prompt(idx)) then
+        self.staging.unstage_hidden(idx)
+    end
+end
+
+-- whether u on slot `idx`, or U when it's nil, needs a confirm before it runs
+---@param idx integer|nil
+---@return boolean
+function View:_drops_unheld(idx)
+    local unheld = self.staging and self.staging.unheld
+    return unheld ~= nil and unheld(self.model, idx)
 end
 
 -- whether u on unmarked hunk `idx` drops staged content the whole change can't show
@@ -1530,6 +1571,9 @@ end
 -- advancing past the last hunk, minus its in-file wrap: S leaves no hunk behind to come
 -- back for
 function View:stage_all()
+    if self:_can_stage_hunk() and not self:_review_done(false) and not self:_stage_confirmed() then
+        return
+    end
     if not self:_toggle_all(true) and self:_can_stage_hunk() then
         if not self:_step_review_file("next", false) then
             self:_walk_done(false)
@@ -1540,6 +1584,12 @@ end
 -- U: unstage every hunk, or, when none are staged (nothing to do), step back to the
 -- previous file with something staged, landing on its last staged hunk
 function View:unstage_all()
+    if self:_can_stage_hunk() and self:_drops_unheld(nil) then
+        local prompt = "Unstage all of %s? Staged content nothing else holds goes with it."
+        if not self:_confirmed(prompt:format(self.model.path)) then
+            return
+        end
+    end
     if not self:_toggle_all(false) and self:_can_stage_hunk() then
         if self:_step_review_file("prev", true) then
             self:_focus_last_hunk() -- only when a previous file actually opened

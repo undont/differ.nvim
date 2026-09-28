@@ -2296,12 +2296,86 @@ func getDownloadSpeed() {
 
     it("U gives the index HEAD's text where hunk by hunk can't", function()
         local root, p, v = staged_as(JOINED.head, JOINED.index, JOINED.work)
-        v:unstage_all()
+        local prompt = confirming(1, function()
+            v:unstage_all()
+        end)
         local written, hidden = indexed(root, "a.lua"), v.staging.hidden
         p:close()
+        assert.are.equal(
+            "Unstage all of a.lua? Staged content nothing else holds goes with it.",
+            prompt
+        )
         assert.are.equal(JOINED.head, written)
         assert.is_nil(hidden)
     end)
+
+    -- 2x staged and then edited again to 2y: the index's 2x is on neither side
+    it(
+        "u on a ! hunk in the whole change asks before dropping what only the index holds",
+        function()
+            local head, index = lines_of({ "1", "2", "3" }), lines_of({ "1", "2x", "3" })
+            local root, p, v = staged_as(head, index, lines_of({ "1", "2y", "3" }))
+            local win = v.columns[#v.columns].winid
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_win_set_cursor(win, { hunk_line(v, 1), 0 })
+            local prompt = confirming(2, function()
+                v:unstage_hunk()
+            end)
+            local kept = indexed(root, "a.lua")
+            confirming(1, function()
+                v:unstage_hunk()
+            end)
+            local dropped = indexed(root, "a.lua")
+            p:close()
+            assert.are.equal(
+                "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
+                prompt
+            )
+            assert.are.equal(index, kept)
+            assert.are.equal(head, dropped)
+        end
+    )
+
+    it("u on a staged edit whose file was deleted asks before dropping it", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "edited\n")
+        git(root, "add", "a.lua")
+        os.remove(root .. "/a.lua")
+        write(root .. "/b.lua", "b\n")
+        vim.cmd.edit(root .. "/b.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("a.lua", true))
+        local prompt = confirming(1, function()
+            view_in_origin(p):unstage_hunk()
+        end)
+        local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
+        p:close()
+        assert.are.equal("Drop the staged change to a.lua? Nothing else holds it.", prompt)
+        assert.are.equal(" D a.lua\n", status)
+    end)
+
+    it(
+        "u on a binary file staged and changed again asks before dropping the staged blob",
+        function()
+            local root = fresh_repo()
+            write(root .. "/b.dat", "\0one")
+            git(root, "add", "b.dat")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/b.dat", "\0two")
+            git(root, "add", "b.dat")
+            write(root .. "/b.dat", "\0three")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            assert.is_true(p:goto_path("b.dat", true))
+            local prompt = confirming(2, function()
+                view_in_origin(p):unstage_hunk()
+            end)
+            local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
+            p:close()
+            assert.are.equal("Drop the staged change to b.dat? Nothing else holds it.", prompt)
+            assert.are.equal("MM b.dat\n", status)
+        end
+    )
 
     it("S gives the index the worktree's text where hunk by hunk can't", function()
         local root, p, v = staged_as(JOINED.head, JOINED.index, JOINED.work)
@@ -2345,7 +2419,9 @@ func getDownloadSpeed() {
 
     it("U takes HEAD's mode", function()
         local root, p, v = with_staged_mode(true)
-        v:unstage_all()
+        confirming(1, function()
+            v:unstage_all()
+        end)
         local mode = index_mode(root)
         p:close()
         assert.are.equal("100644", mode)
@@ -2363,7 +2439,9 @@ func getDownloadSpeed() {
         ten[5], ten[1] = "5", "1x"
         local root, p, v = staged_as(head, index, lines_of(ten))
         local hidden_before = v.staging.hidden
-        v:unstage_all()
+        confirming(1, function()
+            v:unstage_all()
+        end)
         local written, hidden = indexed(root, "a.lua"), v.staging.hidden
         p:close()
         assert.is_not_nil(hidden_before)
@@ -2948,7 +3026,9 @@ func getDownloadSpeed() {
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-        v:unstage_hunk()
+        local prompt = confirming(1, function()
+            v:unstage_hunk()
+        end)
         local index = indexed(root, "a.lua")
         if Panel.current() then
             p:close() -- unstaging the last staged change empties the list
@@ -2958,6 +3038,10 @@ func getDownloadSpeed() {
         assert.is_nil(notice)
         assert.are.equal("INDEX", badge)
         assert.are.equal("staged", state)
+        assert.are.equal(
+            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
+            prompt
+        )
         assert.are.equal(committed(root, "a.lua"), index)
     end)
 
@@ -3716,7 +3800,9 @@ func getDownloadSpeed() {
         toggle_preview(p)
         assert.is_true(p:goto_path("c.lua", true))
         local v = view_in_origin(p)
-        v:unstage_hunk()
+        confirming(1, function()
+            v:unstage_hunk()
+        end)
         local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
         v:stage_hunk()
         local back = indexed(root, "c.lua")
@@ -3834,12 +3920,15 @@ func getDownloadSpeed() {
         local v = view_in_origin(p)
         local revs, hunks, badge =
             { v.model.old_rev, v.model.new_rev }, #v.model.hunks, v.staging.badge
-        v:unstage_hunk()
+        local prompt = confirming(1, function()
+            v:unstage_hunk()
+        end)
         local status = git(root, "status", "--porcelain=v1")
         p:close()
         assert.are.same({ "HEAD", "INDEX" }, revs)
         assert.are.equal(1, hunks)
         assert.are.equal("INDEX", badge)
+        assert.are.equal("Drop the staged change to c.lua? Nothing else holds it.", prompt)
         assert.are.equal("", status)
     end)
 
@@ -5815,9 +5904,15 @@ func getDownloadSpeed() {
         local v = view_in_origin(p)
         v:toggle_local()
         local badge, hunks = v.staging.badge, #v.model.hunks
-        v:stage_hunk()
+        local prompt = confirming(1, function()
+            v:stage_hunk()
+        end)
         local status = git(root, "status", "--porcelain=v1")
         p:close()
+        assert.are.equal(
+            "Stage the deletion of c.lua? Nothing else holds its staged content.",
+            prompt
+        )
         assert.are.equal("LOCAL", badge)
         assert.are.equal(1, hunks) -- the index's lines, all going
         assert.are.equal("", status)
