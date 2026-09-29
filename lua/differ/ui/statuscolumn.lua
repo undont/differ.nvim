@@ -4,12 +4,20 @@
 local M = {}
 
 local STAGED_GLYPH = "▌"
+local HIDDEN_GLYPH = "!"
+local NO_EOL_GLYPH = "¬"
 
 ---@type table<integer, string[]> -- bufnr -> pre-formatted rail string per lnum
 local rails = {}
 
 ---@type table<integer, table<integer, boolean>> -- bufnr -> set of staged lnums
 local staged = {}
+
+---@type table<integer, table<integer, boolean>> -- bufnr -> lnums opening a hunk marked `!`
+local hidden = {}
+
+---@type table<integer, table<integer, boolean>> -- bufnr -> lnums ending a side with no newline
+local no_eol = {}
 
 -- pre-format the gutter string for every line of a column from its map. pure, so
 -- the statuscolumn callback only does an O(1) index per redraw. a unified
@@ -64,15 +72,41 @@ function M.set_staged(bufnr, lines)
     staged[bufnr] = lines
 end
 
+-- register the lines that open a hunk marked `!`; they take the staged cell's place
+---@param bufnr integer
+---@param lines table<integer, boolean>|nil
+function M.set_hidden(bufnr, lines)
+    hidden[bufnr] = lines
+end
+
+-- register the lines that end their side without a newline after them, from the map
+-- the column was rendered from. nil where none do, so the cell costs nothing
+---@param bufnr integer
+---@param map differ.LineMap
+function M.set_no_eol(bufnr, map)
+    local lines
+    for i, l in ipairs(map.lines) do
+        if l.no_eol then
+            lines = lines or {}
+            lines[i] = true
+        end
+    end
+    no_eol[bufnr] = lines
+end
+
 -- drop a buffer's cached rail strings
 ---@param bufnr integer
 function M.clear(bufnr)
     rails[bufnr] = nil
     staged[bufnr] = nil
+    hidden[bufnr] = nil
+    no_eol[bufnr] = nil
 end
 
--- statuscolumn callback: return the rail string for the current line, prefixed by
--- the staged-gutter cell when this is a staging-capable view
+-- statuscolumn callback: return the rail string for the current line, prefixed by the
+-- sign cell where the view has one. a line can carry only one sign: `!` names staged
+-- content the diff can't show, `¬` a line its side ends on without a newline, and `▌`
+-- a line the index holds, which the line's own shading says as well
 ---@return string
 function M.render()
     -- virtual lines (our thread overlay's virt_lines) reuse the anchor's lnum; without
@@ -86,11 +120,19 @@ function M.render()
         return ""
     end
     local s = cache[vim.v.lnum] or ""
-    local sset = buf and staged[buf]
-    if sset then
-        return (sset[vim.v.lnum] and ("%#differStagedSign#" .. STAGED_GLYPH .. "%*") or " ") .. s
+    local sset, eset = buf and staged[buf], buf and no_eol[buf]
+    if not (sset or eset) then
+        return s
     end
-    return s
+    local hset = hidden[buf]
+    if hset and hset[vim.v.lnum] then
+        return "%#differHiddenSign#" .. HIDDEN_GLYPH .. "%*" .. s
+    end
+    if eset and eset[vim.v.lnum] then
+        return "%#differNoEol#" .. NO_EOL_GLYPH .. "%*" .. s
+    end
+    return (sset and sset[vim.v.lnum] and ("%#differStagedSign#" .. STAGED_GLYPH .. "%*") or " ")
+        .. s
 end
 
 return M

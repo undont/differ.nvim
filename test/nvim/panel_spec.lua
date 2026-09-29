@@ -164,7 +164,19 @@ describe("panel navigation", function()
 
     it("focus_first_unstaged lands on the first unstaged file, skipping Staged", function()
         local function se(path, staged)
-            return { path = path, status = "M", additions = 1, deletions = 0, staged = staged }
+            local x, y, review = "M", " ", "staged"
+            if not staged then
+                x, y, review = " ", "M", "unstaged"
+            end
+            return {
+                path = path,
+                status = "M",
+                additions = 1,
+                deletions = 0,
+                x = x,
+                y = y,
+                review = review,
+            }
         end
         local p, picked = panel({}, {
             sections = {
@@ -181,7 +193,15 @@ describe("panel navigation", function()
 
     it("focus_first_unstaged falls back to the first file when all are staged", function()
         local function se(path)
-            return { path = path, status = "M", additions = 1, deletions = 0, staged = true }
+            return {
+                path = path,
+                status = "M",
+                additions = 1,
+                deletions = 0,
+                x = "M",
+                y = " ",
+                review = "staged",
+            }
         end
         local p, picked = panel({}, {
             sections = { { title = "Staged", entries = { se("a.lua"), se("b.lua") } } },
@@ -505,6 +525,29 @@ describe("panel selection identity", function()
         }
     end
 
+    -- a refused file op moved nothing, so the list mustn't reload or the hook fire: the
+    -- commit preview refuses s this way
+    it("does nothing after a file op the action refused", function()
+        local staged, reloaded
+        local actions = acts(function()
+            reloaded = true
+        end)
+        actions.stage = function()
+            return false
+        end
+        local p = panel({ fe("a.lua") }, {
+            actions = actions,
+            on_staged = function(paths)
+                staged = paths
+            end,
+        })
+        p:open()
+        p:stage_op("stage")
+        p:close()
+        assert.is_nil(staged)
+        assert.is_nil(reloaded)
+    end)
+
     -- name mode reorders the list (b.lua rises above a.lua as the tree dir collapses
     -- away), so restoring the cursor by line number lands it on the other file
     it("holds the cursor on its file across a listing toggle", function()
@@ -626,6 +669,31 @@ describe("panel selection identity", function()
         assert.is_true(p:step_review("next", false, true))
         assert.are.same({ "a.lua", "z.lua" }, opened) -- m.lua stepped over, not landed on
         p:close()
+    end)
+
+    -- the walk follows the list order the open file opened on. a row that isn't in it
+    -- has nowhere in it to have come round from, so nothing it reaches is a wrap
+    it("claims no wrap stepping back from a row the remembered order doesn't hold", function()
+        vim.cmd("silent! only")
+        local function staged_row(path)
+            return { path = path, status = "M", additions = 1, deletions = 0, review = "staged" }
+        end
+        local p = Panel.new({
+            sections = {
+                { title = "Staged", entries = { staged_row("a.lua"), staged_row("z.lua") } },
+            },
+            on_select = function()
+                return true
+            end,
+        })
+        p:open()
+        p:goto_path("z.lua")
+        p.walk_order = { "gone.lua" } -- the order was taken before this row was listed
+        local before = #_G.notifs
+        assert.is_true(p:step_review("prev", true, true))
+        local said = #_G.notifs > before and _G.notifs[#_G.notifs].msg or ""
+        p:close()
+        assert.is_nil(said:find("wrapped", 1, true))
     end)
 
     it("step_review reports the walk over when every candidate is stale", function()

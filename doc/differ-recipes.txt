@@ -137,6 +137,13 @@ STAGING                              *differ-recipes-highlight-groups-staging*
                                       kind (links CursorLine)
 
   differStagedSign                    the staged-hunk gutter glyph
+
+  differHiddenSign                    the ! gutter glyph on a hunk
+                                      holding staged content the diff
+                                      can’t show
+
+  differNoEol                         the ¬ gutter glyph on a line its
+                                      side ends on with no newline
   -----------------------------------------------------------------------
 
 FILE PANEL                        *differ-recipes-highlight-groups-file-panel*
