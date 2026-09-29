@@ -912,12 +912,7 @@ function M.new(ctx)
     ---@param model differ.DiffModel  -- index↔worktree
     ---@return (fun(): boolean)|nil
     local function whole_drop(entry, model)
-        if entry.x == "A" then
-            return function()
-                return git_ok({ "rm", "-q", "--cached", "--", entry.path }, root, "unstage")
-            end
-        end
-        if model.binary then
+        if entry.x == "A" or model.binary then
             return function()
                 return index_ops.unstage(root, entry.path)
             end
