@@ -176,7 +176,8 @@ function M.new(ctx)
                 staging.hidden = nil
                 if mode_change then
                     staging.hidden = true
-                elseif #hidden_in > 0 then
+                end
+                if #hidden_in > 0 then
                     staging.hidden = true
                     staging.hidden_in = hidden_in
                 end
@@ -185,11 +186,11 @@ function M.new(ctx)
             local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
             staging.marks.old, staging.marks.new = fresh.old, fresh.new
             local complete = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
+            staging.hidden = nil
             if mode_change then
                 staging.hidden = true
-            elseif complete then
-                staging.hidden = nil
-            else
+            end
+            if not complete then
                 staging.hidden = true
                 local head = require("differ.util.text").to_lines(union.old_text)
                 staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)

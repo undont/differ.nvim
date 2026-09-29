@@ -2415,6 +2415,36 @@ func getDownloadSpeed() {
         end
     )
 
+    -- 2x staged with +x, then -x and 2y on disk: the mode change doesn't hide 2x from u
+    it("u on a ! hunk asks too when the index also holds a mode change", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", lines_of({ "1", "2", "3" }))
+        git(root, "commit", "-q", "-am", "head")
+        local index = lines_of({ "1", "2x", "3" })
+        write(root .. "/a.lua", index)
+        vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+        git(root, "add", "a.lua")
+        vim.fn.setfperm(root .. "/a.lua", "rw-r--r--")
+        write(root .. "/a.lua", lines_of({ "1", "2y", "3" }))
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local win = v.columns[#v.columns].winid
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_cursor(win, { hunk_line(v, 1), 0 })
+        local prompt = confirming(2, function()
+            v:unstage_hunk()
+        end)
+        local kept = indexed(root, "a.lua")
+        local mode = git(root, "ls-files", "-s", "--", "a.lua"):match("^(%d+)")
+        p:close()
+        assert.are.equal(
+            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
+            prompt
+        )
+        assert.are.equal(index, kept)
+        assert.are.equal("100755", mode)
+    end)
+
     it("u on a staged edit whose file was deleted asks before dropping it", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "edited\n")
