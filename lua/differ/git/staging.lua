@@ -424,6 +424,18 @@ function M.new(ctx)
         return true
     end
 
+    -- whether the row stages by hunk once its diff has any. git records no rename, only
+    -- the old path gone from the index and the new one present, so a hunk stages an
+    -- ordinary blob and the move rides along untouched. the move is whole-file and
+    -- belongs to the panel row's keys
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function by_line(entry)
+        local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
+        local added = entry.status == "A" and entry.x == "A"
+        return (content or added) and entry.x ~= "D" and entry.y ~= "T"
+    end
+
     ---@param entry differ.FileEntry
     ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
@@ -431,14 +443,9 @@ function M.new(ctx)
         if not stageable then
             return nil
         end
-        -- git records no rename, only the old path gone from the index and the new one
-        -- present, so a hunk stages an ordinary blob and the move rides along untouched.
-        -- the move is whole-file and belongs to the panel row's keys
-        local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
-        local added = entry.status == "A" and entry.x == "A"
-        if (content or added) and entry.x ~= "D" and entry.y ~= "T" and #diff.hunks > 0 then
+        if by_line(entry) and #diff.hunks > 0 then
             local staging = union_staging(entry)
-            if added then
+            if entry.x == "A" then
                 -- throwing away an add is deleting the file, not reverting a hunk of it
                 staging.revert, staging.revert_label, staging.no_revert =
                     whole_file_revert(entry, "A", false)
@@ -479,7 +486,7 @@ function M.new(ctx)
                 staging.no_revert = why:format(entry.path)
             end
         end
-        if content then
+        if entry.status == "M" or entry.status == "R" or entry.status == "C" then
             if entry.status == "R" or entry.status == "C" then
                 staging.no_revert = "X on the panel row undoes the move"
             end
@@ -493,6 +500,21 @@ function M.new(ctx)
             return staging
         end
         return nil
+    end
+
+    -- whether unstaging the whole row loses staged content nothing else holds: what U
+    -- in the row's diff view confirms on
+    ---@param entry differ.FileEntry
+    ---@param work_model fun(): differ.DiffModel  -- HEAD↔worktree, built only when read
+    ---@return boolean
+    local function unstage_drops(entry, work_model)
+        if entry.x == " " or entry.x == "?" then
+            return false
+        end
+        if by_line(entry) and #work_model().hunks > 0 then
+            return union_staging(entry).hidden == true
+        end
+        return unheld_blob(entry)
     end
 
     -- a row with a staged change and more on top of it: the one kind with a local view.
@@ -951,6 +973,7 @@ function M.new(ctx)
         whole_drop = whole_drop,
         whole_restore = whole_restore,
         partly_staged = partly_staged,
+        unstage_drops = unstage_drops,
     }
 end
 

@@ -1263,6 +1263,142 @@ describe(":Differ panel staging (slice C)", function()
         p:close()
     end)
 
+    -- run `fn` with vim.fn.confirm answering `choice`, returning every prompt shown
+    local function prompts_of(choice, fn)
+        local orig, shown = vim.fn.confirm, {}
+        vim.fn.confirm = function(msg)
+            shown[#shown + 1] = msg
+            return choice
+        end
+        local ok, err = pcall(fn)
+        vim.fn.confirm = orig
+        assert(ok, err)
+        return shown
+    end
+
+    it("u on a row whose staged blob is held nowhere else asks first", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua")
+        os.remove(root .. "/a.lua") -- MD: the index alone holds the edit
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local staged = git(root, "rev-parse", ":a.lua")
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("unstage")
+        end)
+        assert.are.equal(1, #shown)
+        assert.matches("Unstage a.lua%?", shown[1])
+        assert.are.equal(staged, git(root, "rev-parse", ":a.lua")) -- declined: kept
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        prompts_of(1, function()
+            p:stage_op("unstage")
+        end)
+        assert.are.equal(" D a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        p:close()
+    end)
+
+    it("u on a partly staged row asks only when the file lost staged lines", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "local x = 2\nreturn x\nprint(x)\n") -- keeps the staged line
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("unstage")
+            end)
+        )
+        assert.are.equal(" M a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "local x = 3\nreturn x\n") -- overwrites the staged line
+        p:refresh()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("unstage")
+        end)
+        assert.are.equal(1, #shown)
+        assert.are.equal("MM a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        p:close()
+    end)
+
+    it("u on a directory asks once, naming only the files that lose content", function()
+        local root = fresh_repo()
+        vim.fn.mkdir(root .. "/src", "p")
+        write(root .. "/src/gone.lua", "g\n")
+        write(root .. "/src/kept.lua", "k\n")
+        git(root, "add", "src")
+        git(root, "commit", "-q", "-m", "src")
+        write(root .. "/src/gone.lua", "g2\n")
+        write(root .. "/src/kept.lua", "k2\n")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "-A")
+        os.remove(root .. "/src/gone.lua") -- MD
+        write(root .. "/src/kept.lua", "k2\nmore\n") -- MM, staged line still on disk
+        write(root .. "/a.lua", "local x = 2\nreturn x\nmore\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local before = git(root, "ls-files", "-s")
+
+        vim.api.nvim_win_set_cursor(p.winid, { assert(dir_line(p, "src")), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("unstage")
+        end)
+        assert.are.equal(1, #shown)
+        assert.matches("Unstage src/%? 1 file holds", shown[1])
+        assert.matches("src/gone.lua", shown[1], 1, true)
+        assert.is_nil(shown[1]:find("kept", 1, true))
+        assert.are.equal(before, git(root, "ls-files", "-s")) -- declined: nothing moved
+
+        vim.api.nvim_win_set_cursor(p.winid, { assert(dir_line(p, "src")), 0 })
+        prompts_of(1, function()
+            p:stage_op("unstage")
+        end)
+        local status = git(root, "status", "--porcelain=v1")
+        assert.matches(" D src/gone.lua", status, 1, true)
+        assert.matches(" M src/kept.lua", status, 1, true)
+        assert.matches("MM a.lua", status, 1, true) -- outside the directory: untouched
+        p:close()
+    end)
+
+    it("U asks once before dropping staged content nothing else holds", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "-A")
+        os.remove(root .. "/a.lua")
+        vim.cmd.edit(root .. "/b.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local before = git(root, "ls-files", "-s")
+
+        local shown = prompts_of(2, function()
+            p:stage_op("unstage_all")
+        end)
+        assert.are.equal(1, #shown)
+        assert.matches("Unstage all%? 1 file holds", shown[1])
+        assert.are.equal(before, git(root, "ls-files", "-s"))
+
+        prompts_of(1, function()
+            p:stage_op("unstage_all")
+        end)
+        local status = git(root, "status", "--porcelain=v1")
+        assert.matches(" D a.lua", status, 1, true)
+        assert.matches("?? b.lua", status, 1, true)
+        p:close()
+    end)
+
     it("discards a tracked file back to HEAD (after confirm)", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")

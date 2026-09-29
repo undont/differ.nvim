@@ -63,6 +63,7 @@ local STATUS_HL = {
 ---@class differ.panel.Actions
 ---@field stage fun(entry: differ.FileEntry): boolean|nil  -- false: refused, nothing moved
 ---@field unstage fun(entry: differ.FileEntry)
+---@field unstage_drops? fun(entry: differ.FileEntry): boolean  -- unstaging loses content nothing else holds
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
@@ -780,12 +781,18 @@ function Panel:stage_op(op)
     end
     local paths ---@type table<string, boolean>|nil -- nil: the op moved every file
     if op == "stage_all" or op == "unstage_all" then
+        if op == "unstage_all" and not self:_unstage_confirmed(self:_all_entries(), "all") then
+            return
+        end
         if self.actions[op]() == false then
             return
         end
     else
-        local entries = self:_op_targets()
+        local entries, label = self:_op_targets()
         if #entries == 0 then
+            return
+        end
+        if op == "unstage" and not self:_unstage_confirmed(entries, label) then
             return
         end
         paths = {}
@@ -799,6 +806,52 @@ function Panel:stage_op(op)
         end
     end
     self:_after_stage_op(paths)
+end
+
+---@return differ.FileEntry[]
+function Panel:_all_entries()
+    local entries = {}
+    for _, sec in ipairs(self.sections) do
+        vim.list_extend(entries, sec.entries)
+    end
+    return entries
+end
+
+-- u or U on `entries`: asks first when any of them holds staged content nothing else
+-- has. `label` names the target, as X's confirm does
+---@param entries differ.FileEntry[]
+---@param label string|nil
+---@return boolean
+function Panel:_unstage_confirmed(entries, label)
+    local drops = self.actions.unstage_drops
+    if not drops then
+        return true
+    end
+    local lost = {} ---@type string[]
+    for _, e in ipairs(entries) do
+        if drops(e) then
+            lost[#lost + 1] = e.path
+        end
+    end
+    if #lost == 0 then
+        return true
+    end
+    local prompt
+    if #entries == 1 then
+        prompt = ("Unstage %s? Staged content nothing else holds goes with it."):format(lost[1])
+    else
+        local names = table.concat(vim.list_slice(lost, 1, 3), ", ")
+        if #lost > 3 then
+            names = ("%s, +%d more"):format(names, #lost - 3)
+        end
+        local files = #lost == 1 and "1 file holds" or ("%d files hold"):format(#lost)
+        prompt = ("Unstage %s? %s staged content nothing else holds (%s)."):format(
+            label,
+            files,
+            names
+        )
+    end
+    return vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
 end
 
 -- reload the list after one of the panel's own staging ops, then let the session

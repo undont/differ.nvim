@@ -1171,6 +1171,7 @@ function M.panel(opts)
     local preview = false -- ds: the panel lists only what a commit would take
     local sections, model_for, raw_args_for, actions
     local list_err ---@type string|nil -- git's own words when the listing failed
+    local staging_ops ---@type table -- assigned below; the hooks read it at call time
     if is_worktree_status(source) then
         sections, list_err = M.status_sections(root)
         model_for = function(entry)
@@ -1198,6 +1199,11 @@ function M.panel(opts)
             end,
             unstage = function(entry)
                 set_staged(root, entry, false)
+            end,
+            unstage_drops = function(entry)
+                return staging_ops.unstage_drops(entry, function()
+                    return M.model({ old = HEAD, new = WORKTREE }, root, entry)
+                end)
             end,
             stage_all = function()
                 if preview then
@@ -1249,7 +1255,6 @@ function M.panel(opts)
     local watcher ---@type differ.git.Watcher|nil -- fs watcher, set for worktree panels
     local retarget_view ---@type fun(outside: boolean): boolean -- assigned below
     local set_preview ---@type fun(on: boolean) -- assigned below
-    local staging_ops ---@type table -- assigned below; the review hooks read it at call time
 
     -- hunk-level staging. content edits stage by hunk; anything with no lines to stage
     -- sets `whole_file`. `apply` stages one hunk, or unstages it with `reverse`
