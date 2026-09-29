@@ -439,7 +439,7 @@ function M.new(ctx)
     ---@param entry differ.FileEntry
     ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
     ---@return differ.view.Staging|nil
-    local function stage_for(entry, diff)
+    local function for_whole(entry, diff)
         if not stageable then
             return nil
         end
@@ -723,7 +723,7 @@ function M.new(ctx)
     ---@param model differ.DiffModel  -- HEAD↔index
     ---@param preview boolean  -- the row comes from the commit preview's listing
     ---@return differ.view.Staging
-    local function staged_staging(entry, model, preview)
+    local function for_index(entry, model, preview)
         local staging
         if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
             staging = frozen_staging(entry, model, true, function()
@@ -833,8 +833,8 @@ function M.new(ctx)
     ---@param entry differ.FileEntry
     ---@param model differ.DiffModel  -- HEAD↔index
     ---@return differ.view.Staging
-    local function preview_staging(entry, model)
-        local staging = staged_staging(entry, model, true)
+    local function for_preview(entry, model)
+        local staging = for_index(entry, model, true)
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: ds goes back"
         staging.leave = function()
@@ -980,16 +980,96 @@ function M.new(ctx)
         return true
     end
 
+    -- the local view's staging, index↔worktree
+    ---@param entry differ.FileEntry
+    ---@param model differ.DiffModel  -- index↔worktree
+    ---@param reopen fun()
+    ---@return differ.view.Staging
+    local function for_local(entry, model, reopen)
+        if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
+            local staging = frozen_staging(entry, model, false, reopen)
+            local _, cached = gitmod.union_models(root, entry)
+            -- an add has no HEAD lines for a rewritten line to go back to
+            if cached and entry.x ~= "A" then
+                staging.hidden_in =
+                    require("differ.model.marks").restaged(model.hunks, cached.hunks)
+            end
+            staging.unstage_hidden = function(idx)
+                return drop_hidden(entry, model, staging, idx, reopen)
+            end
+            staging.drop_scope = function(idx)
+                return drop_scope(entry, model, staging, idx)
+            end
+            staging.revert = function(m, idx)
+                return revert_frozen(entry, m, staging, idx, 0, reopen)
+            end
+            -- staging the last hunk empties "changes since staging", so there's nothing
+            -- left for this view to show and it hands back to the whole change
+            local stage_hunk = staging.apply
+            staging.apply = function(m, hunk, reverse)
+                if not (stage_hunk and stage_hunk(m, hunk, reverse)) then
+                    return false
+                end
+                local state = require("differ.model.marks").state
+                for _, h in ipairs(model.hunks) do
+                    if state(staging.marks, h) ~= "staged" then
+                        return true
+                    end
+                end
+                vim.schedule(function()
+                    retarget_view(false)
+                end)
+                return true
+            end
+            return staging
+        end
+        -- s stages the file whole: what's left has no lines to take, or is the file's
+        -- deletion, which a hunk would stage as an empty file. that leaves this view
+        -- nothing to show. u has no reverse here: unstaging the row would take its
+        -- staged content with it
+        ---@type differ.view.Staging
+        local staging = {
+            initial = "unstaged",
+            whole_file = true,
+            refresh = refresh_panel,
+            apply = function(_, _, reverse)
+                if reverse or not set_staged(root, entry, true) then
+                    return false
+                end
+                vim.schedule(function()
+                    retarget_view(false)
+                end)
+                return true
+            end,
+        }
+        if entry.x == "A" and entry.y == "D" then
+            staging.confirm_stage =
+                "Stage the deletion of %s? Nothing else holds its staged content."
+        end
+        staging.revert = function()
+            return whole_restore(entry)
+        end
+        staging.revert_label = "puts it back as the index has it"
+        local drop = whole_drop(entry, model)
+        if drop then
+            staging.hidden_in = { 1 }
+            staging.unstage_hidden = function()
+                if not drop() then
+                    return false
+                end
+                refresh_panel()
+                retarget_view(false)
+                return true
+            end
+        end
+        return staging
+    end
+
     return {
-        for_entry = stage_for,
-        preview = preview_staging,
-        staged_only = staged_staging,
-        frozen = frozen_staging,
-        revert_frozen = revert_frozen,
-        drop_hidden = drop_hidden,
-        drop_scope = drop_scope,
-        whole_drop = whole_drop,
-        whole_restore = whole_restore,
+        for_whole = for_whole,
+        for_local = for_local,
+        for_preview = for_preview,
+        for_index = for_index,
         partly_staged = partly_staged,
         unstage_drops = unstage_drops,
     }

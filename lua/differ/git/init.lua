@@ -1400,91 +1400,12 @@ function M.panel(opts)
         end
         local file = { path = entry.path, status = entry.status, previous_path = prev }
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
-        local staging ---@type differ.view.Staging
-        if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
-            staging = staging_ops.frozen(entry, model, false, function()
-                show_local(entry)
-            end)
-            local _, cached = M.union_models(root, entry)
-            -- an add has no HEAD lines for a rewritten line to go back to
-            if cached and entry.x ~= "A" then
-                staging.hidden_in =
-                    require("differ.model.marks").restaged(model.hunks, cached.hunks)
-            end
-            staging.unstage_hidden = function(idx)
-                return staging_ops.drop_hidden(entry, model, staging, idx, function()
-                    show_local(entry)
-                end)
-            end
-            staging.drop_scope = function(idx)
-                return staging_ops.drop_scope(entry, model, staging, idx)
-            end
-            staging.revert = function(m, idx)
-                return staging_ops.revert_frozen(entry, m, staging, idx, 0, function()
-                    show_local(entry)
-                end)
-            end
-            -- staging the last hunk empties "changes since staging", so there's nothing
-            -- left for this view to show and it hands back to the whole change
-            local stage_hunk = staging.apply
-            staging.apply = function(m, hunk, reverse)
-                if not (stage_hunk and stage_hunk(m, hunk, reverse)) then
-                    return false
-                end
-                local state = require("differ.model.marks").state
-                for _, h in ipairs(model.hunks) do
-                    if state(staging.marks, h) ~= "staged" then
-                        return true
-                    end
-                end
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
-                return true
-            end
-        else
-            if #model.hunks == 0 and not model.binary then
-                model.notice = empty_notice(root, entry, model, {}) or "No local content change"
-            end
-            -- s stages the file whole: what's left has no lines to take, or is the file's
-            -- deletion, which a hunk would stage as an empty file. that leaves this view
-            -- nothing to show. u has no reverse here: unstaging the row would take its
-            -- staged content with it
-            staging = {
-                initial = "unstaged",
-                whole_file = true,
-                refresh = refresh_panel,
-                apply = function(_, _, reverse)
-                    if reverse or not set_staged(root, entry, true) then
-                        return false
-                    end
-                    vim.schedule(function()
-                        retarget_view(false)
-                    end)
-                    return true
-                end,
-            }
-            if entry.x == "A" and entry.y == "D" then
-                staging.confirm_stage =
-                    "Stage the deletion of %s? Nothing else holds its staged content."
-            end
-            staging.revert = function()
-                return staging_ops.whole_restore(entry)
-            end
-            staging.revert_label = "puts it back as the index has it"
-            local drop = staging_ops.whole_drop(entry, model)
-            if drop then
-                staging.hidden_in = { 1 }
-                staging.unstage_hidden = function()
-                    if not drop() then
-                        return false
-                    end
-                    refresh_panel()
-                    retarget_view(false)
-                    return true
-                end
-            end
+        if #model.hunks == 0 and not model.binary then
+            model.notice = empty_notice(root, entry, model, {}) or "No local content change"
         end
+        local staging = staging_ops.for_local(entry, model, function()
+            show_local(entry)
+        end)
         local function back()
             retarget_view(false)
         end
@@ -1552,11 +1473,11 @@ function M.panel(opts)
         end
         local staging ---@type differ.view.Staging|nil
         if preview then
-            staging = staging_ops.preview(entry, model)
+            staging = staging_ops.for_preview(entry, model)
         elseif staged_only then
-            staging = staging_ops.staged_only(entry, model, false)
+            staging = staging_ops.for_index(entry, model, false)
         else
-            staging = staging_ops.for_entry(entry, model)
+            staging = staging_ops.for_whole(entry, model)
         end
         if staging and not preview then
             if staging_ops.partly_staged(entry) then
