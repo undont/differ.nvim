@@ -1396,7 +1396,7 @@ function M.panel(opts)
         local file = { path = entry.path, status = entry.status, previous_path = prev }
         local model = M.model({ old = INDEX, new = WORKTREE }, root, file, head_branch(root))
         local staging ---@type differ.view.Staging
-        if #model.hunks > 0 and entry.y ~= "D" then
+        if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
             staging = staging_ops.frozen(entry, model, false, function()
                 show_local(entry)
             end)

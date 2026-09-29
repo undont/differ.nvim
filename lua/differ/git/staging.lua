@@ -436,7 +436,7 @@ function M.new(ctx)
         -- the move is whole-file and belongs to the panel row's keys
         local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
         local added = entry.status == "A" and entry.x == "A"
-        if (content or added) and entry.x ~= "D" and #diff.hunks > 0 then
+        if (content or added) and entry.x ~= "D" and entry.y ~= "T" and #diff.hunks > 0 then
             local staging = union_staging(entry)
             if added then
                 -- throwing away an add is deleting the file, not reverting a hunk of it
