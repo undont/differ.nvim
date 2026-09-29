@@ -4314,6 +4314,42 @@ func getDownloadSpeed() {
         assert.are.equal("one\n", back)
     end)
 
+    it("s in the commit preview refuses an add staged from outside since u", function()
+        local root = preview_repo()
+        local p = open_panel()
+        toggle_preview(p)
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        confirming(1, function()
+            v:unstage_hunk()
+        end)
+        write(root .. "/c.lua", "three\n")
+        git(root, "add", "c.lua")
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "c.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal("three\n", index)
+    end)
+
+    it("u in the commit preview refuses an add staged again from outside", function()
+        local root = preview_repo()
+        local p = open_panel()
+        toggle_preview(p)
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        git(root, "add", "c.lua")
+        _G.notifs = {}
+        v:unstage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "c.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal("one\ntwo\n", index)
+    end)
+
     it("refuses s in the commit preview panel", function()
         local root = preview_repo()
         local p = open_panel()

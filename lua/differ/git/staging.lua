@@ -590,15 +590,35 @@ function M.new(ctx)
     end
 
     -- whole-file staging frozen at the index the view opened on: u resets the row's
-    -- paths to HEAD, s puts back the entries the index held then
+    -- paths to HEAD, s puts back the entries the index held then. both refuse once the
+    -- index moves outside differ
     ---@param entry differ.FileEntry
+    ---@param reopen fun()
     ---@return differ.view.Staging
-    local function snapshot_staging(entry)
+    local function snapshot_staging(entry, reopen)
         local paths = entry_paths(entry)
+        local function ls_files()
+            return git(vim.list_extend({ "ls-files", "-s", "-z", "--" }, paths), root) or ""
+        end
+        local listed = ls_files()
         local held = {} ---@type table<string, string> -- path -> update-index cacheinfo
-        local listed = git(vim.list_extend({ "ls-files", "-s", "-z", "--" }, paths), root) or ""
         for mode, sha, path in listed:gmatch("(%d+) (%x+) %d+\t([^%z]+)") do
             held[path] = ("%s,%s,%s"):format(mode, sha, path)
+        end
+        ---@param reverse boolean
+        local function stage(reverse)
+            if reverse then
+                return set_staged(root, entry, false)
+            end
+            local ok = true
+            for _, path in ipairs(paths) do
+                local cmd = { "update-index", "--force-remove", "--", path }
+                if held[path] then
+                    cmd = { "update-index", "--add", "--cacheinfo", held[path] }
+                end
+                ok = git_ok(cmd, root, "staging " .. path) and ok
+            end
+            return ok
         end
         return {
             initial = "staged",
@@ -608,17 +628,13 @@ function M.new(ctx)
                 return unheld_blob(entry)
             end,
             apply = function(_, _, reverse)
-                if reverse then
-                    return set_staged(root, entry, false)
+                if ls_files() ~= listed then
+                    notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
+                    vim.schedule(reopen)
+                    return false
                 end
-                local ok = true
-                for _, path in ipairs(paths) do
-                    local cmd = { "update-index", "--force-remove", "--", path }
-                    if held[path] then
-                        cmd = { "update-index", "--add", "--cacheinfo", held[path] }
-                    end
-                    ok = git_ok(cmd, root, "staging " .. path) and ok
-                end
+                local ok = stage(reverse)
+                listed = ls_files()
                 return ok
             end,
         }
@@ -775,7 +791,9 @@ function M.new(ctx)
                 return revert_frozen(entry, m, staging, idx, offset, reopen)
             end
         else
-            staging = snapshot_staging(entry)
+            staging = snapshot_staging(entry, function()
+                retarget_view(false)
+            end)
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(entry, entry.x, preview)
             if entry.x == "A" and entry.y == "D" then
