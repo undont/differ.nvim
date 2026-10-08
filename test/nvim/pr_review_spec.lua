@@ -94,7 +94,7 @@ describe("review.start", function()
         review.start(s)
         assert.are.equal("fresh", s.review_id)
         assert.are.equal(
-            "differ: review started - comments are drafts until you submit",
+            "differ: review started; comments are drafts until you submit",
             _G.notifs[#_G.notifs].msg
         )
         restore()

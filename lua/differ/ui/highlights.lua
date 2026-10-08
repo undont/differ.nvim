@@ -282,7 +282,7 @@ local function check_termguicolors()
     end
     warned = true
     vim.notify(
-        "differ.nvim needs 'termguicolors' for its diff colours; without it the diff renders uncoloured",
+        "differ: needs 'termguicolors' for diff colours; without it the diff renders uncoloured",
         vim.log.levels.WARN
     )
 end

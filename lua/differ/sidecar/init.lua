@@ -271,11 +271,9 @@ function flush_queue()
     end
 end
 
--- the next request() spins a fresh client, so a rebuilt binary heals a mismatch
+-- the next request() spins a fresh client, so a rebuilt binary heals a mismatch. the
+-- queued callers report `why`; the request that started the client is always one
 local function handshake_failed(why)
-    vim.schedule(function()
-        vim.notify("differ: sidecar " .. why, vim.log.levels.ERROR)
-    end)
     teardown(mkerr("internal", why))
 end
 
@@ -293,12 +291,12 @@ function handshake()
             if not client.running then
                 return
             end
-            handshake_failed("handshake failed: " .. (err.message or err.code))
+            handshake_failed("sidecar handshake failed: " .. (err.message or err.code))
             return
         end
         if type(result) ~= "table" or result.protocol ~= PROTOCOL then
             handshake_failed(
-                "protocol mismatch — rebuild your sidecar (run `make go-build` or `go install`)"
+                "sidecar protocol mismatch; rebuild it with make go-build or go install"
             )
             return
         end
@@ -384,9 +382,6 @@ function schedule_restart()
     local self = client
     client.attempts = client.attempts + 1
     if client.attempts > MAX_ATTEMPTS then
-        vim.schedule(function()
-            vim.notify("differ: sidecar keeps crashing; giving up", vim.log.levels.ERROR)
-        end)
         -- a request made before the handshake sits in the queue, so no per-exit failure
         -- reaches it and this is the only error a caller sees
         local why = "sidecar unavailable"

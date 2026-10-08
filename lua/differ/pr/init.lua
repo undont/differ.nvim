@@ -66,7 +66,10 @@ local function notify_err(err)
     local code = (err and err.code) or "internal"
     local msg = (err and err.message) or code
     local hint = M.error_hint(err)
-    notify(hint and (msg .. " (" .. hint .. ")") or msg, vim.log.levels.ERROR)
+    if hint and not msg:gsub("`", ""):find(hint, 1, true) then -- gh's own text may say it
+        msg = msg .. " (" .. hint .. ")"
+    end
+    notify(msg, vim.log.levels.ERROR)
 end
 
 -- exposed for the review/comment modules, which share the same typed-error treatment
@@ -431,7 +434,7 @@ function M.resolve()
     end
     target = target or anchor.threads[1]
     if target.is_pending or not target.thread_id then
-        return notify("this thread can't be resolved yet")
+        return notify("a draft thread can't be resolved until the review is submitted")
     end
     local threads = require("differ.pr.threads")
     local new_state = not target.resolved
@@ -482,7 +485,7 @@ function M.handle_conflict(on_ready)
             show_file(cur) -- re-source the diff + overlay at the new head
         end
         notify(
-            "the PR head moved; refreshed to the latest - review and re-submit",
+            "the PR head moved; refreshed to the latest, review and re-submit",
             vim.log.levels.WARN
         )
         if on_ready then
@@ -532,7 +535,7 @@ end
 ---@return table|nil view
 local function editable_view()
     if not (session and session.view and session.view:is_open()) then
-        notify("no active pull request diff")
+        notify("no active pull request diff", vim.log.levels.WARN)
         return nil
     end
     if not session.root then
@@ -664,7 +667,7 @@ local function adopt_pending_review(pr)
         if type(review_id) == "string" and review_id ~= "" then
             s.review_id = review_id
             notify(
-                "you have a pending review here - comments are drafts (:Differ pr review resume to manage)"
+                "you have a pending review here; comments are drafts (:Differ pr review resume to manage it)"
             )
         end
     end)
@@ -1006,7 +1009,11 @@ function M.open(opts)
                 return notify_err(lerr)
             end
             if not prs or #prs == 0 then
-                return notify("no pull requests for " .. coords.owner .. "/" .. coords.repo)
+                local msg = "no pull requests for " .. coords.owner .. "/" .. coords.repo
+                if opts.filter then
+                    msg = ("%s (%s)"):format(msg, (opts.filter:gsub("_", " ")))
+                end
+                return notify(msg)
             end
             pick(coords, prs, { land = opts.land, review = opts.review })
         end)
@@ -1155,7 +1162,7 @@ function M.merge(method_arg)
         return notify("no active pull request")
     end
     local method = M.merge_method(method_arg)
-    confirm(('merge "%s" via %s?'):format(pr_title(), method), function()
+    confirm(('Merge "%s" via %s?'):format(pr_title(), method), function()
         if not session then
             return
         end
@@ -1183,6 +1190,14 @@ function M.merge(method_arg)
     end)
 end
 
+---@type table<string, string>
+local STATE_DONE = {
+    ready = "marked ready",
+    draft = "converted to draft",
+    close = "closed",
+    reopen = "reopened",
+}
+
 -- :Differ pr ready|draft|close|reopen - map the verb to a state and transition. close
 -- confirms (destructive); the reversible verbs act immediately. on success the session's
 -- cached state/draft flags follow the server's echoed state
@@ -1207,11 +1222,11 @@ function M.set_state(verb)
             local new_state = (res and res.state) or state
             s.pr_meta.state = new_state
             s.pr_meta.draft = new_state == "draft"
-            notify("pull request " .. new_state)
+            notify("pull request " .. STATE_DONE[verb])
         end)
     end
     if M.is_destructive(verb) then
-        confirm(('close "%s"?'):format(pr_title()), run)
+        confirm(('Close "%s"?'):format(pr_title()), run)
     else
         run()
     end
@@ -1237,10 +1252,8 @@ function M.checkout()
         end
         local ok, err = git.checkout(root, ref, s.pr.number)
         if not ok then
-            return notify(
-                "checkout failed: " .. (err and vim.trim(err) or ref),
-                vim.log.levels.ERROR
-            )
+            local exec = require("differ.git.exec")
+            return notify(exec.with_stderr("checkout failed", err), vim.log.levels.ERROR)
         end
         notify("checked out " .. ref)
     end)
@@ -1308,7 +1321,7 @@ function M.resume(arg)
         end)
     end
     if not session then
-        return notify("no active pull request - open one with :Differ pr review <number>")
+        return notify("no active pull request; open one with :Differ pr review <number>")
     end
     require("differ.pr.review").reattach(session)
 end

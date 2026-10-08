@@ -218,7 +218,7 @@ end
 function M.jump_to_file()
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:jump_to_file()
 end
@@ -230,7 +230,7 @@ end
 function M.edit_file()
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:edit_file()
 end
@@ -243,7 +243,7 @@ end
 function M.goto_hunk(direction, opts)
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:goto_hunk(direction, opts)
 end

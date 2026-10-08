@@ -82,7 +82,7 @@ function M.range_anchor(map, row1, row2, colside)
     if a.side == "LEFT" and b.side == "RIGHT" then
         return { start_side = "LEFT", start_line = a.line, side = "RIGHT", line = b.line }
     end
-    return nil, "mixed-side selection GitHub can't represent"
+    return nil, "mixed-side selection github can't represent"
 end
 
 -- ── gesture entry points (vim surface) ────────────────────────────────────────────
@@ -199,7 +199,7 @@ function M.reply(session)
     local row = vim.api.nvim_win_get_cursor(win)[1]
     local anchor = require("differ.pr.threads").anchor_at(session, buf, row)
     if not anchor then
-        return notify("no thread under the cursor to reply to")
+        return notify("no thread on this line to reply to")
     end
     pick_thread(anchor, "Reply to which thread?", function(thread)
         if not guard.owns(session) then
@@ -251,7 +251,7 @@ function M.delete(session)
     local row = vim.api.nvim_win_get_cursor(win)[1]
     local anchor = require("differ.pr.threads").anchor_at(session, buf, row)
     if not anchor then
-        return notify("no thread under the cursor to delete from")
+        return notify("no thread on this line to delete from")
     end
     pick_thread(anchor, "Delete from which thread?", function(thread)
         if not guard.owns(session) then
@@ -282,7 +282,7 @@ function M.compose(session, opts)
     local base = opts.in_reply_to and "Reply"
         or (session.review_id and "Comment (draft)" or "Comment (posts immediately)")
     require("differ.ui.compose").open({
-        title = opts.stale and (base .. " — head moved, re-submit") or base,
+        title = opts.stale and (base .. " · head moved, re-submit") or base,
         initial = opts.initial,
         layout = session.view and session.view.layout,
         anchor_win = opts.anchor_win,
@@ -309,7 +309,10 @@ function M.post(session, opts, body)
     else
         local a = opts.anchor
         if not opts.path then
-            return notify("lost track of the file this comment anchors to; nothing posted")
+            return notify(
+                "lost track of the file this comment anchors to; nothing posted",
+                vim.log.levels.WARN
+            )
         end
         args.path = opts.path
         args.side, args.line = a.side, a.line

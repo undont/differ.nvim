@@ -388,7 +388,9 @@ local function set_keymaps(b)
         end
         local target = target_at(vim.api.nvim_win_get_cursor(0)[1])
         if not target then
-            return require("differ.pr").notify("nothing here to answer; ga comments on the PR")
+            return require("differ.pr").notify(
+                "nothing here to reply to or quote; ga comments on the PR"
+            )
         end
         answer(s, target, quote and quoted(target.author, split_body(target.body)) or nil)
     end
@@ -408,7 +410,9 @@ local function set_keymaps(b)
         local lo, hi = math.min(r1, r2), math.max(r1, r2)
         local target = target_at(lo)
         if not target then
-            return require("differ.pr").notify("nothing here to answer; ga comments on the PR")
+            return require("differ.pr").notify(
+                "nothing here to reply to or quote; ga comments on the PR"
+            )
         end
         local picked = {}
         for _, l in ipairs(vim.api.nvim_buf_get_lines(b, lo - 1, hi, false)) do
