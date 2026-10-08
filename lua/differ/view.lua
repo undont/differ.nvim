@@ -681,7 +681,7 @@ function View:toggle_local()
     if not toggle then
         local why = self.staging and self.staging.no_local
             or "only a partly staged file has a local view"
-        return vim.notify("differ: " .. why, vim.log.levels.INFO)
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
     toggle()
 end
@@ -1343,7 +1343,7 @@ function View:_confirmed(prompt)
     end
     if self.model ~= asked_on then
         vim.notify(
-            "differ: the diff changed while the prompt was up; nothing was dropped",
+            "differ: the diff changed while the prompt was up; nothing was changed",
             vim.log.levels.WARN
         )
         return false
@@ -1357,16 +1357,16 @@ end
 function View:_drop_prompt(idx)
     local scope = idx and self.staging.drop_scope and self.staging.drop_scope(idx)
     if scope then
-        return ("Drop %s in %s? Nothing else holds them."):format(scope, self.model.path)
+        return ("Unstage %s in %s? The staged change will be lost."):format(scope, self.model.path)
     end
     if idx and not self:_whole_file() then
-        return ("Drop the staged change under hunk %d/%d in %s? Nothing else holds it."):format(
+        return ("Unstage hunk %d/%d in %s? The staged change will be lost."):format(
             idx,
             #self.model.hunks,
             self.model.path
         )
     end
-    return ("Drop the staged change to %s? Nothing else holds it."):format(self.model.path)
+    return ("Unstage %s? The staged change will be lost."):format(self.model.path)
 end
 
 -- u on a `!` hunk drops staged content no other side holds, so it confirms like X does
@@ -1412,7 +1412,7 @@ function View:_step_review_file(direction, staged)
     local offers_local = st ~= nil and st.toggle_local ~= nil and st.badge ~= "LOCAL"
     if not staged and offers_local and panel:has_local_work() then
         local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
-        local msg = ("differ: %s differs locally: %s"):format(vim.fs.basename(self.model.path), key)
+        local msg = ("differ: %s has local changes: %s shows them"):format(self.model.path, key)
         vim.notify(msg, vim.log.levels.INFO)
         return true
     end
@@ -1434,23 +1434,6 @@ function View:_review_done(staged)
         end
     end
     return true
-end
-
--- a label per leftover row: its basename, or its path where two rows share one
----@param entries differ.FileEntry[]
----@return string[]
-local function leftover_labels(entries)
-    local names, taken = {}, {}
-    for i, e in ipairs(entries) do
-        names[i] = vim.fs.basename(e.path)
-        taken[names[i]] = (taken[names[i]] or 0) + 1
-    end
-    for i, e in ipairs(entries) do
-        if taken[names[i]] > 1 then
-            names[i] = e.path
-        end
-    end
-    return names
 end
 
 -- `names` joined while they fit LEFTOVER_WIDTH, the first always and whole, and the rest
@@ -1481,9 +1464,13 @@ function View:_walk_done(staged)
     local panel = require("differ.panel").current()
     local left = (panel and not staged) and panel:review_leftover() or {}
     if #left > 0 then
-        local verb = #left == 1 and "differs" or "differ"
+        local paths = {}
+        for i, e in ipairs(left) do
+            paths[i] = e.path
+        end
+        local verb = #left == 1 and "has" or "have"
         local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
-        msg = ("%s (%s %s locally: %s)"):format(msg, fit_names(leftover_labels(left)), verb, key)
+        msg = ("%s (%s %s local changes: %s shows them)"):format(msg, fit_names(paths), verb, key)
     end
     vim.notify(msg, vim.log.levels.INFO)
 end
@@ -1599,7 +1586,7 @@ end
 -- previous file with something staged, landing on its last staged hunk
 function View:unstage_all()
     if self:_can_stage_hunk() and self:_drops_unheld(nil) then
-        local prompt = "Unstage all of %s? Staged content nothing else holds goes with it."
+        local prompt = "Unstage all of %s? Some staged changes will be lost."
         if not self:_confirmed(prompt:format(self.model.path)) then
             return
         end
@@ -1747,7 +1734,7 @@ function View:revert_hunk()
         -- reports it; only speak up when the panel is still there but has nowhere to go
         local panel = require("differ.panel").current()
         if panel and not panel:open_nearest(true) then
-            vim.notify("differ: no changes left to show", vim.log.levels.INFO)
+            vim.notify("differ: no changes left", vim.log.levels.INFO)
         end
         return
     end
@@ -1773,7 +1760,7 @@ end
 function View:jump_to_file()
     local root = self.model.root
     if not root then
-        vim.notify("differ: jump-to-file needs a file-backed source", vim.log.levels.WARN)
+        vim.notify("differ: this diff has no file to jump to", vim.log.levels.WARN)
         return
     end
     local abs = root .. "/" .. self.model.path
@@ -1951,7 +1938,7 @@ end
 function View:_edit_target()
     local root = self.model.root
     if not root then
-        vim.notify("differ: editing needs a file-backed source", vim.log.levels.WARN)
+        vim.notify("differ: this diff has no file to edit", vim.log.levels.WARN)
         return nil
     end
     local abs = root .. "/" .. self.model.path

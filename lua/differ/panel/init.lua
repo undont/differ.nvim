@@ -54,6 +54,15 @@ local STATUS_HL = {
     ["?"] = "differPanelUntracked",
 }
 
+-- `one` takes the path; `many` the names of the files that lose content
+---@class differ.panel.DropPrompt
+---@field one string
+---@field many string
+
+---@class differ.panel.DropPrompts
+---@field stage differ.panel.DropPrompt
+---@field unstage differ.panel.DropPrompt
+
 ---@class differ.panel.Section
 ---@field title string|nil
 ---@field entries differ.FileEntry[]
@@ -63,6 +72,8 @@ local STATUS_HL = {
 ---@class differ.panel.Actions
 ---@field stage fun(entry: differ.FileEntry): boolean|nil  -- false: refused, nothing moved
 ---@field unstage fun(entry: differ.FileEntry)
+---@field stage_drops? fun(entry: differ.FileEntry): boolean  -- staging loses content nothing else holds
+---@field drop_prompts? differ.panel.DropPrompts  -- what s/S and u/U ask when a drops hook says so
 ---@field unstage_drops? fun(entry: differ.FileEntry): boolean  -- unstaging loses content nothing else holds
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
@@ -716,25 +727,25 @@ end
 -- the entries a stage/unstage/discard acts on from the cursor row: the single file
 -- under the cursor, every file beneath a directory row, or every file in a section
 -- when the cursor is on its header (the only target for a section whose shared deep
--- prefix is stripped to a subtitle, leaving no dir row). also returns a label for the
--- discard confirm. empty when the cursor isn't on a file, dir, or header row
----@return differ.FileEntry[] entries, string|nil label
+-- prefix is stripped to a subtitle, leaving no dir row). empty when the cursor isn't
+-- on a file, dir, or header row
+---@return differ.FileEntry[]
 function Panel:_op_targets()
     local m = self.winid and self.meta[vim.api.nvim_win_get_cursor(self.winid)[1]]
     if not m then
-        return {}, nil
+        return {}
     end
     if m.kind == "file" then
-        return { m.entry }, m.entry.path
+        return { m.entry }
     end
     if m.kind == "dir" then
-        return self:_dir_entries(m), m.dir_path .. "/"
+        return self:_dir_entries(m)
     end
     if m.kind == "header" then
         local sec = self.sections[m.section]
-        return sec and vim.list_slice(sec.entries) or {}, m.title or "section"
+        return sec and vim.list_slice(sec.entries) or {}
     end
-    return {}, nil
+    return {}
 end
 
 -- re-read the model (after a stage op or on focus) and repaint, keeping the cursor
@@ -779,20 +790,24 @@ function Panel:stage_op(op)
     if not self.actions then
         return
     end
+    local verb = "unstage" ---@type "stage"|"unstage"
+    if op == "stage" or op == "stage_all" then
+        verb = "stage"
+    end
     local paths ---@type table<string, boolean>|nil -- nil: the op moved every file
     if op == "stage_all" or op == "unstage_all" then
-        if op == "unstage_all" and not self:_unstage_confirmed(self:_all_entries(), "all") then
+        if not self:_drop_confirmed(verb, self:_all_entries()) then
             return
         end
         if self.actions[op]() == false then
             return
         end
     else
-        local entries, label = self:_op_targets()
+        local entries = self:_op_targets()
         if #entries == 0 then
             return
         end
-        if op == "unstage" and not self:_unstage_confirmed(entries, label) then
+        if not self:_drop_confirmed(verb, entries) then
             return
         end
         paths = {}
@@ -817,14 +832,15 @@ function Panel:_all_entries()
     return entries
 end
 
--- u or U on `entries`: asks first when any of them holds staged content nothing else
--- has. `label` names the target, as X's confirm does
+-- s/S or u/U on `entries`: asks first when any of them holds staged content nothing
+-- else has
+---@param verb "stage"|"unstage"
 ---@param entries differ.FileEntry[]
----@param label string|nil
 ---@return boolean
-function Panel:_unstage_confirmed(entries, label)
-    local drops = self.actions.unstage_drops
-    if not drops then
+function Panel:_drop_confirmed(verb, entries)
+    local drops = self.actions[verb .. "_drops"]
+    local prompts = self.actions.drop_prompts
+    if not drops or not prompts then
         return true
     end
     local lost = {} ---@type string[]
@@ -838,18 +854,13 @@ function Panel:_unstage_confirmed(entries, label)
     end
     local prompt
     if #entries == 1 then
-        prompt = ("Unstage %s? Staged content nothing else holds goes with it."):format(lost[1])
+        prompt = prompts[verb].one:format(lost[1])
     else
         local names = table.concat(vim.list_slice(lost, 1, 3), ", ")
         if #lost > 3 then
             names = ("%s, +%d more"):format(names, #lost - 3)
         end
-        local files = #lost == 1 and "1 file holds" or ("%d files hold"):format(#lost)
-        prompt = ("Unstage %s? %s staged content nothing else holds (%s)."):format(
-            label,
-            files,
-            names
-        )
+        prompt = prompts[verb].many:format(names)
     end
     return vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
 end
@@ -880,15 +891,16 @@ function Panel:discard()
     if not self.actions then
         return
     end
-    local entries, label = self:_op_targets()
+    local entries = self:_op_targets()
     if #entries == 0 then
         return
     end
-    local what = #entries == 1 and discard_label(entries[1])
-        or ("%s (%d files)"):format(label, #entries)
-    local prompt = ("Discard changes to %s?"):format(what)
-    if #entries == 1 and self.actions.discard_prompt then
-        prompt = self.actions.discard_prompt(entries[1]) or prompt
+    local prompt = "Discard changes to these files?"
+    if #entries == 1 then
+        prompt = ("Discard changes to %s?"):format(discard_label(entries[1]))
+        if self.actions.discard_prompt then
+            prompt = self.actions.discard_prompt(entries[1]) or prompt
+        end
     end
     local choice = vim.fn.confirm(prompt, "&Yes\n&No", 2)
     if choice == 1 then

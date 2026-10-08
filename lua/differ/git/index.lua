@@ -54,7 +54,10 @@ function M.write_index(root, path, text, mode)
         stdin = text,
     }):wait()
     if hashed.code ~= 0 or not hashed.stdout then
-        notify(("staging %s failed: %s"):format(path, hashed.stderr or ""), vim.log.levels.ERROR)
+        notify(
+            exec.with_stderr(("staging %s failed"):format(path), hashed.stderr),
+            vim.log.levels.ERROR
+        )
         return false
     end
     local spec = ("%s,%s,%s"):format(mode, exec.chomp(hashed.stdout), path)
@@ -114,7 +117,7 @@ end
 ---@return boolean
 function M.restore_deleted(root, entry)
     if entry.kept then
-        local msg = "X would overwrite the untracked copy of %s on disk"
+        local msg = "X would overwrite %s on disk; u unstages the deletion instead"
         notify(msg:format(entry.path), vim.log.levels.WARN)
         return false
     end
@@ -122,7 +125,7 @@ function M.restore_deleted(root, entry)
         or { "checkout", "--", entry.path }
     local _, err = git(cmd, root)
     if err then
-        notify(("restore failed: %s"):format(err), vim.log.levels.ERROR)
+        notify(exec.with_stderr("restore failed", err), vim.log.levels.ERROR)
         return false
     end
     exec.reload_buffer(root, entry.path)

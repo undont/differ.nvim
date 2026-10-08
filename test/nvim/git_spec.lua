@@ -613,7 +613,7 @@ describe("git.status_sections", function()
         end
         _G.notifs = {}
         assert.is_false(git_src.discard(root, entry))
-        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("untracked copy of a.lua", 1, true))
+        assert.is_truthy(_G.notifs[#_G.notifs].msg:find("overwrite a.lua on disk", 1, true))
         assert.are.equal("mine\n", table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
     end)
 
@@ -1356,8 +1356,10 @@ describe(":Differ panel staging (slice C)", function()
             p:stage_op("unstage")
         end)
         assert.are.equal(1, #shown)
-        assert.matches("Unstage src/%? 1 file holds", shown[1])
-        assert.matches("src/gone.lua", shown[1], 1, true)
+        assert.are.equal(
+            "Unstage these files? Staged changes in src/gone.lua will be lost.",
+            shown[1]
+        )
         assert.is_nil(shown[1]:find("kept", 1, true))
         assert.are.equal(before, git(root, "ls-files", "-s")) -- declined: nothing moved
 
@@ -1387,7 +1389,7 @@ describe(":Differ panel staging (slice C)", function()
             p:stage_op("unstage_all")
         end)
         assert.are.equal(1, #shown)
-        assert.matches("Unstage all%? 1 file holds", shown[1])
+        assert.are.equal("Unstage these files? Staged changes in a.lua will be lost.", shown[1])
         assert.are.equal(before, git(root, "ls-files", "-s"))
 
         prompts_of(1, function()
@@ -1396,6 +1398,166 @@ describe(":Differ panel staging (slice C)", function()
         local status = git(root, "status", "--porcelain=v1")
         assert.matches(" D a.lua", status, 1, true)
         assert.matches("?? b.lua", status, 1, true)
+        p:close()
+    end)
+
+    it("s on an add deleted on disk asks before dropping the staged add", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "c\n")
+        git(root, "add", "c.lua")
+        os.remove(root .. "/c.lua") -- AD: the index alone holds the add
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local staged = git(root, "rev-parse", ":c.lua")
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "c.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("stage")
+        end)
+        assert.are.same({ "Stage the deletion of c.lua? The staged file will be lost." }, shown)
+        assert.are.equal(staged, git(root, "rev-parse", ":c.lua")) -- declined: kept
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "c.lua"), 0 })
+        prompts_of(1, function()
+            p:stage_op("stage")
+        end)
+        assert.are.equal("", (git(root, "status", "--porcelain=v1", "--", "c.lua")))
+        p:close()
+    end)
+
+    it("S asks once before staging an add deleted on disk", function()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "c\n")
+        git(root, "add", "c.lua")
+        os.remove(root .. "/c.lua")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local before = git(root, "ls-files", "-s")
+
+        local shown = prompts_of(2, function()
+            p:stage_op("stage_all")
+        end)
+        assert.are.equal(1, #shown)
+        assert.are.equal("Stage these files? Staged changes in c.lua will be lost.", shown[1])
+        assert.are.equal(before, git(root, "ls-files", "-s")) -- declined: nothing moved
+
+        prompts_of(1, function()
+            p:stage_op("stage_all")
+        end)
+        local status = git(root, "status", "--porcelain=v1")
+        assert.is_nil(status:find("c.lua", 1, true))
+        assert.matches("M  a.lua", status, 1, true)
+        p:close()
+    end)
+
+    it("s on an edit deleted on disk asks only when nothing else holds the edit", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        git(root, "update-index", "--chmod=+x", "b.lua")
+        os.remove(root .. "/b.lua") -- MD whose blob HEAD still has
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua")
+        os.remove(root .. "/a.lua") -- MD with a new blob
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("stage")
+            end)
+        )
+        assert.are.equal("D  b.lua\n", (git(root, "status", "--porcelain=v1", "--", "b.lua")))
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("stage")
+        end)
+        assert.are.same({ "Stage the deletion of a.lua? The staged file will be lost." }, shown)
+        assert.are.equal("MD a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        p:close()
+    end)
+
+    it("s on a rename deleted on disk asks only when the rename carried an edit", function()
+        local root = fresh_repo()
+        git(root, "mv", "a.lua", "b.lua")
+        os.remove(root .. "/b.lua") -- RD whose blob HEAD still has at a.lua
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("stage")
+            end)
+        )
+        p:close()
+
+        root = fresh_repo()
+        git(root, "mv", "a.lua", "b.lua")
+        write(root .. "/b.lua", V1 .. "more\n")
+        git(root, "add", "b.lua")
+        os.remove(root .. "/b.lua") -- RD with an edit only the index holds
+        assert.matches("^RD", git(root, "status", "--porcelain=v1"))
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        p = Panel.current()
+        local before = git(root, "ls-files", "-s")
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("stage")
+        end)
+        assert.are.same({ "Stage the deletion of b.lua? The staged file will be lost." }, shown)
+        assert.are.equal(before, git(root, "ls-files", "-s"))
+        p:close()
+    end)
+
+    it("s on a typechange deleted on disk asks first", function()
+        local root = fresh_repo()
+        write(root .. "/z.lua", "z\n")
+        local link = vim.trim(git(root, "hash-object", "-w", "z.lua"))
+        git(root, "update-index", "--cacheinfo", "120000," .. link .. ",a.lua")
+        os.remove(root .. "/a.lua") -- TD: the index alone holds the symlink
+        assert.matches("TD a.lua", git(root, "status", "--porcelain=v1"), 1, true)
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        local before = git(root, "ls-files", "-s")
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        local shown = prompts_of(2, function()
+            p:stage_op("stage")
+        end)
+        assert.are.same({ "Stage the deletion of a.lua? The staged file will be lost." }, shown)
+        assert.are.equal(before, git(root, "ls-files", "-s"))
+        p:close()
+    end)
+
+    it("s on a plain unstaged row stages without asking", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("stage")
+            end)
+        )
+        assert.are.equal("M  a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
         p:close()
     end)
 
@@ -2516,10 +2678,7 @@ func getDownloadSpeed() {
         end)
         local written, hidden = indexed(root, "a.lua"), v.staging.hidden
         p:close()
-        assert.are.equal(
-            "Unstage all of a.lua? Staged content nothing else holds goes with it.",
-            prompt
-        )
+        assert.are.equal("Unstage all of a.lua? Some staged changes will be lost.", prompt)
         assert.are.equal(JOINED.head, written)
         assert.is_nil(hidden)
     end)
@@ -2542,10 +2701,7 @@ func getDownloadSpeed() {
             end)
             local dropped = indexed(root, "a.lua")
             p:close()
-            assert.are.equal(
-                "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
-                prompt
-            )
+            assert.are.equal("Unstage hunk 1/1 in a.lua? The staged change will be lost.", prompt)
             assert.are.equal(index, kept)
             assert.are.equal(head, dropped)
         end
@@ -2573,10 +2729,7 @@ func getDownloadSpeed() {
         local kept = indexed(root, "a.lua")
         local mode = git(root, "ls-files", "-s", "--", "a.lua"):match("^(%d+)")
         p:close()
-        assert.are.equal(
-            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
-            prompt
-        )
+        assert.are.equal("Unstage hunk 1/1 in a.lua? The staged change will be lost.", prompt)
         assert.are.equal(index, kept)
         assert.are.equal("100755", mode)
     end)
@@ -2595,7 +2748,7 @@ func getDownloadSpeed() {
         end)
         local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
         p:close()
-        assert.are.equal("Drop the staged change to a.lua? Nothing else holds it.", prompt)
+        assert.are.equal("Unstage a.lua? The staged change will be lost.", prompt)
         assert.are.equal(" D a.lua\n", status)
     end)
 
@@ -2617,7 +2770,7 @@ func getDownloadSpeed() {
             end)
             local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
             p:close()
-            assert.are.equal("Drop the staged change to b.dat? Nothing else holds it.", prompt)
+            assert.are.equal("Unstage b.dat? The staged change will be lost.", prompt)
             assert.are.equal("MM b.dat\n", status)
         end
     )
@@ -2880,17 +3033,17 @@ func getDownloadSpeed() {
         {
             key = "s",
             op = "stage_hunk",
-            what = "this hunk's unstaged change also covers hunk 2: s in dw",
+            what = "this hunk can't be staged without hunk 2; stage it from dw",
         },
         {
             key = "u",
             op = "unstage_hunk",
-            what = "this hunk's staged change also covers hunk 2: u on the !",
+            what = "this hunk can't be unstaged without hunk 2; unstage it from ds",
         },
         {
             key = "X",
             op = "revert_hunk",
-            what = "X can't revert hunk 1 alone: its staged change also covers hunk 2",
+            what = "this hunk can't be reverted without hunk 2",
         },
     }) do
         it(("refuses %s on a hunk sharing a change with the next"):format(case.key), function()
@@ -3296,10 +3449,7 @@ func getDownloadSpeed() {
         assert.is_nil(notice)
         assert.are.equal("INDEX", badge)
         assert.are.equal("staged", state)
-        assert.are.equal(
-            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
-            prompt
-        )
+        assert.are.equal("Unstage hunk 1/1 in a.lua? The staged change will be lost.", prompt)
         assert.are.equal(committed(root, "a.lua"), index)
     end)
 
@@ -3363,7 +3513,7 @@ func getDownloadSpeed() {
             local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
             local mode = git(root, "ls-files", "-s", "--", "a.lua"):sub(1, 6)
             p:close()
-            assert.are.equal("Drop the staged change to a.lua? Nothing else holds it.", prompt)
+            assert.are.equal("Unstage a.lua? The staged change will be lost.", prompt)
             assert.is_nil(badge)
             assert.are.equal("M  a.lua\n", status)
             assert.are.equal("100644", mode)
@@ -3442,7 +3592,7 @@ func getDownloadSpeed() {
         local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
         local perm = vim.fn.getfperm(root .. "/a.lua")
         p:close()
-        assert.are.equal("Revert all of a.lua? This puts it back as the index has it.", prompt)
+        assert.are.equal("Revert all of a.lua? This resets it to the index.", prompt)
         assert.are.equal("M  a.lua\n", status)
         assert.are.equal("rwxr-xr-x", perm)
     end)
@@ -3602,10 +3752,7 @@ func getDownloadSpeed() {
             view_in_origin(p):revert_hunk()
         end)
         p:close()
-        assert.are.equal(
-            "Revert all of c.lua? This drops the staged add, which nothing else holds.",
-            prompt
-        )
+        assert.are.equal("Revert all of c.lua? This deletes the staged file.", prompt)
     end)
 
     it("says so when the commit preview empties and hands back every change", function()
@@ -3658,7 +3805,7 @@ func getDownloadSpeed() {
         local status = git(root, "status", "--porcelain=v1")
         local perm = vim.fn.getfperm(root .. "/a.lua")
         p:close()
-        assert.are.equal("Revert all of a.lua? This puts it back as HEAD has it.", prompt)
+        assert.are.equal("Revert all of a.lua? This resets it to HEAD.", prompt)
         assert.are.equal("", status)
         assert.are.equal("rw-r--r--", perm)
     end)
@@ -3873,10 +4020,7 @@ func getDownloadSpeed() {
         end)
         local written = indexed(root, "a.lua")
         p:close()
-        assert.are.equal(
-            "Drop the staged change under hunk 1/1 in a.lua? Nothing else holds it.",
-            prompt
-        )
+        assert.are.equal("Unstage hunk 1/1 in a.lua? The staged change will be lost.", prompt)
         assert.are.equal(twelve({ [10] = "ten", [12] = "twelve" }), written)
     end)
 
@@ -3895,7 +4039,7 @@ func getDownloadSpeed() {
         end)
         local written = indexed(root, "a.lua")
         p:close()
-        assert.are.equal("Drop the staged lines 10-11 in a.lua? Nothing else holds them.", prompt)
+        assert.are.equal("Unstage lines 10-11 in a.lua? The staged change will be lost.", prompt)
         assert.are.equal(head, written)
     end)
 
@@ -4467,7 +4611,7 @@ func getDownloadSpeed() {
         assert.are.same({ "HEAD", "INDEX" }, revs)
         assert.are.equal(1, hunks)
         assert.are.equal("INDEX", badge)
-        assert.are.equal("Drop the staged change to c.lua? Nothing else holds it.", prompt)
+        assert.are.equal("Unstage c.lua? The staged change will be lost.", prompt)
         assert.are.equal("", status)
     end)
 
@@ -4490,7 +4634,7 @@ func getDownloadSpeed() {
         p:close()
         assert.is_not_nil(v)
         assert.are.same({ "a.lua", "c.lua", "c.lua", "c.lua", "c.lua" }, landed)
-        assert.are.equal("differ: c.lua differs locally: dw", said)
+        assert.are.equal("differ: c.lua has local changes: dw shows them", said)
     end)
 
     -- b.lua staged then put back on disk: passed once, and back in the walk once it changes
@@ -6235,7 +6379,7 @@ func getDownloadSpeed() {
         assert.is_true(refused)
         assert.are.equal(before, indexed(root, "a.lua")) -- no identical blob written
         local said = _G.notifs[#_G.notifs].msg
-        assert.is_truthy(said:find("sits under another hunk", 1, true))
+        assert.is_truthy(said:find("can't be staged on its own here", 1, true))
         assert.is_truthy(said:find("dw", 1, true))
         p:close()
     end)
@@ -6292,7 +6436,7 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/a.lua")
         local p = open_panel()
         _G.notifs = {}
-        return p, press_s(p, "differs locally: dw$")
+        return p, press_s(p, "has local changes: dw shows them$")
     end
 
     -- the same walk, leaving each file it stops on with ]f, to its last word
@@ -6302,7 +6446,8 @@ func getDownloadSpeed() {
         for _ = 1, 10 do
             view_in_origin(p):step_file("next")
             _G.notifs = {}
-            said = press_s(p, "^differ: nothing left") or press_s(p, "differs locally: dw$")
+            said = press_s(p, "^differ: nothing left")
+                or press_s(p, "has local changes: dw shows them$")
             if said:find("^differ: nothing left") then
                 break
             end
@@ -6318,7 +6463,7 @@ func getDownloadSpeed() {
         view_in_origin(p):stage_hunk()
         local again, path = _G.notifs[#_G.notifs].msg, view_in_origin(p).model.path
         p:close()
-        assert.are.equal("differ: b.lua differs locally: dw", said)
+        assert.are.equal("differ: b.lua has local changes: dw shows them", said)
         assert.are.equal(said, again)
         assert.are.equal("b.lua", path)
     end)
@@ -6329,13 +6474,13 @@ func getDownloadSpeed() {
         local p = walk(root)
         view_in_origin(p):toggle_local()
         _G.notifs = {}
-        local stop = press_s(p, "differs locally: dw$")
+        local stop = press_s(p, "has local changes: dw shows them$")
         view_in_origin(p):toggle_local()
         _G.notifs = {}
         local last = press_s(p, "^differ: nothing left")
         local status = git(root, "status", "--porcelain=v1")
         p:close()
-        assert.are.equal("differ: c.lua differs locally: dw", stop)
+        assert.are.equal("differ: c.lua has local changes: dw shows them", stop)
         assert.are.equal("differ: nothing left to stage", last)
         assert.are.equal("M  a.lua\n", status)
     end)
@@ -6344,7 +6489,7 @@ func getDownloadSpeed() {
         local root = fresh_repo()
         put_back(root, { "b.lua" })
         assert.are.equal(
-            "differ: nothing left to stage (b.lua differs locally: dw)",
+            "differ: nothing left to stage (b.lua has local changes: dw shows them)",
             walk_leaving(root)
         )
     end)
@@ -6392,7 +6537,7 @@ func getDownloadSpeed() {
         end, _G.notifs)
         p:close()
         assert.are.equal("a.lua", path)
-        assert.is_nil(table.concat(said, "\n"):find("differs locally", 1, true))
+        assert.is_nil(table.concat(said, "\n"):find("local changes", 1, true))
     end)
 
     -- b, c and d staged and then put back on disk: u on b empties its row
@@ -6426,13 +6571,16 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/b.lua")
         local p = open_panel()
         _G.notifs = {}
-        local stop = press_s(p, "differs locally: dw$")
+        local stop = press_s(p, "has local changes: dw shows them$")
         view_in_origin(p):step_file("next")
         _G.notifs = {}
         local last = press_s(p, "^differ: nothing left")
         p:close()
-        assert.are.equal("differ: b.lua differs locally: dw", stop)
-        assert.are.equal("differ: nothing left to stage (b.lua differs locally: dw)", last)
+        assert.are.equal("differ: b.lua has local changes: dw shows them", stop)
+        assert.are.equal(
+            "differ: nothing left to stage (b.lua has local changes: dw shows them)",
+            last
+        )
     end)
 
     it("doesn't stop s in the commit preview, which has no local view", function()
@@ -6447,7 +6595,7 @@ func getDownloadSpeed() {
             vim.wait(20)
         end
         local stops = vim.tbl_filter(function(n)
-            return n.msg:find("differs locally: dw$") ~= nil
+            return n.msg:find("has local changes: dw shows them$") ~= nil
         end, _G.notifs)
         p:close()
         assert.are.same({}, stops)
@@ -6462,7 +6610,9 @@ func getDownloadSpeed() {
         put_back(root, paths)
         local said = walk_leaving(root)
         assert.is_truthy(
-            said:find("^differ: nothing left to stage %(b.lua, c.lua.* %+%d+ differ locally: dw%)$"),
+            said:find(
+                "^differ: nothing left to stage %(b.lua, c.lua.* %+%d+ have local changes: dw shows them%)$"
+            ),
             said
         )
     end)
@@ -6471,14 +6621,17 @@ func getDownloadSpeed() {
         local root = fresh_repo()
         local long = ("x"):rep(80) .. ".lua"
         put_back(root, { long })
-        local want = ("differ: nothing left to stage (%s differs locally: dw)"):format(long)
+        local want = ("differ: nothing left to stage (%s has local changes: dw shows them)"):format(
+            long
+        )
         assert.are.equal(want, walk_leaving(root))
     end)
 
-    it("names rows left with a local view by path when their basenames collide", function()
+    it("names rows left with a local view by their repo paths", function()
         local root = fresh_repo()
         put_back(root, { "x/b.lua", "y/b.lua" })
-        local want = "differ: nothing left to stage (x/b.lua, y/b.lua differ locally: dw)"
+        local want =
+            "differ: nothing left to stage (x/b.lua, y/b.lua have local changes: dw shows them)"
         assert.are.equal(want, walk_leaving(root))
     end)
 
@@ -6498,7 +6651,7 @@ func getDownloadSpeed() {
         v:toggle_local()
         local notice = v.model.notice
         p:close()
-        assert.are.equal("differ: b.lua differs locally: dw", said)
+        assert.are.equal("differ: b.lua has local changes: dw shows them", said)
         assert.is_truthy(notice:find("^Mode changed"), notice)
     end)
 
@@ -6519,13 +6672,30 @@ func getDownloadSpeed() {
         end)
         local status = git(root, "status", "--porcelain=v1")
         p:close()
-        assert.are.equal(
-            "Stage the deletion of c.lua? Nothing else holds its staged content.",
-            prompt
-        )
+        assert.are.equal("Stage the deletion of c.lua? The staged file will be lost.", prompt)
         assert.are.equal("LOCAL", badge)
         assert.are.equal(1, hunks) -- the index's lines, all going
         assert.are.equal("", status)
+    end)
+
+    it("asks before s stages an edit's deletion from its view", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua")
+        os.remove(root .. "/a.lua") -- MD: the index alone holds the edit
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        local p = open_panel()
+        assert.is_true(p:goto_path("a.lua", true))
+        local v = view_in_origin(p)
+        local staged = git(root, "rev-parse", ":a.lua")
+        local prompt = confirming(2, function()
+            v:stage_hunk()
+        end)
+        local kept = git(root, "rev-parse", ":a.lua")
+        p:close()
+        assert.are.equal("Stage the deletion of a.lua? The staged file will be lost.", prompt)
+        assert.are.equal(staged, kept)
     end)
 end)
 
@@ -7071,7 +7241,7 @@ describe(":Differ diff whole-file staging", function()
         local said = _G.notifs[#_G.notifs].msg
         p:close()
         assert.is_nil(prompt)
-        assert.is_truthy(said:find("would overwrite the untracked copy", 1, true))
+        assert.is_truthy(said:find("on disk; u unstages the deletion instead", 1, true))
     end)
 
     -- a file swapped for a symlink has one content hunk but no line-level change to
@@ -7532,7 +7702,7 @@ describe("git listing errors", function()
         local n = last_notif()
         assert.are.equal(vim.log.levels.ERROR, n.level)
         assert.is_truthy(n.msg:find("nosuchref", 1, true))
-        assert.is_nil(n.msg:find("no changes for this source", 1, true))
+        assert.is_nil(n.msg:find("no changes to show", 1, true))
     end)
 
     it("still reports a genuinely empty source at INFO", function()
@@ -7542,7 +7712,7 @@ describe("git listing errors", function()
         _G.notifs = {}
         assert.is_nil(git_src.panel({}))
         local n = last_notif()
-        assert.are.equal("differ: no changes for this source", n.msg)
+        assert.are.equal("differ: no changes to show", n.msg)
         assert.are.equal(vim.log.levels.INFO, n.level)
     end)
 

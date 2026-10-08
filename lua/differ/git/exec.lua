@@ -86,10 +86,22 @@ end
 function M.git_ok(args, cwd, what)
     local out, err = M.git(args, cwd) -- nil out is exactly a non-zero exit; stderr can be empty
     if not out then
-        M.notify(("%s failed: %s"):format(what, err or ""), vim.log.levels.ERROR)
+        M.notify(M.with_stderr(what .. " failed", err), vim.log.levels.ERROR)
         return false
     end
     return true
+end
+
+-- `lead`, followed by what git said when it said anything
+---@param lead string
+---@param stderr string|nil
+---@return string
+function M.with_stderr(lead, stderr)
+    local said = vim.trim(stderr or "")
+    if said == "" then
+        return lead
+    end
+    return lead .. ": " .. said
 end
 
 -- strip trailing whitespace from a git output line (e.g. rev-parse, show, log)

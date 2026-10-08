@@ -810,7 +810,7 @@ local function remove_ok(abs)
     local ok, err = os.remove(abs)
     -- a file already gone from disk is as discarded as one removed here
     if not ok and (vim.uv or vim.loop).fs_lstat(abs) then
-        notify(("discard failed: %s"):format(err or ""), vim.log.levels.ERROR)
+        notify(exec.with_stderr("discard failed", err), vim.log.levels.ERROR)
         return false
     end
     return true
@@ -957,7 +957,7 @@ function M.discard(root, entry, preview)
     end
     -- restoring a staged deletion from HEAD would overwrite the copy still on disk
     if entry.kept then
-        local msg = "discard skipped: X would overwrite the untracked copy of %s on disk"
+        local msg = "discard skipped: X would overwrite %s on disk; u unstages the deletion instead"
         notify(msg:format(entry.path), vim.log.levels.WARN)
         return false
     end
@@ -1200,6 +1200,10 @@ function M.panel(opts)
             unstage = function(entry)
                 set_staged(root, entry, false)
             end,
+            stage_drops = function(entry)
+                return not preview and staging_ops.stage_drops(entry)
+            end,
+            drop_prompts = require("differ.git.staging").DROP_PROMPTS,
             unstage_drops = function(entry)
                 return staging_ops.unstage_drops(entry, function()
                     return M.model({ old = HEAD, new = WORKTREE }, root, entry)
@@ -1245,9 +1249,9 @@ function M.panel(opts)
         -- an empty list and a failed one look the same from here, and a mistyped
         -- revspec only ever lands as the second: report what git said
         if list_err then
-            return notify(chomp(list_err), vim.log.levels.ERROR)
+            return notify(exec.with_stderr("couldn't list changes", list_err), vim.log.levels.ERROR)
         end
-        return notify("no changes for this source")
+        return notify("no changes to show")
     end
 
     local view ---@type differ.View|nil -- the single diff view the panel drives
@@ -1689,10 +1693,13 @@ function M.panel(opts)
                         return
                     end
                     if preview then
-                        return notify("the commit preview has no local view: ds goes back")
+                        return notify(
+                            "the commit preview has no local view: ds goes back",
+                            vim.log.levels.WARN
+                        )
                     end
                     if not staging_ops.partly_staged(entry) then
-                        return notify(no_local_reason(entry))
+                        return notify(no_local_reason(entry), vim.log.levels.WARN)
                     end
                     local on_row = active_entry ~= nil and active_entry.path == entry.path
                     local local_view = view ~= nil
@@ -1834,7 +1841,7 @@ function M.history(opts)
     local commits, err = M.log_commits(root, { path = relpath })
     if #commits == 0 then
         if err then
-            return notify(chomp(err), vim.log.levels.ERROR)
+            return notify(exec.with_stderr("couldn't read history", err), vim.log.levels.ERROR)
         end
         return notify("no history for " .. relpath)
     end
@@ -1921,7 +1928,7 @@ function M.range_history(opts)
     local commits, err = M.range_commits(root, range)
     if #commits == 0 then
         if err then
-            return notify(chomp(err), vim.log.levels.ERROR)
+            return notify(exec.with_stderr("couldn't read history", err), vim.log.levels.ERROR)
         end
         return notify("no commits in " .. range)
     end

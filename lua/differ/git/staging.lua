@@ -24,6 +24,20 @@ local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
 
 local GITLINK = "160000"
 
+-- the confirms before s/S or u/U drop staged content nothing else holds, in the panel
+-- and a file's own view
+---@type differ.panel.DropPrompts
+M.DROP_PROMPTS = {
+    stage = {
+        one = "Stage the deletion of %s? The staged file will be lost.",
+        many = "Stage these files? Staged changes in %s will be lost.",
+    },
+    unstage = {
+        one = "Unstage %s? The staged change will be lost.",
+        many = "Unstage these files? Staged changes in %s will be lost.",
+    },
+}
+
 ---@class differ.git.StagingCtx
 ---@field root string
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
@@ -134,7 +148,7 @@ function M.new(ctx)
         local ok, err = gitmod.revert_patch(root, p)
         reload_buffer(root, entry.path)
         if not ok then
-            notify(("hunk revert failed: %s"):format(err or ""), vim.log.levels.ERROR)
+            notify(exec.with_stderr("hunk revert failed", err), vim.log.levels.ERROR)
             return false
         end
         return true
@@ -207,16 +221,13 @@ function M.new(ctx)
         local function refusal(take, reaches)
             if not reaches then
                 if take then
-                    return "this hunk's unstaged change sits under another hunk: "
-                        .. "s in dw stages it whole"
+                    return "this hunk can't be staged on its own here; stage it from dw"
                 end
-                return "this hunk's staged change sits under another hunk: "
-                    .. "u in ds unstages it whole"
+                return "this hunk can't be unstaged on its own here; unstage it from ds"
             end
-            local msg = "this hunk's staged change also covers hunk %d: "
-                .. "u on the ! hunk in dw, or in ds, unstages it whole"
+            local msg = "this hunk can't be unstaged without hunk %d; unstage it from ds"
             if take then
-                msg = "this hunk's unstaged change also covers hunk %d: s in dw stages it whole"
+                msg = "this hunk can't be staged without hunk %d; stage it from dw"
             end
             return msg:format(reaches)
         end
@@ -278,8 +289,8 @@ function M.new(ctx)
             end
             local _, reaches = stage.next_index(union, cached, unstaged, model.hunks[idx], false)
             if reaches then
-                local msg = "X can't revert hunk %d alone: its staged change also covers hunk %d"
-                notify(msg:format(idx, reaches), vim.log.levels.WARN)
+                local msg = "this hunk can't be reverted without hunk %d"
+                notify(msg:format(reaches), vim.log.levels.WARN)
                 return true
             end
             return false
@@ -297,8 +308,8 @@ function M.new(ctx)
             local hunk = model.hunks[idx]
             local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
             if reaches then
-                local msg = "X can't revert hunk %d alone: its staged change also covers hunk %d"
-                notify(msg:format(idx, reaches), vim.log.levels.WARN)
+                local msg = "this hunk can't be reverted without hunk %d"
+                notify(msg:format(reaches), vim.log.levels.WARN)
                 return false
             end
             -- a hunk the index holds nothing of on its own leaves the index where it is,
@@ -366,7 +377,7 @@ function M.new(ctx)
     local function whole_file_revert(entry, letter, preview)
         if letter == "D" then
             if entry.kept then
-                local why = "X would overwrite the untracked copy of %s on disk"
+                local why = "X would overwrite %s on disk; u unstages the deletion instead"
                 return nil, nil, why:format(entry.path)
             end
             return function()
@@ -380,7 +391,7 @@ function M.new(ctx)
         if letter == "A" or letter == "?" then
             return discard, "deletes the file"
         end
-        return discard, "puts it back as HEAD has it"
+        return discard, "resets it to HEAD"
     end
 
     -- a whole-file row's staged state. a conflict holds both sides at once, which the
@@ -422,6 +433,17 @@ function M.new(ctx)
             end
         end
         return true
+    end
+
+    -- whether staging the whole row loses staged content nothing else holds: a staged
+    -- change deleted on disk stages as the deletion, dropping the index's blob
+    ---@param entry differ.FileEntry
+    ---@return boolean
+    local function stage_drops(entry)
+        if entry.y ~= "D" or entry.x == " " or entry.x == "D" or entry.status == "U" then
+            return false
+        end
+        return unheld_blob(entry)
     end
 
     -- whether the row stages by hunk once its diff has any. git records no rename, only
@@ -474,6 +496,9 @@ function M.new(ctx)
             end,
             refresh = refresh_panel,
         }
+        if stage_drops(entry) then
+            staging.confirm_stage = M.DROP_PROMPTS.stage.one
+        end
         -- X puts a mode change or a binary file back as HEAD has it. a move stays with the
         -- panel row's keys, and a submodule has no X
         if entry.status == "M" then
@@ -797,7 +822,7 @@ function M.new(ctx)
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(entry, entry.x, preview)
             if entry.x == "A" and entry.y == "D" then
-                staging.revert_label = "drops the staged add, which nothing else holds"
+                staging.revert_label = "deletes the staged file"
             end
             -- a whole-file discard takes the worktree too, and this view shows none of it.
             -- read again at X: an edit since the view opened counts as well
@@ -903,9 +928,9 @@ function M.new(ctx)
             return text
         end
         if lo == hi then
-            return text, ("the staged line %d"):format(lo)
+            return text, ("line %d"):format(lo)
         end
-        return text, ("the staged lines %d-%d"):format(lo, hi)
+        return text, ("lines %d-%d"):format(lo, hi)
     end
 
     ---@param entry differ.FileEntry
@@ -1042,14 +1067,13 @@ function M.new(ctx)
                 return true
             end,
         }
-        if entry.x == "A" and entry.y == "D" then
-            staging.confirm_stage =
-                "Stage the deletion of %s? Nothing else holds its staged content."
+        if stage_drops(entry) then
+            staging.confirm_stage = M.DROP_PROMPTS.stage.one
         end
         staging.revert = function()
             return whole_restore(entry)
         end
-        staging.revert_label = "puts it back as the index has it"
+        staging.revert_label = "resets it to the index"
         local drop = whole_drop(entry, model)
         if drop then
             staging.hidden_in = { 1 }
@@ -1071,6 +1095,7 @@ function M.new(ctx)
         for_preview = for_preview,
         for_index = for_index,
         partly_staged = partly_staged,
+        stage_drops = stage_drops,
         unstage_drops = unstage_drops,
     }
 end
