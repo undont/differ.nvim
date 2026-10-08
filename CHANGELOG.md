@@ -19,7 +19,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Staged content that can't be shown in the standard diff is marked `!`, openable by `dw`
 - `X` on a hunk discards it from the index and the file together, instead of asking you to unstage it first
 - `s` and `u` walk the change set once and end with what is left, and `s` stops on a file whose remaining change only `dw` shows until you finish it there or leave it with `]f`
-- `u` and `U` ask before dropping staged content that neither `HEAD` nor the file on disk holds
+- `s`, `S`, `u` and `U` ask before dropping staged content that neither `HEAD` nor the file on disk holds
+- Prompts and notices say plainly what an action loses, or why it did nothing and where to do it instead
 - `X` in the panel on a staged edit whose file was then deleted brings it back as staged, instead of resetting it to `HEAD`
 
 ### Fixed
@@ -31,6 +32,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A file swapped for a symlink refused every staging key in the diff
 - `s` in the panel on a staged deletion reported "stage failed"
 - `X` in the panel on a submodule asked to discard it and then did nothing. It now says why
+- A sidecar that failed to start or kept crashing reported the error twice
+- Submitting a review after the PR head moved showed two warnings
+- `gh` errors that already said to run `gh auth login` repeated the advice
+- Git errors in notices ended with a blank line
 
 ## [0.1.45] — 2026-09-12
 
