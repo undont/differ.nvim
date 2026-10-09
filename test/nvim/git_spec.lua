@@ -7572,6 +7572,26 @@ describe(":Differ diff rename staging", function()
         p:close()
     end)
 
+    it("undoes a rename with X in the index only when a file is back at the old path", function()
+        local root = renamed_repo({ 5 })
+        write(root .. "/old/big.lua", "new file\n")
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+
+        confirming(1, function()
+            p:discard()
+        end)
+
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal(" M old/big.lua\n", status)
+        assert.are.same({ "new file" }, vim.fn.readfile(root .. "/old/big.lua"))
+        assert.are.equal(0, vim.fn.filereadable(root .. "/new/big.lua"))
+    end)
+
     it("names the path X will restore in its confirm", function()
         local root = renamed_repo()
         vim.cmd.edit(root .. "/new/big.lua")

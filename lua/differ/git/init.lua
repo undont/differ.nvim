@@ -989,10 +989,16 @@ function M.discard(root, entry, preview)
         -- untouched, so its new path is an add
         ok = git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard") and remove_ok(abs)
     elseif kind == "R" and entry.previous_path then
-        -- undoing a move: the old path comes back from HEAD, the new one goes like an add
-        ok = git_ok({ "checkout", "HEAD", "--", entry.previous_path }, root, "discard")
-            and git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard")
-            and remove_ok(abs)
+        -- undoing a move: the old path comes back from HEAD, the new one goes like an add.
+        -- a file since recreated at the old path stays as it is, against HEAD in the index
+        if (vim.uv or vim.loop).fs_lstat(root .. "/" .. entry.previous_path) then
+            local unstage = { "reset", "-q", "HEAD", "--", entry.previous_path, entry.path }
+            ok = git_ok(unstage, root, "discard") and remove_ok(abs)
+        else
+            ok = git_ok({ "checkout", "HEAD", "--", entry.previous_path }, root, "discard")
+                and git_ok({ "reset", "-q", "HEAD", "--", entry.path }, root, "discard")
+                and remove_ok(abs)
+        end
     else
         ok = git_ok({ "checkout", "HEAD", "--", entry.path }, root, "discard") -- index + worktree
     end
