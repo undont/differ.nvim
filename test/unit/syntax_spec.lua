@@ -28,6 +28,22 @@ describe("syntax.project", function()
         assert.are.same({ { row = 2, col_start = 2, col_end = 4, hl = "@b.x" } }, marks)
     end)
 
+    it("carries the layer priority through, so injections stay above their host", function()
+        local from = { [1] = 1 }
+        local marks = project.project({
+            {
+                row = 0,
+                col_start = 0,
+                col_end = 4,
+                hl = "@markup.raw.block.markdown",
+                priority = 90,
+            },
+            { row = 0, col_start = 0, col_end = 5, hl = "@keyword.lua", priority = 91 },
+        }, from)
+        assert.are.equal(90, marks[1].priority)
+        assert.are.equal(91, marks[2].priority)
+    end)
+
     it("returns nothing for no captures", function()
         assert.are.same({}, project.project({}, { [1] = 1 }))
     end)

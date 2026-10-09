@@ -16,19 +16,40 @@ local function model(old, new, path)
     })
 end
 
--- syntax extmarks for a buffer: { {row, col, end_col, hl}, ... }
+-- syntax extmarks for a buffer: { {row, col, end_col, hl, priority}, ... }
 local function syntax_marks(bufnr)
     local out = {}
     for _, m in ipairs(vim.api.nvim_buf_get_extmarks(bufnr, ns, 0, -1, { details = true })) do
-        out[#out + 1] = { row = m[2], col = m[3], end_col = m[4].end_col, hl = m[4].hl_group }
+        out[#out + 1] = {
+            row = m[2],
+            col = m[3],
+            end_col = m[4].end_col,
+            hl = m[4].hl_group,
+            priority = m[4].priority,
+        }
     end
     return out
 end
 
--- is there a mark with `hl` on `row` (optionally starting at `col`)?
-local function has(marks, row, hl, col)
+-- the first mark with `hl` on `row` (optionally starting at `col`), or nil
+local function find(marks, row, hl, col)
     for _, m in ipairs(marks) do
         if m.row == row and m.hl == hl and (col == nil or m.col == col) then
+            return m
+        end
+    end
+    return nil
+end
+
+-- is there a mark with `hl` on `row` (optionally starting at `col`)?
+local function has(marks, row, hl, col)
+    return find(marks, row, hl, col) ~= nil
+end
+
+-- is there a mark with `hl` anywhere in the buffer?
+local function has_hl(marks, hl)
+    for _, m in ipairs(marks) do
+        if m.hl == hl then
             return true
         end
     end
@@ -89,6 +110,50 @@ describe("syntax pass (split)", function()
     end)
 end)
 
+-- injected languages: a fenced lua block in markdown. both parsers ship with nvim, so
+-- this holds wherever the suite runs; astro/vue/svelte are the same shape, with the bulk
+-- of the file living in injections rather than in the host tree
+describe("syntax pass (injections)", function()
+    -- stacked, whole-file context: "# t"(0), ""(1), "```lua"(2), old(3), new(4), "```"(5)
+    local function md_view()
+        return view("# t\n\n```lua\nlocal x = 1\n```\n", "# t\n\n```lua\nlocal y = 2\n```\n", {
+            path = "x.md",
+        })
+    end
+
+    it("highlights the embedded language, not just the host", function()
+        local v = md_view()
+        v:open()
+        local marks = syntax_marks(v.columns[1].bufnr)
+        assert.is_true(has(marks, 3, "@keyword.lua", 0)) -- `local` on the old line
+        assert.is_true(has(marks, 4, "@keyword.lua", 0)) -- and on the new line
+        assert.is_true(has(marks, 0, "@markup.heading.1.markdown")) -- host tree still paints
+        v:close()
+    end)
+
+    it("layers an injected capture over the host's on the same row", function()
+        local v = md_view()
+        v:open()
+        local marks = syntax_marks(v.columns[1].bufnr)
+        -- markdown captures the whole fence as raw block, lua captures inside it
+        local host = find(marks, 3, "@markup.raw.block.markdown")
+        local injected = find(marks, 3, "@keyword.lua")
+        assert.is_not_nil(host)
+        assert.is_not_nil(injected)
+        assert.is_true(injected.priority > host.priority)
+        v:close()
+    end)
+
+    it("skips spell captures, which carry metadata rather than a highlight", function()
+        local v = md_view()
+        v:open()
+        local marks = syntax_marks(v.columns[1].bufnr)
+        assert.is_false(has_hl(marks, "@spell.markdown"))
+        assert.is_false(has_hl(marks, "@nospell.markdown"))
+        v:close()
+    end)
+end)
+
 -- apply_snippets projects treesitter captures onto arbitrary buffer rows (the overview's
 -- boxed hunk lines), parsed from the stripped source text and shifted right by col_offset
 -- to clear the box spine + inset. same namespace/helpers as the View syntax pass
@@ -120,6 +185,25 @@ describe("apply_snippets (overview hunk syntax)", function()
         local marks = syntax_marks(b)
         assert.is_true(has(marks, 0, "@keyword.lua", offset)) -- `local`, shifted past the inset
         assert.is_true(has(marks, 1, "@function.call.lua")) -- keep() on the next snippet row
+    end)
+
+    it("projects injected captures too, shifted by col_offset", function()
+        local offset = 3
+        local pad = string.rep(" ", offset)
+        local src = { "```lua", "local x = 1", "```" }
+        local b = scratch({ pad .. src[1], pad .. src[2], pad .. src[3] })
+        syntax.apply_snippets(b, {
+            {
+                path = "x.md",
+                col_offset = offset,
+                lines = {
+                    { text = src[1], row = 0 },
+                    { text = src[2], row = 1 },
+                    { text = src[3], row = 2 },
+                },
+            },
+        })
+        assert.is_true(has(syntax_marks(b), 1, "@keyword.lua", offset))
     end)
 
     it("is a no-op for a path with no treesitter language", function()
