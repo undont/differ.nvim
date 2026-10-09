@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- In the merge tool, `g?`, `]x` and `[x` also work from the ours, theirs and base panes
+
+## [0.2.3] — 2026-10-09
+
 ### Fixed
 
 - A file whose `.gitattributes` sets a clean filter, `ident` or `working-tree-encoding` showed changes `git diff` doesn't, and staging its hunks could stage different content from `git add`. Its worktree side now reads as git would store it
