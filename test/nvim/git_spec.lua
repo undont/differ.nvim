@@ -408,9 +408,8 @@ describe("git.read (worktree clean filter)", function()
         local source = { old = { kind = "index", label = "INDEX" }, new = wt }
         local model = git_src.model(source, root, { path = "conf.txt" })
         assert.are.equal(1, #model.hunks)
-        local patch = require("differ.git.patch")
-        local p = patch.hunk("conf.txt", model.hunks[1], model.old_text, model.new_text, 0, false)
-        assert.is_true(git_src.apply_patch(root, p, false))
+        local text = require("differ.model.apply").splice(model, { true })
+        assert.is_true(require("differ.git.index").write_index(root, "conf.txt", text))
         assert.are.equal("a\nNEW\nb\n", raw_indexed(root, "conf.txt"))
     end)
 
