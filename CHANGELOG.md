@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `X` on a staged rename overwrote a file recreated at the old path with its `HEAD` content. It now undoes the rename and leaves that file as it is
+
+## [0.2.1] — 2026-10-09
+
 ### Added
 
 - The diff view highlights code embedded in another language with that language's parser, not only the file's own grammar
