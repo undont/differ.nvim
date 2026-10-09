@@ -398,19 +398,6 @@ local function untracked_additions(root, relpath)
     return additions
 end
 
--- whether `relpath` is currently conflicted
----@param root string
----@param relpath string
----@return boolean
-function M.is_conflicted(root, relpath)
-    for _, p in ipairs(M.conflicted(root)) do
-        if p == relpath then
-            return true
-        end
-    end
-    return false
-end
-
 -- list changed files for a resolved source (used by the picker/panel). rev.source is
 -- pure and can't tell a real ref from a typo, so this is the first call that finds
 -- out: git's stderr rides along, else a typo reads as an empty change set
