@@ -52,7 +52,7 @@ function M.start(session, opts)
             return require("differ.pr").notify_err(err)
         end
         session.review_id = res and res.review_id
-        notify("review started - comments are drafts until you submit")
+        notify("review started; comments are drafts until you submit")
     end)
 end
 
@@ -87,9 +87,15 @@ function M.reattach(session, opts)
                 session.panel:goto_path(session.entries[next_up].path)
             end
         end
-        notify("resumed your pending review - comments are drafts")
+        notify("resumed your pending review; comments are drafts")
     end)
 end
+
+local EVENT_LABELS = {
+    COMMENT = "Comment",
+    APPROVE = "Approve",
+    REQUEST_CHANGES = "Request changes",
+}
 
 -- :Differ pr review submit - finalise the draft as one batch. pick an event, author a summary
 -- in the compose float, then submit with the session head guard. on success the drafts
@@ -101,12 +107,15 @@ function M.submit(session)
     end
     vim.ui.select({ "COMMENT", "APPROVE", "REQUEST_CHANGES" }, {
         prompt = "Submit review as",
+        format_item = function(event)
+            return EVENT_LABELS[event]
+        end,
     }, function(event)
         if not event then
             return -- cancelled the pick; nothing submitted
         end
         require("differ.ui.compose").open({
-            title = "Review summary · " .. event,
+            title = "Review summary · " .. EVENT_LABELS[event],
             layout = session.view and session.view.layout,
             anchor_win = diff_win(session),
             on_submit = function(body)
@@ -131,15 +140,13 @@ function M._do_submit(session, event, body)
         end
         if err then
             if err.code == "conflict" then
-                return require("differ.pr").handle_conflict(function()
-                    notify("re-submit your review against the refreshed head", vim.log.levels.WARN)
-                end)
+                return require("differ.pr").handle_conflict()
             end
             return require("differ.pr").notify_err(err)
         end
         session.review_id = nil
         repaint_threads(session)
-        notify("review submitted · " .. event)
+        notify("review submitted · " .. EVENT_LABELS[event]:lower())
     end)
 end
 

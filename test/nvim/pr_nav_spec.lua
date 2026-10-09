@@ -1218,7 +1218,7 @@ describe("pr overview commenting", function()
         assert.is_true(fire_lhs(buf, "gp"))
 
         assert.are.equal(
-            "differ: nothing here to answer; ga comments on the PR",
+            "differ: nothing here to reply to or quote; ga comments on the PR",
             _G.notifs[#_G.notifs].msg
         )
         assert.are.equal(buf, vim.api.nvim_get_current_buf()) -- no compose split opened

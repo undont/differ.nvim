@@ -80,7 +80,7 @@ end
 ---@field context? number|"full"
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
----@field on_edit_unstage? fun(path: string)
+---@field commit_preview? fun()
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -104,7 +104,7 @@ function M.diff_model(model, opts)
             keymaps = cfg.keymaps.diff --[[@as table]],
             staging = opts.staging,
             can_stage = opts.can_stage,
-            on_edit_unstage = opts.on_edit_unstage,
+            commit_preview = opts.commit_preview,
             extra_keymaps = opts.extra_keymaps,
             on_rerender = opts.on_rerender,
             on_cursor = opts.on_cursor,
@@ -218,7 +218,7 @@ end
 function M.jump_to_file()
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:jump_to_file()
 end
@@ -230,7 +230,7 @@ end
 function M.edit_file()
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:edit_file()
 end
@@ -243,7 +243,7 @@ end
 function M.goto_hunk(direction, opts)
     local view = M.active_view()
     if not view then
-        return vim.notify("differ: no diff view here", vim.log.levels.WARN)
+        return vim.notify("differ: no differ view open", vim.log.levels.WARN)
     end
     view:goto_hunk(direction, opts)
 end

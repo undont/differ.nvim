@@ -26,6 +26,8 @@ local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
 -- where the first narrow step lands when coming down from whole-file, which has no
 -- finite neighbour to decrement
 local FULL_STEP_DOWN = 10
+-- the display width the walk's last word gives to naming leftover files
+local LEFTOVER_WIDTH = 40
 
 local set_wo = require("differ.util.win").set_local
 
@@ -62,34 +64,47 @@ local armed_view = nil
 ---@field side differ.ColumnSide
 ---@field folds? differ.FoldRange[]
 
--- the hunk-staging capability the git frontend supplies per source. the
--- view keeps its diff frozen and marks staged hunks in place rather than re-reading
--- git, so it tracks per-hunk state and calls `apply` to patch one hunk: `reverse`
--- false stages, true unstages, `offset` shifts past already-staged hunks before it.
--- `initial` is every hunk's opening state (an unstaged diff opens unstaged, a staged
--- one opens staged). `apply` patches one hunk and returns ok; `refresh` repaints the
--- panel counts and is called once after a single toggle or a whole S/U batch
+-- the hunk-staging capability the git frontend supplies per source. the view keeps its
+-- diff frozen and reads staged state from `marks`, which the source keeps current;
+-- `apply` stages one hunk (`reverse` unstages it) and returns ok, and `refresh`
+-- repaints the panel counts once after a single toggle or a whole S/U batch.
 -- `apply` and `revert` are independently optional, and each one's absence gates its own
--- keys rather than the whole capability. the git frontend supplies both wherever it
--- stages at all: a deleted file stages wholesale like a new one, and reverts by
--- restoring the file rather than removing it.
--- `revert` throws a hunk away instead of moving it between index and worktree, and its
--- absence is what gates the key off a source that can't do it. `offset` shifts its
--- index-side apply past hunks unstaged before it; its worktree apply needs none, since
--- a revert re-sources the model. `revert_label` names the consequence for a file whose
+-- keys rather than the whole capability. `revert` throws a hunk away instead of moving
+-- it between index and worktree. `revert_label` names the consequence for a file whose
 -- whole content is one hunk, where reverting isn't a partial act: the frontend knows
 -- what it will do to the file, the view words the question
 ---@class differ.view.Staging
----@field initial "staged"|"unstaged"
+---@field initial? differ.model.HunkState  -- a whole-file source: where it starts
 -- `whole_file` stages as a unit: the keys act on the file, and its diff shares one
 -- staged-state slot
 ---@field whole_file? boolean
 -- `apply` takes a nil hunk on a whole-file source, which ignores it
----@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, offset: integer, reverse: boolean): boolean
----@field revert? fun(model: differ.DiffModel, hunk: differ.Hunk, offset: integer): boolean
+-- the second return says the op refused because this hunk can't move on its own, as
+-- against a failure: the source has named the view that can take it whole
+---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
+---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
+---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
 ---@field revert_label? string  -- e.g. "deletes the file"
+---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field refresh fun()
----@field settle? fun(): boolean  -- post-op: re-target the view when this pair emptied
+---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
+---@field hidden? boolean  -- union source: some staged content isn't on screen
+---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
+---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
+---@field no_local? string  -- why dw does nothing here, in place of the default
+---@field leave? fun()  -- a frozen view: back to the whole change, whose new side is the file to edit
+---@field badge? string  -- winbar tag naming a view that isn't the whole change
+---@field unstage_hidden? fun(idx: integer): boolean  -- u on a `!` hunk: drop the staged change it undoes
+-- `unheld` says u on slot `idx`, or U when it's nil, drops staged content neither HEAD
+-- nor the file holds, so the key confirms first
+---@field unheld? fun(model: differ.DiffModel, idx: integer|nil): boolean
+---@field confirm_stage? string  -- s and S ask this first, `%s` the path: they drop content too
+-- `drop_scope` names the lines u on `!` hunk `idx` takes back, when wider than the hunk
+---@field drop_scope? fun(idx: integer): string|nil
+-- `set_all` runs S / U on the whole file at once, and says whether the index moved
+-- the second return says the op refused (a stale drawing, an unreadable index), as
+-- against there being nothing to move
+---@field set_all? fun(model: differ.DiffModel, staged: boolean): boolean, boolean|nil
 
 ---@class differ.View
 ---@field columns differ.ViewColumn[]
@@ -103,9 +118,10 @@ local armed_view = nil
 ---@field keymaps table
 ---@field can_stage boolean  -- session-level: bind s/u (worktree-status panels)
 ---@field staging differ.view.Staging|nil  -- per-source capability (nil off-side)
----@field staged_hunks table<integer, boolean>  -- hunk index -> staged, for marking
+---@field commit_preview fun()|nil  -- session-level: ds flips the panel's listing
 ---@field fold_memory table<string, differ.view.OpenedFolds>  -- diff_key -> its open folds when last left
----@field on_edit_unstage fun(path: string)|nil  -- frontend hook: unstage + re-source for edit-in-review
+---@field marks differ.model.Marks  -- which lines the index holds; hunk state rolls up from it
+---@field stuck table<string, table<integer, boolean>>  -- hunks a key refused to move, by the state it wanted
 ---@field extra_keymaps differ.panel.ExtraMap[]|nil  -- session-supplied buffer maps (pr unviewed nav)
 ---@field on_rerender fun()|nil  -- session hook after a re-render, to re-apply overlays (pr threads)
 ---@field on_cursor fun()|nil  -- session hook on cursor move in a diff window (pr thread cursor-expand)
@@ -131,7 +147,7 @@ View.__index = View
 ---@field keymaps? table
 ---@field staging? differ.view.Staging
 ---@field can_stage? boolean
----@field on_edit_unstage? fun(path: string)
+---@field commit_preview? fun()  -- session-level: ds flips the panel's listing
 ---@field extra_keymaps? differ.panel.ExtraMap[]
 ---@field on_rerender? fun()
 ---@field on_cursor? fun()
@@ -161,14 +177,16 @@ function View.new(model, opts)
         ),
         can_stage = opts.can_stage or false,
         staging = opts.staging,
-        on_edit_unstage = opts.on_edit_unstage,
+        -- the session's own listing flip, so ds reads the same either side of the diff
+        commit_preview = opts.commit_preview,
         -- session-supplied maps the generic diff surface doesn't own (pr unviewed nav)
         extra_keymaps = opts.extra_keymaps,
         on_rerender = opts.on_rerender,
         on_cursor = opts.on_cursor,
         on_repurpose = opts.on_repurpose,
-        staged_hunks = {},
         fold_memory = {},
+        marks = { old = {}, new = {} },
+        stuck = { staged = {}, unstaged = {} },
         id = next_id(),
         _suppress_close = false,
         _closing = false,
@@ -178,16 +196,25 @@ function View.new(model, opts)
     return self
 end
 
--- seed staged state for the current source: a staged diff (HEAD↔index) opens with
--- everything staged, an unstaged diff (index↔worktree) with nothing
+-- seed staged state for the current source. a hunk-level source hands over its marks
+-- and keeps them current itself; a whole-file one starts from `initial`
 function View:_init_staged()
-    self.staged_hunks = {}
-    if not (self.staging and self.staging.initial == "staged") then
+    self:_forget_stuck()
+    local staging = self.staging
+    if staging and staging.marks then
+        self.marks = staging.marks
         return
     end
-    for i = 1, self:_slot_count() do
-        self.staged_hunks[i] = true
+    self.marks = { old = {}, new = {} }
+    if staging and self:_whole_file() then
+        self.marks.whole = staging.initial
     end
+end
+
+-- drop the record of hunks a key has refused to move. any op moves what the index
+-- holds, so what was unreachable before it may not be after
+function View:_forget_stuck()
+    self.stuck = { staged = {}, unstaged = {} }
 end
 
 -- a stable, file-shaped buffer name so the statusline/winbar shows the file path
@@ -304,6 +331,7 @@ function View:rerender(opts)
         paint.apply(bufnr, ns, col)
         syntax.apply(bufnr, col, self.model)
         statuscolumn.set(bufnr, statuscolumn.format(col))
+        statuscolumn.set_no_eol(bufnr, col.map)
         self.columns[i] = {
             bufnr = bufnr,
             winid = existing and existing.winid or nil,
@@ -338,11 +366,23 @@ function View:_paint_staged()
     if not self.can_stage then
         return
     end
+    local hidden = {}
+    for _, h in ipairs(self.staging and self.staging.hidden_in or {}) do
+        hidden[h] = true
+    end
     for _, col in ipairs(self.columns) do
+        local opening, seen = {}, {}
+        for i, line in ipairs(col.map.lines) do
+            local h = line.hunk
+            if h and hidden[h] and not seen[h] then
+                seen[h], opening[i] = true, true
+            end
+        end
+        statuscolumn.set_hidden(col.bufnr, opening)
         vim.api.nvim_buf_clear_namespace(col.bufnr, staged_ns, 0, -1)
         local staged_lines = {}
         for i, line in ipairs(col.map.lines) do
-            if line.hunk and self.staged_hunks[self:_slot(line.hunk)] then
+            if self:_line_staged(line) then
                 local row = i - 1
                 -- char-level fill with hl_eol, not line_hl_group: a line_hl_group covers
                 -- the text but loses the past-EOL tail to the diff bg's own hl_eol (it
@@ -432,10 +472,7 @@ function View:_paint_cursorline()
     -- a staged line is recoloured above the live word spans (210/215); lift the cursor
     -- tint over that so the focused line still lights up in its kind. on a normal line
     -- stay under the word spans (200) so changed words show through under the cursor
-    local staged = self.can_stage
-        and line
-        and line.hunk
-        and self.staged_hunks[self:_slot(line.hunk)]
+    local staged = self.can_stage and line ~= nil and self:_line_staged(line)
     vim.api.nvim_buf_set_extmark(col.bufnr, cursor_ns, row, 0, {
         end_row = row + 1,
         end_col = 0,
@@ -443,22 +480,6 @@ function View:_paint_cursorline()
         hl_eol = true, -- fill past EOL so the whole row is covered, like the diff bg
         priority = staged and 220 or 160,
     })
-end
-
--- the net line-count delta of the staged hunks before `idx`: the frozen view's
--- line numbers are from open time, but git applies against the live index, where
--- each already-staged earlier hunk has shifted positions by its added/removed lines
----@param idx integer
----@return integer
-function View:_stage_offset(idx)
-    local off = 0
-    for j = 1, idx - 1 do
-        if self.staged_hunks[j] then
-            local h = self.model.hunks[j]
-            off = off + (h.new_count - h.old_count)
-        end
-    end
-    return off
 end
 
 -- open folds by the rail lines at their ends, with the texts those line numbers refer to
@@ -644,6 +665,27 @@ function View:toggle_layout()
     self:set_layout(self.layout == "stacked" and "split" or "stacked")
 end
 
+-- dw: swap a partly staged file between its whole change (HEAD↔worktree) and what
+-- changed since staging (index↔worktree)
+-- ds: the same flip the panel's key does. the session owns the listing, so the view
+-- only asks for it
+function View:toggle_commit_preview()
+    if not self.commit_preview then
+        return vim.notify("differ: no commit preview here", vim.log.levels.INFO)
+    end
+    self.commit_preview()
+end
+
+function View:toggle_local()
+    local toggle = self.staging and self.staging.toggle_local
+    if not toggle then
+        local why = self.staging and self.staging.no_local
+            or "only a partly staged file has a local view"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
+    end
+    toggle()
+end
+
 -- set the per-view context line count (math.huge = whole file). same column
 -- count, so no relayout, content/map/gutter/highlights refresh in place
 ---@param n number
@@ -800,6 +842,14 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.unstage_all, function()
             self:unstage_all()
         end, "differ: unstage all hunks")
+        bind(bufnr, km.toggle_local, function()
+            self:toggle_local()
+        end, "differ: toggle the local view")
+        if self.commit_preview then
+            bind(bufnr, km.commit_preview, function()
+                self:toggle_commit_preview()
+            end, "differ: toggle the commit preview")
+        end
         -- hunk-level here vs the panel's file-level discard, and destructive either
         -- way, so it confirms rather than acting straight off the key
         bind(bufnr, km.discard, function()
@@ -821,6 +871,10 @@ end
 ---@return boolean moved
 function View:step_file(direction, wrap)
     local panel = require("differ.panel").current()
+    -- stepping off a file the s walk stopped on leaves it: the walk doesn't come back
+    if panel and self:_can_stage_hunk() and self:_review_done(false) then
+        panel:accept_review(false)
+    end
     if panel and panel:is_open() then
         return panel:goto_file(direction, true, wrap) -- keep focus in the diff window
     end
@@ -885,6 +939,18 @@ function View:show_help()
     end
     if self.staging and self.staging.revert then
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
+    end
+    if self.staging and self.staging.toggle_local then
+        local what = self.staging.badge == "LOCAL" and "back to the whole change"
+            or "changes since staging"
+        rows[#rows + 1] = { fmt(km.toggle_local), what }
+    end
+    if self.commit_preview then
+        local what = "commit preview: staged changes only"
+        if self.staging and self.staging.badge == "STAGED" then
+            what = "back to every change"
+        end
+        rows[#rows + 1] = { fmt(km.commit_preview), what }
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         rows[#rows + 1] = { fmt(m.spec), m.desc }
@@ -961,12 +1027,23 @@ function View:goto_hunk(direction, opts)
 end
 
 -- a hunk filter for the review scans: `staged` picks the side, so false matches every
--- hunk still to stage and true every one still to unstage
+-- hunk with something left to stage and true every one with something left to unstage.
+-- a partial hunk matches both; one the key has already refused to move matches neither,
+-- so the walk reads the file as done rather than circling the hunk it can't take. a `!`
+-- hunk u can drop counts as something left to unstage
 ---@param staged boolean
 ---@return fun(hunk: integer): boolean
 function View:_review_filter(staged)
+    local done = staged and "unstaged" or "staged"
+    local refused = self.stuck[done]
     return function(hunk)
-        return (self.staged_hunks[self:_slot(hunk)] or false) == staged
+        if refused[hunk] then
+            return false
+        end
+        if staged and self:_drops_hidden(hunk) then
+            return true
+        end
+        return self:_hunk_state(hunk) ~= done
     end
 end
 
@@ -1124,14 +1201,56 @@ function View:_slot_count()
     return #self.model.hunks
 end
 
--- the slot holding hunk `h`'s staged state
----@param h integer
----@return integer
-function View:_slot(h)
-    if self:_whole_file() then
-        return 1
+-- whether a rail line's content is already in the index
+---@param line differ.RailLine
+---@return boolean
+function View:_line_staged(line)
+    if not line.hunk then
+        return false
     end
-    return h
+    if self:_whole_file() then
+        return self.marks.whole == "staged"
+    end
+    if line.kind == "old" then
+        return self.marks.old[line.old] or false
+    end
+    if line.kind == "new" then
+        return self.marks.new[line.new] or false
+    end
+    return false
+end
+
+-- a slot's staged state. only a union source has a middle: a hunk git merged out of a
+-- change staged and another made after it holds some lines the index has and some it
+-- doesn't, and s and u both have work to do on it
+---@param idx integer
+---@return differ.model.HunkState
+function View:_hunk_state(idx)
+    if self:_whole_file() then
+        return self.marks.whole or "unstaged"
+    end
+    local h = self.model.hunks[idx]
+    if not h then
+        return "unstaged"
+    end
+    return require("differ.model.marks").state(self.marks, h)
+end
+
+-- how many of the file's hunks the index holds, and how many it holds part of. nil off
+-- a hunk-staging source, which has nothing to tally
+---@return { staged: integer, partial: integer, total: integer }|nil
+function View:hunk_tally()
+    if not self:_can_stage_hunk() or self:_whole_file() then
+        return nil
+    end
+    local counts = { staged = 0, partial = 0, total = #self.model.hunks }
+    for i = 1, counts.total do
+        local state = self:_hunk_state(i)
+        if state == "staged" or state == "partial" then
+            counts[state] = counts[state] + 1
+        end
+    end
+    return counts
 end
 
 -- the slot the staging keys act on: slot 1 for a whole-file source, backed by a hunk
@@ -1144,24 +1263,28 @@ function View:_target_index()
     return self:_hunk_index_under_cursor()
 end
 
--- patch hunk `idx` to `want_staged` in the index from the frozen hunk model (never
--- buffer text), shifted past the hunks staged before it, and mark it. no panel
--- refresh / repaint, so callers can batch. returns whether it changed
+-- move hunk `idx` to `want_staged` in the index from the hunk model (never buffer
+-- text), and mark it. no panel refresh / repaint, so callers can batch. returns
+-- whether it changed, and whether the source refused because this hunk can't move on
+-- its own (as against a failure, which leaves the cursor where it is)
 ---@param idx integer
 ---@param want_staged boolean
----@return boolean
+---@return boolean changed, boolean|nil stuck
 function View:_apply_hunk(idx, want_staged)
     local apply = self.staging and self.staging.apply
-    if not apply or (self.staged_hunks[idx] or false) == want_staged then
+    local want = want_staged and "staged" or "unstaged"
+    if not apply or self:_hunk_state(idx) == want then
         return false
     end
-    local offset = self:_stage_offset(idx)
-    -- reverse unstages: we patch away a change currently in the index
-    if apply(self.model, self.model.hunks[idx], offset, not want_staged) then
-        self.staged_hunks[idx] = want_staged
-        return true
+    -- reverse unstages: the change leaves the index
+    local changed, stuck = apply(self.model, self.model.hunks[idx], not want_staged)
+    if not changed then
+        return false, stuck
     end
-    return false
+    if self:_whole_file() then
+        self.marks.whole = want
+    end
+    return true
 end
 
 -- s: stage the hunk under the cursor, or advance if there's nothing to stage here.
@@ -1173,11 +1296,21 @@ function View:stage_hunk()
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_target_index()
-    if idx and not (self.staged_hunks[idx] or false) then
+    if idx and self:_hunk_state(idx) ~= "staged" then
+        if not self:_stage_confirmed() then
+            return
+        end
         self:_toggle_hunk(true)
     else
         self:_step_review("next")
     end
+end
+
+-- whether s / S may go ahead where staging drops content too
+---@return boolean
+function View:_stage_confirmed()
+    local prompt = self.staging and self.staging.confirm_stage
+    return not prompt or self:_confirmed(prompt:format(self.model.path))
 end
 
 -- u: the mirror of s. unstage the staged hunk under the cursor, or retreat to the
@@ -1187,23 +1320,159 @@ function View:unstage_hunk()
         return vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
     end
     local idx = self:_target_index()
-    if idx and (self.staged_hunks[idx] or false) then
+    if idx and self:_hunk_state(idx) ~= "unstaged" then
+        if self:_drops_unheld(idx) and not self:_confirmed(self:_drop_prompt(idx)) then
+            return
+        end
         self:_toggle_hunk(false)
+    elseif idx and self:_drops_hidden(idx) then
+        self:_drop_hidden(idx)
     else
         self:_step_review("prev")
     end
 end
 
+-- ask `prompt` before an op that drops content, and whether to go ahead. the prompt
+-- drains scheduled callbacks, so the model is checked again after it
+---@param prompt string
+---@return boolean
+function View:_confirmed(prompt)
+    local asked_on = self.model
+    if vim.fn.confirm(prompt, "&Yes\n&No", 2) ~= 1 then
+        return false
+    end
+    if self.model ~= asked_on then
+        vim.notify(
+            "differ: the diff changed while the prompt was up; nothing was changed",
+            vim.log.levels.WARN
+        )
+        return false
+    end
+    return true
+end
+
+-- the confirm for dropping the staged change in slot `idx`, or in the whole file
+---@param idx integer|nil
+---@return string
+function View:_drop_prompt(idx)
+    local scope = idx and self.staging.drop_scope and self.staging.drop_scope(idx)
+    if scope then
+        return ("Unstage %s in %s? The staged change will be lost."):format(scope, self.model.path)
+    end
+    if idx and not self:_whole_file() then
+        return ("Unstage hunk %d/%d in %s? The staged change will be lost."):format(
+            idx,
+            #self.model.hunks,
+            self.model.path
+        )
+    end
+    return ("Unstage %s? The staged change will be lost."):format(self.model.path)
+end
+
+-- u on a `!` hunk drops staged content no other side holds, so it confirms like X does
+---@param idx integer
+function View:_drop_hidden(idx)
+    if self:_confirmed(self:_drop_prompt(idx)) then
+        self.staging.unstage_hidden(idx)
+    end
+end
+
+-- whether u on slot `idx`, or U when it's nil, needs a confirm before it runs
+---@param idx integer|nil
+---@return boolean
+function View:_drops_unheld(idx)
+    local unheld = self.staging and self.staging.unheld
+    return unheld ~= nil and unheld(self.model, idx)
+end
+
+-- whether u on unmarked hunk `idx` drops staged content the whole change can't show
+---@param idx integer
+---@return boolean
+function View:_drops_hidden(idx)
+    if not (self.staging and self.staging.unstage_hidden) then
+        return false
+    end
+    return vim.tbl_contains(self.staging.hidden_in or {}, idx)
+end
+
 -- hand the file-level half of the review walk to the panel: the next file with work
--- left on the `staged` pair, cycling past the list ends. not View:step_file, which also
+-- left on the `staged` pair, cycling past the list ends. s stops instead on a file whose
+-- local view has something left, until dw finishes it or ]f leaves it. not View:step_file, which also
 -- serves ]f / [f and file history; the review flow needs a worktree-status panel (it's
 -- the only source that stages) and the state-aware step only that panel can make
 ---@param direction "next"|"prev"
 ---@param staged boolean
----@return boolean moved
+---@return boolean handled  -- moved, or stopped on this file
 function View:_step_review_file(direction, staged)
     local panel = require("differ.panel").current()
-    return panel ~= nil and panel:step_review(direction, staged, true)
+    if not panel then
+        return false
+    end
+    local st = self.staging
+    local offers_local = st ~= nil and st.toggle_local ~= nil and st.badge ~= "LOCAL"
+    if not staged and offers_local and panel:has_local_work() then
+        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        local msg = ("differ: %s has local changes: %s shows them"):format(self.model.path, key)
+        vim.notify(msg, vim.log.levels.INFO)
+        return true
+    end
+    if self:_review_done(staged) then
+        panel:accept_review(staged)
+    end
+    return panel:step_review(direction, staged, true)
+end
+
+-- whether no hunk here has anything left for the walk's key: stepping off leaves the
+-- rest of the file as it is shown
+---@param staged boolean
+---@return boolean
+function View:_review_done(staged)
+    local want = self:_review_filter(staged)
+    for i = 1, self:_slot_count() do
+        if want(i) then
+            return false
+        end
+    end
+    return true
+end
+
+-- `names` joined while they fit LEFTOVER_WIDTH, the first always and whole, and the rest
+-- as a count
+---@param names string[]
+---@return string
+local function fit_names(names)
+    local shown, width = { names[1] }, vim.api.nvim_strwidth(names[1])
+    for i = 2, #names do
+        width = width + 2 + vim.api.nvim_strwidth(names[i])
+        if width > LEFTOVER_WIDTH then
+            break
+        end
+        shown[i] = names[i]
+    end
+    local out = table.concat(shown, ", ")
+    if #shown < #names then
+        out = ("%s +%d"):format(out, #names - #shown)
+    end
+    return out
+end
+
+-- the walk's end: nothing left for the key. s names the rows it passed with changes
+-- only the local view shows; what u leaves staged there (a move, a mode) isn't dw's
+---@param staged boolean
+function View:_walk_done(staged)
+    local msg = staged and "differ: nothing left to unstage" or "differ: nothing left to stage"
+    local panel = require("differ.panel").current()
+    local left = (panel and not staged) and panel:review_leftover() or {}
+    if #left > 0 then
+        local paths = {}
+        for i, e in ipairs(left) do
+            paths[i] = e.path
+        end
+        local verb = #left == 1 and "has" or "have"
+        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        msg = ("%s (%s %s local changes: %s shows them)"):format(msg, fit_names(paths), verb, key)
+    end
+    vim.notify(msg, vim.log.levels.INFO)
 end
 
 -- the second tap of s / u: move to the next hunk that still has work left on it,
@@ -1251,10 +1520,7 @@ function View:_step_review(direction)
         return
     end
 
-    vim.notify(
-        forward and "differ: no more hunks to stage" or "differ: no more hunks to unstage",
-        vim.log.levels.INFO
-    )
+    self:_walk_done(staged)
 end
 
 -- toggle the staged state of the hunk under the cursor, marking it in place
@@ -1269,22 +1535,35 @@ function View:_toggle_hunk(want_staged)
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
-    if (self.staged_hunks[idx] or false) == want_staged then
+    -- a partial hunk is neither, and both keys have something to do on it: s takes the
+    -- lines the index is missing, u gives back the ones it holds
+    local state = self:_hunk_state(idx)
+    if state == (want_staged and "staged" or "unstaged") then
         return vim.notify(
             "differ: hunk already " .. (want_staged and "staged" or "unstaged"),
             vim.log.levels.INFO
         )
     end
-    if self:_apply_hunk(idx, want_staged) then
-        self.staging.refresh()
-        -- that may have taken this pair's last hunk, in which case the session re-sources
-        -- the view onto the file's surviving pair and there's nothing here left to paint
-        if self.staging.settle and self.staging.settle() then
-            return
-        end
-        self:_paint_staged()
-        self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+    local changed, stuck = self:_apply_hunk(idx, want_staged)
+    if changed then
+        return self:_after_staging()
     end
+    -- the source has said where this hunk's change can be taken whole, so carry the
+    -- walk on rather than parking on a hunk this key can never move
+    if stuck then
+        self.stuck[want_staged and "staged" or "unstaged"][idx] = true
+        self:_step_review(want_staged and "next" or "prev")
+    end
+end
+
+-- repaint after a staging op: the panel counts, the staged shade, and the winbar
+-- tally, which a `%!` winbar only redraws on its own when the cursor moves
+function View:_after_staging()
+    self:_forget_stuck()
+    self.staging.refresh()
+    self:_paint_staged()
+    self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
+    vim.cmd.redrawstatus({ bang = true })
 end
 
 -- S: stage every hunk in the file, or, when they're all staged already (nothing left to
@@ -1292,9 +1571,13 @@ end
 -- advancing past the last hunk, minus its in-file wrap: S leaves no hunk behind to come
 -- back for
 function View:stage_all()
-    if not self:_toggle_all(true) and self:_can_stage_hunk() then
+    if self:_can_stage_hunk() and not self:_review_done(false) and not self:_stage_confirmed() then
+        return
+    end
+    local changed, refused = self:_toggle_all(true)
+    if not changed and not refused and self:_can_stage_hunk() then
         if not self:_step_review_file("next", false) then
-            vim.notify("differ: no more files to stage", vim.log.levels.INFO)
+            self:_walk_done(false)
         end
     end
 end
@@ -1302,79 +1585,54 @@ end
 -- U: unstage every hunk, or, when none are staged (nothing to do), step back to the
 -- previous file with something staged, landing on its last staged hunk
 function View:unstage_all()
-    if not self:_toggle_all(false) and self:_can_stage_hunk() then
+    if self:_can_stage_hunk() and self:_drops_unheld(nil) then
+        local prompt = "Unstage all of %s? Some staged changes will be lost."
+        if not self:_confirmed(prompt:format(self.model.path)) then
+            return
+        end
+    end
+    local changed, refused = self:_toggle_all(false)
+    if not changed and not refused and self:_can_stage_hunk() then
         if self:_step_review_file("prev", true) then
             self:_focus_last_hunk() -- only when a previous file actually opened
         else
-            vim.notify("differ: no more files to unstage", vim.log.levels.INFO)
+            self:_walk_done(true)
         end
     end
 end
 
--- stage / unstage every hunk. forward order keeps the running offset correct
--- as the index shifts under each apply; the panel refreshes once after the batch.
--- returns whether anything changed (false when already wholly in the target state),
--- so S/U can fall through to file stepping
+-- stage / unstage every hunk, through the source's whole-file op when it has one; the
+-- panel refreshes once after the batch. returns whether anything changed (false when
+-- already wholly in the target state), so S/U can fall through to file stepping, and
+-- whether the source refused, which stays put instead
 ---@param want_staged boolean
----@return boolean changed
+---@return boolean changed, boolean refused
 function View:_toggle_all(want_staged)
     if not self:_can_stage_hunk() then
         vim.notify("differ: hunk staging isn't available here", vim.log.levels.WARN)
-        return false
+        return false, false
     end
-    local changed = false
-    for i = 1, self:_slot_count() do
-        if self:_apply_hunk(i, want_staged) then
-            changed = true
+    local changed, refused = false, false ---@type boolean, boolean|nil
+    if self.staging.set_all then
+        changed, refused = self.staging.set_all(self.model, want_staged)
+    else
+        local want = want_staged and "staged" or "unstaged"
+        for i = 1, self:_slot_count() do
+            if self:_hunk_state(i) ~= want then
+                local moved, stuck = self:_apply_hunk(i, want_staged)
+                if moved then
+                    changed = true
+                elseif not stuck then
+                    refused = true
+                    break
+                end
+            end
         end
     end
     if changed then
-        self.staging.refresh()
-        -- S/U empty a pair outright, so this is where the follow usually fires
-        if not (self.staging.settle and self.staging.settle()) then
-            self:_paint_staged()
-            self:_paint_cursorline() -- re-lift the cursor tint above the fresh staged fill
-        end
+        self:_after_staging()
     end
-    return changed
-end
-
--- the index-side shift for a revert on a staged diff: unstaging a hunk swaps its new
--- lines back for its old ones, so every hunk after it sits that many lines off the
--- frozen model. only the index moves under an unstage, so this never applies to the
--- worktree half of a revert
----@param idx integer
----@return integer
-function View:_unstage_offset(idx)
-    local off = 0
-    for j = 1, idx - 1 do
-        if not self.staged_hunks[j] then
-            local h = self.model.hunks[j]
-            off = off + (h.old_count - h.new_count)
-        end
-    end
-    return off
-end
-
--- shift per-hunk staged marks down past a hunk that has just left the model. the
--- rebuilt list normally loses exactly the reverted hunk and keeps the rest in order;
--- if it didn't, the marks can't be mapped, so reseed them from the source instead of
--- carrying wrong ones
----@param removed integer
----@param before integer  -- hunk count before the revert
-function View:_rekey_staged(removed, before)
-    if #self.model.hunks ~= before - 1 then
-        return self:_init_staged()
-    end
-    local out = {}
-    for i, staged in pairs(self.staged_hunks) do
-        if i < removed then
-            out[i] = staged
-        elseif i > removed then
-            out[i - 1] = staged
-        end
-    end
-    self.staged_hunks = out
+    return changed, refused == true
 end
 
 -- the new-side line to land on once `h` is reverted: the cursor's own line, shifted by
@@ -1427,21 +1685,18 @@ function View:revert_hunk()
     end
     local revert = self.staging.revert
     if not revert then
-        return vim.notify("differ: this hunk can't be reverted", vim.log.levels.WARN)
+        local why = self.staging.no_revert or "this hunk can't be reverted"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
-    local idx = self:_hunk_index_under_cursor()
+    -- a whole-file source reverts as one unit, so it takes slot 1 even where the diff
+    -- draws a notice rather than hunks (a mode change, a bare rename, a submodule)
+    local idx = self:_target_index()
     if not idx then
         return vim.notify("differ: no hunk under the cursor", vim.log.levels.WARN)
     end
-    -- on an unstaged diff a marked hunk is already in the index, so reverting only the
-    -- worktree copy would leave the two differing the opposite way round
-    if self.model.new_rev == "WORKTREE" and self.staged_hunks[idx] then
-        return vim.notify(
-            "differ: hunk is staged; unstage it (u) before reverting",
-            vim.log.levels.WARN
-        )
+    if self.staging.refuses_revert and self.staging.refuses_revert(self.model, idx) then
+        return
     end
-
     -- a whole-file revert isn't partial, so it says so rather than counting hunks
     local label = self.staging.revert_label
     local prompt = label and ("Revert all of %s? This %s."):format(self.model.path, label)
@@ -1461,14 +1716,12 @@ function View:revert_hunk()
         )
     end
 
-    local offset = self.model.new_rev == "INDEX" and self:_unstage_offset(idx) or 0
     -- a whole-file revert, or one taking the file's last hunk, leaves no diff at all
     local emptied = label ~= nil or #self.model.hunks == 1
     local hunk = self.model.hunks[idx] -- captured before the model is replaced
-    local before = #self.model.hunks
     local focus = self:cursor_new_line()
 
-    if not revert(self.model, hunk, offset) then
+    if not revert(self.model, idx) then
         return
     end
 
@@ -1481,14 +1734,14 @@ function View:revert_hunk()
         -- reports it; only speak up when the panel is still there but has nowhere to go
         local panel = require("differ.panel").current()
         if panel and not panel:open_nearest(true) then
-            vim.notify("differ: no changes left to show", vim.log.levels.INFO)
+            vim.notify("differ: no changes left", vim.log.levels.INFO)
         end
         return
     end
 
     local opened = self:_opened_folds() -- before rerender replaces col.folds
+    self:_forget_stuck() -- the hunks renumber around the one that just left
     self.model = require("differ.model.diff").revert_hunk(self.model, idx)
-    self:_rekey_staged(idx, before)
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)
     -- stay where the reverted hunk was rather than being pulled to the next one
@@ -1507,7 +1760,7 @@ end
 function View:jump_to_file()
     local root = self.model.root
     if not root then
-        vim.notify("differ: jump-to-file needs a file-backed source", vim.log.levels.WARN)
+        vim.notify("differ: this diff has no file to jump to", vim.log.levels.WARN)
         return
     end
     local abs = root .. "/" .. self.model.path
@@ -1580,10 +1833,8 @@ end
 -- jump_to_file this never tears down the diff: you edit, `:w`, and the worktree
 -- watcher re-sources the diff in place (cursor held near its hunk). the projection
 -- buffer and line map are untouched (invariant 2); you edit the real file's own
--- buffer, so LSP / treesitter / undo all work natively. a staged diff (index↔ side)
--- can't be edited in place (you can't edit the index), so the file is unstaged first:
--- the staged change returns to the worktree and the watcher re-sources to the now-
--- unstaged diff, where the edit shows. git-correct; re-stage (s) when done
+-- buffer, so LSP / treesitter / undo all work natively. a file not on disk (a
+-- deletion) has nothing to edit, and _edit_target says so
 function View:edit_file()
     if not self:_editable_source() then
         return vim.notify(
@@ -1591,23 +1842,13 @@ function View:edit_file()
             vim.log.levels.WARN
         )
     end
+    if self.staging and self.staging.leave then
+        self.staging.leave()
+    end
     local t = self:_edit_target()
     if not t then
         return
     end
-
-    -- staged diff: unstage the file and re-source to its unstaged index↔worktree view
-    -- so the edit lands on a diff that reflects it. driven explicitly (the watcher's
-    -- re-source is suppressed by the staging signature); falls back to an in-place
-    -- unstage if no frontend hook is wired
-    if self.model.new_rev == "INDEX" then
-        if self.on_edit_unstage then
-            self.on_edit_unstage(self.model.path)
-        elseif self:_can_stage_hunk() then
-            self:_toggle_all(false)
-        end
-    end
-
     self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
 end
 
@@ -1697,7 +1938,7 @@ end
 function View:_edit_target()
     local root = self.model.root
     if not root then
-        vim.notify("differ: editing needs a file-backed source", vim.log.levels.WARN)
+        vim.notify("differ: this diff has no file to edit", vim.log.levels.WARN)
         return nil
     end
     local abs = root .. "/" .. self.model.path

@@ -604,7 +604,7 @@ local function resolve_choice(choice)
     local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
     local region = region_at(regions, cur)
     if not region then
-        return notify("no conflict under the cursor")
+        return notify("no conflict under the cursor", vim.log.levels.WARN)
     end
     -- the live buffer parse carries no base under the default conflictStyle, so take-base
     -- reads the slab recovered at build time, mapped live index -> original via `order`
@@ -612,8 +612,7 @@ local function resolve_choice(choice)
         local original = original_index(region.result_start)
         if not original then
             return notify(
-                "this conflict's markers were edited, so its ancestor can't be identified; "
-                    .. "run :Differ mergetool again to re-read them",
+                "this conflict's markers were edited; run :Differ mergetool again to use its base",
                 vim.log.levels.WARN
             )
         end
@@ -649,7 +648,7 @@ local function resolve_choice(choice)
         vim.api.nvim_win_set_cursor(session.result_win, { target.result_start, 0 })
         on_cursor_moved()
     elseif #session.regions == 0 then
-        notify("all conflicts resolved — :w to save and stage")
+        notify("all conflicts resolved: :w to save and stage")
     end
 end
 
@@ -1021,9 +1020,8 @@ function lay_out(root, relpath, model, layout)
                 if not session.autoformat_warned then
                     session.autoformat_warned = true
                     notify(
-                        "conflict markers were reformatted on save and the file was NOT staged. "
-                            .. "your format_on_save isn't honouring vim.b.disable_autoformat, "
-                            .. "which differ sets on this buffer",
+                        "a formatter changed the conflict markers on save; not staged. "
+                            .. "your format_on_save ignores vim.b.disable_autoformat",
                         vim.log.levels.WARN
                     )
                 end
@@ -1041,7 +1039,11 @@ function lay_out(root, relpath, model, layout)
                     end
                 end)
             else
-                notify(("%d conflict(s) still unresolved — not staged"):format(#session.regions))
+                local noun = "conflicts"
+                if #session.regions == 1 then
+                    noun = "conflict"
+                end
+                notify(("%d %s still unresolved; not staged"):format(#session.regions, noun))
             end
         end,
     })

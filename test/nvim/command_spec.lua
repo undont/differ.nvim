@@ -280,7 +280,7 @@ describe("command view controls from the panel", function()
         v:close()
         assert.is_true(on_tab)
         assert.are.equal("stacked", v.layout)
-        assert.matches("no diff view here", _G.notifs[#_G.notifs].msg)
+        assert.matches("no differ view open", _G.notifs[#_G.notifs].msg)
     end)
 end)
 

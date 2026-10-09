@@ -14,14 +14,14 @@ end
 function M.layout(arg)
     local view = require("differ").active_view()
     if not view then
-        return notify("no diff view here", vim.log.levels.WARN)
+        return notify("no differ view open", vim.log.levels.WARN)
     end
     if arg == nil or arg == "" then
         view:toggle_layout()
     elseif arg == "stacked" or arg == "split" then
         view:set_layout(arg)
     else
-        notify("layout: expected 'stacked' or 'split'", vim.log.levels.ERROR)
+        notify("layout: expected 'stacked' or 'split'", vim.log.levels.WARN)
     end
 end
 
@@ -30,7 +30,7 @@ end
 function M.context(arg)
     local view = require("differ").active_view()
     if not view then
-        return notify("no diff view here", vim.log.levels.WARN)
+        return notify("no differ view open", vim.log.levels.WARN)
     end
     if arg == "full" then
         view:set_context(math.huge)
@@ -41,7 +41,7 @@ function M.context(arg)
     else
         local n = tonumber(arg)
         if not n then
-            return notify("context: expected a number, 'full', '+' or '-'", vim.log.levels.ERROR)
+            return notify("context: expected a number, 'full', '+' or '-'", vim.log.levels.WARN)
         end
         view:set_context(math.max(0, math.floor(n)))
     end
@@ -270,7 +270,10 @@ function M.sidecar(arg)
         if err then
             -- a spawn/handshake failure already carries the binary's own stderr; a
             -- protocol-level one doesn't, so fall back to whatever it last said
-            local msg = "sidecar: " .. (err.message or err.code)
+            local msg = err.message or err.code
+            if not vim.startswith(msg, "sidecar") then -- transport errors already say so
+                msg = "sidecar: " .. msg
+            end
             local exit = sidecar.last_exit()
             if not msg:find("\n", 1, true) and exit then
                 msg = sidecar.with_tail(msg, exit.stderr)
@@ -278,7 +281,7 @@ function M.sidecar(arg)
             return notify(msg, vim.log.levels.ERROR)
         end
         notify(
-            ("sidecar ok — binary %s, protocol %d"):format(info.binary or "?", info.protocol or 0)
+            ("sidecar ok: binary %s, protocol %d"):format(info.binary or "?", info.protocol or 0)
         )
     end)
 end
@@ -287,7 +290,7 @@ end
 ---@param arg string|nil
 function M.cache(arg)
     if arg ~= "clear" then
-        return notify("cache: expected 'clear'", vim.log.levels.ERROR)
+        return notify("cache: expected 'clear'", vim.log.levels.WARN)
     end
     require("differ.sidecar").request("cache_clear", nil, function(err)
         if err then

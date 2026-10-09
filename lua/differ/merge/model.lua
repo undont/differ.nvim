@@ -160,11 +160,11 @@ function M.build(root, relpath, head)
     local git = require("differ.git")
     local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
-        return nil, "file is not in the working tree"
+        return nil, relpath .. " is not in the working tree"
     end
     local regions = conflict.parse(to_lines(result_text))
     if #regions == 0 then
-        return nil, "no conflicts to resolve"
+        return nil, relpath .. " has no conflicts to resolve"
     end
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)

@@ -78,6 +78,8 @@ Every group is defined with `default = true`, so a `:highlight` of your own wins
 | `differStagedWordAdd` / `differStagedWordDelete` | the word patch inside a staged line |
 | `differStagedLine` | a staged line with no add/delete kind (links `CursorLine`) |
 | `differStagedSign` | the staged-hunk gutter glyph |
+| `differHiddenSign` | the `!` gutter glyph on a hunk holding staged content the diff can't show |
+| `differNoEol` | the `¬` gutter glyph on a line its side ends on with no newline |
 
 ### File panel
 
