@@ -783,8 +783,8 @@ function M.close()
     end
 end
 
--- g?: a floating keymap cheatsheet for the merge result buffer, mirroring the diff
--- view's. rows read the session's resolved keymaps so a configured lhs shows correctly
+-- g?: a floating keymap cheatsheet, mirroring the diff view's. rows read the session's
+-- resolved keymaps so a configured lhs shows correctly; an input pane lists only its keys
 local function show_help()
     if not session then
         return
@@ -792,18 +792,22 @@ local function show_help()
     local km = session.keymaps
     local help = require("differ.ui.help")
     local fmt, pair = help.fmt, help.pair
-    local rows = {
-        { pair(km.next_conflict, km.prev_conflict), "next / previous conflict" },
-        { pair(km.next_marker, km.prev_marker), "next / previous marker line" },
-        { fmt(km.choose_ours), "take ours" },
-        { fmt(km.choose_theirs), "take theirs" },
-        { fmt(km.choose_base), "take base" },
-        { fmt(km.choose_all), "take both (ours then theirs)" },
-        { fmt(km.choose_none), "drop the conflict" },
-        { ":w", "write the file (auto-stages once resolved)" },
+    local rows = { { pair(km.next_conflict, km.prev_conflict), "next / previous conflict" } }
+    if vim.api.nvim_get_current_buf() == session.result_buf then
+        vim.list_extend(rows, {
+            { pair(km.next_marker, km.prev_marker), "next / previous marker line" },
+            { fmt(km.choose_ours), "take ours" },
+            { fmt(km.choose_theirs), "take theirs" },
+            { fmt(km.choose_base), "take base" },
+            { fmt(km.choose_all), "take both (ours then theirs)" },
+            { fmt(km.choose_none), "drop the conflict" },
+            { ":w", "write the file (auto-stages once resolved)" },
+        })
+    end
+    vim.list_extend(rows, {
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
-    }
+    })
     -- dismiss on the configured help key too, not just the hardcoded q/<Esc>
     local dismiss = { "q", "<Esc>" }
     vim.list_extend(dismiss, type(km.help) == "table" and km.help or { km.help })
@@ -997,6 +1001,16 @@ function lay_out(root, relpath, model, layout)
         resolve_choice("none")
     end, "differ: drop the conflict")
     rb("help", show_help, "differ: keymap help")
+    -- the input panes are scratch buffers deleted on close, so these need no unbind
+    for _, buf in ipairs(bufs) do
+        bind(buf, km.next_conflict, function()
+            goto_conflict("next")
+        end, "differ: next conflict")
+        bind(buf, km.prev_conflict, function()
+            goto_conflict("prev")
+        end, "differ: previous conflict")
+        bind(buf, km.help, show_help, "differ: keymap help")
+    end
     -- no close key here: the result buffer is the real file and stays editable, so q is
     -- left to native macro recording. `:Differ close` ends the session
 

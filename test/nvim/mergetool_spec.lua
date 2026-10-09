@@ -328,6 +328,50 @@ describe(":Differ mergetool", function()
         vim.api.nvim_win_close(float, true)
     end)
 
+    it("binds conflict nav and g? on the input panes, with a pane-scoped cheatsheet", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+
+        local function callback(buf, desc)
+            for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+                if m.desc == desc then
+                    return m.callback
+                end
+            end
+        end
+        for _, buf in ipairs(s.bufs) do
+            assert.is_not_nil(callback(buf, "differ: next conflict"))
+            assert.is_not_nil(callback(buf, "differ: previous conflict"))
+            assert.is_not_nil(callback(buf, "differ: keymap help"))
+        end
+
+        local inp = s.inputs[1]
+        vim.api.nvim_set_current_win(inp.win)
+        vim.api.nvim_win_set_cursor(s.result_win, { 1, 0 })
+        callback(s.bufs[1], "differ: next conflict")()
+        assert.are.equal(s.regions[1].result_start, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        assert.are.equal(inp.win, vim.api.nvim_get_current_win()) -- focus stays on the input
+
+        callback(s.bufs[1], "differ: keymap help")()
+        local float
+        for _, w in ipairs(vim.api.nvim_list_wins()) do
+            if vim.api.nvim_win_get_config(w).relative ~= "" then
+                float = w
+            end
+        end
+        assert.is_not_nil(float)
+        local txt = table.concat(
+            vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(float), 0, -1, false),
+            "\n"
+        )
+        assert.is_true(txt:find("next / previous conflict", 1, true) ~= nil)
+        assert.is_nil(txt:find("take ours", 1, true))
+        assert.is_nil(txt:find("marker line", 1, true))
+        vim.api.nvim_win_close(float, true)
+    end)
+
     it("opts the result buffer out of format-on-save and restores it on close", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
