@@ -7537,6 +7537,22 @@ describe(":Differ diff rename staging", function()
         assert.are.equal("R  old/big.lua -> new/big.lua\n", status)
     end)
 
+    it("leaves a file back at a staged rename's old path untracked on s", function()
+        local root = renamed_repo({ 5 })
+        write(root .. "/old/big.lua", "new file\n")
+        vim.cmd.edit(root .. "/new/big.lua")
+
+        git_src.panel({ rev = {} })
+        local p = Panel.current()
+        assert.is_true(p:focus_file("new/big.lua"))
+        p:stage_op("stage")
+
+        local status = git(root, "status", "--porcelain=v1", "-uall")
+        p:close()
+        assert.are.equal("R  old/big.lua -> new/big.lua\n?? old/big.lua\n", status)
+        assert.are.same({ "new file" }, vim.fn.readfile(root .. "/old/big.lua"))
+    end)
+
     it("unstages both of a rename's paths from the panel row, as the diff keys do", function()
         local root = renamed_repo({ 5 })
         vim.cmd.edit(root .. "/new/big.lua")
