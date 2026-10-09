@@ -182,21 +182,44 @@ local function read_file(abs)
     return data
 end
 
+-- whether an attribute that rewrites LF-only content on `git add` is set for `relpath`
+---@param root string
+---@param relpath string
+---@return boolean
+local function has_clean_attr(root, relpath)
+    local attrs = { "filter", "ident", "working-tree-encoding" }
+    local out =
+        git(vim.list_extend({ "check-attr" }, vim.list_extend(attrs, { "--", relpath })), root)
+    if not out then
+        return false
+    end
+    for line in out:gmatch("[^\n]+") do
+        local value = line:match(": ([^:]*)$")
+        if value ~= "unspecified" and value ~= "unset" then
+            return true
+        end
+    end
+    return false
+end
+
 -- worktree bytes as `git add` would store them (the clean filter: eol
 -- conversion, text attrs, custom filters), so worktree-side diffs compare in
 -- the repo domain, like `git diff`, and the hunk patches built from the model
 -- stage the same blob a `git add` of the file would write. runs the real
 -- `git add` against a throwaway copy of the index and reads the entry back, so
 -- every conversion rule (safe-crlf stickiness included) is git's own, not a
--- reimplementation. gated on a CR byte in non-binary content: LF-only content
--- can't convert differently, so the common case pays nothing. any failure
--- falls back to the raw bytes (the old behaviour)
+-- reimplementation. gated on non-binary content that has a CR byte or a
+-- converting attribute (has_clean_attr): nothing else converts, so the common
+-- case pays one check-attr. any failure falls back to the raw bytes
 ---@param root string
 ---@param relpath string
 ---@param data string
 ---@return string
 local function as_staged(root, relpath, data)
-    if not data:find("\r", 1, true) or text_util.is_binary(data) then
+    if text_util.is_binary(data) then
+        return data
+    end
+    if not data:find("\r", 1, true) and not has_clean_attr(root, relpath) then
         return data
     end
     local index = git({ "rev-parse", "--git-path", "index" }, root)

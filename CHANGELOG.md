@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A file whose `.gitattributes` sets a clean filter, `ident` or `working-tree-encoding` showed changes `git diff` doesn't, and staging its hunks could stage different content from `git add`. Its worktree side now reads as git would store it
+
+## [0.2.2] — 2026-10-09
+
+### Fixed
+
 - `X` on a staged rename overwrote a file recreated at the old path with its `HEAD` content. It now undoes the rename and leaves that file as it is
 
 ## [0.2.1] — 2026-10-09

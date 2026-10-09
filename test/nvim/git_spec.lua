@@ -378,6 +378,53 @@ describe("git.read (worktree clean filter)", function()
         -- the staged blob is byte-identical to what `git add` would have written
         assert.are.equal("one\nNEW LINE\ntwo\n", raw_indexed(root, "c.txt"))
     end)
+
+    -- a repo whose `filter` driver drops `secret` lines from conf.txt on the way in
+    local function filtered_repo()
+        local root = fresh_repo()
+        git(root, "config", "filter.strip.clean", "sed /^secret/d")
+        git(root, "config", "filter.strip.smudge", "cat")
+        write(root .. "/.gitattributes", "conf.txt filter=strip\n")
+        write(root .. "/conf.txt", "a\nb\n")
+        git(root, "add", ".gitattributes", "conf.txt")
+        git(root, "commit", "-q", "-m", "filtered file")
+        return root
+    end
+
+    it("runs a custom clean filter over LF-only worktree content", function()
+        local root = filtered_repo()
+        write(root .. "/conf.txt", "a\nsecret 1\nb\n")
+        assert.are.equal("a\nb\n", git_src.read(wt, root, "conf.txt"))
+
+        local source = { old = { kind = "index", label = "INDEX" }, new = wt }
+        local model = git_src.model(source, root, { path = "conf.txt" })
+        assert.are.equal(0, #model.hunks)
+    end)
+
+    it("hunk staging leaves filtered-out lines out of the index", function()
+        local root = filtered_repo()
+        write(root .. "/conf.txt", "a\nsecret 1\nNEW\nb\n")
+
+        local source = { old = { kind = "index", label = "INDEX" }, new = wt }
+        local model = git_src.model(source, root, { path = "conf.txt" })
+        assert.are.equal(1, #model.hunks)
+        local text = require("differ.model.apply").splice(model, { true })
+        assert.is_true(require("differ.git.index").write_index(root, "conf.txt", text))
+        assert.are.equal("a\nNEW\nb\n", raw_indexed(root, "conf.txt"))
+    end)
+
+    it("collapses an expanded ident keyword the way git add would", function()
+        local root = fresh_repo()
+        write(root .. "/.gitattributes", "id.txt ident\n")
+        write(root .. "/id.txt", "$Id: 0123abcd $\n")
+        assert.are.equal("$Id$\n", git_src.read(wt, root, "id.txt"))
+    end)
+
+    it("reads a file with no filter attribute raw", function()
+        local root = filtered_repo()
+        write(root .. "/a.lua", "secret 1\n")
+        assert.are.equal("secret 1\n", git_src.read(wt, root, "a.lua"))
+    end)
 end)
 
 describe("git.revert_patch", function()
