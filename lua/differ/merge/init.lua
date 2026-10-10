@@ -820,16 +820,21 @@ end
 local lay_out
 
 -- once a file resolves + stages, open the next conflicted file (git's order, the staged file
--- already dropped off), reusing the session layout. when none remain, report done and close,
--- returning to the invoking tab. a next file that fails to build leaves the resolved view up
--- rather than looping. no commit hint: the merge may be a rebase/cherry-pick/etc., so naming
--- one command would be wrong as often as right
+-- already dropped off), reusing the session layout. when none remain, report done, naming
+-- the in-progress operation's `--continue` when there is one, and close, returning to the
+-- invoking tab. a next file that fails to build leaves the resolved view up rather than looping
 ---@param root string
 ---@param layout "default"|"diff4"
 local function advance(root, layout)
-    local remaining = require("differ.git").conflicted(root)
+    local git = require("differ.git")
+    local remaining = git.conflicted(root)
     if #remaining == 0 then
-        notify("all conflicts resolved and staged")
+        local op = git.operation(root)
+        if op then
+            notify(("all conflicts resolved: git %s --continue"):format(op))
+        else
+            notify("all conflicts resolved and staged")
+        end
         return M.close()
     end
     local relpath = remaining[1]

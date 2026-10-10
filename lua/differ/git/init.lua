@@ -347,6 +347,36 @@ function M.conflicted(root)
     return out and rev.parse_unmerged(out) or {}
 end
 
+-- git-dir markers of the operations with a `--continue`, checked in order: a rebase
+-- replaying a merge or a pick also writes MERGE_HEAD/CHERRY_PICK_HEAD, and `git am` shares
+-- rebase-apply/
+local OPERATION_MARKERS = {
+    { "rebase-merge", "rebase" },
+    { "rebase-apply/applying", "am" },
+    { "rebase-apply", "rebase" },
+    { "MERGE_HEAD", "merge" },
+    { "CHERRY_PICK_HEAD", "cherry-pick" },
+    { "REVERT_HEAD", "revert" },
+}
+
+-- the in-progress operation that has a `--continue`; nil for conflicts left by one that
+-- doesn't (stash pop, checkout -m)
+---@param root string
+---@return "merge"|"rebase"|"am"|"cherry-pick"|"revert"|nil
+function M.operation(root)
+    local dir = git({ "rev-parse", "--absolute-git-dir" }, root)
+    if not dir then
+        return nil
+    end
+    dir = chomp(dir)
+    for _, marker in ipairs(OPERATION_MARKERS) do
+        if vim.uv.fs_stat(dir .. "/" .. marker[1]) then
+            return marker[2]
+        end
+    end
+    return nil
+end
+
 -- repo-relative paths of untracked files, respecting .gitignore, in git's order
 ---@param root string
 ---@return string[]

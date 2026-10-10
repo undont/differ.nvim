@@ -26,11 +26,8 @@ local function write(path, content)
     fd:close()
 end
 
--- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
--- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
--- ||||||| base marker as well
----@param style string|nil
-local function conflict_repo(style)
+-- a repo on `main` where `main` and `feature` both changed line 2 of f.txt
+local function diverged_repo()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -43,10 +40,51 @@ local function conflict_repo(style)
     git_ok(root, "checkout", "-q", "main")
     write(root .. "/f.txt", "a\nOURS\nc\n")
     git_ok(root, "commit", "-q", "-am", "ours")
+    return root
+end
+
+-- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
+-- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
+-- ||||||| base marker as well
+---@param style string|nil
+local function conflict_repo(style)
+    local root = diverged_repo()
     if style then
         git(root, "-c", "merge.conflictStyle=" .. style, "merge", "feature")
     else
         git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    end
+    return root
+end
+
+-- a diverged repo stopped on f.txt's conflict by `op`, each its own way of replaying one
+-- side onto the other; "stash" pops a stash over a conflicting commit, which has no --continue
+---@param op "merge"|"rebase"|"rebase-apply"|"am"|"cherry-pick"|"revert"|"stash"
+local function operation_repo(op)
+    local root = diverged_repo()
+    if op == "merge" then
+        git(root, "merge", "feature")
+    elseif op == "rebase" then
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "rebase", "main")
+    elseif op == "rebase-apply" then
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "rebase", "--apply", "main")
+    elseif op == "am" then
+        local patch = root .. "/../" .. vim.fn.fnamemodify(root, ":t") .. ".patch"
+        write(patch, git_ok(root, "format-patch", "-1", "--stdout", "feature"))
+        git(root, "am", "-3", patch)
+    elseif op == "cherry-pick" then
+        git(root, "cherry-pick", "feature")
+    elseif op == "revert" then
+        write(root .. "/f.txt", "a\nLATER\nc\n")
+        git_ok(root, "commit", "-q", "-am", "later")
+        git(root, "revert", "--no-edit", "HEAD~1")
+    elseif op == "stash" then
+        write(root .. "/f.txt", "a\nSTASHED\nc\n")
+        git_ok(root, "stash", "-q")
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "stash", "pop")
     end
     return root
 end
@@ -572,6 +610,77 @@ local function input(s, side)
         end
     end
 end
+
+describe(":Differ mergetool in-progress operation", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    local cases = {
+        { "merge", "merge" },
+        { "rebase", "rebase" },
+        { "rebase-apply", "rebase" },
+        { "am", "am" },
+        { "cherry-pick", "cherry-pick" },
+        { "revert", "revert" },
+    }
+    for _, case in ipairs(cases) do
+        it(("reads %s as %s"):format(case[1], case[2]), function()
+            local root = operation_repo(case[1])
+            local git_mod = require("differ.git")
+            assert.are.same({ "f.txt" }, git_mod.conflicted(root))
+            assert.are.equal(case[2], git_mod.operation(root))
+        end)
+    end
+
+    it("reads no operation for conflicts a stash pop left", function()
+        local root = operation_repo("stash")
+        local git_mod = require("differ.git")
+        assert.are.same({ "f.txt" }, git_mod.conflicted(root))
+        assert.is_nil(git_mod.operation(root))
+    end)
+
+    ---@param op string
+    ---@return string[] messages
+    local function resolve_last(op)
+        local root = operation_repo(op)
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local orig_notify = vim.notify
+        local messages = {}
+        vim.notify = function(msg)
+            messages[#messages + 1] = msg
+        end
+        local ok, err = pcall(function()
+            fire(s.result_buf, "differ: take ours")
+            vim.api.nvim_set_current_win(s.result_win)
+            vim.cmd("silent write")
+            vim.wait(2000, function()
+                return merge.current() == nil
+            end)
+        end)
+        vim.notify = orig_notify
+        assert(ok, err)
+        assert.is_nil(merge.current())
+        return messages
+    end
+
+    it("names the operation's --continue once the last file is written", function()
+        local messages = resolve_last("rebase")
+        assert.are.equal(
+            "differ: all conflicts resolved: git rebase --continue",
+            messages[#messages]
+        )
+    end)
+
+    it("reports plain done when no operation has a --continue", function()
+        local messages = resolve_last("stash")
+        assert.are.equal("differ: all conflicts resolved and staged", messages[#messages])
+    end)
+end)
 
 describe(":Differ mergetool navigation", function()
     after_each(function()
