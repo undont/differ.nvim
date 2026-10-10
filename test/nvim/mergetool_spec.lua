@@ -220,6 +220,35 @@ local function conflict_repo_two()
     return root
 end
 
+-- a repo where merging `feature` leaves a.txt modify/delete (main edits it, feature deletes
+-- it), sorted before a content conflict in each of `files`
+---@param files string[]
+local function conflict_repo_modify_delete(files)
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/a.txt", "a\n")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nb\nc\n")
+    end
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    git_ok(root, "rm", "-q", "a.txt")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nTHEIRS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/a.txt", "OURS\n")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nOURS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end
+
 local merge_ns = vim.api.nvim_create_namespace("differ.merge")
 local flash_ns = vim.api.nvim_create_namespace("differ.merge.flash")
 
@@ -568,6 +597,80 @@ describe(":Differ mergetool resolution", function()
         end)
         assert.is_nil(merge.current())
         assert.are.same({}, require("differ.git").conflicted(root))
+    end)
+
+    it("skips a conflict the merge tool can't open for the next one that builds", function()
+        local root = conflict_repo_modify_delete({ "f.txt", "g.txt" })
+        assert.are.same({ "a.txt", "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        fire(s.result_buf, "differ: take ours")
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        vim.wait(2000, function()
+            return merge.current() ~= nil and merge.current().path == "g.txt"
+        end)
+        assert.are.equal("g.txt", merge.current().path)
+    end)
+
+    it("names the conflicts it can't open once only those remain, then closes", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take ours")
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        vim.wait(2000, function()
+            return merge.current() == nil
+        end)
+        assert.is_nil(merge.current())
+        local last = _G.notifs[#_G.notifs]
+        assert.are.equal(
+            "differ: a.txt can't be opened in the merge tool: resolve with git add/rm",
+            last.msg
+        )
+        for _, n in ipairs(_G.notifs) do
+            assert.is_nil(n.msg:find("--continue", 1, true))
+        end
+    end)
+
+    it("says why when asked to open a conflict it can't", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        _G.notifs = {}
+        merge.open({ path = root .. "/a.txt" })
+        assert.is_nil(merge.current())
+        assert.are.equal(
+            "differ: a.txt can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[1].msg
+        )
+        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+    end)
+
+    it("says why when asked to open a conflicted symlink, not its target", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        git_ok(root, "merge", "--abort")
+        git_ok(root, "checkout", "-q", "feature")
+        vim.uv.fs_symlink("f.txt", root .. "/link.txt")
+        git_ok(root, "add", "link.txt")
+        git_ok(root, "commit", "-q", "-m", "link theirs")
+        git_ok(root, "checkout", "-q", "main")
+        vim.uv.fs_symlink("a.txt", root .. "/link.txt")
+        git_ok(root, "add", "link.txt")
+        git_ok(root, "commit", "-q", "-m", "link ours")
+        git(root, "merge", "feature")
+        assert.is_true(vim.tbl_contains(require("differ.git").conflicted(root), "link.txt"))
+        vim.cmd.edit(root .. "/f.txt")
+        _G.notifs = {}
+        merge.open({ path = root .. "/link.txt" })
+        assert.is_nil(merge.current())
+        assert.are.equal(
+            "differ: link.txt can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[1].msg
+        )
     end)
 
     it("does not stage while conflicts remain on write", function()

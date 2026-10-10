@@ -819,10 +819,21 @@ end
 ---@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff4")
 local lay_out
 
--- once a file resolves + stages, open the next conflicted file (git's order, the staged file
--- already dropped off), reusing the session layout. when none remain, report done, naming
--- the in-progress operation's `--continue` when there is one, and close, returning to the
--- invoking tab. a next file that fails to build leaves the resolved view up rather than looping
+-- conflicted paths with no markers in the worktree (modify/delete, added by one side, binary)
+---@param relpaths string[]
+local function report_unopenable(relpaths)
+    notify(
+        ("%s can't be opened in the merge tool: resolve with git add/rm"):format(
+            table.concat(relpaths, ", ")
+        ),
+        vim.log.levels.WARN
+    )
+end
+
+-- once a file resolves + stages, open the next conflicted file that builds (git's order, the
+-- staged file already dropped off), reusing the session layout. when none remain, report
+-- done, naming the in-progress operation's `--continue` when there is one; when only
+-- unbuildable ones remain, name them instead. either way close, returning to the invoking tab
 ---@param root string
 ---@param layout "default"|"diff4"
 local function advance(root, layout)
@@ -837,12 +848,15 @@ local function advance(root, layout)
         end
         return M.close()
     end
-    local relpath = remaining[1]
-    local model, err = require("differ.merge.model").build(root, relpath, nil)
-    if not model then
-        return notify(err or ("could not open " .. relpath), vim.log.levels.WARN)
+    local build = require("differ.merge.model").build
+    for _, relpath in ipairs(remaining) do
+        local model = build(root, relpath, nil)
+        if model then
+            return lay_out(root, relpath, model, layout)
+        end
     end
-    lay_out(root, relpath, model, layout)
+    report_unopenable(remaining)
+    M.close()
 end
 
 -- lay out the render in a fresh session tab and wire navigation
@@ -1173,15 +1187,19 @@ function M.open(opts)
     local layout = opts.layout or merge_cfg.layout or "default"
 
     local function go(relpath)
-        local model, err = require("differ.merge.model").build(root, relpath, nil)
+        local model = require("differ.merge.model").build(root, relpath, nil)
         if not model then
-            return notify(err or "could not open the merge tool", vim.log.levels.WARN)
+            return report_unopenable({ relpath })
         end
         lay_out(root, relpath, model, layout)
     end
 
     if opts.path and opts.path ~= "" then
-        local abs = vim.fn.fnamemodify(opts.path, ":p")
+        local full = vim.fn.fnamemodify(opts.path, ":p")
+        -- the directory only: git lists a conflicted symlink by its own path, not its target
+        local abs = vim.fn.resolve(vim.fn.fnamemodify(full, ":h"))
+            .. "/"
+            .. vim.fn.fnamemodify(full, ":t")
         local rel = (abs:sub(1, #root + 1) == root .. "/") and abs:sub(#root + 2) or opts.path
         if not vim.tbl_contains(conflicted, rel) then
             return notify(("%s is not conflicted"):format(opts.path), vim.log.levels.WARN)
