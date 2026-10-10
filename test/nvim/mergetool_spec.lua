@@ -464,6 +464,38 @@ describe(":Differ mergetool resolution", function()
         assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
     end)
 
+    it("neither reports nor advances when the stage fails", function()
+        local root = conflict_repo_two()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local git_mod = require("differ.git")
+        local stage, orig_notify = git_mod.stage, vim.notify
+        local messages = {}
+        git_mod.stage = function()
+            return false
+        end
+        vim.notify = function(msg)
+            messages[#messages + 1] = msg
+        end
+        local ok, err = pcall(function()
+            fire(s.result_buf, "differ: take ours")
+            vim.api.nvim_set_current_win(s.result_win)
+            vim.cmd("silent write")
+            -- give a scheduled advance the chance to run
+            vim.wait(200, function()
+                return merge.current() == nil or merge.current().path ~= "f.txt"
+            end)
+        end)
+        git_mod.stage, vim.notify = stage, orig_notify
+        assert(ok, err)
+        for _, msg in ipairs(messages) do
+            assert.is_nil(msg:find("resolved and staged", 1, true))
+        end
+        assert.are.equal("f.txt", merge.current().path)
+        assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+    end)
+
     it("reports done and closes the session once the last conflict is written", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")

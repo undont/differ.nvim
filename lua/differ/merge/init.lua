@@ -1040,7 +1040,10 @@ function lay_out(root, relpath, model, layout)
                     )
                 end
             elseif #session.regions == 0 then
-                require("differ.git").stage(session.root, session.path)
+                -- a failed add has already notified; the view stays up so a later :w retries
+                if not require("differ.git").stage(session.root, session.path) then
+                    return
+                end
                 notify(session.path .. " resolved and staged")
                 -- advance to the next conflicted file (or finish + close) once the write
                 -- settles; re-opening the session from inside this BufWritePost isn't safe.
