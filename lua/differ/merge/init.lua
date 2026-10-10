@@ -74,6 +74,7 @@ local INPUT_HL = {
 ---@field keymaps table                   -- resolved merge keymaps (for the g? cheatsheet)
 ---@field saved_autoformat any            -- the result buffer's prior disable_autoformat, restored on close
 ---@field saved_markdown_render boolean|nil -- the result buffer's prior render-markdown state, restored on close
+---@field saved_diagnostics boolean       -- the result buffer's prior diagnostic enable state, restored on close
 ---@field autoformat_warned boolean|nil   -- set once a save is seen to have reformatted the markers
 ---@field diag_aug integer|nil            -- the DiagnosticChanged hook that hushes the result
 ---@field aug integer|nil                 -- the session augroup on the result buffer
@@ -170,10 +171,10 @@ local function live_session()
 end
 
 -- the result is the real file, so the user's LSP/linter parses it and reports errors over
--- the conflict markers (invalid source). just toggling display (enable/disable) leaves the
--- diagnostics stored, so they still leak through hover floats and the loc/qf list — clear
--- them outright and keep them cleared as the producers re-publish (DiagnosticChanged),
--- until the session closes. returns the augroup id so close can drop the hook
+-- the conflict markers (invalid source). disabling display alone leaves the diagnostics
+-- stored for hover floats and the loc/qf list, so also clear them outright and keep them
+-- cleared as the producers re-publish (DiagnosticChanged), until the session closes.
+-- returns the augroup id so close can drop the hook
 ---@param buf integer
 ---@return integer|nil augroup
 local function suppress_diagnostics(buf)
@@ -758,6 +759,7 @@ function M.close()
         if s.saved_markdown_render then
             set_markdown_render(s.result_buf, true) -- re-render markdown if it was on
         end
+        vim.diagnostic.enable(s.saved_diagnostics, { bufnr = s.result_buf })
         for _, ns in ipairs({ merge_ns, flash_ns, anchor_ns }) do
             vim.api.nvim_buf_clear_namespace(s.result_buf, ns, 0, -1)
         end
@@ -939,6 +941,7 @@ function lay_out(root, relpath, model, layout)
         bound_keys = bound,
         diag_aug = suppress_diagnostics(result_buf), -- the markers aren't valid source
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
+        saved_diagnostics = vim.diagnostic.is_enabled({ bufnr = result_buf }),
     }
     -- one anchor per original conflict, spanning its block so a splice retires it
     for _, r in ipairs(model.regions) do
@@ -969,6 +972,9 @@ function lay_out(root, relpath, model, layout)
     -- restored on close; honoured by any format_on_save gate that checks the flag
     session.saved_autoformat = vim.b[result_buf].disable_autoformat
     vim.b[result_buf].disable_autoformat = true
+    -- the reset alone leaves a renderer registered after the hook with a stale cache: the
+    -- nested empty DiagnosticChanged reaches it before the outer one
+    vim.diagnostic.enable(false, { bufnr = result_buf })
     local function rb(action, fn, desc)
         bind(result_buf, km[action], fn, desc)
         bound[#bound + 1] = km[action]

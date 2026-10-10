@@ -382,6 +382,27 @@ describe(":Differ mergetool", function()
         merge.close()
         assert.is_nil(vim.b[buf].disable_autoformat) -- restored to its prior (unset) value
     end)
+
+    it("disables diagnostics on the result buffer and restores them on close", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local buf = merge.current().result_buf
+        local seen = {}
+        vim.api.nvim_create_autocmd("DiagnosticChanged", {
+            buffer = buf,
+            callback = function()
+                seen[#seen + 1] = vim.diagnostic.is_enabled({ bufnr = buf })
+            end,
+        })
+        local ns = vim.api.nvim_create_namespace("differ.test.diag")
+        vim.diagnostic.set(ns, buf, { { lnum = 0, col = 0, message = "x", severity = 1 } })
+        assert.is_true(#seen > 0)
+        assert.is_false(vim.tbl_contains(seen, true)) -- a later renderer sees them off
+        assert.are.same({}, vim.diagnostic.get(buf))
+        merge.close()
+        assert.is_true(vim.diagnostic.is_enabled({ bufnr = buf }))
+    end)
 end)
 
 -- fire a buffer-local keymap by its description, so the test doesn't depend on <leader>
