@@ -84,6 +84,14 @@ function M.head_sha(root)
     return out and chomp(out) or nil
 end
 
+-- the repo's absolute git dir, or nil outside a repo
+---@param root string
+---@return string|nil
+function M.git_dir(root)
+    local out = git({ "rev-parse", "--absolute-git-dir" }, root)
+    return out and chomp(out) or nil
+end
+
 -- does a local branch of this name already exist?
 ---@param root string
 ---@param ref string
@@ -364,11 +372,10 @@ local OPERATION_MARKERS = {
 ---@param root string
 ---@return "merge"|"rebase"|"am"|"cherry-pick"|"revert"|nil
 function M.operation(root)
-    local dir = git({ "rev-parse", "--absolute-git-dir" }, root)
+    local dir = M.git_dir(root)
     if not dir then
         return nil
     end
-    dir = chomp(dir)
     for _, marker in ipairs(OPERATION_MARKERS) do
         if vim.uv.fs_stat(dir .. "/" .. marker[1]) then
             return marker[2]
@@ -1689,8 +1696,7 @@ function M.panel(opts)
     -- editor, a commit) re-sources instantly, not just on focus. worktree panels only:
     -- rev-pair diffs are against immutable SHAs and never go stale
     if stageable then
-        local git_dir = git({ "rev-parse", "--absolute-git-dir" }, root)
-        git_dir = git_dir and chomp(git_dir) or nil
+        local git_dir = M.git_dir(root)
         if git_dir then
             watcher = watch.new({ git_dir = git_dir, on_change = refresh_external })
         end
