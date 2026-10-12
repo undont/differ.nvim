@@ -643,7 +643,7 @@ describe(":Differ mergetool resolution", function()
         vim.cmd("silent write")
         assert.are.equal(s, merge.current())
         assert.are.equal(
-            "differ: all conflicts resolved: git merge --continue",
+            "differ: all conflicts resolved: :Differ continue",
             _G.notifs[#_G.notifs].msg
         )
         assert.are.same({}, require("differ.git").conflicted(root))
@@ -665,7 +665,7 @@ describe(":Differ mergetool resolution", function()
             last.msg
         )
         for _, n in ipairs(_G.notifs) do
-            assert.is_nil(n.msg:find("--continue", 1, true))
+            assert.is_nil(n.msg:find(":Differ continue", 1, true))
         end
     end)
 
@@ -800,15 +800,12 @@ describe(":Differ mergetool in-progress operation", function()
         return messages
     end
 
-    it("names the operation's --continue once the last file is written", function()
+    it("points at :Differ continue once the last file is written", function()
         local messages = resolve_last("rebase")
-        assert.are.equal(
-            "differ: all conflicts resolved: git rebase --continue",
-            messages[#messages]
-        )
+        assert.are.equal("differ: all conflicts resolved: :Differ continue", messages[#messages])
     end)
 
-    it("reports plain done when no operation has a --continue", function()
+    it("reports plain done when no operation is in progress", function()
         local messages = resolve_last("stash")
         assert.are.equal("differ: all conflicts resolved and staged", messages[#messages])
     end)
@@ -915,7 +912,10 @@ describe(":Differ mergetool file stepping", function()
         _G.notifs = {}
         fire(s.result_buf, "differ: next conflicted file")
         assert.are.equal(s, merge.current())
-        assert.are.equal("differ: no conflicted files left", _G.notifs[#_G.notifs].msg)
+        assert.are.equal(
+            "differ: no conflicted files left: :Differ continue",
+            _G.notifs[#_G.notifs].msg
+        )
     end)
 
     it("shows file progress in the result winbar", function()
@@ -939,7 +939,7 @@ describe(":Differ mergetool file stepping", function()
         vim.api.nvim_set_current_win(g.result_win)
         vim.cmd("silent write")
         assert.are.equal(
-            "RESULT · file 2/2 · staged · all conflicts resolved",
+            "RESULT · file 2/2 · staged · all conflicts resolved · :Differ continue",
             plain(merge.winbar())
         )
     end)
@@ -2181,12 +2181,12 @@ describe(":Differ mergetool modify/delete", function()
             fire(a.result_buf, "differ: take theirs")
         end)
         assert.are.equal(
-            "differ: all conflicts resolved: git merge --continue",
+            "differ: all conflicts resolved: :Differ continue",
             _G.notifs[#_G.notifs].msg
         )
         vim.g.statusline_winid = a.result_win
         assert.are.equal(
-            "RESULT · file 1/2 · deleted · all conflicts resolved",
+            "RESULT · file 1/2 · deleted · all conflicts resolved · :Differ continue",
             plain(merge.winbar())
         )
     end)
@@ -2203,7 +2203,7 @@ describe(":Differ mergetool modify/delete", function()
         _G.notifs = {}
         fire(a.result_buf, "differ: take ours")
         assert.are.equal(
-            "differ: all conflicts resolved: git merge --continue",
+            "differ: all conflicts resolved: :Differ continue",
             _G.notifs[#_G.notifs].msg
         )
     end)

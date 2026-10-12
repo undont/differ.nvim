@@ -222,6 +222,11 @@ describe("M.complete (pr tree)", function()
     before_each(function()
         package.loaded["differ.view"] = { current = function() end }
         package.loaded["differ.pr"] = FAKE_PR
+        package.loaded["differ.merge.continue"] = {
+            in_progress = function()
+                return false
+            end,
+        }
         package.loaded["differ.command"] = nil
         cmd = require("differ.command")
     end)
@@ -230,6 +235,7 @@ describe("M.complete (pr tree)", function()
         package.loaded["differ.command"] = nil
         package.loaded["differ.pr"] = nil
         package.loaded["differ.view"] = nil
+        package.loaded["differ.merge.continue"] = nil
     end)
 
     it("offers the review actions after `pr review `", function()

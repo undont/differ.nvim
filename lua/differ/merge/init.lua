@@ -74,6 +74,7 @@ local INPUT_HL = {
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
 ---@field operation string|nil          -- the in-progress operation at session start
 ---@field watcher differ.git.Watcher|nil -- the git dir watch for changes made outside the session
+---@field running boolean|nil           -- :Differ continue is running git; its end decides, not the watcher
 ---@field result_win integer
 ---@field result_buf integer              -- the real worktree file (editable)
 ---@field bufs integer[]                  -- the scratch input buffers (deleted on close)
@@ -724,6 +725,9 @@ local function result_winbar(s)
     end
     if remaining == 0 and s.staged then
         local done = tint(s.removed and "deleted" or "staged", "differMergeStaged")
+        if s.left == 0 and s.operation then
+            return ("%s · %s · all conflicts resolved · :Differ continue"):format(file, done)
+        end
         if s.left == 0 then
             return ("%s · %s · all conflicts resolved"):format(file, done)
         end
@@ -927,15 +931,14 @@ local function report_unopenable(relpaths)
     )
 end
 
--- with no conflict left to open here, report done (naming the in-progress operation's
--- `--continue` when there is one), or name the conflicts left for git add/rm
+-- with no conflict left to open here, report done (pointing at :Differ continue when an
+-- operation is in progress), or name the conflicts left for git add/rm
 ---@param root string
 ---@param conflicted string[]
 local function report_progress(root, conflicted)
     if #conflicted == 0 then
-        local op = require("differ.git").operation(root)
-        if op then
-            notify(("all conflicts resolved: git %s --continue"):format(op))
+        if require("differ.git").operation(root) then
+            notify("all conflicts resolved: :Differ continue")
         else
             notify("all conflicts resolved and staged")
         end
@@ -1061,6 +1064,9 @@ local function step_file(direction)
         local others = vim.tbl_filter(function(p)
             return p ~= s.path
         end, conflicted)
+        if #conflicted == 0 and s.operation then
+            return notify("no conflicted files left: :Differ continue")
+        end
         if #conflicted == 0 then
             return notify("no conflicted files left")
         end
@@ -1204,7 +1210,7 @@ end
 -- the git dir changed: refresh the files left, and close once the session is stale
 ---@param this differ.MergeSession
 local function on_git_change(this)
-    if session ~= this then
+    if session ~= this or this.running then
         return
     end
     local conflicted = require("differ.git").conflicted(this.root)
@@ -1501,6 +1507,52 @@ function lay_out(root, relpath, model, layout, files)
     end
     vim.cmd("normal! zz")
     on_cursor_moved()
+end
+
+-- before :Differ continue runs git: save and stage the open result. false when the save
+-- failed or a marker-free result stays unstaged
+---@return boolean
+function M.settle()
+    if not session then
+        return true
+    end
+    return settle_result()
+end
+
+-- hold the session open while differ runs git, so the git-dir watcher doesn't close it
+function M.hold()
+    if session then
+        session.running = true
+    end
+end
+
+-- once differ's own continue, skip or abort ends: open the first conflict it stopped on,
+-- else close the session when the operation is over, else keep it with git's new HEAD
+---@param root string
+function M.after_operation(root)
+    local git = require("differ.git")
+    local s = session
+    if s then
+        s.running = false
+        s.head, s.operation = git.head_sha(root), git.operation(root)
+    end
+    if not git.operation(root) then
+        return M.close()
+    end
+    local conflicted = git.conflicted(root)
+    if #conflicted == 0 then
+        return
+    end
+    local build = require("differ.merge.model").build
+    for _, relpath in ipairs(conflicted) do
+        local model = build(root, relpath, nil)
+        if model then
+            local layout = s and s.layout or require("differ").get_config().merge.layout
+            return lay_out(root, relpath, model, layout or "default", conflicted)
+        end
+    end
+    report_unopenable(conflicted)
+    M.close()
 end
 
 -- resolve root + the target relpath, then build + open. with no path the current file is
