@@ -18,6 +18,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field regions differ.merge.Region[]
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
+---@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
 
 local M = {}
 
@@ -150,8 +151,28 @@ local function recover_base(regions, ours_text, base_text, theirs_text)
     end
 end
 
+-- the side that deleted a modify/delete file: the ancestor and exactly one side's stage
+-- are in the index. git leaves the other side's file on disk with no markers
+---@param root string
+---@param relpath string
+---@return "ours"|"theirs"|nil
+local function deleted_side(root, relpath)
+    local git = require("differ.git")
+    if not git.has_stage(root, relpath, 1) then
+        return nil
+    end
+    local has_ours = git.has_stage(root, relpath, 2)
+    if has_ours == git.has_stage(root, relpath, 3) then
+        return nil
+    end
+    if has_ours then
+        return "theirs"
+    end
+    return "ours"
+end
+
 -- build a MergeModel for a conflicted `relpath`. returns nil + a reason when the file
--- isn't on disk or carries no conflict markers (already resolved / never conflicted)
+-- isn't on disk, or carries no conflict markers and isn't a modify/delete conflict
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -163,8 +184,12 @@ function M.build(root, relpath, head)
         return nil, relpath .. " is not in the working tree"
     end
     local regions = conflict.parse(to_lines(result_text))
+    local deleted = nil
     if #regions == 0 then
-        return nil, relpath .. " has no conflicts to resolve"
+        deleted = deleted_side(root, relpath)
+        if not deleted then
+            return nil, relpath .. " has no conflicts to resolve"
+        end
     end
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)
@@ -186,6 +211,7 @@ function M.build(root, relpath, head)
         regions = regions,
         head = head,
         no_ancestor = no_ancestor,
+        deleted = deleted,
     }
 end
 

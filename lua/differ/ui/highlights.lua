@@ -126,6 +126,9 @@ local function status_groups(p)
         -- the gutter glyph on a line its side ends on with no newline after it: the
         -- changed colour, since that ending is what changed
         differNoEol = { fg = p.yellow },
+        -- the merge result winbar's index state: a file still to stage, and one staged
+        differMergeUnstaged = { fg = p.orange },
+        differMergeStaged = { fg = p.green },
         -- the winbar badge on a view that isn't the whole change
         differViewBadge = { fg = p.green, bold = true, reverse = true },
     }

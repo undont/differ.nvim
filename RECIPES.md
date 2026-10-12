@@ -129,3 +129,4 @@ Every group is defined with `default = true`, so a `:highlight` of your own wins
 | `differMergeConflict` | an unresolved block in the result |
 | `differMergeMarker` | a raw conflict marker left in the buffer |
 | `differMergeFlash` | the transient flash on lines a take-this produced |
+| `differMergeUnstaged` / `differMergeStaged` | the result winbar's index state: still to stage, or staged |
