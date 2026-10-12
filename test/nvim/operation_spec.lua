@@ -108,6 +108,29 @@ local function subject(root)
     return vim.trim(git_ok(root, "log", "-1", "--format=%s"))
 end
 
+-- signing on, with a gpg.program that records whether GPG_TTY names a terminal, then
+-- signs with junk. returns the record's path
+local function signing(root)
+    local record = vim.fn.tempname()
+    local stub = vim.fn.tempname()
+    write(
+        stub,
+        table.concat({
+            "#!/bin/sh",
+            "cat >/dev/null",
+            ('if [ -c "$GPG_TTY" ]; then echo tty; else echo none; fi > %s'):format(
+                vim.fn.shellescape(record)
+            ),
+            "printf '\\n[GNUPG:] SIG_CREATED D 22 8 00 0 0\\n' >&2",
+            "printf -- '-----BEGIN PGP SIGNATURE-----\\nstub\\n-----END PGP SIGNATURE-----\\n'",
+        }, "\n")
+    )
+    vim.fn.setfperm(stub, "rwx------")
+    git_ok(root, "config", "commit.gpgsign", "true")
+    git_ok(root, "config", "gpg.program", stub)
+    return record
+end
+
 describe("git operation runner", function()
     local saved, marker
 
@@ -205,6 +228,40 @@ describe("git operation runner", function()
         assert.is_true(res.ok, res.output)
         assert.is_nil(git_src.operation(root))
         assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
+    end)
+
+    describe("with signing on", function()
+        it("runs in a floating terminal that gpg can prompt on", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            local record = signing(root)
+            local wins = #vim.api.nvim_list_wins()
+            local result
+            operation.run(root, "merge", "continue", nil, function(ok, output)
+                result = { ok = ok, output = output }
+            end)
+            assert.are.equal(wins + 1, #vim.api.nvim_list_wins())
+            assert.are.equal("terminal", vim.bo.buftype)
+            assert(
+                vim.wait(10000, function()
+                    return result ~= nil
+                end),
+                "the run never finished"
+            )
+            assert.is_true(result.ok, result.output)
+            assert.are.equal(wins, #vim.api.nvim_list_wins())
+            assert.are.same({ "tty" }, vim.fn.readfile(record))
+            assert.matches("gpgsig", git_ok(root, "cat-file", "-p", "HEAD"))
+        end)
+
+        it("hands back the float's output when git fails", function()
+            local root = stopped("merge")
+            signing(root)
+            local res = run(root, "continue")
+            assert.is_false(res.ok)
+            assert.matches("conflict", res.output)
+            assert.not_matches("Process exited", res.output)
+        end)
     end)
 end)
 
@@ -340,6 +397,25 @@ describe(":Differ continue", function()
         finished(root)
         assert.are.equal("edited", subject(root))
         assert.is_false(vim.api.nvim_buf_is_valid(buf))
+    end)
+
+    it("leaves focus in the signing float after the edit buffer is written", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        signing(root)
+        in_repo(root)
+        chosen = "continue and edit the message"
+        command.dispatch({ "continue" })
+        local buf = vim.api.nvim_get_current_buf()
+        vim.cmd("write")
+        assert(
+            vim.wait(1000, function()
+                return vim.bo.buftype == "terminal"
+            end),
+            "focus never reached the float"
+        )
+        assert.is_false(vim.api.nvim_buf_is_valid(buf))
+        finished(root)
     end)
 
     it("leaves the operation alone when the edit buffer closes unwritten", function()

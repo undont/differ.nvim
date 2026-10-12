@@ -118,12 +118,13 @@ local function edit_message(root, op, text)
         callback = function()
             local message = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
             vim.bo[buf].modified = false
+            -- closing the message window moves focus, so run only once it's gone
             vim.schedule(function()
                 pcall(vim.api.nvim_buf_delete, buf, { force = true })
+                if resolved(root) then
+                    run(root, op, "continue", { message = message .. "\n" })
+                end
             end)
-            if resolved(root) then
-                run(root, op, "continue", { message = message .. "\n" })
-            end
         end,
     })
 end
