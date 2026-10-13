@@ -827,11 +827,23 @@ local function release_result(s)
         for _, spec in ipairs(s.bound_keys) do
             unbind(s.result_buf, spec)
         end
+        if s.aug then
+            vim.api.nvim_clear_autocmds({ group = s.aug, buffer = s.result_buf })
+        end
     end
     -- drop the diagnostics hook; the producers re-lint the now-resolved file on their own
     if s.diag_aug then
         pcall(vim.api.nvim_del_augroup_by_id, s.diag_aug)
         s.diag_aug = nil
+    end
+end
+
+-- read back what git wrote to the result's file while the session held it. a buffer with
+-- unsaved edits gets nvim's changed-on-disk prompt
+---@param s differ.MergeSession
+local function reload_result(s)
+    if vim.api.nvim_buf_is_valid(s.result_buf) then
+        vim.cmd.checktime(s.result_buf)
     end
 end
 
@@ -844,6 +856,7 @@ function M.close()
     session = nil
     restore_timeout() -- net in case the tab teardown didn't fire BufLeave on the result buf
     release_result(s)
+    reload_result(s)
     if s.aug then
         pcall(vim.api.nvim_del_augroup_by_id, s.aug)
     end
@@ -1007,6 +1020,8 @@ end
 ---@return boolean
 local function settle_result()
     local s = assert(session)
+    -- on_write warns about a reformatting formatter once; a later refusal has to say why
+    local warned = s.autoformat_warned
     -- an untouched modify/delete file waits for keep or delete; stepping past isn't a keep
     if s.deleted and not s.staged and not vim.bo[s.result_buf].modified then
         return true
@@ -1022,7 +1037,17 @@ local function settle_result()
     elseif #s.regions == 0 and not s.staged then
         on_write() -- written but never staged, e.g. after a failed add
     end
-    return #s.regions > 0 or s.staged
+    if #s.regions > 0 or s.staged then
+        return true
+    end
+    local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+    if warned and markers_reformatted(lines) then
+        notify(
+            ("%s isn't staged: a formatter changed its conflict markers"):format(s.path),
+            vim.log.levels.WARN
+        )
+    end
+    return false
 end
 
 -- the next/prev file in the session's list that is still conflicted and builds, wrapping
@@ -1535,6 +1560,7 @@ function M.after_operation(root)
     if s then
         s.running = false
         s.head, s.operation = git.head_sha(root), git.operation(root)
+        reload_result(s)
     end
     if not git.operation(root) then
         return M.close()

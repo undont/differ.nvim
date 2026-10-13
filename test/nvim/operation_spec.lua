@@ -108,9 +108,9 @@ local function subject(root)
     return vim.trim(git_ok(root, "log", "-1", "--format=%s"))
 end
 
--- signing on, with a gpg.program that records whether GPG_TTY names a terminal, then
--- signs with junk. returns the record's path
-local function signing(root)
+-- a gpg.program that records whether GPG_TTY names a terminal, then signs with junk after
+-- `delay` seconds. returns the record's path
+local function gpg_stub(root, delay)
     local record = vim.fn.tempname()
     local stub = vim.fn.tempname()
     write(
@@ -121,14 +121,20 @@ local function signing(root)
             ('if [ -c "$GPG_TTY" ]; then echo tty; else echo none; fi > %s'):format(
                 vim.fn.shellescape(record)
             ),
+            ("sleep %d"):format(delay or 0),
             "printf '\\n[GNUPG:] SIG_CREATED D 22 8 00 0 0\\n' >&2",
             "printf -- '-----BEGIN PGP SIGNATURE-----\\nstub\\n-----END PGP SIGNATURE-----\\n'",
         }, "\n")
     )
     vim.fn.setfperm(stub, "rwx------")
-    git_ok(root, "config", "commit.gpgsign", "true")
     git_ok(root, "config", "gpg.program", stub)
     return record
+end
+
+-- signing on through commit.gpgsign. returns the stub's record
+local function signing(root, delay)
+    git_ok(root, "config", "commit.gpgsign", "true")
+    return gpg_stub(root, delay)
 end
 
 describe("git operation runner", function()
@@ -191,15 +197,28 @@ describe("git operation runner", function()
         end)
     end
 
-    it("keeps the picked commit's author on an edited cherry-pick", function()
-        local root = stopped("cherry-pick")
+    it("keeps prepare-commit-msg's output in an edited merge message", function()
+        local root = stopped("merge")
         resolve_all(root)
-        run(root, "continue", { message = "edited\n" })
-        assert.are.equal(
-            vim.trim(git_ok(root, "log", "-1", "--format=%ae", "feature~1")),
-            vim.trim(git_ok(root, "log", "-1", "--format=%ae"))
-        )
+        local hook = root .. "/.git/hooks/prepare-commit-msg"
+        write(hook, '#!/bin/sh\necho hooked >> "$1"\n')
+        vim.fn.setfperm(hook, "rwx------")
+        local res = run(root, "continue", { message = "edited\n" })
+        assert.is_true(res.ok, res.output)
+        assert.is_nil(git_src.operation(root))
+        assert.are.equal("edited\nhooked", vim.trim(git_ok(root, "log", "-1", "--format=%B")))
+        assert.are.equal(2, #vim.split(vim.trim(git_ok(root, "log", "-1", "--format=%p")), " "))
     end)
+
+    for _, op in ipairs({ "rebase", "cherry-pick" }) do
+        it("keeps the picked commit's author on an edited " .. op, function()
+            local root = stopped(op)
+            resolve_all(root)
+            run(root, "continue", { message = "edited\n" })
+            assert.are.equal("edited", subject(root))
+            assert.are.equal("f@f", vim.trim(git_ok(root, "log", "-1", "--format=%ae")))
+        end)
+    end
 
     it("has no prepared message for am or an apply-backend rebase", function()
         assert.is_nil(operation.prepared_message(stopped("am"), "am"))
@@ -261,6 +280,71 @@ describe("git operation runner", function()
             assert.is_false(res.ok)
             assert.matches("conflict", res.output)
             assert.not_matches("Process exited", res.output)
+        end)
+
+        for _, close in ipairs({ "quit", "bdelete!" }) do
+            it("stops git and still hands back when the float is closed with :" .. close, function()
+                local root = stopped("merge")
+                resolve_all(root)
+                signing(root, 30)
+                local wins = #vim.api.nvim_list_wins()
+                local result
+                operation.run(root, "merge", "continue", nil, function(ok, output)
+                    result = { ok = ok, output = output }
+                end)
+                vim.cmd(close)
+                assert(
+                    vim.wait(5000, function()
+                        return result ~= nil
+                    end),
+                    "the run never handed back"
+                )
+                assert.is_false(result.ok)
+                assert.are.equal(wins, #vim.api.nvim_list_wins())
+                assert.are.equal("merge", git_src.operation(root))
+            end)
+        end
+
+        it("aborts in the background", function()
+            local root = stopped("merge")
+            signing(root)
+            local wins = #vim.api.nvim_list_wins()
+            local result
+            operation.run(root, "merge", "abort", nil, function(ok, output)
+                result = { ok = ok, output = output }
+            end)
+            assert.are.equal(wins, #vim.api.nvim_list_wins())
+            assert(vim.wait(10000, function()
+                return result ~= nil
+            end))
+            assert.is_true(result.ok, result.output)
+        end)
+
+        it("runs a rebase started with -S in the float", function()
+            local root = diverged_repo()
+            local record = gpg_stub(root)
+            git_ok(root, "checkout", "-q", "feature")
+            git(root, "rebase", "-S", "main")
+            resolve_all(root)
+            local result
+            operation.run(root, "rebase", "continue", nil, function(ok, output)
+                result = { ok = ok, output = output }
+            end)
+            assert.are.equal("terminal", vim.bo.buftype)
+            assert(vim.wait(10000, function()
+                return result ~= nil
+            end))
+            assert.are.same({ "tty" }, vim.fn.readfile(record))
+        end)
+
+        it("signs an edited commit of a cherry-pick range started with -S", function()
+            local root = diverged_repo()
+            gpg_stub(root)
+            git(root, "cherry-pick", "-S", "feature~1", "feature")
+            resolve_all(root)
+            run(root, "continue", { message = "edited\n" })
+            assert.are.equal("edited", subject(root))
+            assert.matches("gpgsig", git_ok(root, "cat-file", "-p", "HEAD"))
         end)
     end)
 end)
@@ -504,6 +588,28 @@ describe(":Differ continue", function()
             assert.is_nil(outside_closes())
         end)
 
+        for _, case in ipairs({ { "merge", "abort" }, { "rebase", "skip" } }) do
+            it("reads the saved result back after a " .. case[2], function()
+                local root = stopped(case[1])
+                local s = session_on(root)
+                vim.api.nvim_buf_call(s.result_buf, function()
+                    vim.cmd("silent write")
+                end)
+                chosen = case[2]
+                vim.fn.confirm = function()
+                    return 1
+                end
+                command.dispatch({ "continue" })
+                local buf = vim.fn.bufnr(root .. "/f.txt")
+                assert(
+                    vim.wait(10000, function()
+                        return vim.api.nvim_buf_get_lines(buf, 0, -1, false)[1] == "main"
+                    end),
+                    "the result kept the pre-" .. case[2] .. " text"
+                )
+            end)
+        end
+
         it("stays open with git's error when a hook refuses the commit", function()
             local root = stopped("merge")
             local hook = root .. "/.git/hooks/commit-msg"
@@ -522,6 +628,25 @@ describe(":Differ continue", function()
             assert.are.equal(s, merge.current())
             assert.is_not_nil(git_src.operation(root))
         end)
+    end)
+
+    it("refuses a second run while the first is going", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        local hook = root .. "/.git/hooks/commit-msg"
+        write(hook, "#!/bin/sh\nsleep 1\n")
+        vim.fn.setfperm(hook, "rwx------")
+        in_repo(root)
+        chosen = "continue"
+        command.dispatch({ "continue" })
+        command.dispatch({ "continue" })
+        local refused = noted("still running")
+        assert.is_not_nil(refused)
+        assert.are.equal(vim.log.levels.WARN, refused.level)
+        finished(root)
+        for _, n in ipairs(notes) do
+            assert.are_not.equal(vim.log.levels.ERROR, n.level, n.msg)
+        end
     end)
 
     it("opens the merge tool on new conflicts when run outside it", function()
@@ -557,6 +682,20 @@ describe("operation label", function()
     it("is nil with nothing in progress", function()
         assert.is_nil(git_src.operation_label(diverged_repo()))
     end)
+
+    -- resolving the stopped commit and committing it by hand drops *_HEAD, not sequencer/
+    for _, case in ipairs({
+        { "cherry-pick", "(cherry-picking) → main" },
+        { "revert", "(reverting) → feature" },
+    }) do
+        it("names a " .. case[1] .. " range left with only sequencer/", function()
+            local root = stopped(case[1])
+            resolve_all(root)
+            git_ok(root, "commit", "-q", "--no-edit")
+            assert.are.equal(case[1], git_src.operation(root))
+            assert.are.equal(case[2], git_src.operation_label(root))
+        end)
+    end
 
     it("names each commit once", function()
         local root = stopped("merge")
@@ -612,4 +751,17 @@ describe("local panel mid-operation", function()
             assert.are.equal(vim.trim(git_ok(root, "rev-parse", "HEAD")), p.lines[#p.lines])
         end)
     end
+
+    it("drops the operation lines after a rebase --quit", function()
+        local root = stopped("rebase")
+        local p = panel_on(root)
+        assert.are.equal(2, #operation_lines(p))
+        git_ok(root, "rebase", "--quit")
+        assert(
+            vim.wait(5000, function()
+                return #operation_lines(p) == 0
+            end),
+            "the operation lines outlived the --quit"
+        )
+    end)
 end)

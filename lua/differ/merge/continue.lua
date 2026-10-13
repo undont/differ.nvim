@@ -56,14 +56,32 @@ local function report(root, op, action, ok, output)
     )
 end
 
+-- the operation of the run in flight; a second run alongside it only gets git's errors
+---@type string|nil
+local running
+
+---@return boolean
+local function refuse_while_running()
+    if not running then
+        return false
+    end
+    notify(("git %s is still running"):format(running), vim.log.levels.WARN)
+    return true
+end
+
 ---@param root string
 ---@param op string
 ---@param action "continue"|"skip"|"abort"
 ---@param opts { message?: string }|nil
 local function run(root, op, action, opts)
+    if refuse_while_running() then
+        return
+    end
     local merge = require("differ.merge")
     merge.hold()
+    running = op
     git_op.run(root, op, action, opts, function(ok, output)
+        running = nil
         report(root, op, action, ok, output)
         merge.after_operation(root)
     end)
@@ -188,6 +206,9 @@ end
 
 -- the picker, continue first
 function M.pick()
+    if refuse_while_running() then
+        return
+    end
     local root = target_root()
     local op = root and require("differ.git").operation(root)
     if not root or not op then

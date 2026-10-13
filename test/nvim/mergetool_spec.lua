@@ -733,6 +733,27 @@ describe(":Differ mergetool resolution", function()
         -- the parser reads zero regions, but the file is still conflicted: not staged
         assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
     end)
+
+    it("says why ]f stays put once a reformatted save was warned about", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        for i, l in ipairs(lines) do
+            lines[i] = "    " .. l
+        end
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, lines)
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal(1, #_G.notifs)
+        assert.matches(
+            "f.txt isn't staged: a formatter changed its conflict markers",
+            _G.notifs[1].msg
+        )
+    end)
 end)
 
 -- the located input slab line for a side (the row sync_inputs centres on)
@@ -2063,6 +2084,21 @@ describe(":Differ mergetool modify/delete", function()
         end)
         assert.are.equal("", status(root, "a.txt"))
         assert.are.equal(0, vim.fn.filereadable(root .. "/a.txt"))
+    end)
+
+    it("doesn't stage a write of the deleted file from a window outside the session", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/a.txt")
+        local s = open_at(root, "a.txt")
+        local real = s.result_buf
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.is_true(vim.api.nvim_buf_is_loaded(real))
+        vim.api.nvim_buf_call(real, function()
+            vim.cmd("silent write")
+        end)
+        assert.are.equal("", vim.trim(git_ok(root, "ls-files", "--stage", "--", "a.txt")))
     end)
 
     it("says there's nothing to write on a :w after the delete", function()

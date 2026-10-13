@@ -367,6 +367,10 @@ local OPERATION_MARKERS = {
     { "REVERT_HEAD", "revert" },
 }
 
+-- the verb on sequencer/todo's first line: a cherry-pick or revert range whose stopped
+-- commit was committed by hand leaves only sequencer/
+local SEQUENCER_VERBS = { pick = "cherry-pick", p = "cherry-pick", revert = "revert" }
+
 -- the in-progress operation that has a `--continue`; nil for conflicts left by one that
 -- doesn't (stash pop, checkout -m)
 ---@param root string
@@ -381,7 +385,12 @@ function M.operation(root)
             return marker[2]
         end
     end
-    return nil
+    local todo = read_file(dir .. "/sequencer/todo")
+    local verb = todo and todo:match("^(%S+)")
+    if not verb then
+        return nil
+    end
+    return SEQUENCER_VERBS[verb]
 end
 
 -- repo-relative paths of untracked files, respecting .gitignore, in git's order
@@ -1438,6 +1447,8 @@ function M.panel(opts)
         local sig = (git({ "rev-parse", "HEAD" }, root) or "")
             .. "\0"
             .. (git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
+            .. "\0"
+            .. (M.operation(root) or "")
         if active_entry then
             sig = sig .. "\0" .. row_signature(active_entry)
         end
