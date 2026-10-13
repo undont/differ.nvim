@@ -554,15 +554,98 @@ describe(":Differ continue", function()
         finished(root)
     end)
 
-    it("leaves the operation alone when the edit buffer closes unwritten", function()
-        local root = stopped("merge")
-        resolve_all(root)
-        in_repo(root)
+    -- the edit buffer for the stopped operation, open on its prefilled message
+    local function edit_buffer()
         chosen = "continue and edit the message"
         command.dispatch({ "continue" })
+        local buf = vim.api.nvim_get_current_buf()
+        assert.are.equal("gitcommit", vim.bo[buf].filetype)
+        return buf
+    end
+
+    -- edit the message's subject and close the buffer unwritten
+    local function draft(text)
+        local buf = edit_buffer()
+        vim.api.nvim_buf_set_lines(buf, 0, 1, false, { text })
         vim.cmd("bwipeout!")
-        assert.is_false(continue.running())
-        assert.is_not_nil(git_src.operation(root))
+    end
+
+    local function first_line(buf)
+        return vim.api.nvim_buf_get_lines(buf, 0, 1, false)[1]
+    end
+
+    describe("message draft", function()
+        it("is kept when the edit buffer closes unwritten, and reopens", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            in_repo(root)
+            draft("drafted")
+            assert.is_false(continue.running())
+            assert.is_not_nil(git_src.operation(root))
+            assert.is_not_nil(noted("merge message draft kept"))
+            assert.are.equal("drafted", first_line(edit_buffer()))
+        end)
+
+        it("isn't kept when the edit buffer closes unchanged", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            in_repo(root)
+            edit_buffer()
+            vim.cmd("bwipeout!")
+            assert.is_nil(noted("draft kept"))
+        end)
+
+        it("is committed by a write, then cleared", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            in_repo(root)
+            draft("drafted")
+            edit_buffer()
+            vim.cmd("write")
+            finished(root)
+            assert.are.equal("drafted", subject(root))
+            git_ok(root, "reset", "-q", "--hard", "HEAD~1")
+            git(root, "merge", "--no-edit", "feature")
+            resolve_all(root)
+            assert.are.equal("Merge branch 'feature'", first_line(edit_buffer()))
+        end)
+
+        it("is ignored by a plain continue", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            in_repo(root)
+            draft("drafted")
+            chosen = "continue"
+            command.dispatch({ "continue" })
+            finished(root)
+            assert.are.equal("Merge branch 'feature'", subject(root))
+        end)
+
+        it("is cleared by an abort", function()
+            local root = stopped("merge")
+            resolve_all(root)
+            in_repo(root)
+            draft("drafted")
+            chosen = "abort"
+            vim.fn.confirm = function()
+                return 1
+            end
+            command.dispatch({ "continue" })
+            finished(root)
+            git(root, "merge", "--no-edit", "feature")
+            resolve_all(root)
+            assert.are.equal("Merge branch 'feature'", first_line(edit_buffer()))
+        end)
+
+        it("isn't offered on the next stop of a rebase", function()
+            local root = stopped("rebase")
+            resolve_all(root)
+            in_repo(root)
+            draft("drafted")
+            git(root, "-c", "core.editor=true", "rebase", "--continue")
+            resolve_all(root)
+            assert.are.equal("feature g", first_line(edit_buffer()))
+        end)
     end)
 
     it("aborts once confirmed, and not otherwise", function()

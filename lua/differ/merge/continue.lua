@@ -47,6 +47,25 @@ local function report(root, op, action, ok, output)
     )
 end
 
+-- an edited message closed unwritten, one per repo, for the stop it was written on
+---@type table<string, { op: string, head: string|nil, text: string }>
+local drafts = {}
+
+---@param root string
+---@param op string
+---@return string|nil
+local function draft_for(root, op)
+    local draft = drafts[root]
+    if not draft then
+        return nil
+    end
+    if draft.op ~= op or draft.head ~= require("differ.git").head_sha(root) then
+        drafts[root] = nil
+        return nil
+    end
+    return draft.text
+end
+
 -- the operation of the run in flight; a second run alongside it only gets git's errors
 ---@type string|nil
 local running
@@ -72,6 +91,9 @@ local function run(root, op, action, opts)
     running = op
     git_op.run(root, op, action, opts, function(ok, output)
         running = nil
+        if ok then
+            drafts[root] = nil
+        end
         report(root, op, action, ok, output)
         merge.after_operation(root)
     end)
@@ -97,7 +119,7 @@ local function resolved(root)
 end
 
 -- a scratch buffer holding the prepared message; :w continues with what it holds, closing
--- it unwritten cancels
+-- it unwritten keeps its text as the draft
 ---@param root string
 ---@param op string
 ---@param text string
@@ -120,11 +142,27 @@ local function edit_message(root, op, text)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(vim.trim(text), "\n"))
     vim.bo[buf].modified = false
     vim.bo[buf].filetype = "gitcommit"
-    vim.wo.winbar = ("%s message · :w continues, close to cancel"):format(op)
+    vim.wo.winbar = ("%s message · :w continues, close keeps a draft"):format(op)
+    local head = require("differ.git").head_sha(root)
+    local function buffer_text()
+        return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+    end
+    vim.api.nvim_create_autocmd("BufWipeout", {
+        buffer = buf,
+        callback = function()
+            if not vim.bo[buf].modified then
+                return
+            end
+            drafts[root] = { op = op, head = head, text = buffer_text() }
+            notify(op .. " message draft kept")
+        end,
+    })
     vim.api.nvim_create_autocmd("BufWriteCmd", {
         buffer = buf,
         callback = function()
-            local message = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+            local message = buffer_text()
+            -- kept until the continue succeeds, so a refused commit reopens with it
+            drafts[root] = { op = op, head = head, text = message }
             vim.bo[buf].modified = false
             -- closing the message window moves focus, so run only once it's gone
             vim.schedule(function()
@@ -161,7 +199,7 @@ local function entries(root, op)
             label = "continue and edit the message",
             run = function()
                 if resolved(root) then
-                    edit_message(root, op, message)
+                    edit_message(root, op, draft_for(root, op) or message)
                 end
             end,
         }
