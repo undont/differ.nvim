@@ -11,7 +11,7 @@ local INDENT = " "
 local FOLD_OPEN, FOLD_CLOSED = "▾", "▸"
 
 ---@class differ.panel.LineMeta
----@field kind "root"|"help"|"blank"|"header"|"dir"|"file"|"foothead"|"footrev"
+---@field kind "root"|"operation"|"continue"|"help"|"blank"|"header"|"dir"|"file"|"foothead"|"footrev"
 ---@field entry differ.FileEntry|nil
 ---@field path string|nil
 ---@field dir_path string|nil      -- dir rows: full repo-relative dir path (prefix re-attached)
@@ -32,6 +32,7 @@ local FOLD_OPEN, FOLD_CLOSED = "▾", "▸"
 ---@field viewed_end integer|nil
 ---@field prefix_col integer|nil  -- header rows: byte col where the dimmed common-prefix subtitle begins
 ---@field prefix_end integer|nil
+---@field verb_end integer|nil    -- operation row: byte col just past the parenthesised verb
 
 ---@class differ.panel.Block
 ---@field title string|nil               -- section header, nil = no header row
@@ -53,10 +54,11 @@ end
 
 ---@class differ.panel.Header
 ---@field path string|nil   -- repo/worktree path shown on the top line
+---@field operation string|nil  -- in-progress git operation, `(<verb>) <detail>`, above the path
 ---@field help string|nil   -- keymap hint (rendered as "Help: <help>")
 
 -- build the panel buffer lines and a parallel metadata list (one per line). an
--- optional header (repo path + `Help: g?` + blank) prefixes the sections,
+-- optional header (any in-progress operation, repo path, `Help: g?`, blank) prefixes the sections,
 -- and an optional `footer` rev appends a "Showing changes for:" block.
 -- `icon_for(path)` (supplied by the runtime layer, nvim-web-devicons, so this
 -- stays pure) returns a `(glyph, hl_group)` pair painted before each filename.
@@ -72,6 +74,12 @@ end
 function M.lines(blocks, header, icon_for, footer, width)
     local lines, meta = {}, {}
     if header then
+        if header.operation then
+            lines[#lines + 1] = header.operation
+            meta[#meta + 1] = { kind = "operation", verb_end = header.operation:find(")", 1, true) }
+            lines[#lines + 1] = ":Differ continue"
+            meta[#meta + 1] = { kind = "continue" }
+        end
         if header.path then
             lines[#lines + 1] = header.path
             meta[#meta + 1] = { kind = "root" }

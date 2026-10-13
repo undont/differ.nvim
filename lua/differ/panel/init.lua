@@ -98,6 +98,9 @@ local STATUS_HL = {
 ---@field on_staged fun(paths: table<string, boolean>|nil)|nil
 ---@field root string|nil
 ---@field footer string|nil
+---@field footer_source string|fun(): string|nil
+---@field operation fun(): string|nil
+---@field operation_label string|nil
 ---@field actions differ.panel.Actions|nil
 ---@field keymaps table<string, string|string[]|false>
 -- session-supplied buffer maps (e.g. pr viewed nav) the generic panel doesn't own
@@ -144,7 +147,10 @@ Panel.__index = Panel
 -- s / u keep their frozen marks
 ---@field on_staged? fun(paths: table<string, boolean>|nil)
 ---@field root? string  -- repo/worktree path shown in the panel header
----@field footer? string -- rev spec shown under "Showing changes for:"
+-- rev spec shown under "Showing changes for:"; a function is re-read on every reload, as
+-- is `operation`, the in-progress git operation
+---@field footer? string|fun(): string|nil
+---@field operation? fun(): string|nil
 ---@field actions? differ.panel.Actions -- file-level staging hooks (slice C)
 ---@field keymaps? table<string, string|string[]|false> -- resolved panel action -> lhs
 ---@field extra_keymaps? differ.panel.ExtraMap[] -- session maps (pr viewed nav)
@@ -189,7 +195,7 @@ function Panel.new(opts)
     if not pcall(vim.api.nvim_buf_set_name, bufnr, "differ://panel") then
         pcall(vim.api.nvim_buf_set_name, bufnr, "differ://panel#" .. bufnr)
     end
-    return setmetatable({
+    local self = setmetatable({
         bufnr = bufnr,
         sections = opts.sections,
         on_select = opts.on_select,
@@ -199,7 +205,8 @@ function Panel.new(opts)
         on_refresh = opts.on_refresh,
         on_staged = opts.on_staged,
         root = opts.root,
-        footer = opts.footer,
+        footer_source = opts.footer,
+        operation = opts.operation or function() end,
         actions = opts.actions,
         extra_keymaps = opts.extra_keymaps,
         on_step = opts.on_step,
@@ -219,6 +226,8 @@ function Panel.new(opts)
         lines = {},
         meta = {},
     }, Panel)
+    self:_read_chrome()
+    return self
 end
 
 -- 1-based line of the first file row, or 1 if there are none
@@ -323,7 +332,10 @@ function Panel:render()
     -- diff --stat totals, painted on the help line (the file count already sits in the
     -- winbar meter, so the totals show the +A -B the count doesn't repeat)
     self.add_total, self.del_total = add_total, del_total
-    local header = self.root and { path = self.root, help = "g?" } or nil
+    local header ---@type differ.panel.Header|nil
+    if self.root then
+        header = { path = self.root, operation = self.operation_label, help = "g?" }
+    end
     -- live window width, falling back to the configured width when the window
     -- isn't open yet (headless construction / tests)
     local live = self:is_open() and vim.api.nvim_win_get_width(self.winid) or self.width
@@ -397,6 +409,22 @@ function Panel:_highlight()
                 row,
                 0,
                 { end_col = eol, hl_group = "differPanelRoot" }
+            )
+        elseif m.kind == "operation" then
+            vim.api.nvim_buf_set_extmark(
+                self.bufnr,
+                ns,
+                row,
+                0,
+                { end_col = m.verb_end or eol, hl_group = "differPanelOperation" }
+            )
+        elseif m.kind == "continue" then
+            vim.api.nvim_buf_set_extmark(
+                self.bufnr,
+                ns,
+                row,
+                0,
+                { end_col = eol, hl_group = "differPanelContinue" }
             )
         elseif m.kind == "help" then
             vim.api.nvim_buf_set_extmark(
@@ -524,10 +552,20 @@ function Panel:_highlight()
     end
 end
 
+function Panel:_read_chrome()
+    local footer = self.footer_source
+    if type(footer) == "function" then
+        footer = footer()
+    end
+    self.footer = footer
+    self.operation_label = self.operation()
+end
+
 -- replace the file-list model and repaint (used on refresh / source change)
 ---@param sections differ.panel.Section[]
 function Panel:set_sections(sections)
     self.sections = sections
+    self:_read_chrome()
     self:render()
 end
 

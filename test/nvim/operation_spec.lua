@@ -539,3 +539,77 @@ describe(":Differ continue", function()
         )
     end)
 end)
+
+describe("operation label", function()
+    for _, case in ipairs({
+        { "merge", "(merging) feature → main" },
+        { "rebase", "(rebasing) feature onto main" },
+        { "rebase-apply", "(rebasing) feature onto main" },
+        { "am", "(applying patch 1/2) → main" },
+        { "cherry-pick", "(cherry-picking) feature~1 → main" },
+        { "revert", "(reverting) feature~2 → feature" },
+    }) do
+        it("names a stopped " .. case[1], function()
+            assert.are.equal(case[2], git_src.operation_label(stopped(case[1])))
+        end)
+    end
+
+    it("is nil with nothing in progress", function()
+        assert.is_nil(git_src.operation_label(diverged_repo()))
+    end)
+
+    it("names each commit once", function()
+        local root = stopped("merge")
+        assert.are.equal("(merging) feature → main", git_src.operation_label(root))
+        git_ok(root, "branch", "-m", "feature", "renamed")
+        assert.are.equal("(merging) feature → main", git_src.operation_label(root))
+    end)
+end)
+
+describe("local panel mid-operation", function()
+    after_each(function()
+        local p = require("differ.panel").current()
+        if p then
+            p:close()
+        end
+        vim.cmd("silent! %bwipeout!")
+    end)
+
+    local function operation_lines(p)
+        local lines = {}
+        for i, m in ipairs(p.meta) do
+            if m.kind == "operation" or m.kind == "continue" then
+                lines[#lines + 1] = p.lines[i]
+            end
+        end
+        return lines
+    end
+
+    -- every conflict staged, plus an untracked file so the panel outlives the operation
+    local function panel_on(root)
+        resolve_all(root)
+        write(root .. "/extra.txt", "extra\n")
+        vim.cmd.edit(vim.fn.fnameescape(root .. "/f.txt"))
+        git_src.panel({ rev = {} })
+        return assert(require("differ.panel").current())
+    end
+
+    for _, action in ipairs({ "continue", "abort" }) do
+        it("drops the operation lines after a " .. action, function()
+            local root = stopped("merge")
+            local p = panel_on(root)
+            assert.are.same(
+                { "(merging) feature → main", ":Differ continue" },
+                operation_lines(p)
+            )
+            assert.is_true(run(root, action).ok)
+            assert(
+                vim.wait(5000, function()
+                    return #operation_lines(p) == 0
+                end),
+                "the operation lines outlived the " .. action
+            )
+            assert.are.equal(vim.trim(git_ok(root, "rev-parse", "HEAD")), p.lines[#p.lines])
+        end)
+    end
+end)

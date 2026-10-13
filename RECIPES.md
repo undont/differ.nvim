@@ -86,6 +86,7 @@ Every group is defined with `default = true`, so a `:highlight` of your own wins
 | Group | Applies to |
 |---|---|
 | `differPanelHeader` / `differPanelRoot` / `differPanelHelp` | panel chrome (link `Title` / `Directory` / `Comment`) |
+| `differPanelOperation` / `differPanelContinue` | the in-progress operation's `(merging)` verb and its `:Differ continue` line in the panel header (link `WarningMsg` / `Special`) |
 | `differPanelDir` / `differPanelContext` | a tree directory row, and the dimmed `·parent/` trailer in the name listing |
 | `differPanelAdd` / `differPanelModify` / `differPanelDelete` | the status glyph, by kind |
 | `differPanelRename` / `differPanelUnmerged` / `differPanelUntracked` | the status glyph, by kind |

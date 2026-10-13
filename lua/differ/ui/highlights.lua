@@ -30,6 +30,8 @@ local LINKS = {
     differPanelHeader = { link = "Title" },
     differPanelRoot = { link = "Directory" },
     differPanelHelp = { link = "Comment" },
+    differPanelOperation = { link = "WarningMsg" },
+    differPanelContinue = { link = "Special" },
     differPanelDir = { link = "Directory" },
     -- dimmed "·parent/" trailer after a basename in the name listing
     differPanelContext = { link = "Comment" },
