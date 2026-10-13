@@ -53,9 +53,11 @@ local function diverged_repo()
 end
 
 -- stopped on the first conflict of `op`; revert undoes feature's two commits on top of a
--- third that rewrites both files
+-- third that rewrites both files. `single` picks or reverts only the first commit, which
+-- git runs without a sequencer
 ---@param op "merge"|"rebase"|"rebase-apply"|"am"|"cherry-pick"|"revert"
-local function stopped(op)
+---@param single boolean|nil
+local function stopped(op, single)
     local root = diverged_repo()
     if op == "merge" then
         git(root, "merge", "--no-edit", "feature") -- --no-edit isn't saved for the continue
@@ -70,13 +72,21 @@ local function stopped(op)
         write(patch, git_ok(root, "format-patch", "-2", "--stdout", "feature"))
         git(root, "am", "-3", patch)
     elseif op == "cherry-pick" then
-        git(root, "cherry-pick", "feature~1", "feature")
+        local picks = { "feature~1", "feature" }
+        if single then
+            picks = { "feature~1" }
+        end
+        git(root, "cherry-pick", unpack(picks))
     elseif op == "revert" then
         git_ok(root, "checkout", "-q", "feature")
         write(root .. "/f.txt", "later\n")
         write(root .. "/g.txt", "later\n")
         git_ok(root, "commit", "-q", "-am", "later")
-        git(root, "revert", "--no-edit", "HEAD~2", "HEAD~1")
+        local reverts = { "HEAD~2", "HEAD~1" }
+        if single then
+            reverts = { "HEAD~2" }
+        end
+        git(root, "revert", "--no-edit", unpack(reverts))
     end
     assert(#git_src.conflicted(root) > 0, op .. " didn't stop on a conflict")
     return root
@@ -233,19 +243,63 @@ describe("git operation runner", function()
         assert.is_not_nil(git_src.operation(root))
     end)
 
-    it("skips a rebase commit", function()
-        local root = stopped("rebase")
-        local res = run(root, "skip")
-        assert.is_false(res.ok) -- the next commit stops too
-        assert.are.same({ "g.txt" }, git_src.conflicted(root))
-    end)
+    for _, op in ipairs({ "rebase", "am", "cherry-pick", "revert" }) do
+        it("skips a " .. op .. " commit", function()
+            local root = stopped(op)
+            local res = run(root, "skip")
+            assert.is_false(res.ok) -- the next commit stops too
+            assert.are.same({ "g.txt" }, git_src.conflicted(root))
+            assert.are.equal(op, git_src.operation(root))
+        end)
+    end
 
-    it("aborts a merge", function()
-        local root = stopped("merge")
-        local head = git_ok(root, "rev-parse", "main")
-        local res = run(root, "abort")
-        assert.is_true(res.ok, res.output)
-        assert.is_nil(git_src.operation(root))
+    for _, op in ipairs({ "merge", "rebase", "am", "cherry-pick", "revert" }) do
+        it("aborts a " .. op, function()
+            local root = stopped(op)
+            -- a rebase stops detached on main; aborting goes back to feature
+            local head = git_ok(root, "rev-parse", "HEAD")
+            if op == "rebase" then
+                head = git_ok(root, "rev-parse", "feature")
+            end
+            local res = run(root, "abort")
+            assert.is_true(res.ok, res.output)
+            assert.is_nil(git_src.operation(root))
+            assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
+            assert.are.same({}, git_src.conflicted(root))
+        end)
+    end
+
+    for _, op in ipairs({ "cherry-pick", "revert" }) do
+        it("continues a single-commit " .. op, function()
+            local root = stopped(op, true)
+            assert.is_nil(vim.uv.fs_stat(root .. "/.git/sequencer"))
+            resolve_all(root)
+            local res = run(root, "continue")
+            assert.is_true(res.ok, res.output)
+            assert.is_nil(git_src.operation(root))
+        end)
+
+        it("continues a single-commit " .. op .. " with an edited message", function()
+            local root = stopped(op, true)
+            resolve_all(root)
+            local res = run(root, "continue", { message = "edited\n" })
+            assert.is_true(res.ok, res.output)
+            assert.is_nil(git_src.operation(root))
+            assert.are.equal("edited", subject(root))
+        end)
+    end
+
+    it("stops before the --continue when the edited commit fails", function()
+        local root = stopped("cherry-pick")
+        resolve_all(root)
+        local head = git_ok(root, "rev-parse", "HEAD")
+        local hook = root .. "/.git/hooks/commit-msg"
+        write(hook, "#!/bin/sh\necho 'hook says no' >&2\nexit 1\n")
+        vim.fn.setfperm(hook, "rwx------")
+        local res = run(root, "continue", { message = "edited\n" })
+        assert.is_false(res.ok)
+        assert.matches("hook says no", res.output)
+        assert.are.equal("cherry-pick", git_src.operation(root))
         assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
     end)
 
@@ -351,15 +405,13 @@ end)
 
 describe(":Differ continue", function()
     local command = require("differ.command")
-    local saved, notes, shown, chosen
+    local continue = require("differ.merge.continue")
+    local saved, shown, chosen
 
     -- stub the picker, choosing the entry labelled `chosen` (nil chooses nothing)
     before_each(function()
-        saved = { select = vim.ui.select, notify = vim.notify, confirm = vim.fn.confirm }
-        notes, shown, chosen = {}, nil, nil
-        vim.notify = function(msg, level)
-            notes[#notes + 1] = { msg = msg, level = level }
-        end
+        saved = { select = vim.ui.select, confirm = vim.fn.confirm }
+        _G.notifs, shown, chosen = {}, nil, nil
         vim.ui.select = function(items, opts, on_choice)
             shown = { prompt = opts.prompt, labels = vim.tbl_map(opts.format_item, items) }
             for _, item in ipairs(items) do
@@ -372,7 +424,7 @@ describe(":Differ continue", function()
     end)
 
     after_each(function()
-        vim.ui.select, vim.notify, vim.fn.confirm = saved.select, saved.notify, saved.confirm
+        vim.ui.select, vim.fn.confirm = saved.select, saved.confirm
         if merge.current() then
             merge.close()
         end
@@ -385,21 +437,21 @@ describe(":Differ continue", function()
     end
 
     local function noted(pattern)
-        for _, n in ipairs(notes) do
+        for _, n in ipairs(_G.notifs) do
             if n.msg:find(pattern) then
                 return n
             end
         end
     end
 
+    -- the run is reported in the same callback that clears running()
     local function finished(root)
         assert(
             vim.wait(10000, function()
-                return git_src.operation(root) == nil
+                return git_src.operation(root) == nil and not continue.running()
             end),
             "the operation never finished"
         )
-        vim.wait(100) -- the scheduled report
     end
 
     it("says there's nothing in progress", function()
@@ -441,8 +493,8 @@ describe(":Differ continue", function()
         in_repo(root)
         chosen = "continue"
         command.dispatch({ "continue" })
-        vim.wait(200)
         assert.are.equal(vim.log.levels.WARN, noted("2 conflicted files left").level)
+        assert.is_false(continue.running())
         assert.is_not_nil(git_src.operation(root))
     end)
 
@@ -509,7 +561,7 @@ describe(":Differ continue", function()
         chosen = "continue and edit the message"
         command.dispatch({ "continue" })
         vim.cmd("bwipeout!")
-        vim.wait(200)
+        assert.is_false(continue.running())
         assert.is_not_nil(git_src.operation(root))
     end)
 
@@ -521,7 +573,7 @@ describe(":Differ continue", function()
             return 2
         end
         command.dispatch({ "continue" })
-        vim.wait(200)
+        assert.is_false(continue.running())
         assert.is_not_nil(git_src.operation(root))
         vim.fn.confirm = function()
             return 1
@@ -543,6 +595,24 @@ describe(":Differ continue", function()
 
         local function outside_closes()
             return noted("outside the merge tool")
+        end
+
+        -- touch the git dir and wait for the session's watcher to handle it
+        local function after_git_change(s, root)
+            local files = require("differ.merge.files")
+            local on_git_change, seen = files.on_git_change, false
+            files.on_git_change = function(this)
+                if this == s then
+                    seen = true
+                end
+                return on_git_change(this)
+            end
+            git_ok(root, "config", "differ.test", "touched")
+            local handled = vim.wait(3000, function()
+                return seen
+            end)
+            files.on_git_change = on_git_change
+            assert(handled, "the watcher never handled a change")
         end
 
         it("saves and stages the result, then closes once the merge finishes", function()
@@ -570,8 +640,9 @@ describe(":Differ continue", function()
                 end),
                 "never reopened on g.txt"
             )
-            vim.wait(300) -- a late watcher fire must not close the new session
-            assert.is_not_nil(merge.current())
+            local s = assert(merge.current())
+            after_git_change(s, root)
+            assert.are.equal(s, merge.current())
             assert.is_nil(outside_closes())
         end)
 
@@ -624,7 +695,7 @@ describe(":Differ continue", function()
                 return noted("hook says no") ~= nil
             end))
             assert.are.equal(vim.log.levels.ERROR, noted("hook says no").level)
-            vim.wait(300)
+            after_git_change(s, root)
             assert.are.equal(s, merge.current())
             assert.is_not_nil(git_src.operation(root))
         end)
@@ -644,7 +715,7 @@ describe(":Differ continue", function()
         assert.is_not_nil(refused)
         assert.are.equal(vim.log.levels.WARN, refused.level)
         finished(root)
-        for _, n in ipairs(notes) do
+        for _, n in ipairs(_G.notifs) do
             assert.are_not.equal(vim.log.levels.ERROR, n.level, n.msg)
         end
     end)
