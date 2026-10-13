@@ -410,14 +410,14 @@ describe(":Differ continue", function()
     end)
 
     local cases = {
-        { "merge", { "continue", "continue and edit the message", "abort", "cancel" } },
-        { "rebase", { "continue", "continue and edit the message", "skip", "abort", "cancel" } },
-        { "am", { "continue", "skip", "abort", "cancel" } },
+        { "merge", { "continue", "continue and edit the message", "abort" } },
+        { "rebase", { "continue", "continue and edit the message", "skip", "abort" } },
+        { "am", { "continue", "skip", "abort" } },
         {
             "cherry-pick",
-            { "continue", "continue and edit the message", "skip", "abort", "cancel" },
+            { "continue", "continue and edit the message", "skip", "abort" },
         },
-        { "revert", { "continue", "continue and edit the message", "skip", "abort", "cancel" } },
+        { "revert", { "continue", "continue and edit the message", "skip", "abort" } },
     }
     for _, case in ipairs(cases) do
         it("offers " .. case[1] .. "'s options", function()

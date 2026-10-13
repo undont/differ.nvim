@@ -7,6 +7,7 @@
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
+local operation_ops = require("differ.git.operation")
 local GIT = exec.GIT
 local notify, chomp, reload_buffer = exec.notify, exec.chomp, exec.reload_buffer
 local git, git_raw, git_ok = exec.git, exec.git_raw, exec.git_ok
@@ -84,12 +85,23 @@ function M.head_sha(root)
     return out and chomp(out) or nil
 end
 
--- the repo's absolute git dir, or nil outside a repo
+---@type table<string, string>
+local git_dirs = {}
+
+-- the repo's absolute git dir, or nil outside a repo. only found dirs are cached: a
+-- directory outside a repo can become one
 ---@param root string
 ---@return string|nil
 function M.git_dir(root)
+    if git_dirs[root] then
+        return git_dirs[root]
+    end
     local out = git({ "rev-parse", "--absolute-git-dir" }, root)
-    return out and chomp(out) or nil
+    if not out then
+        return nil
+    end
+    git_dirs[root] = chomp(out)
+    return git_dirs[root]
 end
 
 -- does a local branch of this name already exist?
@@ -355,43 +367,7 @@ function M.conflicted(root)
     return out and rev.parse_unmerged(out) or {}
 end
 
--- git-dir markers of the operations with a `--continue`, checked in order: a rebase
--- replaying a merge or a pick also writes MERGE_HEAD/CHERRY_PICK_HEAD, and `git am` shares
--- rebase-apply/
-local OPERATION_MARKERS = {
-    { "rebase-merge", "rebase" },
-    { "rebase-apply/applying", "am" },
-    { "rebase-apply", "rebase" },
-    { "MERGE_HEAD", "merge" },
-    { "CHERRY_PICK_HEAD", "cherry-pick" },
-    { "REVERT_HEAD", "revert" },
-}
-
--- the verb on sequencer/todo's first line: a cherry-pick or revert range whose stopped
--- commit was committed by hand leaves only sequencer/
-local SEQUENCER_VERBS = { pick = "cherry-pick", p = "cherry-pick", revert = "revert" }
-
--- the in-progress operation that has a `--continue`; nil for conflicts left by one that
--- doesn't (stash pop, checkout -m)
----@param root string
----@return "merge"|"rebase"|"am"|"cherry-pick"|"revert"|nil
-function M.operation(root)
-    local dir = M.git_dir(root)
-    if not dir then
-        return nil
-    end
-    for _, marker in ipairs(OPERATION_MARKERS) do
-        if vim.uv.fs_stat(dir .. "/" .. marker[1]) then
-            return marker[2]
-        end
-    end
-    local todo = read_file(dir .. "/sequencer/todo")
-    local verb = todo and todo:match("^(%S+)")
-    if not verb then
-        return nil
-    end
-    return SEQUENCER_VERBS[verb]
-end
+M.operation, M.operation_label = operation_ops.current, operation_ops.label
 
 -- repo-relative paths of untracked files, respecting .gitignore, in git's order
 ---@param root string
@@ -563,105 +539,12 @@ end
 -- the current branch name (for the buffer statusline), or nil on a detached HEAD
 ---@param root string
 ---@return string|nil
-local function head_branch(root)
+function M.head_branch(root)
     local out = git({ "rev-parse", "--abbrev-ref", "HEAD" }, root)
     local name = out and chomp(out) or nil
     return (name and name ~= "HEAD") and name or nil
 end
-
--- name-rev walks history, which takes hundreds of ms in a large repo, and the panel asks
--- on every refresh while the named commit only changes once per operation step
-local commit_names, commit_names_cached = {}, 0
-local COMMIT_NAMES_MAX = 64
-
--- a commit as `git name-rev` names it (`topic`, `main~1`), else its short sha
----@param root string
----@param sha string
----@return string
-local function commit_name(root, sha)
-    local key = root .. "\0" .. sha
-    if commit_names[key] then
-        return commit_names[key]
-    end
-    local out = git({ "name-rev", "--name-only", "--no-undefined", sha }, root)
-    local name = out and chomp(out) or sha:sub(1, 7)
-    if commit_names_cached >= COMMIT_NAMES_MAX then
-        commit_names, commit_names_cached = {}, 0
-    end
-    commit_names[key], commit_names_cached = name, commit_names_cached + 1
-    return name
-end
-
--- the first line of a git-dir state file, or nil when it isn't there
----@param dir string
----@param file string
----@return string|nil
-local function state_line(dir, file)
-    local data = read_file(dir .. "/" .. file)
-    return data and data:match("^[^\n]*") or nil
-end
-
----@param root string
----@param dir string
----@return string
-local function rebase_detail(root, dir)
-    local state = vim.uv.fs_stat(dir .. "/rebase-merge") and "rebase-merge" or "rebase-apply"
-    local detail = ""
-    local branch = state_line(dir, state .. "/head-name")
-    if branch then
-        detail = " " .. branch:gsub("^refs/heads/", "")
-    end
-    local onto = state_line(dir, state .. "/onto")
-    if onto then
-        detail = detail .. " onto " .. commit_name(root, onto)
-    end
-    return detail
-end
-
-local OPERATION_HEADS = {
-    merge = { "MERGE_HEAD", "merging" },
-    ["cherry-pick"] = { "CHERRY_PICK_HEAD", "cherry-picking" },
-    revert = { "REVERT_HEAD", "reverting" },
-}
-
----@param root string
----@param dir string
----@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
----@return string verb, string detail
-local function operation_parts(root, dir, op)
-    if op == "rebase" then
-        return "rebasing", rebase_detail(root, dir)
-    end
-    local target = head_branch(root)
-    local into = target and (" → " .. target) or ""
-    if op == "am" then
-        local at, last = state_line(dir, "rebase-apply/next"), state_line(dir, "rebase-apply/last")
-        if not (at and last) then
-            return "applying patches", into
-        end
-        return ("applying patch %s/%s"):format(at, last), into
-    end
-    local file, verb = unpack(OPERATION_HEADS[op])
-    local sha = state_line(dir, file)
-    if not sha then
-        return verb, into
-    end
-    return verb, " " .. commit_name(root, sha) .. into
-end
-
--- the in-progress operation in lazygit's form (`(merging) topic → main`, `(rebasing) topic
--- onto main`), or nil when there's none
----@param root string
----@return string|nil
-function M.operation_label(root)
-    local op = M.operation(root)
-    local dir = op and M.git_dir(root)
-    if not (op and dir) then
-        return nil
-    end
-    local verb, detail = operation_parts(root, dir, op)
-    return ("(%s)%s"):format(verb, detail)
-end
+local head_branch = M.head_branch
 
 -- the "Showing changes for:" footer label: the user's rev spec, or the
 -- resolved HEAD commit for the default uncommitted view (mirrors diffview)

@@ -54,6 +54,16 @@ local STATUS_HL = {
     ["?"] = "differPanelUntracked",
 }
 
+-- rows painted from column 0 to the line's end, or to the operation row's verb_end
+---@type table<string, string>
+local LINE_HL = {
+    root = "differPanelRoot",
+    operation = "differPanelOperation",
+    continue = "differPanelContinue",
+    help = "differPanelHelp",
+    footrev = "differPanelHelp",
+}
+
 -- `one` takes the path; `many` the names of the files that lose content
 ---@class differ.panel.DropPrompt
 ---@field one string
@@ -97,10 +107,8 @@ local STATUS_HL = {
 ---@field on_refresh fun()|nil
 ---@field on_staged fun(paths: table<string, boolean>|nil)|nil
 ---@field root string|nil
----@field footer string|nil
----@field footer_source string|fun(): string|nil
----@field operation fun(): string|nil
----@field operation_label string|nil
+---@field chrome_sources { footer?: string|(fun(): string|nil), operation?: (fun(): string|nil) }
+---@field chrome { footer?: string, operation?: string } -- chrome_sources as last read
 ---@field actions differ.panel.Actions|nil
 ---@field keymaps table<string, string|string[]|false>
 -- session-supplied buffer maps (e.g. pr viewed nav) the generic panel doesn't own
@@ -205,8 +213,8 @@ function Panel.new(opts)
         on_refresh = opts.on_refresh,
         on_staged = opts.on_staged,
         root = opts.root,
-        footer_source = opts.footer,
-        operation = opts.operation or function() end,
+        chrome_sources = { footer = opts.footer, operation = opts.operation },
+        chrome = {},
         actions = opts.actions,
         extra_keymaps = opts.extra_keymaps,
         on_step = opts.on_step,
@@ -334,7 +342,7 @@ function Panel:render()
     self.add_total, self.del_total = add_total, del_total
     local header ---@type differ.panel.Header|nil
     if self.root then
-        header = { path = self.root, operation = self.operation_label, help = "g?" }
+        header = { path = self.root, operation = self.chrome.operation, help = "g?" }
     end
     -- live window width, falling back to the configured width when the window
     -- isn't open yet (headless construction / tests)
@@ -349,7 +357,7 @@ function Panel:render()
     local horizontal = self.position == "top" or self.position == "bottom"
     local out, width
     if horizontal then
-        out = render.lines(blocks, header, self.icon_for, self.footer, nil)
+        out = render.lines(blocks, header, self.icon_for, self.chrome.footer, nil)
         local needed = 0
         for i, m in ipairs(out.meta) do
             if m.kind == "file" then
@@ -364,11 +372,11 @@ function Panel:render()
         -- the untruncated render stands unless the content overflows the window, in
         -- which case re-render truncated to the live edge
         if width < needed then
-            out = render.lines(blocks, header, self.icon_for, self.footer, width)
+            out = render.lines(blocks, header, self.icon_for, self.chrome.footer, width)
         end
     else
         width = live
-        out = render.lines(blocks, header, self.icon_for, self.footer, width)
+        out = render.lines(blocks, header, self.icon_for, self.chrome.footer, width)
     end
     self.content_width = width
     self.lines, self.meta = out.lines, out.meta
@@ -402,38 +410,17 @@ function Panel:_highlight()
     for i, m in ipairs(self.meta) do
         local row = i - 1
         local eol = #self.lines[i]
-        if m.kind == "root" then
+        local line_hl = LINE_HL[m.kind]
+        if line_hl then
             vim.api.nvim_buf_set_extmark(
                 self.bufnr,
                 ns,
                 row,
                 0,
-                { end_col = eol, hl_group = "differPanelRoot" }
+                { end_col = m.verb_end or eol, hl_group = line_hl }
             )
-        elseif m.kind == "operation" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = m.verb_end or eol, hl_group = "differPanelOperation" }
-            )
-        elseif m.kind == "continue" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = eol, hl_group = "differPanelContinue" }
-            )
-        elseif m.kind == "help" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = eol, hl_group = "differPanelHelp" }
-            )
+        end
+        if m.kind == "help" then
             -- the diff --stat totals ride the (otherwise sparse) help line, pinned to
             -- the same content column as the per-file counts so they stack directly
             -- above them as a column total. virt_text, not line text, so it can't be
@@ -473,14 +460,6 @@ function Panel:_highlight()
                     { end_col = m.prefix_end, hl_group = "differPanelContext" }
                 )
             end
-        elseif m.kind == "footrev" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = eol, hl_group = "differPanelHelp" }
-            )
         elseif m.kind == "dir" then
             vim.api.nvim_buf_set_extmark(
                 self.bufnr,
@@ -553,12 +532,12 @@ function Panel:_highlight()
 end
 
 function Panel:_read_chrome()
-    local footer = self.footer_source
-    if type(footer) == "function" then
-        footer = footer()
+    for key, source in pairs(self.chrome_sources) do
+        if type(source) == "function" then
+            source = source()
+        end
+        self.chrome[key] = source
     end
-    self.footer = footer
-    self.operation_label = self.operation()
 end
 
 -- replace the file-list model and repaint (used on refresh / source change)

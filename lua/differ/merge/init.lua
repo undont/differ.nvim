@@ -19,6 +19,9 @@
 local set_local = require("differ.util.win").set_local
 local keymap = require("differ.util.keymap")
 local tab_util = require("differ.util.tab")
+local plural = require("differ.util.text").plural
+local merge_files = require("differ.merge.files")
+local markers_reformatted = require("differ.git.conflict").reformatted
 local bind, unbind = keymap.bind, keymap.unbind
 
 local M = {}
@@ -74,7 +77,6 @@ local INPUT_HL = {
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
 ---@field operation string|nil          -- the in-progress operation at session start
 ---@field watcher differ.git.Watcher|nil -- the git dir watch for changes made outside the session
----@field running boolean|nil           -- :Differ continue is running git; its end decides, not the watcher
 ---@field result_win integer
 ---@field result_buf integer              -- the real worktree file (editable)
 ---@field bufs integer[]                  -- the scratch input buffers (deleted on close)
@@ -137,26 +139,6 @@ end
 ---@param level integer|nil
 local function notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
-end
-
--- a clean conflict marker sits at column 0; a format-on-save that ignores the buffer's
--- disable_autoformat opt-out reflows the whole region and indents the markers with it. the
--- parser then can't see the region (it matches at column 0), so it would read as resolved
--- and stage a file that still has markers. an indented <<<<<<< / >>>>>>> run is the tell;
--- `<`/`>` only, since a stray indented ======= can be decorative
----@param lines string[]
----@return boolean
-local function markers_reformatted(lines)
-    for _, line in ipairs(lines) do
-        local ch = line:match("^%s+([<>])")
-        if ch then
-            local run = line:match("^%s+(%" .. ch .. "+)")
-            if run and #run >= 7 then
-                return true
-            end
-        end
-    end
-    return false
 end
 
 -- the active session, or nil. exposed so :Differ close can route to it
@@ -602,18 +584,16 @@ local function region_at(regions, lnum)
     return nil
 end
 
----@type fun(choice: "ours"|"theirs"|"both"|"base"|"none")
-local resolve_deleted
-
 -- resolve the conflict under the cursor by splicing in the chosen slab, then re-derive +
 -- repaint, flash the produced lines, and advance to the next remaining conflict
 ---@param choice "ours"|"theirs"|"both"|"base"|"none"
 local function resolve_choice(choice)
-    if not live_session() then
+    local s = live_session()
+    if not s then
         return
     end
-    if session.deleted then
-        return resolve_deleted(choice)
+    if s.deleted then
+        return require("differ.merge.deleted").resolve(s, choice)
     end
     local regions = live_regions()
     if #regions == 0 then
@@ -694,16 +674,6 @@ local function base_label()
         return label .. " · none for this conflict"
     end
     return label
-end
-
----@param n integer
----@param noun string
----@return string
-local function plural(n, noun)
-    if n == 1 then
-        return "1 " .. noun
-    end
-    return ("%d %ss"):format(n, noun)
 end
 
 -- a winbar segment in `hl`, then back to the winbar's own colours
@@ -913,9 +883,6 @@ local function show_help()
     help.show(help.lines(rows), { title = " Differ: merge ", dismiss = dismiss })
 end
 
----@type fun(root: string, relpath: string, model: differ.MergeModel, layout: "default"|"diff4", files: string[])
-local lay_out
-
 -- the input pane labels, named by the first conflict's markers. a modify/delete file has
 -- none: HEAD is ours under every operation, but theirs has no one ref to name
 ---@param model differ.MergeModel
@@ -933,49 +900,6 @@ local function side_labels(model)
     return labels
 end
 
--- conflicted paths the merge tool can't open (added by one side, deleted by both, binary)
----@param relpaths string[]
-local function report_unopenable(relpaths)
-    notify(
-        ("%s can't be opened in the merge tool: resolve with git add/rm"):format(
-            table.concat(relpaths, ", ")
-        ),
-        vim.log.levels.WARN
-    )
-end
-
--- with no conflict left to open here, report done (pointing at :Differ continue when an
--- operation is in progress), or name the conflicts left for git add/rm
----@param root string
----@param conflicted string[]
-local function report_progress(root, conflicted)
-    if #conflicted == 0 then
-        if require("differ.git").operation(root) then
-            notify("all conflicts resolved: :Differ continue")
-        else
-            notify("all conflicts resolved and staged")
-        end
-        return
-    end
-    local build = require("differ.merge.model").build
-    for _, relpath in ipairs(conflicted) do
-        if build(root, relpath, nil) then
-            return
-        end
-    end
-    report_unopenable(conflicted)
-end
-
--- mark this file resolved in the same tick as the index write, so the git-dir watcher
--- doesn't read it as resolved outside the session, and report progress
----@param s differ.MergeSession
-local function mark_staged(s)
-    s.staged = true
-    local conflicted = require("differ.git").conflicted(s.root)
-    s.left = #conflicted
-    report_progress(s.root, conflicted)
-end
-
 -- git add the marker-free result. the winbar shows it staged; only the file's first stage
 -- reports progress, since an auto-save re-stages it on every later edit
 local function stage_result()
@@ -985,7 +909,7 @@ local function stage_result()
         return
     end
     if not s.staged then
-        mark_staged(s)
+        merge_files.mark_staged(s)
     end
 end
 
@@ -1050,64 +974,6 @@ local function settle_result()
     return false
 end
 
--- the next/prev file in the session's list that is still conflicted and builds, wrapping
--- past the ends. staged files drop out of `conflicted`; unopenable ones fail the build
----@param s differ.MergeSession
----@param conflicted string[]
----@param direction "next"|"prev"
----@return string|nil relpath, differ.MergeModel|nil model, boolean wrapped
-local function find_file(s, conflicted, direction)
-    local build = require("differ.merge.model").build
-    local n, from = #s.files, s.file_index
-    local step = 1
-    if direction == "prev" then
-        step = -1
-    end
-    for k = 1, n - 1 do
-        local i = (from - 1 + k * step) % n + 1
-        local relpath = s.files[i]
-        if vim.tbl_contains(conflicted, relpath) then
-            local model = build(s.root, relpath, nil)
-            if model then
-                return relpath, model, (step == 1 and i < from) or (step == -1 and i > from)
-            end
-        end
-    end
-    return nil, nil, false
-end
-
--- ]f/[f: settle the result, then open the next/prev conflicted file in the session layout
----@param direction "next"|"prev"
-local function step_file(direction)
-    local s = live_session()
-    if not s or not settle_result() then
-        return
-    end
-    local conflicted = require("differ.git").conflicted(s.root)
-    local relpath, model, wrapped = find_file(s, conflicted, direction)
-    if not relpath then
-        local others = vim.tbl_filter(function(p)
-            return p ~= s.path
-        end, conflicted)
-        if #conflicted == 0 and s.operation then
-            return notify("no conflicted files left: :Differ continue")
-        end
-        if #conflicted == 0 then
-            return notify("no conflicted files left")
-        end
-        if #others == 0 then
-            return notify("no other conflicted file")
-        end
-        return report_unopenable(others)
-    end
-    if wrapped and direction == "next" then
-        notify("wrapped to the first conflicted file")
-    elseif wrapped then
-        notify("wrapped to the last conflicted file")
-    end
-    lay_out(s.root, relpath, assert(model), s.layout, s.files)
-end
-
 -- the keys an input pane carries; also bound on the scratch buffer a delete leaves behind
 ---@param buf integer
 local function bind_pane(buf)
@@ -1119,133 +985,12 @@ local function bind_pane(buf)
         goto_conflict("prev")
     end, "differ: previous conflict")
     bind(buf, km.next_file, function()
-        step_file("next")
+        merge_files.step("next")
     end, "differ: next conflicted file")
     bind(buf, km.prev_file, function()
-        step_file("prev")
+        merge_files.step("prev")
     end, "differ: previous conflicted file")
     bind(buf, km.help, show_help, "differ: keymap help")
-end
-
--- keep a modify/delete file: write it as it stands, which stages it like any write
-local function keep_file()
-    local s = assert(session)
-    local ok, err = pcall(vim.api.nvim_buf_call, s.result_buf, function()
-        vim.cmd("silent write")
-    end)
-    if not ok then
-        notify(tostring(err), vim.log.levels.ERROR)
-    end
-end
-
--- after a delete the file is gone, so the result window shows an empty read-only buffer
--- in place of the real one; a write there would recreate the file
----@param s differ.MergeSession
-local function show_deleted(s)
-    local real = s.result_buf
-    release_result(s)
-    local buf = make_buffer("deleted", s.path, {})
-    local notice = s.path .. " deletion staged"
-    -- acwrite, so a :w reaches the BufWriteCmd below rather than failing on the buftype
-    vim.bo[buf].buftype = "acwrite"
-    vim.api.nvim_create_autocmd("BufWriteCmd", {
-        buffer = buf,
-        group = s.aug,
-        callback = function()
-            notify(notice .. ": nothing to write")
-        end,
-    })
-    s.bufs[#s.bufs + 1] = buf
-    s.result_buf, s.bound_keys = buf, {}
-    vim.api.nvim_win_set_buf(s.result_win, buf)
-    dress(s.result_win)
-    show_notice(s.result_win, buf, notice)
-    bind_pane(buf)
-    -- unloaded, so nvim doesn't report the file missing; a window outside the session keeps it
-    if #vim.fn.win_findbuf(real) == 0 then
-        pcall(vim.api.nvim_buf_delete, real, {})
-    end
-end
-
--- delete a modify/delete file with git rm, once confirmed
-local function delete_file()
-    local s = assert(session)
-    if vim.bo[s.result_buf].modified then
-        return notify("unsaved changes: drop them with :e! to delete", vim.log.levels.WARN)
-    end
-    -- confirm() runs scheduled callbacks while it blocks, so the watcher can close the session
-    if vim.fn.confirm(("Delete %s?"):format(s.path), "&Yes\n&No", 2) ~= 1 then
-        return
-    end
-    if session ~= s then
-        return notify("the merge tool closed while the prompt was up; nothing was deleted")
-    end
-    if not require("differ.git").remove(s.root, s.path) then
-        return
-    end
-    s.removed = true
-    mark_staged(s)
-    show_deleted(s)
-end
-
--- a modify/delete file: taking the deleting side deletes it, taking the other keeps it
----@param choice "ours"|"theirs"|"both"|"base"|"none"
-function resolve_deleted(choice)
-    local s = assert(session)
-    if s.staged then
-        return notify(("%s is already resolved"):format(s.path))
-    end
-    if choice ~= "ours" and choice ~= "theirs" then
-        return notify(
-            "a modify/delete conflict is kept or deleted: take ours or theirs",
-            vim.log.levels.WARN
-        )
-    end
-    if choice == s.deleted then
-        return delete_file()
-    end
-    keep_file()
-end
-
--- why the session no longer matches git, or nil: HEAD or the operation changed (a
--- --continue, --abort or skip), or this file was resolved by something other than the session
----@param s differ.MergeSession
----@param conflicted string[]
----@return string|nil msg, integer|nil level
-local function stale_reason(s, conflicted)
-    local git = require("differ.git")
-    if git.head_sha(s.root) ~= s.head or git.operation(s.root) ~= s.operation then
-        return "git moved on outside the merge tool", vim.log.levels.INFO
-    end
-    if s.staged or vim.tbl_contains(conflicted, s.path) then
-        return nil, nil
-    end
-    -- what git staged is the file on disk, which the buffer may not match
-    local ok, lines = pcall(vim.fn.readfile, s.root .. "/" .. s.path)
-    if not ok then
-        lines = {}
-    end
-    if #require("differ.git.conflict").parse(lines) > 0 or markers_reformatted(lines) then
-        return s.path .. " was staged with conflict markers outside the merge tool",
-            vim.log.levels.WARN
-    end
-    return s.path .. " was resolved outside the merge tool", vim.log.levels.INFO
-end
-
--- the git dir changed: refresh the files left, and close once the session is stale
----@param this differ.MergeSession
-local function on_git_change(this)
-    if session ~= this or this.running then
-        return
-    end
-    local conflicted = require("differ.git").conflicted(this.root)
-    this.left = #conflicted
-    local msg, level = stale_reason(this, conflicted)
-    if not msg then
-        return vim.cmd("redrawstatus!")
-    end
-    notify(msg, level)
-    M.close()
 end
 
 -- lay out the render in a fresh session tab and wire navigation
@@ -1254,7 +999,7 @@ end
 ---@param model differ.MergeModel
 ---@param layout "default"|"diff4"
 ---@param files string[]
-function lay_out(root, relpath, model, layout, files)
+local function lay_out(root, relpath, model, layout, files)
     local git = require("differ.git")
     if session then -- re-open over a live session
         M.close()
@@ -1429,10 +1174,10 @@ function lay_out(root, relpath, model, layout, files)
         resolve_choice("none")
     end, "differ: drop the conflict")
     rb("next_file", function()
-        step_file("next")
+        merge_files.step("next")
     end, "differ: next conflicted file")
     rb("prev_file", function()
-        step_file("prev")
+        merge_files.step("prev")
     end, "differ: previous conflicted file")
     rb("help", show_help, "differ: keymap help")
     -- the input panes are scratch buffers deleted on close, so these need no unbind
@@ -1451,7 +1196,7 @@ function lay_out(root, relpath, model, layout, files)
         session.watcher = require("differ.git.watch").new({
             git_dir = git_dir,
             on_change = function()
-                on_git_change(this)
+                merge_files.on_git_change(this)
             end,
         })
     end
@@ -1544,40 +1289,30 @@ function M.settle()
     return settle_result()
 end
 
--- hold the session open while differ runs git, so the git-dir watcher doesn't close it
-function M.hold()
-    if session then
-        session.running = true
-    end
-end
-
 -- once differ's own continue, skip or abort ends: open the first conflict it stopped on,
 -- else close the session when the operation is over, else keep it with git's new HEAD
 ---@param root string
 function M.after_operation(root)
     local git = require("differ.git")
     local s = session
+    local operation = git.operation(root)
     if s then
-        s.running = false
-        s.head, s.operation = git.head_sha(root), git.operation(root)
+        s.head, s.operation = git.head_sha(root), operation
         reload_result(s)
     end
-    if not git.operation(root) then
+    if not operation then
         return M.close()
     end
     local conflicted = git.conflicted(root)
     if #conflicted == 0 then
         return
     end
-    local build = require("differ.merge.model").build
-    for _, relpath in ipairs(conflicted) do
-        local model = build(root, relpath, nil)
-        if model then
-            local layout = s and s.layout or require("differ").get_config().merge.layout
-            return lay_out(root, relpath, model, layout or "default", conflicted)
-        end
+    local relpath, model = merge_files.first_openable(root, conflicted)
+    if relpath then
+        local layout = s and s.layout or require("differ").get_config().merge.layout
+        return lay_out(root, relpath, assert(model), layout or "default", conflicted)
     end
-    report_unopenable(conflicted)
+    merge_files.report_unopenable(conflicted)
     M.close()
 end
 
@@ -1607,7 +1342,7 @@ function M.open(opts)
     local function go(relpath)
         local model = require("differ.merge.model").build(root, relpath, nil)
         if not model then
-            return report_unopenable({ relpath })
+            return merge_files.report_unopenable({ relpath })
         end
         lay_out(root, relpath, model, layout, conflicted)
     end
@@ -1645,5 +1380,10 @@ function M.open(opts)
         end
     end)
 end
+
+-- for merge/files.lua and merge/deleted.lua
+M._live_session, M._lay_out, M._bind_pane = live_session, lay_out, bind_pane
+M._make_buffer, M._release_result = make_buffer, release_result
+M._dress, M._show_notice = dress, show_notice
 
 return M

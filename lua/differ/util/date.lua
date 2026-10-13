@@ -16,7 +16,7 @@ local YEAR = 365 * DAY
 ---@param unit string
 ---@return string
 local function ago(n, unit)
-    return n .. " " .. unit .. (n == 1 and "" or "s") .. " ago"
+    return require("differ.util.text").plural(n, unit) .. " ago"
 end
 
 -- a coarse "N <unit> ago" for `epoch`, measured against `now` (defaults to the

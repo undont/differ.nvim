@@ -1,4 +1,5 @@
--- continue, skip or abort the in-progress operation (`git.operation`) in the background.
+-- the in-progress operation (merge, rebase, am, cherry-pick, revert): detected from the
+-- git dir, labelled for the panel, and continued, skipped or aborted in the background.
 -- git never gets a terminal here, so it never gets a real editor either: a plain run
 -- commits the message git prepared, an edited one hands git the user's text
 
@@ -22,13 +23,147 @@ local function read(path)
     return text
 end
 
+---@param root string
+---@return string|nil
+local function git_dir(root)
+    return require("differ.git").git_dir(root)
+end
+
+-- git-dir markers of the operations with a `--continue`, checked in order: a rebase
+-- replaying a merge or a pick also writes MERGE_HEAD/CHERRY_PICK_HEAD, and `git am` shares
+-- rebase-apply/
+local OPERATION_MARKERS = {
+    { "rebase-merge", "rebase" },
+    { "rebase-apply/applying", "am" },
+    { "rebase-apply", "rebase" },
+    { "MERGE_HEAD", "merge" },
+    { "CHERRY_PICK_HEAD", "cherry-pick" },
+    { "REVERT_HEAD", "revert" },
+}
+
+-- the verb on sequencer/todo's first line: a cherry-pick or revert range whose stopped
+-- commit was committed by hand leaves only sequencer/
+local SEQUENCER_VERBS = { pick = "cherry-pick", p = "cherry-pick", revert = "revert" }
+
+-- the in-progress operation that has a `--continue`; nil for conflicts left by one that
+-- doesn't (stash pop, checkout -m)
+---@param root string
+---@return "merge"|"rebase"|"am"|"cherry-pick"|"revert"|nil
+function M.current(root)
+    local dir = git_dir(root)
+    if not dir then
+        return nil
+    end
+    for _, marker in ipairs(OPERATION_MARKERS) do
+        if vim.uv.fs_stat(dir .. "/" .. marker[1]) then
+            return marker[2]
+        end
+    end
+    local todo = read(dir .. "/sequencer/todo")
+    local verb = todo and todo:match("^(%S+)")
+    if not verb then
+        return nil
+    end
+    return SEQUENCER_VERBS[verb]
+end
+
+-- name-rev walks history, which takes hundreds of ms in a large repo, and the panel asks
+-- on every refresh while the named commit only changes once per operation step
+---@type { key: string, name: string }|nil
+local last_name
+
+-- a commit as `git name-rev` names it (`topic`, `main~1`), else its short sha
+---@param root string
+---@param sha string
+---@return string
+local function commit_name(root, sha)
+    local key = root .. "\0" .. sha
+    if last_name and last_name.key == key then
+        return last_name.name
+    end
+    local out = exec.git({ "name-rev", "--name-only", "--no-undefined", sha }, root)
+    last_name = { key = key, name = out and exec.chomp(out) or sha:sub(1, 7) }
+    return last_name.name
+end
+
+-- the first line of a git-dir state file, or nil when it isn't there
+---@param dir string
+---@param file string
+---@return string|nil
+local function state_line(dir, file)
+    local data = read(dir .. "/" .. file)
+    return data and data:match("^[^\n]*") or nil
+end
+
+---@param root string
+---@param dir string
+---@return string
+local function rebase_detail(root, dir)
+    local state = vim.uv.fs_stat(dir .. "/rebase-merge") and "rebase-merge" or "rebase-apply"
+    local detail = ""
+    local branch = state_line(dir, state .. "/head-name")
+    if branch then
+        detail = " " .. branch:gsub("^refs/heads/", "")
+    end
+    local onto = state_line(dir, state .. "/onto")
+    if onto then
+        detail = detail .. " onto " .. commit_name(root, onto)
+    end
+    return detail
+end
+
+local OPERATION_HEADS = {
+    merge = { "MERGE_HEAD", "merging" },
+    ["cherry-pick"] = { "CHERRY_PICK_HEAD", "cherry-picking" },
+    revert = { "REVERT_HEAD", "reverting" },
+}
+
+---@param root string
+---@param dir string
+---@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
+---@return string verb, string detail
+local function operation_parts(root, dir, op)
+    if op == "rebase" then
+        return "rebasing", rebase_detail(root, dir)
+    end
+    local target = require("differ.git").head_branch(root)
+    local into = target and (" → " .. target) or ""
+    if op == "am" then
+        local at, last = state_line(dir, "rebase-apply/next"), state_line(dir, "rebase-apply/last")
+        if not (at and last) then
+            return "applying patches", into
+        end
+        return ("applying patch %s/%s"):format(at, last), into
+    end
+    local file, verb = unpack(OPERATION_HEADS[op])
+    local sha = state_line(dir, file)
+    if not sha then
+        return verb, into
+    end
+    return verb, " " .. commit_name(root, sha) .. into
+end
+
+-- the in-progress operation in lazygit's form (`(merging) topic → main`, `(rebasing) topic
+-- onto main`), or nil when there's none
+---@param root string
+---@return string|nil
+function M.label(root)
+    local op = M.current(root)
+    if not op then
+        return nil
+    end
+    local dir = assert(git_dir(root))
+    local verb, detail = operation_parts(root, dir, op)
+    return ("(%s)%s"):format(verb, detail)
+end
+
 -- the message the operation's next commit starts from, or nil when its --continue never
 -- opens an editor (am, an apply-backend rebase)
 ---@param root string
 ---@param op string
 ---@return string|nil
 function M.prepared_message(root, op)
-    local dir = require("differ.git").git_dir(root)
+    local dir = git_dir(root)
     if not dir or op == "am" then
         return nil
     end
@@ -60,7 +195,7 @@ local function signing(root)
     if vim.trim(exec.git({ "config", "--type=bool", "commit.gpgsign" }, root) or "") == "true" then
         return true
     end
-    local dir = require("differ.git").git_dir(root)
+    local dir = git_dir(root)
     if not dir then
         return false
     end
@@ -80,14 +215,7 @@ local function spawn_float(root, cmd, editor, on_exit)
     local buf = vim.api.nvim_create_buf(false, true)
     local width = math.floor(vim.o.columns * 0.8)
     local height = math.floor(vim.o.lines * 0.6)
-    local win = vim.api.nvim_open_win(buf, true, {
-        relative = "editor",
-        width = width,
-        height = height,
-        row = math.floor((vim.o.lines - height) / 2),
-        col = math.floor((vim.o.columns - width) / 2),
-        style = "minimal",
-        border = "rounded",
+    local win = require("differ.util.win").open_centred(buf, width, height, {
         title = " git " .. cmd[#exec.GIT + 1] .. " ",
     })
     local argv = vim.list_extend({ "sh", "-c", 'GPG_TTY=$(tty) exec "$@"', "sh" }, cmd)
@@ -168,7 +296,7 @@ end
 ---@param float boolean
 ---@param on_exit fun(ok: boolean, output: string)
 local function commit_then_continue(root, op, msgfile, float, on_exit)
-    local dir = require("differ.git").git_dir(root)
+    local dir = git_dir(root)
     local args = { "commit", "-q", "--cleanup=strip", "-F", msgfile }
     local sign = dir and sequencer_sign(dir)
     if sign then

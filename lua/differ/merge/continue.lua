@@ -3,20 +3,11 @@
 
 local exec = require("differ.git.exec")
 local git_op = require("differ.git.operation")
+local plural = require("differ.util.text").plural
 
 local M = {}
 
 local notify = exec.notify
-
----@param n integer
----@param noun string
----@return string
-local function plural(n, noun)
-    if n == 1 then
-        return "1 " .. noun
-    end
-    return ("%d %ss"):format(n, noun)
-end
 
 -- the repo the command acts on: a merge session's, else the current file's or cwd's
 ---@return string|nil
@@ -78,7 +69,6 @@ local function run(root, op, action, opts)
         return
     end
     local merge = require("differ.merge")
-    merge.hold()
     running = op
     git_op.run(root, op, action, opts, function(ok, output)
         running = nil
@@ -193,7 +183,6 @@ local function entries(root, op)
             end
         end,
     }
-    list[#list + 1] = { label = "cancel", run = function() end }
     return list
 end
 
@@ -202,6 +191,12 @@ end
 function M.in_progress()
     local root = target_root()
     return root ~= nil and require("differ.git").operation(root) ~= nil
+end
+
+-- whether a run is in flight
+---@return boolean
+function M.running()
+    return running ~= nil
 end
 
 -- the picker, continue first
