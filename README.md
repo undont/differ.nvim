@@ -287,7 +287,8 @@ The lifecycle verbs act on the active session's PR:
 |---|---|
 | `:Differ gofile` | Open the real file at the cursor's mapped line and end the session. The `de` key |
 | `:Differ edit` | Edit the real file in a transient split at the cursor's mapped line, keeping the session; `:w` re-sources the diff. The `df` key |
-| `:Differ mergetool [path]` | Open the merge tool on a conflicted file; no argument takes the current file, else the only conflicted one, else a picker |
+| `:Differ mergetool [path]` | Open the merge tool on a conflicted file; `]f`/`[f` step between conflicted files |
+| `:Differ continue` | Finish the merge, rebase, cherry-pick, revert or `am` in progress. Supports gitconfig `commit.gpgsign` with a floating terminal for the passphrase input |
 | `:Differ sidecar` | Smoke-check the Go sidecar: start it, round-trip a handshake, and report the binary and protocol version |
 | `:Differ sidecar stop` | Stop the supervised sidecar; the next PR command starts a fresh one |
 | `:Differ cache clear` | Flush the sidecar's in-process caches (file blobs and PR review threads) |
