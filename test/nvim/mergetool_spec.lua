@@ -296,6 +296,22 @@ end
 local merge_ns = vim.api.nvim_create_namespace("differ.merge")
 local flash_ns = vim.api.nvim_create_namespace("differ.merge.flash")
 
+-- open the merge tool on a file no other window shows, from an untracked one beside it
+local function open_unshown(root, relpath)
+    write(root .. "/untracked.txt", "x\n")
+    vim.cmd.edit(root .. "/untracked.txt")
+    merge.open({ path = root .. "/" .. relpath })
+    return assert(merge.current())
+end
+
+-- whether the current window carries none of the merge tool's window dressing
+local function assert_undressed()
+    assert.are.equal("", vim.api.nvim_get_option_value("winbar", { scope = "local" }))
+    for _, opt in ipairs({ "number", "signcolumn", "cursorline", "scrollbind", "foldmethod" }) do
+        assert.are.equal(vim.go[opt], vim.wo[opt], opt)
+    end
+end
+
 describe(":Differ mergetool", function()
     after_each(function()
         if merge.current() then
@@ -371,6 +387,14 @@ describe(":Differ mergetool", function()
         merge.open({})
         merge.close()
         assert.is_nil(merge.current())
+    end)
+
+    it("hands the result buffer back without its window options", function()
+        local root = conflict_repo()
+        open_unshown(root, "f.txt")
+        merge.close()
+        vim.cmd.edit(root .. "/f.txt")
+        assert_undressed()
     end)
 
     it("leaves q to native macro recording on the editable result buffer", function()
@@ -2069,6 +2093,20 @@ describe(":Differ mergetool modify/delete", function()
         assert.is_false(vim.wo[s.result_win].number)
         vim.g.statusline_winid = s.result_win
         assert.are.equal("RESULT · file 1/2 · deleted · 1 file left", plain(merge.winbar()))
+    end)
+
+    it("hands a deleted file's buffer back without its window options", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/a.txt") -- a window outside the session keeps the real buffer
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        merge.close()
+        git_ok(root, "checkout", "HEAD", "--", "a.txt")
+        vim.cmd("new")
+        vim.cmd.edit(root .. "/a.txt")
+        assert_undressed()
     end)
 
     it("deletes a delete/modify file on taking ours", function()

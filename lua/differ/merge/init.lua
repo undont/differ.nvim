@@ -437,12 +437,12 @@ local function without_scrollbind(fn)
     end
     each(function(w)
         saved[w] = vim.wo[w].scrollbind
-        vim.wo[w].scrollbind = false
+        set_local(w, "scrollbind", false)
     end)
     local ok, err = pcall(fn)
     each(function(w)
         if saved[w] ~= nil then
-            vim.wo[w].scrollbind = saved[w]
+            set_local(w, "scrollbind", saved[w])
         end
     end)
     if not ok then
@@ -781,10 +781,30 @@ local function apply_folds(win, folds)
     end)
 end
 
+-- every window option dress() and apply_folds set, back to its global value. nvim stores
+-- a buffer's last window-local options and reapplies them when the buffer is next shown
+---@param win integer
+local function undress(win)
+    vim.api.nvim_win_call(win, function()
+        vim.cmd("silent! normal! zE")
+        vim.cmd(
+            "setlocal number< relativenumber< wrap< foldcolumn< foldenable< foldmethod<"
+                .. " foldtext< signcolumn< cursorline< scrollbind< winbar<"
+        )
+    end)
+end
+
 -- the result buffer is the user's real file and outlives the session, so it has to be
--- handed back clean: no session paint, no session keymaps, no session hooks
+-- handed back clean: no session paint, no session keymaps, no session hooks, no
+-- session window options
 ---@param s differ.MergeSession
 local function release_result(s)
+    if
+        vim.api.nvim_win_is_valid(s.result_win)
+        and vim.api.nvim_win_get_buf(s.result_win) == s.result_buf
+    then
+        undress(s.result_win)
+    end
     if vim.api.nvim_buf_is_valid(s.result_buf) then
         vim.b[s.result_buf].disable_autoformat = s.saved_autoformat -- give autoformat back
         if s.saved_markdown_render then
