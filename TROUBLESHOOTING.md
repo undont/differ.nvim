@@ -67,6 +67,10 @@ The merge result buffer is the real worktree file, so a format-on-save would oth
 
 If a formatter reformats the markers anyway, differ notices on save, refuses to stage the file, and warns once that the flag isn't being honoured.
 
+## Signing prompts during `:Differ continue`
+
+With `commit.gpgsign` on, `:Differ continue` runs git in a floating terminal and points `GPG_TTY` at it, so a terminal pinentry or an `ssh-keygen` passphrase prompt draws there. A key held by gpg-agent's SSH support is the exception: its prompt goes to the terminal the agent started in. A GUI pinentry (pinentry-mac) or a cached passphrase avoids the prompt entirely.
+
 ## render-markdown.nvim in the merge result
 
 The merge result disables in-buffer markdown rendering for the session so the conflict markers aren't concealed as block-quotes, restoring it on close.

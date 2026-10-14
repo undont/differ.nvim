@@ -7,6 +7,7 @@
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
+local operation_ops = require("differ.git.operation")
 local GIT = exec.GIT
 local notify, chomp, reload_buffer = exec.notify, exec.chomp, exec.reload_buffer
 local git, git_raw, git_ok = exec.git, exec.git_raw, exec.git_ok
@@ -82,6 +83,25 @@ end
 function M.head_sha(root)
     local out = git({ "rev-parse", "HEAD" }, root)
     return out and chomp(out) or nil
+end
+
+---@type table<string, string>
+local git_dirs = {}
+
+-- the repo's absolute git dir, or nil outside a repo. only found dirs are cached: a
+-- directory outside a repo can become one
+---@param root string
+---@return string|nil
+function M.git_dir(root)
+    if git_dirs[root] then
+        return git_dirs[root]
+    end
+    local out = git({ "rev-parse", "--absolute-git-dir" }, root)
+    if not out then
+        return nil
+    end
+    git_dirs[root] = chomp(out)
+    return git_dirs[root]
 end
 
 -- does a local branch of this name already exist?
@@ -347,6 +367,8 @@ function M.conflicted(root)
     return out and rev.parse_unmerged(out) or {}
 end
 
+M.operation, M.operation_label = operation_ops.current, operation_ops.label
+
 -- repo-relative paths of untracked files, respecting .gitignore, in git's order
 ---@param root string
 ---@return string[]
@@ -517,11 +539,12 @@ end
 -- the current branch name (for the buffer statusline), or nil on a detached HEAD
 ---@param root string
 ---@return string|nil
-local function head_branch(root)
+function M.head_branch(root)
     local out = git({ "rev-parse", "--abbrev-ref", "HEAD" }, root)
     local name = out and chomp(out) or nil
     return (name and name ~= "HEAD") and name or nil
 end
+local head_branch = M.head_branch
 
 -- the "Showing changes for:" footer label: the user's rev spec, or the
 -- resolved HEAD commit for the default uncommitted view (mirrors diffview)
@@ -787,6 +810,7 @@ end
 
 -- the index ops the panel's file keys and the merge tool drive
 M.stage, M.unstage = index_ops.stage, index_ops.unstage
+M.remove = index_ops.remove
 M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- reverse-apply a single-hunk patch to the worktree, atomically. `--unidiff-zero`
@@ -1039,7 +1063,7 @@ end
 
 -- the repo to operate on: the current file's repo if it's a real file, else cwd
 ---@return string|nil
-local function repo_root()
+function M.repo_root()
     local file = vim.api.nvim_buf_get_name(0)
     local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
     return M.root(anchor)
@@ -1080,7 +1104,7 @@ end
 -- the base ref the caller suffixes (`...HEAD` for log, `...` for diff), or nil
 ---@return string|nil
 function M.resolve_base()
-    local root = repo_root()
+    local root = M.repo_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -1150,7 +1174,7 @@ function M.panel(opts)
     local origin_file = vim.api.nvim_buf_get_name(0)
     local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
 
-    local root = repo_root()
+    local root = M.repo_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -1306,6 +1330,8 @@ function M.panel(opts)
         local sig = (git({ "rev-parse", "HEAD" }, root) or "")
             .. "\0"
             .. (git({ "status", "--porcelain=v1", "-z", "-uall" }, root) or "")
+            .. "\0"
+            .. (M.operation(root) or "")
         if active_entry then
             sig = sig .. "\0" .. row_signature(active_entry)
         end
@@ -1659,8 +1685,7 @@ function M.panel(opts)
     -- editor, a commit) re-sources instantly, not just on focus. worktree panels only:
     -- rev-pair diffs are against immutable SHAs and never go stale
     if stageable then
-        local git_dir = git({ "rev-parse", "--absolute-git-dir" }, root)
-        git_dir = git_dir and chomp(git_dir) or nil
+        local git_dir = M.git_dir(root)
         if git_dir then
             watcher = watch.new({ git_dir = git_dir, on_change = refresh_external })
         end
@@ -1675,7 +1700,12 @@ function M.panel(opts)
     panel = Panel.new({
         sections = nonempty,
         root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
-        footer = footer_label(args, root),
+        footer = function()
+            return footer_label(args, root)
+        end,
+        operation = stageable and function()
+            return M.operation_label(root)
+        end or nil,
         actions = actions,
         on_external_change = refresh_external,
         on_refresh = function()
@@ -1937,7 +1967,7 @@ function M.range_history(opts)
     if not range or range == "" then
         return notify("range history needs a rev-range (e.g. main...HEAD)", vim.log.levels.WARN)
     end
-    local root = repo_root()
+    local root = M.repo_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end

@@ -86,6 +86,7 @@ Every group is defined with `default = true`, so a `:highlight` of your own wins
 | Group | Applies to |
 |---|---|
 | `differPanelHeader` / `differPanelRoot` / `differPanelHelp` | panel chrome (link `Title` / `Directory` / `Comment`) |
+| `differPanelOperation` / `differPanelContinue` | the in-progress operation's `(merging)` verb and its `:Differ continue` line in the panel header (link `WarningMsg` / `Special`) |
 | `differPanelDir` / `differPanelContext` | a tree directory row, and the dimmed `·parent/` trailer in the name listing |
 | `differPanelAdd` / `differPanelModify` / `differPanelDelete` | the status glyph, by kind |
 | `differPanelRename` / `differPanelUnmerged` / `differPanelUntracked` | the status glyph, by kind |
@@ -129,3 +130,4 @@ Every group is defined with `default = true`, so a `:highlight` of your own wins
 | `differMergeConflict` | an unresolved block in the result |
 | `differMergeMarker` | a raw conflict marker left in the buffer |
 | `differMergeFlash` | the transient flash on lines a take-this produced |
+| `differMergeUnstaged` / `differMergeStaged` | the result winbar's index state: still to stage, or staged |

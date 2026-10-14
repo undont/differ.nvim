@@ -26,11 +26,8 @@ local function write(path, content)
     fd:close()
 end
 
--- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
--- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
--- ||||||| base marker as well
----@param style string|nil
-local function conflict_repo(style)
+-- a repo on `main` where `main` and `feature` both changed line 2 of f.txt
+local function diverged_repo()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -43,10 +40,51 @@ local function conflict_repo(style)
     git_ok(root, "checkout", "-q", "main")
     write(root .. "/f.txt", "a\nOURS\nc\n")
     git_ok(root, "commit", "-q", "-am", "ours")
+    return root
+end
+
+-- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
+-- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
+-- ||||||| base marker as well
+---@param style string|nil
+local function conflict_repo(style)
+    local root = diverged_repo()
     if style then
         git(root, "-c", "merge.conflictStyle=" .. style, "merge", "feature")
     else
         git(root, "merge", "feature") -- conflicts: exit non-zero, expected
+    end
+    return root
+end
+
+-- a diverged repo stopped on f.txt's conflict by `op`, each its own way of replaying one
+-- side onto the other; "stash" pops a stash over a conflicting commit, which has no --continue
+---@param op "merge"|"rebase"|"rebase-apply"|"am"|"cherry-pick"|"revert"|"stash"
+local function operation_repo(op)
+    local root = diverged_repo()
+    if op == "merge" then
+        git(root, "merge", "feature")
+    elseif op == "rebase" then
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "rebase", "main")
+    elseif op == "rebase-apply" then
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "rebase", "--apply", "main")
+    elseif op == "am" then
+        local patch = root .. "/../" .. vim.fn.fnamemodify(root, ":t") .. ".patch"
+        write(patch, git_ok(root, "format-patch", "-1", "--stdout", "feature"))
+        git(root, "am", "-3", patch)
+    elseif op == "cherry-pick" then
+        git(root, "cherry-pick", "feature")
+    elseif op == "revert" then
+        write(root .. "/f.txt", "a\nLATER\nc\n")
+        git_ok(root, "commit", "-q", "-am", "later")
+        git(root, "revert", "--no-edit", "HEAD~1")
+    elseif op == "stash" then
+        write(root .. "/f.txt", "a\nSTASHED\nc\n")
+        git_ok(root, "stash", "-q")
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "stash", "pop")
     end
     return root
 end
@@ -161,7 +199,7 @@ local function conflict_repo_add_add()
 end
 
 -- a repo where merging `feature` conflicts on TWO files (f.txt then g.txt), to exercise
--- write-driven advancing through the conflict set
+-- ]f/[f stepping through the conflict set
 local function conflict_repo_two()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
@@ -182,8 +220,97 @@ local function conflict_repo_two()
     return root
 end
 
+-- a repo where merging `feature` leaves a.txt modify/delete, sorted before a content
+-- conflict in each of `files`. `deleter` is the side that deletes it, theirs by default
+---@param files string[]
+---@param deleter "ours"|"theirs"|nil
+local function conflict_repo_modify_delete(files, deleter)
+    local root = vim.fn.tempname()
+    local function change_a(side)
+        if side == (deleter or "theirs") then
+            git_ok(root, "rm", "-q", "a.txt")
+        else
+            write(root .. "/a.txt", side:upper() .. "\n")
+        end
+    end
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/a.txt", "a\n")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nb\nc\n")
+    end
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    change_a("theirs")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nTHEIRS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    change_a("ours")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nOURS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end
+
+-- a repo where merging `feature` conflicts on a.bin, a binary file git writes no markers
+-- into, sorted before a content conflict in each of `files`
+---@param files string[]
+local function conflict_repo_binary(files)
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/a.bin", "base\0")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nb\nc\n")
+    end
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/a.bin", "theirs\0")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nTHEIRS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/a.bin", "ours\0")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nOURS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end
+
+-- winbar text without its %#Group# / %* highlight items
+---@param bar string
+---@return string
+local function plain(bar)
+    return (bar:gsub("%%#[^#]*#", ""):gsub("%%%*", ""))
+end
+
 local merge_ns = vim.api.nvim_create_namespace("differ.merge")
 local flash_ns = vim.api.nvim_create_namespace("differ.merge.flash")
+
+-- open the merge tool on a file no other window shows, from an untracked one beside it
+local function open_unshown(root, relpath)
+    write(root .. "/untracked.txt", "x\n")
+    vim.cmd.edit(root .. "/untracked.txt")
+    merge.open({ path = root .. "/" .. relpath })
+    return assert(merge.current())
+end
+
+-- whether the current window carries none of the merge tool's window dressing
+local function assert_undressed()
+    assert.are.equal("", vim.api.nvim_get_option_value("winbar", { scope = "local" }))
+    for _, opt in ipairs({ "number", "signcolumn", "cursorline", "scrollbind", "foldmethod" }) do
+        assert.are.equal(vim.go[opt], vim.wo[opt], opt)
+    end
+end
 
 describe(":Differ mergetool", function()
     after_each(function()
@@ -260,6 +387,38 @@ describe(":Differ mergetool", function()
         merge.open({})
         merge.close()
         assert.is_nil(merge.current())
+    end)
+
+    it("hands the result buffer back without its window options", function()
+        local root = conflict_repo()
+        open_unshown(root, "f.txt")
+        merge.close()
+        vim.cmd.edit(root .. "/f.txt")
+        assert_undressed()
+    end)
+
+    it("hands the result buffer's own keymap back", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        local buf = vim.api.nvim_get_current_buf()
+        vim.keymap.set("n", "<leader>ca", "<Nop>", { buffer = buf, desc = "code action" })
+        merge.open()
+        assert.are.equal("differ: take both", vim.fn.maparg("<leader>ca", "n", false, true).desc)
+        merge.close()
+        vim.api.nvim_set_current_buf(buf)
+        assert.are.equal("code action", vim.fn.maparg("<leader>ca", "n", false, true).desc)
+    end)
+
+    it("keeps a keymap set over the merge tool's during the session", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        local buf = vim.api.nvim_get_current_buf()
+        merge.open()
+        vim.keymap.set("n", "<leader>ca", "<Nop>", { buffer = buf, desc = "code action" })
+        merge.close()
+        vim.api.nvim_set_current_buf(buf)
+        assert.are.equal("code action", vim.fn.maparg("<leader>ca", "n", false, true).desc)
+        assert.are.same({}, vim.fn.maparg("<leader>ct", "n", false, true))
     end)
 
     it("leaves q to native macro recording on the editable result buffer", function()
@@ -382,6 +541,27 @@ describe(":Differ mergetool", function()
         merge.close()
         assert.is_nil(vim.b[buf].disable_autoformat) -- restored to its prior (unset) value
     end)
+
+    it("disables diagnostics on the result buffer and restores them on close", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local buf = merge.current().result_buf
+        local seen = {}
+        vim.api.nvim_create_autocmd("DiagnosticChanged", {
+            buffer = buf,
+            callback = function()
+                seen[#seen + 1] = vim.diagnostic.is_enabled({ bufnr = buf })
+            end,
+        })
+        local ns = vim.api.nvim_create_namespace("differ.test.diag")
+        vim.diagnostic.set(ns, buf, { { lnum = 0, col = 0, message = "x", severity = 1 } })
+        assert.is_true(#seen > 0)
+        assert.is_false(vim.tbl_contains(seen, true)) -- a later renderer sees them off
+        assert.are.same({}, vim.diagnostic.get(buf))
+        merge.close()
+        assert.is_true(vim.diagnostic.is_enabled({ bufnr = buf }))
+    end)
 end)
 
 -- fire a buffer-local keymap by its description, so the test doesn't depend on <leader>
@@ -402,6 +582,34 @@ local function has_marker(buf)
         end
     end
     return false
+end
+
+local function take_ours_and_write(s)
+    fire(s.result_buf, "differ: take ours")
+    vim.api.nvim_set_current_win(s.result_win)
+    vim.cmd("silent write")
+end
+
+-- run `fn`, then wait for the session's git-dir watcher to handle a change
+local function after_git_change(s, fn)
+    local files = require("differ.merge.files")
+    local on_git_change, seen = files.on_git_change, false
+    files.on_git_change = function(this)
+        if this == s then
+            seen = true
+        end
+        return on_git_change(this)
+    end
+    local ok, err = pcall(fn)
+    local handled = false
+    if ok then
+        handled = vim.wait(3000, function()
+            return seen
+        end)
+    end
+    files.on_git_change = on_git_change
+    assert(ok, err)
+    assert(handled, "the watcher never handled a change")
 end
 
 describe(":Differ mergetool resolution", function()
@@ -441,42 +649,125 @@ describe(":Differ mergetool resolution", function()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         local s = merge.current()
-        fire(s.result_buf, "differ: take ours")
-        vim.api.nvim_set_current_win(s.result_win)
-        vim.cmd("silent write")
+        take_ours_and_write(s)
         assert.are.same({}, require("differ.git").conflicted(root))
     end)
 
-    it("advances to the next conflicted file once one is resolved and written", function()
+    it("stages and re-stages quietly, leaving progress to the winbar", function()
         local root = conflict_repo_two()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         local s = merge.current()
-        assert.are.equal("f.txt", s.path)
-        fire(s.result_buf, "differ: take ours")
-        vim.api.nvim_set_current_win(s.result_win)
+        _G.notifs = {}
+        take_ours_and_write(s)
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, 0, false, { "extra" })
         vim.cmd("silent write")
-        -- f.txt stages immediately; the deferred advance opens the next conflicted file
-        vim.wait(2000, function()
-            return merge.current() ~= nil and merge.current().path == "g.txt"
-        end)
-        assert.are.equal("g.txt", merge.current().path)
+        assert.are.same({}, _G.notifs)
         assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
     end)
 
-    it("reports done and closes the session once the last conflict is written", function()
+    it("doesn't move on when the stage fails", function()
+        local root = conflict_repo_two()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local git_mod = require("differ.git")
+        local stage = git_mod.stage
+        git_mod.stage = function()
+            return false
+        end
+        local ok, err = pcall(function()
+            take_ours_and_write(s)
+            -- a marker-free result left unstaged couldn't be reopened, so ]f holds too
+            fire(s.result_buf, "differ: next conflicted file")
+        end)
+        git_mod.stage = stage
+        assert(ok, err)
+        assert.are.equal(s, merge.current())
+        assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("reports done once the last conflict is written, staying open", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         local s = merge.current()
-        fire(s.result_buf, "differ: take ours")
-        vim.api.nvim_set_current_win(s.result_win)
-        vim.cmd("silent write")
-        vim.wait(2000, function()
-            return merge.current() == nil
-        end)
-        assert.is_nil(merge.current())
+        _G.notifs = {}
+        take_ours_and_write(s)
+        assert.are.equal(s, merge.current())
+        assert.are.equal(
+            "differ: all conflicts resolved: :Differ continue",
+            _G.notifs[#_G.notifs].msg
+        )
         assert.are.same({}, require("differ.git").conflicted(root))
+    end)
+
+    it("names the conflicts it can't open once only those remain, staying open", function()
+        local root = conflict_repo_binary({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        _G.notifs = {}
+        take_ours_and_write(s)
+        assert.are.equal(s, merge.current())
+        local last = _G.notifs[#_G.notifs]
+        assert.are.equal(
+            "differ: a.bin can't be opened in the merge tool: resolve with git add/rm",
+            last.msg
+        )
+        for _, n in ipairs(_G.notifs) do
+            assert.is_nil(n.msg:find(":Differ continue", 1, true))
+        end
+    end)
+
+    it("closes, naming them, when an operation stops only on conflicts it can't open", function()
+        local root = conflict_repo_binary({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        git_ok(root, "add", "f.txt")
+        _G.notifs = {}
+        merge.after_operation(root)
+        assert.is_nil(merge.current())
+        assert.are.equal(
+            "differ: a.bin can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[#_G.notifs].msg
+        )
+    end)
+
+    it("says why when asked to open a conflict it can't", function()
+        local root = conflict_repo_binary({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        _G.notifs = {}
+        merge.open({ path = root .. "/a.bin" })
+        assert.is_nil(merge.current())
+        assert.are.equal(
+            "differ: a.bin can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[1].msg
+        )
+        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+    end)
+
+    it("says why when asked to open a conflicted symlink, not its target", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        git_ok(root, "merge", "--abort")
+        git_ok(root, "checkout", "-q", "feature")
+        vim.uv.fs_symlink("f.txt", root .. "/link.txt")
+        git_ok(root, "add", "link.txt")
+        git_ok(root, "commit", "-q", "-m", "link theirs")
+        git_ok(root, "checkout", "-q", "main")
+        vim.uv.fs_symlink("a.txt", root .. "/link.txt")
+        git_ok(root, "add", "link.txt")
+        git_ok(root, "commit", "-q", "-m", "link ours")
+        git(root, "merge", "feature")
+        assert.is_true(vim.tbl_contains(require("differ.git").conflicted(root), "link.txt"))
+        vim.cmd.edit(root .. "/f.txt")
+        _G.notifs = {}
+        merge.open({ path = root .. "/link.txt" })
+        assert.is_nil(merge.current())
+        assert.are.equal(
+            "differ: link.txt can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[1].msg
+        )
     end)
 
     it("does not stage while conflicts remain on write", function()
@@ -507,6 +798,27 @@ describe(":Differ mergetool resolution", function()
         -- the parser reads zero regions, but the file is still conflicted: not staged
         assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
     end)
+
+    it("says why ]f stays put once a reformatted save was warned about", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        for i, l in ipairs(lines) do
+            lines[i] = "    " .. l
+        end
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, lines)
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal(1, #_G.notifs)
+        assert.matches(
+            "f.txt isn't staged: a formatter changed its conflict markers",
+            _G.notifs[1].msg
+        )
+    end)
 end)
 
 -- the located input slab line for a side (the row sync_inputs centres on)
@@ -519,6 +831,280 @@ local function input(s, side)
         end
     end
 end
+
+describe(":Differ mergetool in-progress operation", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    local cases = {
+        { "merge", "merge" },
+        { "rebase", "rebase" },
+        { "rebase-apply", "rebase" },
+        { "am", "am" },
+        { "cherry-pick", "cherry-pick" },
+        { "revert", "revert" },
+    }
+    for _, case in ipairs(cases) do
+        it(("reads %s as %s"):format(case[1], case[2]), function()
+            local root = operation_repo(case[1])
+            local git_mod = require("differ.git")
+            assert.are.same({ "f.txt" }, git_mod.conflicted(root))
+            assert.are.equal(case[2], git_mod.operation(root))
+        end)
+    end
+
+    it("reads no operation for conflicts a stash pop left", function()
+        local root = operation_repo("stash")
+        local git_mod = require("differ.git")
+        assert.are.same({ "f.txt" }, git_mod.conflicted(root))
+        assert.is_nil(git_mod.operation(root))
+    end)
+
+    ---@param op string
+    ---@return string message the last notify
+    local function resolve_last(op)
+        local root = operation_repo(op)
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        _G.notifs = {}
+        take_ours_and_write(s)
+        assert.are.equal(s, merge.current())
+        return _G.notifs[#_G.notifs].msg
+    end
+
+    it("points at :Differ continue once the last file is written", function()
+        assert.are.equal("differ: all conflicts resolved: :Differ continue", resolve_last("rebase"))
+    end)
+
+    it("reports plain done when no operation is in progress", function()
+        assert.are.equal("differ: all conflicts resolved and staged", resolve_last("stash"))
+    end)
+end)
+
+describe(":Differ mergetool file stepping", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    ---@param root string
+    ---@param relpath string
+    local function open_at(root, relpath)
+        vim.cmd.edit(root .. "/" .. relpath)
+        merge.open({})
+        return assert(merge.current())
+    end
+
+    it("steps to the next conflicted file with ]f, keeping the layout", function()
+        local root = conflict_repo_two()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ layout = "diff4" })
+        fire(merge.current().result_buf, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        assert.are.equal("diff4", merge.current().layout)
+    end)
+
+    it("wraps past either end, saying so", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "g.txt")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+        assert.are.equal("differ: wrapped to the first conflicted file", _G.notifs[1].msg)
+        _G.notifs = {}
+        fire(merge.current().result_buf, "differ: previous conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        assert.are.equal("differ: wrapped to the last conflicted file", _G.notifs[1].msg)
+    end)
+
+    it("steps from an input pane too", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "f.txt")
+        local ours = vim.api.nvim_win_get_buf(input(s, "ours").win)
+        fire(ours, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+    end)
+
+    it("saves and stages an unwritten resolved result on the way out", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "f.txt")
+        fire(s.result_buf, "differ: take ours")
+        assert.is_true(vim.bo[s.result_buf].modified)
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        assert.is_false(vim.bo[s.result_buf].modified)
+        assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("saves without staging a result that still has markers, and moves on", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "f.txt")
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, 0, false, { "extra" })
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        assert.are.equal("extra", vim.fn.readfile(root .. "/f.txt")[1])
+        assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("skips staged files and ones it can't open", function()
+        local root = conflict_repo_binary({ "f.txt", "g.txt", "h.txt" })
+        local s = open_at(root, "f.txt")
+        assert.are.same({ "a.bin", "f.txt", "g.txt", "h.txt" }, s.files)
+        fire(s.result_buf, "differ: next conflicted file") -- f -> g
+        local g = merge.current()
+        fire(g.result_buf, "differ: take ours")
+        fire(g.result_buf, "differ: next conflicted file") -- g staged -> h
+        assert.are.equal("h.txt", merge.current().path)
+        -- forward from h wraps past a.bin (unopenable) to f, back skips g (staged)
+        fire(merge.current().result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+        fire(merge.current().result_buf, "differ: previous conflicted file")
+        assert.are.equal("h.txt", merge.current().path)
+    end)
+
+    it("names what's left when no other file can be opened", function()
+        local root = conflict_repo_binary({ "f.txt" })
+        local s = open_at(root, "f.txt")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal(s, merge.current())
+        assert.are.equal(
+            "differ: a.bin can't be opened in the merge tool: resolve with git add/rm",
+            _G.notifs[#_G.notifs].msg
+        )
+    end)
+
+    it("says so when no conflicted file is left", function()
+        local root = conflict_repo()
+        local s = open_at(root, "f.txt")
+        fire(s.result_buf, "differ: take ours")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal(s, merge.current())
+        assert.are.equal(
+            "differ: no conflicted files left: :Differ continue",
+            _G.notifs[#_G.notifs].msg
+        )
+    end)
+
+    it("shows file progress in the result winbar", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "f.txt")
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · conflict 1/1 · 1 unresolved",
+            plain(merge.winbar())
+        )
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal("RESULT · file 1/2 · all resolved · not staged", plain(merge.winbar()))
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.equal("RESULT · file 1/2 · staged · 1 file left", plain(merge.winbar()))
+        fire(s.result_buf, "differ: next conflicted file")
+        local g = merge.current()
+        vim.g.statusline_winid = g.result_win
+        assert.is_truthy(merge.winbar():find("RESULT · file 2/2", 1, true))
+        take_ours_and_write(g)
+        assert.are.equal(
+            "RESULT · file 2/2 · staged · all conflicts resolved · :Differ continue",
+            plain(merge.winbar())
+        )
+    end)
+
+    it("colours the result's index state in the winbar", function()
+        local root = conflict_repo_two()
+        local s = open_at(root, "f.txt")
+        vim.g.statusline_winid = s.result_win
+        fire(s.result_buf, "differ: take ours")
+        assert.is_truthy(merge.winbar():find("%#differMergeUnstaged#not staged%*", 1, true))
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.is_truthy(merge.winbar():find("%#differMergeStaged#staged%*", 1, true))
+    end)
+end)
+
+describe(":Differ mergetool changes outside the session", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    ---@param root string
+    local function open_two(root)
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        return assert(merge.current())
+    end
+
+    ---@param msg string
+    local function wait_closed_with(msg)
+        vim.wait(3000, function()
+            return merge.current() == nil
+        end)
+        assert.is_nil(merge.current())
+        local found = false
+        for _, n in ipairs(_G.notifs) do
+            found = found or n.msg == msg
+        end
+        assert.is_true(found, msg)
+    end
+
+    it("closes once the file is resolved and staged outside it", function()
+        local root = conflict_repo_two()
+        open_two(root)
+        _G.notifs = {}
+        write(root .. "/f.txt", "a\nOURS\nc\n")
+        git_ok(root, "add", "f.txt")
+        wait_closed_with("differ: f.txt was resolved outside the merge tool")
+    end)
+
+    it("warns when an outside add stages the conflict markers", function()
+        local root = conflict_repo_two()
+        open_two(root)
+        _G.notifs = {}
+        git_ok(root, "add", ".")
+        wait_closed_with("differ: f.txt was staged with conflict markers outside the merge tool")
+    end)
+
+    it("refreshes the files left when another file is staged outside it", function()
+        local root = conflict_repo_two()
+        local s = open_two(root)
+        assert.are.equal(2, s.left)
+        after_git_change(s, function()
+            git_ok(root, "add", "g.txt")
+        end)
+        assert.are.equal(1, s.left)
+        assert.are.equal(s, merge.current())
+    end)
+
+    it("closes once the operation moves on outside it", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        take_ours_and_write(s)
+        _G.notifs = {}
+        git_ok(root, "commit", "-q", "--no-edit")
+        wait_closed_with("differ: git moved on outside the merge tool")
+    end)
+
+    it("stays open through its own stage", function()
+        local root = conflict_repo_two()
+        local s = open_two(root)
+        after_git_change(s, function()
+            take_ours_and_write(s)
+        end)
+        assert.are.equal(s, merge.current())
+        assert.are.equal(1, s.left)
+        assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
+    end)
+end)
 
 describe(":Differ mergetool navigation", function()
     after_each(function()
@@ -941,7 +1527,7 @@ describe(":Differ mergetool diff4 base pane", function()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({ layout = "diff4" })
         local s = merge.current()
-        -- resolve the first (auto-advances onto the second), then take base there: the live
+        -- resolve the first (the cursor moves onto the second), then take base there: the live
         -- index -> original mapping has shifted, so this proves the lookup follows `order`
         fire(s.result_buf, "differ: take base")
         fire(s.result_buf, "differ: take base")
@@ -1046,9 +1632,7 @@ describe(":Differ mergetool take-base anchoring", function()
         -- and through to the index: :w auto-stages once no markers remain, so the wrong
         -- bytes were committable without another gesture
         vim.api.nvim_win_set_cursor(s.result_win, { nth_marker_row(s.result_buf, 1), 0 })
-        fire(s.result_buf, "differ: take ours")
-        vim.api.nvim_set_current_win(s.result_win)
-        vim.cmd("silent write")
+        take_ours_and_write(s)
         local staged = git_ok(root, "show", ":f.txt")
         assert.is_truthy(staged:find("base15", 1, true))
         assert.is_nil(staged:find("base5\n", 1, true))
@@ -1378,5 +1962,387 @@ describe("g? over a buffer the merge tool shares", function()
         vim.api.nvim_set_current_win(edit_win)
 
         assert.are.equal(merge_desc, help_desc(edit_buf)) -- not stolen back mid-merge
+    end)
+end)
+
+describe(":Differ mergetool modify/delete", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    local function open_at(root, relpath)
+        merge.open({ path = root .. "/" .. relpath })
+        return assert(merge.current())
+    end
+
+    -- the text of the dim virtual line on a deleted pane, or nil
+    local function notice(buf)
+        local ns = vim.api.nvim_get_namespaces()["differ.merge.notice"]
+        local marks = vim.api.nvim_buf_get_extmarks(buf, ns, 0, -1, { details = true })
+        return marks[1] and marks[1][4].virt_text[1][1]
+    end
+
+    local function help_text(s)
+        vim.api.nvim_set_current_win(s.result_win)
+        fire(s.result_buf, "differ: keymap help")
+        for _, w in ipairs(vim.api.nvim_list_wins()) do
+            if vim.api.nvim_win_get_config(w).relative ~= "" then
+                local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(w), 0, -1, false)
+                vim.api.nvim_win_close(w, true)
+                return table.concat(lines, "\n")
+            end
+        end
+    end
+
+    it("opens a file theirs deleted, the theirs pane empty and labelled", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        assert.are.equal("theirs", s.deleted)
+        assert.are.same({ "OURS" }, vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false))
+        local theirs = input(s, "theirs")
+        assert.are.equal("deleted in theirs", notice(vim.api.nvim_win_get_buf(theirs.win)))
+        assert.is_false(vim.wo[theirs.win].number)
+        assert.is_nil(notice(vim.api.nvim_win_get_buf(input(s, "ours").win)))
+        assert.are.same(
+            { "" },
+            vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(theirs.win), 0, -1, false)
+        )
+        vim.g.statusline_winid = theirs.win
+        assert.are.equal("THEIRS · deleted", merge.winbar())
+        vim.g.statusline_winid = input(s, "ours").win
+        assert.are.equal("OURS (HEAD)", merge.winbar())
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal("RESULT · file 1/2 · deleted in theirs", plain(merge.winbar()))
+    end)
+
+    it("labels the ours pane deleted when ours deleted the file", function()
+        local root = conflict_repo_modify_delete({ "f.txt" }, "ours")
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        assert.are.equal("ours", s.deleted)
+        vim.g.statusline_winid = input(s, "ours").win
+        assert.are.equal("OURS (HEAD) · deleted", merge.winbar())
+        vim.g.statusline_winid = input(s, "theirs").win
+        assert.are.equal("THEIRS", merge.winbar())
+    end)
+
+    it("shows the original in the diff4 base pane", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({ path = root .. "/a.txt", layout = "diff4" })
+        local base = input(assert(merge.current()), "base")
+        assert.are.same(
+            { "a" },
+            vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(base.win), 0, -1, false)
+        )
+    end)
+
+    it("lists which take key keeps and which deletes in g?", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local txt = help_text(open_at(root, "a.txt"))
+        assert.is_truthy(txt:find("<leader>co%s+keep the file"))
+        assert.is_truthy(txt:find("<leader>ct%s+delete the file"))
+        assert.is_nil(txt:find("take base", 1, true))
+    end)
+
+    it("steps onto a modify/delete file with ]f", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "f.txt")
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("a.txt", merge.current().path)
+    end)
+
+    -- run `fn` with vim.fn.confirm answering `choice` (1 yes, 2 no), returning the prompt
+    local function confirming(choice, fn)
+        local orig, prompt = vim.fn.confirm, nil
+        vim.fn.confirm = function(msg)
+            prompt = msg
+            return choice
+        end
+        local ok, err = pcall(fn)
+        vim.fn.confirm = orig
+        assert(ok, err)
+        return prompt
+    end
+
+    local function status(root, path)
+        return vim.trim(git_ok(root, "status", "--porcelain", "--", path))
+    end
+
+    it("keeps the file on taking the side that modified it, staying put", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal(s, merge.current())
+        assert.are.equal("", status(root, "a.txt")) -- ours is HEAD's version
+        assert.are.equal("OURS", vim.fn.readfile(root .. "/a.txt")[1])
+        assert.is_true(s.staged)
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal("RESULT · file 1/2 · staged · 1 file left", plain(merge.winbar()))
+    end)
+
+    it("keeps a delete/modify file on taking theirs", function()
+        local root = conflict_repo_modify_delete({ "f.txt" }, "ours")
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        fire(s.result_buf, "differ: take theirs")
+        assert.are.equal("A  a.txt", status(root, "a.txt"))
+        assert.are.equal("THEIRS", vim.fn.readfile(root .. "/a.txt")[1])
+    end)
+
+    it("deletes the file on taking the deleting side, once confirmed", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        local real = s.result_buf
+        local prompt = confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.are.equal("Delete a.txt?", prompt)
+        assert.are.equal(s, merge.current())
+        assert.are.equal("D  a.txt", status(root, "a.txt"))
+        assert.are.equal(0, vim.fn.filereadable(root .. "/a.txt"))
+        -- the result window holds an empty scratch buffer, the real one is unloaded
+        assert.are_not.equal(real, s.result_buf)
+        assert.are.equal(s.result_buf, vim.api.nvim_win_get_buf(s.result_win))
+        assert.is_false(vim.api.nvim_buf_is_loaded(real))
+        assert.are.equal("a.txt deletion staged", notice(s.result_buf))
+        assert.is_false(vim.wo[s.result_win].number)
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal("RESULT · file 1/2 · deleted · 1 file left", plain(merge.winbar()))
+    end)
+
+    it("hands a deleted file's buffer back without its window options", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/a.txt") -- a window outside the session keeps the real buffer
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        merge.close()
+        git_ok(root, "checkout", "HEAD", "--", "a.txt")
+        vim.cmd("new")
+        vim.cmd.edit(root .. "/a.txt")
+        assert_undressed()
+    end)
+
+    it("deletes a delete/modify file on taking ours", function()
+        local root = conflict_repo_modify_delete({ "f.txt" }, "ours")
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take ours")
+        end)
+        assert.are.equal("", status(root, "a.txt"))
+        assert.are.equal(0, vim.fn.filereadable(root .. "/a.txt"))
+    end)
+
+    it("doesn't stage a write of the deleted file from a window outside the session", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/a.txt")
+        local s = open_at(root, "a.txt")
+        local real = s.result_buf
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.is_true(vim.api.nvim_buf_is_loaded(real))
+        vim.api.nvim_buf_call(real, function()
+            vim.cmd("silent write")
+        end)
+        assert.are.equal("", vim.trim(git_ok(root, "ls-files", "--stage", "--", "a.txt")))
+    end)
+
+    it("says there's nothing to write on a :w after the delete", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        vim.api.nvim_set_current_win(s.result_win)
+        _G.notifs = {}
+        vim.cmd("write")
+        assert.are.equal("differ: a.txt deletion staged: nothing to write", _G.notifs[1].msg)
+        assert.are.equal(0, vim.fn.filereadable(root .. "/a.txt"))
+    end)
+
+    it("leaves the file alone when the delete isn't confirmed", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(2, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+        assert.is_false(s.staged)
+    end)
+
+    it("leaves the file conflicted when git rm fails", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        local real = s.result_buf
+        local git_mod = require("differ.git")
+        local remove = git_mod.remove
+        git_mod.remove = function()
+            return false
+        end
+        local ok, err = pcall(confirming, 1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        git_mod.remove = remove
+        assert(ok, err)
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+        assert.is_false(s.staged)
+        assert.are.equal(real, s.result_buf)
+    end)
+
+    it("says why when keeping the file can't write it", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        vim.fn.setfperm(root .. "/a.txt", "r--r--r--")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal(vim.log.levels.ERROR, _G.notifs[#_G.notifs].level)
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+        assert.is_false(s.staged)
+    end)
+
+    it("deletes nothing when the merge tool closed while the prompt was up", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        _G.notifs = {}
+        confirming(1, function()
+            local confirm = vim.fn.confirm
+            vim.fn.confirm = function(msg)
+                merge.close()
+                return confirm(msg)
+            end
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.are.equal(
+            "differ: the merge tool closed while the prompt was up; nothing was deleted",
+            _G.notifs[#_G.notifs].msg
+        )
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+        assert.are.equal(1, vim.fn.filereadable(root .. "/a.txt"))
+    end)
+
+    it("refuses to delete over unsaved edits", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "edited" })
+        _G.notifs = {}
+        local prompt = confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.is_nil(prompt)
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+        assert.are.equal("differ: unsaved changes: drop them with :e! to delete", _G.notifs[1].msg)
+    end)
+
+    it("stays open after a delete while the git-dir watcher catches up", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        after_git_change(s, function()
+            confirming(1, function()
+                fire(s.result_buf, "differ: take theirs")
+            end)
+        end)
+        assert.are.equal(s, merge.current())
+    end)
+
+    it("says base, both and none don't apply", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        for _, desc in ipairs({
+            "differ: take base",
+            "differ: take both",
+            "differ: drop the conflict",
+        }) do
+            _G.notifs = {}
+            fire(s.result_buf, desc)
+            assert.are.equal(
+                "differ: a modify/delete conflict is kept or deleted: take ours or theirs",
+                _G.notifs[1].msg
+            )
+        end
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+    end)
+
+    it("steps past an untouched modify/delete file without keeping it", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+        assert.are.equal("UD a.txt", status(root, "a.txt"))
+    end)
+
+    it("keeps an edited modify/delete file when stepping past it", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "edited" })
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+        assert.are.equal("M  a.txt", status(root, "a.txt"))
+    end)
+
+    it("steps on from a deleted file with ]f", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+    end)
+
+    for _, case in ipairs({ { "delete", "theirs", "deleted" }, { "keep", "ours", "staged" } }) do
+        it("fires the done notify when a " .. case[1] .. " resolves the last conflict", function()
+            local root = conflict_repo_modify_delete({ "f.txt" })
+            vim.cmd.edit(root .. "/f.txt")
+            local s = open_at(root, "f.txt")
+            take_ours_and_write(s)
+            fire(s.result_buf, "differ: next conflicted file")
+            local a = merge.current()
+            assert.are.equal("a.txt", a.path)
+            _G.notifs = {}
+            confirming(1, function()
+                fire(a.result_buf, "differ: take " .. case[2])
+            end)
+            assert.are.equal(
+                "differ: all conflicts resolved: :Differ continue",
+                _G.notifs[#_G.notifs].msg
+            )
+            vim.g.statusline_winid = a.result_win
+            local bar = "RESULT · file 1/2 · %s · all conflicts resolved · :Differ continue"
+            assert.are.equal(bar:format(case[3]), plain(merge.winbar()))
+        end)
+    end
+
+    it("says a resolved modify/delete file is already resolved", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        fire(s.result_buf, "differ: take ours")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take theirs")
+        assert.are.equal("differ: a.txt is already resolved", _G.notifs[1].msg)
+        assert.are.equal(1, vim.fn.filereadable(root .. "/a.txt"))
     end)
 end)

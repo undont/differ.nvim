@@ -54,6 +54,17 @@ function M.truncate_end(s, max)
     return s:sub(1, max - 1) .. "…" -- "…" is one display column
 end
 
+-- `n noun`, with an s on the noun unless n is 1
+---@param n integer
+---@param noun string
+---@return string
+function M.plural(n, noun)
+    if n == 1 then
+        return "1 " .. noun
+    end
+    return ("%d %ss"):format(n, noun)
+end
+
 -- set on a last line with no newline after it, so `c` and `c\n` compare unequal as they
 -- do in git's diff. a NUL never reaches a line: is_binary text isn't read by line
 M.NO_EOL = "\0"

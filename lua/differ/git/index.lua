@@ -21,6 +21,13 @@ function M.unstage(root, path)
 end
 
 ---@param root string
+---@param path string
+---@return boolean ok
+function M.remove(root, path)
+    return git_ok({ "rm", "-q", "--", path }, root, "delete")
+end
+
+---@param root string
 ---@return boolean ok
 function M.stage_all(root)
     return git_ok({ "add", "-A" }, root, "stage all")

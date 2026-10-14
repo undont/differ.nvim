@@ -219,6 +219,12 @@ function M.mergetool(arg)
     require("differ.merge").open({ path = (arg ~= "" and arg) or nil })
 end
 
+-- :Differ continue: continue, skip or abort the in-progress merge, rebase, cherry-pick,
+-- revert or am, picked from a list
+function M.continue()
+    require("differ.merge.continue").pick()
+end
+
 -- :Differ log [arg]: file history. no arg or an arg naming a readable file →
 -- single-file history (that file, else the current buffer); `base` is the trunk
 -- shortcut → branch-range history of `<base>...HEAD`; any other arg is a rev-range.
@@ -311,6 +317,7 @@ local SUB = {
     edit = M.edit,
     log = M.log,
     mergetool = M.mergetool,
+    continue = M.continue,
     sidecar = M.sidecar,
     cache = M.cache,
 }
@@ -428,6 +435,11 @@ function M.complete(arglead, cmdline)
     if idx <= 2 then
         pool = vim.tbl_keys(SUB)
         pool[#pool + 1] = "base" -- the trunk diff shortcut isn't a SUB handler
+        if not require("differ.merge.continue").in_progress() then
+            pool = vim.tbl_filter(function(c)
+                return c ~= "continue"
+            end, pool)
+        end
     elseif idx == 3 then
         pool = VALUES[parts[2]] or {}
     elseif parts[2] == "pr" then

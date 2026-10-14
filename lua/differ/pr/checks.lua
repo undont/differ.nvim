@@ -4,6 +4,7 @@
 
 local client = require("differ.pr.client")
 local set_wo = require("differ.util.win").set_local
+local open_centred = require("differ.util.win").open_centred
 
 local M = {}
 
@@ -112,14 +113,8 @@ local function render(checks)
     local title = (" checks · %s "):format(
         (rollup ~= nil and rollup ~= "") and rollup or "no rollup"
     )
-    local win = vim.api.nvim_open_win(buf, true, {
-        relative = "editor",
-        width = width + 1,
-        height = math.min(#lines, math.max(1, vim.o.lines - 6)),
-        row = math.floor((vim.o.lines - #lines) / 2),
-        col = math.floor((vim.o.columns - width) / 2),
-        style = "minimal",
-        border = "rounded",
+    local height = math.min(#lines, math.max(1, vim.o.lines - 6))
+    local win = open_centred(buf, width + 1, height, {
         title = title,
         title_pos = "center",
     })

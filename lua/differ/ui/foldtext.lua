@@ -7,8 +7,8 @@ local M = {}
 function M.render()
     local count = vim.v.foldend - vim.v.foldstart + 1
     local first = vim.fn.getline(vim.v.foldstart):gsub("^%s+", "")
-    local plural = count == 1 and "" or "s"
-    return ("\u{22ef} %d unchanged line%s: %s"):format(count, plural, first)
+    local lines = require("differ.util.text").plural(count, "unchanged line")
+    return ("\u{22ef} %s: %s"):format(lines, first)
 end
 
 return M

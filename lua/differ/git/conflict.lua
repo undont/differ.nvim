@@ -66,4 +66,24 @@ function M.parse(lines)
     return regions
 end
 
+-- a clean conflict marker sits at column 0; a format-on-save that ignores the buffer's
+-- disable_autoformat opt-out reflows the whole region and indents the markers with it. the
+-- parser then can't see the region (it matches at column 0), so it would read as resolved
+-- and stage a file that still has markers. an indented <<<<<<< / >>>>>>> run is the tell;
+-- `<`/`>` only, since a stray indented ======= can be decorative
+---@param lines string[]
+---@return boolean
+function M.reformatted(lines)
+    for _, line in ipairs(lines) do
+        local ch = line:match("^%s+([<>])")
+        if ch then
+            local run = line:match("^%s+(%" .. ch .. "+)")
+            if run and #run >= 7 then
+                return true
+            end
+        end
+    end
+    return false
+end
+
 return M
