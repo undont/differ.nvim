@@ -22,7 +22,7 @@ local tab_util = require("differ.util.tab")
 local plural = require("differ.util.text").plural
 local merge_files = require("differ.merge.files")
 local markers_reformatted = require("differ.git.conflict").reformatted
-local bind, unbind = keymap.bind, keymap.unbind
+local bind = keymap.bind
 
 local M = {}
 
@@ -91,7 +91,7 @@ local INPUT_HL = {
 ---@field autoformat_warned boolean|nil   -- set once a save is seen to have reformatted the markers
 ---@field diag_aug integer|nil            -- the DiagnosticChanged hook that hushes the result
 ---@field aug integer|nil                 -- the session augroup on the result buffer
----@field bound_keys (string|string[]|false)[] -- the lhs specs bound on the result buffer
+---@field held_keys differ.keymap.Held[] -- the maps bound on the result buffer, with what they replaced
 
 ---@type differ.MergeSession|nil
 local session = nil
@@ -814,9 +814,7 @@ local function release_result(s)
         for _, ns in ipairs({ merge_ns, flash_ns, anchor_ns }) do
             vim.api.nvim_buf_clear_namespace(s.result_buf, ns, 0, -1)
         end
-        for _, spec in ipairs(s.bound_keys) do
-            unbind(s.result_buf, spec)
-        end
+        keymap.release(s.result_buf, s.held_keys)
         if s.aug then
             vim.api.nvim_clear_autocmds({ group = s.aug, buffer = s.result_buf })
         end
@@ -1092,7 +1090,7 @@ local function lay_out(root, relpath, model, layout, files)
     local cfg = require("differ").get_config()
     local km = (cfg.keymaps.merge or require("differ.config").defaults.keymaps) --[[@as differ.KeymapSet]]
 
-    local bound = {} -- the specs actually bound below, so close drops exactly these
+    local held = {} -- the maps bound below, so close hands back exactly these
     local file_index
     for i, f in ipairs(files) do
         if f == relpath then
@@ -1125,7 +1123,7 @@ local function lay_out(root, relpath, model, layout, files)
         return_tab = return_tab,
         session_tab = session_tab,
         keymaps = km, -- for the g? cheatsheet
-        bound_keys = bound,
+        held_keys = held,
         diag_aug = suppress_diagnostics(result_buf), -- the markers aren't valid source
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
         saved_diagnostics = vim.diagnostic.is_enabled({ bufnr = result_buf }),
@@ -1163,8 +1161,7 @@ local function lay_out(root, relpath, model, layout, files)
     -- nested empty DiagnosticChanged reaches it before the outer one
     vim.diagnostic.enable(false, { bufnr = result_buf })
     local function rb(action, fn, desc)
-        bind(result_buf, km[action], fn, desc)
-        bound[#bound + 1] = km[action]
+        vim.list_extend(held, keymap.hold(result_buf, km[action], fn, desc))
     end
     rb("next_conflict", function()
         goto_conflict("next")

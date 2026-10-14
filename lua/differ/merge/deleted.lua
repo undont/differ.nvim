@@ -35,7 +35,7 @@ local function show_deleted(s)
         end,
     })
     s.bufs[#s.bufs + 1] = buf
-    s.result_buf, s.bound_keys = buf, {}
+    s.result_buf, s.held_keys = buf, {}
     vim.api.nvim_win_set_buf(s.result_win, buf)
     merge._dress(s.result_win)
     merge._show_notice(s.result_win, buf, notice)
