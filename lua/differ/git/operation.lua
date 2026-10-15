@@ -1,7 +1,6 @@
 -- the in-progress operation (merge, rebase, am, cherry-pick, revert): detected from the
 -- git dir, labelled for the panel, and continued, skipped or aborted in the background.
--- git never gets a terminal here, so it never gets a real editor either: a plain run
--- commits the message git prepared, an edited one hands git the user's text
+-- git's editor is git/editor.lua's shim, which opens each commit message in this nvim
 
 local exec = require("differ.git.exec")
 
@@ -157,80 +156,95 @@ function M.label(root)
     return ("(%s)%s"):format(verb, detail)
 end
 
--- the message the operation's next commit starts from, or nil when its --continue never
--- opens an editor (am, an apply-backend rebase)
----@param root string
----@param op string
----@return string|nil
-function M.prepared_message(root, op)
-    local dir = git_dir(root)
-    if not dir or op == "am" then
-        return nil
-    end
-    local path = dir .. "/MERGE_MSG"
-    if op == "rebase" then
-        path = dir .. "/rebase-merge/message"
-    end
-    return read(path)
-end
+-- todo lines whose message git commits without asking, conflicts aside: a pick, and a
+-- merge that reuses its message with -C (-c or no flag asks)
+local KEEPS_MESSAGE = { "^pick ", "^p ", "^merge %-C ", "^m %-C " }
 
--- the sequencer's saved `-S`: `gpg-sign = <key>` in sequencer/opts, the key empty for a
--- bare -S. nil when the run doesn't sign
----@param dir string
----@return string|nil
-local function sequencer_sign(dir)
-    local opts = read(dir .. "/sequencer/opts")
-    local key = opts and opts:match("\n%s*gpg%-sign = ([^\n]*)")
-    if not key then
-        return nil
-    end
-    return "-S" .. key
-end
-
--- whether git's next commit signs: commit.gpgsign, or a rebase or cherry-pick/revert range
--- started with -S
----@param root string
+---@param line string
 ---@return boolean
-local function signing(root)
-    if vim.trim(exec.git({ "config", "--type=bool", "commit.gpgsign" }, root) or "") == "true" then
-        return true
+local function keeps_message(line)
+    for _, pattern in ipairs(KEEPS_MESSAGE) do
+        if line:match(pattern) then
+            return true
+        end
     end
+    return false
+end
+
+-- what identifies the stop git is on: HEAD, plus a rebase's step. nil when the commit it
+-- stopped on is one whose message the todo asks to edit (a reword, squash, fixup, or a
+-- merge without -C)
+---@param root string
+---@return string|nil
+function M.stop(root)
+    local head = require("differ.git").head_sha(root) or ""
     local dir = git_dir(root)
     if not dir then
-        return false
+        return head
     end
-    return vim.uv.fs_stat(dir .. "/rebase-merge/gpg_sign_opt") ~= nil
-        or vim.uv.fs_stat(dir .. "/rebase-apply/gpg_sign_opt") ~= nil
-        or sequencer_sign(dir) ~= nil
+    local done = read(dir .. "/rebase-merge/done")
+    if not done then
+        return head
+    end
+    if not keeps_message(vim.trim(done):match("([^\n]*)$")) then
+        return nil
+    end
+    return head .. " " .. (state_line(dir, "rebase-merge/msgnum") or "")
 end
 
--- run `cmd` in a floating terminal so a signing prompt has a tty to draw on. gpg reads
--- the commit from a pipe, so GPG_TTY has to name the float's pty or pinentry gets none.
--- hiding or deleting the float stops git
----@param root string
----@param cmd string[]
----@param editor string
----@param on_exit fun(ok: boolean, output: string)
-local function spawn_float(root, cmd, editor, on_exit)
-    local buf = vim.api.nvim_create_buf(false, true)
+-- the terminal buffers git runs in, and their float titles
+---@type table<integer, string>
+local floats = {}
+
+---@param buf integer
+---@param title string
+---@return integer
+local function open_float(buf, title)
     local width = math.floor(vim.o.columns * 0.8)
     local height = math.floor(vim.o.lines * 0.6)
-    local win = require("differ.util.win").open_centred(buf, width, height, {
-        title = " git " .. cmd[#exec.GIT + 1] .. " ",
-    })
+    return require("differ.util.win").open_centred(buf, width, height, { title = title })
+end
+
+-- reopen the float of terminal buffer `buf` when nothing shows it
+---@param buf integer
+function M.show(buf)
+    local title = floats[buf]
+    if not title or vim.fn.bufwinid(buf) ~= -1 then
+        return
+    end
+    open_float(buf, title)
+end
+
+-- run `cmd` in a floating terminal: git edits a cherry-pick or revert message only on a
+-- tty, and a signing prompt needs one to draw on. gpg reads the commit from a pipe, so
+-- GPG_TTY has to name the float's pty or pinentry gets none. hiding or deleting the float
+-- stops git, unless the commit message is showing in its place
+---@param root string
+---@param cmd string[]
+---@param accept boolean
+---@param on_exit fun(ok: boolean, output: string)
+local function in_float(root, cmd, accept, on_exit)
+    local buf = vim.api.nvim_create_buf(false, true)
+    local stop = accept and M.stop(root)
+    if stop then
+        vim.b[buf].differ_accept = { root = root, stop = stop }
+    end
+    floats[buf] = " git " .. cmd[#exec.GIT + 1] .. " "
+    local win = open_float(buf, floats[buf])
     local argv = vim.list_extend({ "sh", "-c", 'GPG_TTY=$(tty) exec "$@"', "sh" }, cmd)
     local job = vim.fn.jobstart(argv, {
         term = true,
         cwd = root,
-        env = { GIT_EDITOR = editor },
+        env = require("differ.git.editor").env(buf),
         on_exit = function(_, code)
             vim.schedule(function()
+                floats[buf] = nil
                 local lines = {}
                 if vim.api.nvim_buf_is_valid(buf) then
                     lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
                 end
-                if vim.api.nvim_win_is_valid(win) then
-                    vim.api.nvim_win_close(win, true)
+                for _, shown in ipairs(vim.fn.win_findbuf(buf)) do
+                    vim.api.nvim_win_close(shown, true)
                 end
                 pcall(vim.api.nvim_buf_delete, buf, { force = true })
                 -- drop the terminal's "[Process exited n]" line
@@ -244,32 +258,28 @@ local function spawn_float(root, cmd, editor, on_exit)
         end,
     })
     if job <= 0 then
+        floats[buf] = nil
         vim.api.nvim_win_close(win, true)
         return on_exit(false, "couldn't start git in a terminal")
     end
     vim.api.nvim_create_autocmd({ "BufHidden", "BufUnload" }, {
         buffer = buf,
-        once = true,
-        callback = function()
+        callback = function(ev)
+            if ev.event == "BufHidden" and vim.b[buf].differ_message then
+                return
+            end
             vim.fn.jobstop(job)
+            return true
         end,
     })
     vim.cmd.startinsert()
 end
 
--- spawn git with `editor` as its editor, off the main loop; `on_exit` gets whether it
--- exited 0 and what it printed. detached: with no controlling terminal a prompt (a curses
--- pinentry) fails rather than drawing over nvim. `float` runs it in a terminal instead
+-- run `cmd` detached and off the main loop, with no editor: an abort never commits
 ---@param root string
----@param args string[]
----@param editor string
----@param float boolean
+---@param cmd string[]
 ---@param on_exit fun(ok: boolean, output: string)
-local function spawn(root, args, editor, float, on_exit)
-    local cmd = vim.list_extend(vim.list_extend({}, exec.GIT), args)
-    if float then
-        return spawn_float(root, cmd, editor, on_exit)
-    end
+local function in_background(root, cmd, on_exit)
     local function done(res)
         local output = vim.trim((res.stderr or "") .. "\n" .. (res.stdout or ""))
         vim.schedule(function()
@@ -280,69 +290,28 @@ local function spawn(root, args, editor, float, on_exit)
         cwd = root,
         text = true,
         detach = true,
-        env = { GIT_EDITOR = editor },
+        env = { GIT_EDITOR = "false" },
     }, done)
     if not ok then
         done({ code = -1, stderr = tostring(err) })
     end
 end
 
--- commit `msgfile` by hand, then let a cherry-pick or revert range go on. their sequencer
--- keeps its saved message past `--continue --edit`, and a merge's editor would overwrite
--- what prepare-commit-msg added
----@param root string
----@param op string
----@param msgfile string
----@param float boolean
----@param on_exit fun(ok: boolean, output: string)
-local function commit_then_continue(root, op, msgfile, float, on_exit)
-    local dir = git_dir(root)
-    local args = { "commit", "-q", "--cleanup=strip", "-F", msgfile }
-    local sign = dir and sequencer_sign(dir)
-    if sign then
-        table.insert(args, 2, sign)
-    end
-    spawn(root, args, "true", float, function(ok, output)
-        os.remove(msgfile)
-        if not ok or op == "merge" or not (dir and vim.uv.fs_stat(dir .. "/sequencer")) then
-            return on_exit(ok, output)
-        end
-        spawn(root, { op, "--continue" }, "true", float, on_exit)
-    end)
-end
-
--- run `git <op> --<action>`, never opening an editor. a continue commits git's prepared
--- message, or `opts.message` in its place. an abort never signs, so it never needs the float
+-- run `git <op> --<action>`; `on_exit` gets whether it exited 0 and what it printed. a
+-- continue or skip runs in the float, where git asks for each commit message through
+-- git/editor.lua as it would in a terminal, a later reword or squash in a rebase included.
+-- `accept` commits the stopped commit's message as it stands, where `M.stop` allows it
 ---@param root string
 ---@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
 ---@param action "continue"|"skip"|"abort"
----@param opts { message?: string }|nil
 ---@param on_exit fun(ok: boolean, output: string)
-function M.run(root, op, action, opts, on_exit)
-    local float = action ~= "abort" and signing(root)
-    local message = opts and opts.message
-    if not (message and action == "continue") then
-        return spawn(root, { op, "--" .. action }, "true", float, on_exit)
+---@param accept boolean|nil
+function M.run(root, op, action, on_exit, accept)
+    local cmd = vim.list_extend(vim.list_extend({}, exec.GIT), { op, "--" .. action })
+    if action == "abort" then
+        return in_background(root, cmd, on_exit)
     end
-    local msgfile = vim.fn.tempname()
-    local fd = assert(io.open(msgfile, "wb"))
-    fd:write(message)
-    fd:close()
-    if op ~= "rebase" then
-        return commit_then_continue(root, op, msgfile, float, on_exit)
-    end
-    -- a rebase commit made by hand loses the picked commit's author, so git commits it,
-    -- with the shell running the editor and the file to edit appended
-    spawn(
-        root,
-        { op, "--continue" },
-        "cp " .. vim.fn.shellescape(msgfile),
-        float,
-        function(ok, output)
-            os.remove(msgfile)
-            on_exit(ok, output)
-        end
-    )
+    in_float(root, cmd, accept == true, on_exit)
 end
 
 return M

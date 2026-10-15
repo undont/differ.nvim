@@ -1,5 +1,4 @@
--- :Differ continue: a picker over the in-progress operation's continue, skip and abort,
--- and the scratch buffer an edited commit message is written from
+-- :Differ continue: a picker over the in-progress operation's continue, skip and abort
 
 local exec = require("differ.git.exec")
 local git_op = require("differ.git.operation")
@@ -47,25 +46,6 @@ local function report(root, op, action, ok, output)
     )
 end
 
--- an edited message closed unwritten, one per repo, for the stop it was written on
----@type table<string, { op: string, head: string|nil, text: string }>
-local drafts = {}
-
----@param root string
----@param op string
----@return string|nil
-local function draft_for(root, op)
-    local draft = drafts[root]
-    if not draft then
-        return nil
-    end
-    if draft.op ~= op or draft.head ~= require("differ.git").head_sha(root) then
-        drafts[root] = nil
-        return nil
-    end
-    return draft.text
-end
-
 -- the operation of the run in flight; a second run alongside it only gets git's errors
 ---@type string|nil
 local running
@@ -82,21 +62,18 @@ end
 ---@param root string
 ---@param op string
 ---@param action "continue"|"skip"|"abort"
----@param opts { message?: string }|nil
-local function run(root, op, action, opts)
+---@param accept boolean|nil
+local function run(root, op, action, accept)
     if refuse_while_running() then
         return
     end
     local merge = require("differ.merge")
     running = op
-    git_op.run(root, op, action, opts, function(ok, output)
+    git_op.run(root, op, action, function(ok, output)
         running = nil
-        if ok then
-            drafts[root] = nil
-        end
         report(root, op, action, ok, output)
         merge.after_operation(root)
-    end)
+    end, accept)
 end
 
 -- a continue with files still conflicted only gets git's refusal, so refuse here. the
@@ -118,61 +95,10 @@ local function resolved(root)
     return false
 end
 
--- a scratch buffer holding the prepared message; :w continues with what it holds, closing
--- it unwritten keeps its text as the draft
----@param root string
----@param op string
----@param text string
-local function edit_message(root, op, text)
-    local name = ("differ://%s-message"):format(op)
-    local existing = vim.fn.bufnr(name)
-    if existing ~= -1 then
-        local wins = vim.fn.win_findbuf(existing)
-        if #wins > 0 then
-            return vim.api.nvim_set_current_win(wins[1])
-        end
-        vim.api.nvim_buf_delete(existing, { force = true })
-    end
-    vim.cmd("botright 12new")
-    local buf = vim.api.nvim_get_current_buf()
-    vim.bo[buf].buftype = "acwrite"
-    vim.bo[buf].bufhidden = "wipe"
-    vim.bo[buf].swapfile = false
-    vim.api.nvim_buf_set_name(buf, name)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(vim.trim(text), "\n"))
-    vim.bo[buf].modified = false
-    vim.bo[buf].filetype = "gitcommit"
-    vim.wo.winbar = ("%s message · :w continues, close keeps a draft"):format(op)
-    local head = require("differ.git").head_sha(root)
-    local function buffer_text()
-        return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
-    end
-    vim.api.nvim_create_autocmd("BufWipeout", {
-        buffer = buf,
-        callback = function()
-            if not vim.bo[buf].modified then
-                return
-            end
-            drafts[root] = { op = op, head = head, text = buffer_text() }
-            notify(op .. " message draft kept")
-        end,
-    })
-    vim.api.nvim_create_autocmd("BufWriteCmd", {
-        buffer = buf,
-        callback = function()
-            local message = buffer_text()
-            -- kept until the continue succeeds, so a refused commit reopens with it
-            drafts[root] = { op = op, head = head, text = message }
-            vim.bo[buf].modified = false
-            -- closing the message window moves focus, so run only once it's gone
-            vim.schedule(function()
-                pcall(vim.api.nvim_buf_delete, buf, { force = true })
-                if resolved(root) then
-                    run(root, op, "continue", { message = message .. "\n" })
-                end
-            end)
-        end,
-    })
+---@param prompt string
+---@return boolean
+local function confirm(prompt)
+    return vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
 end
 
 ---@class differ.merge.ContinueEntry
@@ -188,18 +114,18 @@ local function entries(root, op)
             label = "continue",
             run = function()
                 if resolved(root) then
-                    run(root, op, "continue")
+                    run(root, op, "continue", true)
                 end
             end,
         },
     }
-    local message = git_op.prepared_message(root, op)
-    if message then
+    -- git am never asks for a message
+    if op ~= "am" then
         list[#list + 1] = {
             label = "continue and edit the message",
             run = function()
                 if resolved(root) then
-                    edit_message(root, op, draft_for(root, op) or message)
+                    run(root, op, "continue")
                 end
             end,
         }
@@ -208,15 +134,16 @@ local function entries(root, op)
         list[#list + 1] = {
             label = "skip",
             run = function()
-                run(root, op, "skip")
+                if confirm("Skip the commit git stopped on? Its changes are dropped.") then
+                    run(root, op, "skip")
+                end
             end,
         }
     end
     list[#list + 1] = {
         label = "abort",
         run = function()
-            local prompt = ("Abort the %s? Resolutions so far are lost."):format(op)
-            if vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1 then
+            if confirm(("Abort the %s? Resolutions so far are lost."):format(op)) then
                 run(root, op, "abort")
             end
         end,
@@ -253,9 +180,12 @@ function M.pick()
             return entry.label
         end,
     }, function(choice)
-        if choice then
-            choice.run()
+        if not choice then
+            return
         end
+        -- the builtin inputlist calls back mid-prompt, which holds the float's first redraw
+        -- for seconds
+        vim.schedule(choice.run)
     end)
 end
 

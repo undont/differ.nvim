@@ -444,11 +444,15 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
                                       file; ]f/[f step between conflicted
                                       files
 
-  :Differ continue                    Finish the merge, rebase,
-                                      cherry-pick, revert or am in
-                                      progress. Supports gitconfig
-                                      commit.gpgsign with a floating
-                                      terminal for the passphrase input
+  :Differ continue                    Continue, skip or abort the merge,
+                                      rebase, cherry-pick, revert or am
+                                      in progress. Git runs in a floating
+                                      terminal, and each commit message
+                                      it asks for opens there, except the
+                                      stopped commit’s on a plain
+                                      continue. Closing it commits; an
+                                      emptied message drops that commit
+                                      and leaves the operation stopped
 
   :Differ sidecar                     Smoke-check the Go sidecar: start
                                       it, round-trip a handshake, and
