@@ -27,6 +27,18 @@ function M.remove(root, path)
     return git_ok({ "rm", "-q", "--", path }, root, "delete")
 end
 
+-- resolve a conflict to one side's stage: check it out over the worktree file, then stage it
+---@param root string
+---@param path string
+---@param side "ours"|"theirs"
+---@return boolean ok
+function M.take_side(root, path, side)
+    if not git_ok({ "checkout", "--" .. side, "--", path }, root, "take " .. side) then
+        return false
+    end
+    return M.stage(root, path)
+end
+
 ---@param root string
 ---@return boolean ok
 function M.stage_all(root)

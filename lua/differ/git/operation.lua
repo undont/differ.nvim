@@ -67,9 +67,9 @@ function M.current(root)
 end
 
 -- name-rev walks history, which takes hundreds of ms in a large repo, and the panel asks
--- on every refresh while the named commit only changes once per operation step
----@type { key: string, name: string }|nil
-local last_name
+-- on every refresh while the named commits only change once per operation step
+---@type table<string, string>
+local names = {}
 
 -- a commit as `git name-rev` names it (`topic`, `main~1`), else its short sha
 ---@param root string
@@ -77,12 +77,11 @@ local last_name
 ---@return string
 local function commit_name(root, sha)
     local key = root .. "\0" .. sha
-    if last_name and last_name.key == key then
-        return last_name.name
+    if not names[key] then
+        local out = exec.git({ "name-rev", "--name-only", "--no-undefined", sha }, root)
+        names[key] = out and exec.chomp(out) or sha:sub(1, 7)
     end
-    local out = exec.git({ "name-rev", "--name-only", "--no-undefined", sha }, root)
-    last_name = { key = key, name = out and exec.chomp(out) or sha:sub(1, 7) }
-    return last_name.name
+    return names[key]
 end
 
 -- the first line of a git-dir state file, or nil when it isn't there
@@ -154,6 +153,34 @@ function M.label(root)
     local dir = assert(git_dir(root))
     local verb, detail = operation_parts(root, dir, op)
     return ("(%s)%s"):format(verb, detail)
+end
+
+-- the commit each operation's theirs side comes from; during a rebase, the one being replayed
+local THEIRS_HEADS = {
+    merge = "MERGE_HEAD",
+    rebase = "REBASE_HEAD",
+    ["cherry-pick"] = "CHERRY_PICK_HEAD",
+    revert = "REVERT_HEAD",
+}
+
+-- the name of the commit a conflict's theirs side comes from, as git's markers label it
+-- (a revert's theirs is the reverted commit's parent). nil for am, which applies a patch
+---@param root string
+---@return string|nil
+function M.theirs_name(root)
+    local op = M.current(root)
+    local file = op and THEIRS_HEADS[op]
+    if not file then
+        return nil
+    end
+    local sha = state_line(assert(git_dir(root)), file)
+    if not sha then
+        return nil
+    end
+    if op == "revert" then
+        return "parent of " .. commit_name(root, sha)
+    end
+    return commit_name(root, sha)
 end
 
 -- todo lines whose message git commits without asking, conflicts aside: a pick, and a

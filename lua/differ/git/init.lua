@@ -368,6 +368,7 @@ function M.conflicted(root)
 end
 
 M.operation, M.operation_label = operation_ops.current, operation_ops.label
+M.operation_theirs = operation_ops.theirs_name
 
 -- repo-relative paths of untracked files, respecting .gitignore, in git's order
 ---@param root string
@@ -810,7 +811,7 @@ end
 
 -- the index ops the panel's file keys and the merge tool drive
 M.stage, M.unstage = index_ops.stage, index_ops.unstage
-M.remove = index_ops.remove
+M.remove, M.take_side = index_ops.remove, index_ops.take_side
 M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- reverse-apply a single-hunk patch to the worktree, atomically. `--unidiff-zero`

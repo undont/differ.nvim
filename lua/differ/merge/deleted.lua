@@ -5,9 +5,17 @@ local notify = require("differ.git.exec").notify
 
 local M = {}
 
--- keep the file: write it as it stands, which stages it like any write
+-- keep the file: write it as it stands, which stages it like any write. a binary file is
+-- staged from disk instead, since a write from nvim can change its bytes
 ---@param s differ.MergeSession
 local function keep_file(s)
+    if s.binary then
+        local surviving = "ours"
+        if s.deleted == "ours" then
+            surviving = "theirs"
+        end
+        return require("differ.merge.binary").take(s, surviving)
+    end
     local ok, err = pcall(vim.api.nvim_buf_call, s.result_buf, function()
         vim.cmd("silent write")
     end)
@@ -27,6 +35,7 @@ local function show_deleted(s)
     local notice = s.path .. " deletion staged"
     -- acwrite, so a :w reaches the BufWriteCmd below rather than failing on the buftype
     vim.bo[buf].buftype = "acwrite"
+    vim.bo[buf].modified = false -- or stepping off would save it
     vim.api.nvim_create_autocmd("BufWriteCmd", {
         buffer = buf,
         group = s.aug,

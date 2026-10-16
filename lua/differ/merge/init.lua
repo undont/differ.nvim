@@ -68,6 +68,7 @@ local INPUT_HL = {
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
 ---@field deleted "ours"|"theirs"|nil     -- modify/delete: the side that deleted the file
+---@field binary boolean                  -- binary stages: the result is a scratch notice, not the file
 ---@field layout "default"|"diff4"  -- the chosen layout, reused when stepping to another file
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
 ---@field file_index integer            -- this file's position in files
@@ -78,8 +79,8 @@ local INPUT_HL = {
 ---@field operation string|nil          -- the in-progress operation at session start
 ---@field watcher differ.git.Watcher|nil -- the git dir watch for changes made outside the session
 ---@field result_win integer
----@field result_buf integer              -- the real worktree file (editable)
----@field bufs integer[]                  -- the scratch input buffers (deleted on close)
+---@field result_buf integer              -- the real worktree file (editable), or a binary's scratch notice
+---@field bufs integer[]                  -- the scratch buffers (deleted on close)
 ---@field inputs differ.MergeInput[]       -- the input panes (for pane sync on navigation)
 ---@field win_side table<integer, string> -- window id -> side (for the winbar)
 ---@field return_tab integer
@@ -595,6 +596,9 @@ local function resolve_choice(choice)
     if s.deleted then
         return require("differ.merge.deleted").resolve(s, choice)
     end
+    if s.binary then
+        return require("differ.merge.binary").resolve(s, choice)
+    end
     local regions = live_regions()
     if #regions == 0 then
         return notify("no conflicts remain")
@@ -693,6 +697,9 @@ local function result_winbar(s)
     if s.deleted and not s.staged then
         return ("%s · %s"):format(file, tint("deleted in " .. s.deleted, "differMergeUnstaged"))
     end
+    if s.binary and not s.staged then
+        return ("%s · binary · %s"):format(file, tint("not staged", "differMergeUnstaged"))
+    end
     if remaining == 0 and s.staged then
         local done = tint(s.removed and "deleted" or "staged", "differMergeStaged")
         if s.left == 0 and s.operation then
@@ -745,11 +752,13 @@ local function dress(win)
     set_local(win, "winbar", '%!v:lua.require("differ.merge").winbar()')
 end
 
--- an empty pane that stands for a deleted file: one dim virtual line, no line numbers
+-- an empty pane that stands for a deleted or binary file: one dim virtual line, no line
+-- numbers. a second call replaces the line
 ---@param win integer
 ---@param buf integer
 ---@param text string
 local function show_notice(win, buf, text)
+    vim.api.nvim_buf_clear_namespace(buf, notice_ns, 0, -1)
     set_local(win, "number", false)
     set_local(win, "cursorline", false)
     set_local(win, "signcolumn", "no")
@@ -879,6 +888,11 @@ local function show_help()
             { fmt(km.choose_ours), deleted == "ours" and "delete the file" or "keep the file" },
             { fmt(km.choose_theirs), deleted == "theirs" and "delete the file" or "keep the file" },
         })
+    elseif in_result and session.binary then
+        vim.list_extend(rows, {
+            { fmt(km.choose_ours), "take ours" },
+            { fmt(km.choose_theirs), "take theirs" },
+        })
     elseif in_result then
         vim.list_extend(rows, {
             { pair(km.next_marker, km.prev_marker), "next / previous marker line" },
@@ -901,8 +915,8 @@ local function show_help()
     help.show(help.lines(rows), { title = " Differ: merge ", dismiss = dismiss })
 end
 
--- the input pane labels, named by the first conflict's markers. a modify/delete file has
--- none: HEAD is ours under every operation, but theirs has no one ref to name
+-- the input pane labels, named by the first conflict's markers. a modify/delete or binary
+-- file has none: HEAD is ours under every operation, and theirs is named from git's state
 ---@param model differ.MergeModel
 ---@return table<string, string>
 local function side_labels(model)
@@ -911,6 +925,11 @@ local function side_labels(model)
     if first then
         labels.ours = ("OURS (%s)"):format(first.label_ours or "HEAD")
         labels.theirs = ("THEIRS (%s)"):format(first.label_theirs or "MERGE_HEAD")
+    else
+        local theirs = require("differ.git").operation_theirs(model.root)
+        if theirs then
+            labels.theirs = ("THEIRS (%s)"):format(theirs)
+        end
     end
     if model.deleted then
         labels[model.deleted] = labels[model.deleted] .. " · deleted"
@@ -964,8 +983,8 @@ local function settle_result()
     local s = assert(session)
     -- on_write warns about a reformatting formatter once; a later refusal has to say why
     local warned = s.autoformat_warned
-    -- an untouched modify/delete file waits for keep or delete; stepping past isn't a keep
-    if s.deleted and not s.staged and not vim.bo[s.result_buf].modified then
+    -- an untouched modify/delete or binary file waits for a take; stepping past isn't one
+    if (s.deleted or s.binary) and not s.staged and not vim.bo[s.result_buf].modified then
         return true
     end
     if vim.bo[s.result_buf].modified then
@@ -1037,12 +1056,21 @@ local function lay_out(root, relpath, model, layout, files)
     vim.api.nvim_set_current_win(top)
 
     local abs = root .. "/" .. relpath
-    local bufs, result_buf = {}, nil -- bufs: the scratch input buffers (deleted on close)
+    local bufs, result_buf = {}, nil -- bufs: the scratch buffers (deleted on close)
     local result_col -- the result render column (for its fold ranges)
     local inputs = {} -- { side, win, regions, folds }
     local input_wins = {}
     for i, col in ipairs(result.columns) do
-        if i == result.result_index then
+        if i == result.result_index and model.binary then
+            -- never the real file: a write from nvim can change a binary's bytes
+            result_buf = make_buffer("result", relpath, {})
+            -- acwrite, so a :w reaches the session's BufWriteCmd rather than failing on the buftype
+            vim.bo[result_buf].buftype = "acwrite"
+            vim.bo[result_buf].modified = false -- or stepping off would save it
+            bufs[#bufs + 1] = result_buf
+            vim.api.nvim_win_set_buf(result_win, result_buf)
+            result_col = col
+        elseif i == result.result_index then
             -- the result is the REAL worktree file: editable, native syntax/undo/LSP, and
             -- :w writes it for real (BufWritePost stages it once it's marker-free)
             vim.api.nvim_win_call(result_win, function()
@@ -1078,11 +1106,21 @@ local function lay_out(root, relpath, model, layout, files)
         set_local(win, "signcolumn", "yes:1") -- room for the ▌ slab sign
     end
     for _, inp in ipairs(inputs) do
+        local buf = vim.api.nvim_win_get_buf(inp.win)
         if inp.side == model.deleted then
-            show_notice(inp.win, vim.api.nvim_win_get_buf(inp.win), "deleted in " .. inp.side)
+            show_notice(inp.win, buf, "deleted in " .. inp.side)
+        elseif model.binary and model.binary[inp.side] then
+            show_notice(
+                inp.win,
+                buf,
+                require("differ.merge.binary").describe(model.binary[inp.side])
+            )
         end
     end
     dress(result_win)
+    if model.binary then
+        show_notice(result_win, result_buf, "binary file: take ours or theirs")
+    end
 
     -- nav + take-this resolution live on the result buffer (the working surface), from
     -- the configurable merge keymaps; falls back to the flat defaults when setup
@@ -1108,6 +1146,7 @@ local function lay_out(root, relpath, model, layout, files)
         labels = side_labels(model),
         no_ancestor = model.no_ancestor or false,
         deleted = model.deleted,
+        binary = model.binary ~= nil,
         layout = layout,
         files = files,
         file_index = assert(file_index, "merge: " .. relpath .. " is not in the file list"),
@@ -1222,6 +1261,15 @@ local function lay_out(root, relpath, model, layout, files)
         group = aug,
         callback = on_write,
     })
+    if model.binary then
+        vim.api.nvim_create_autocmd("BufWriteCmd", {
+            buffer = result_buf,
+            group = aug,
+            callback = function()
+                notify(("%s is binary: nothing to write"):format(relpath))
+            end,
+        })
+    end
     -- keep the active-conflict emphasis tracking the cursor
     vim.api.nvim_create_autocmd("CursorMoved", {
         buffer = result_buf,
