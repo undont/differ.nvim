@@ -61,6 +61,7 @@ function M.open(path, chan, float)
     local win = float_win(float)
     vim.b[float].differ_message = true
     vim.api.nvim_win_set_buf(win, buf)
+    require("differ.util.win").no_columns(win)
     vim.api.nvim_set_current_win(win)
     vim.cmd.stopinsert()
     vim.bo[buf].bufhidden = "wipe"
@@ -76,6 +77,7 @@ function M.open(path, chan, float)
                     local back = float_win(float)
                     require("differ.git.operation").title_float(back, float)
                     vim.api.nvim_win_set_buf(back, float)
+                    require("differ.util.win").no_columns(back)
                     vim.api.nvim_set_current_win(back)
                     vim.cmd.startinsert()
                 end

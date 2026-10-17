@@ -353,6 +353,47 @@ describe("git operation runner", function()
         assert.are.same({ { " git merge " } }, back)
     end)
 
+    it("keeps the float's columns off across the message swap", function()
+        local saved = { signcolumn = vim.o.signcolumn, statuscolumn = vim.o.statuscolumn }
+        vim.o.signcolumn, vim.o.statuscolumn = "yes", "%l "
+        -- a plugin hook setting the columns on every buffer a window shows
+        local group = vim.api.nvim_create_augroup("differ_test_columns", {})
+        vim.api.nvim_create_autocmd("BufWinEnter", {
+            group = group,
+            callback = function()
+                vim.wo.signcolumn, vim.wo.statuscolumn = "yes", "%l "
+            end,
+        })
+        local columns = {}
+        local function record(win)
+            columns[#columns + 1] = { vim.wo[win].signcolumn, vim.wo[win].statuscolumn }
+        end
+        vim.api.nvim_create_autocmd("BufWinEnter", {
+            group = group,
+            callback = function(args)
+                if vim.bo[args.buf].buftype == "terminal" then
+                    local win = vim.fn.bufwinid(args.buf)
+                    vim.schedule(function()
+                        if vim.api.nvim_win_is_valid(win) then
+                            record(win)
+                        end
+                    end)
+                end
+            end,
+        })
+        local root = stopped("merge")
+        resolve_all(root)
+        local res = start(root, "continue")
+        local buf = assert(message_buffer(res), "git never asked for a message")
+        record(vim.fn.bufwinid(buf))
+        reply(buf)
+        local ok = finished(res).ok
+        vim.api.nvim_del_augroup_by_id(group)
+        vim.o.signcolumn, vim.o.statuscolumn = saved.signcolumn, saved.statuscolumn
+        assert.is_true(ok, res().output)
+        assert.are.same({ { "no", "" }, { "no", "" } }, columns)
+    end)
+
     it("commits the stopped commit's message unasked when accepting it", function()
         local root = stopped("merge")
         resolve_all(root)

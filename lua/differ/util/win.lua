@@ -13,6 +13,17 @@ function M.set_local(win, opt, val)
     vim.api.nvim_set_option_value(opt, val, { scope = "local", win = win })
 end
 
+-- the columns `style = "minimal"` turns off, off again on `win`: a buffer swapped into a
+-- minimal float gets whatever columns BufWinEnter hooks set for it
+---@param win integer
+function M.no_columns(win)
+    M.set_local(win, "number", false)
+    M.set_local(win, "relativenumber", false)
+    M.set_local(win, "signcolumn", "no")
+    M.set_local(win, "foldcolumn", "0")
+    M.set_local(win, "statuscolumn", "")
+end
+
 -- a minimal, rounded float of `width` x `height` in the middle of the editor, focused
 ---@param buf integer
 ---@param width integer
