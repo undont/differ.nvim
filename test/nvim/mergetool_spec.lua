@@ -732,7 +732,7 @@ describe(":Differ mergetool resolution", function()
         take_ours_and_write(s)
         assert.are.equal(s, merge.current())
         assert.are.equal(
-            "differ: all conflicts resolved: :Differ continue",
+            "differ: all conflicts resolved: gC to continue",
             _G.notifs[#_G.notifs].msg
         )
         assert.are.same({}, require("differ.git").conflicted(root))
@@ -752,7 +752,7 @@ describe(":Differ mergetool resolution", function()
             last.msg
         )
         for _, n in ipairs(_G.notifs) do
-            assert.is_nil(n.msg:find(":Differ continue", 1, true))
+            assert.is_nil(n.msg:find("continue", 1, true))
         end
     end)
 
@@ -912,8 +912,8 @@ describe(":Differ mergetool in-progress operation", function()
         return _G.notifs[#_G.notifs].msg
     end
 
-    it("points at :Differ continue once the last file is written", function()
-        assert.are.equal("differ: all conflicts resolved: :Differ continue", resolve_last("rebase"))
+    it("points at the continue key once the last file is written", function()
+        assert.are.equal("differ: all conflicts resolved: gC to continue", resolve_last("rebase"))
     end)
 
     it("reports plain done when no operation is in progress", function()
@@ -1023,7 +1023,7 @@ describe(":Differ mergetool file stepping", function()
         fire(s.result_buf, "differ: next conflicted file")
         assert.are.equal(s, merge.current())
         assert.are.equal(
-            "differ: no conflicted files left: :Differ continue",
+            "differ: no conflicted files left: gC to continue",
             _G.notifs[#_G.notifs].msg
         )
     end)
@@ -1047,7 +1047,7 @@ describe(":Differ mergetool file stepping", function()
         assert.is_truthy(merge.winbar():find("RESULT · file 2/2", 1, true))
         take_ours_and_write(g)
         assert.are.equal(
-            "RESULT · file 2/2 · staged · all conflicts resolved · :Differ continue",
+            "RESULT · file 2/2 · staged · all conflicts resolved · gC to continue",
             plain(merge.winbar())
         )
     end)
@@ -2364,11 +2364,11 @@ describe(":Differ mergetool modify/delete", function()
                 fire(a.result_buf, "differ: take " .. case[2])
             end)
             assert.are.equal(
-                "differ: all conflicts resolved: :Differ continue",
+                "differ: all conflicts resolved: gC to continue",
                 _G.notifs[#_G.notifs].msg
             )
             vim.g.statusline_winid = a.result_win
-            local bar = "RESULT · file 1/2 · %s · all conflicts resolved · :Differ continue"
+            local bar = "RESULT · file 1/2 · %s · all conflicts resolved · gC to continue"
             assert.are.equal(bar:format(case[3]), plain(merge.winbar()))
         end)
     end
@@ -2523,9 +2523,21 @@ describe(":Differ mergetool binary", function()
         local b = merge.current()
         assert.are.equal("a.bin", b.path)
         _G.notifs = {}
+        local select = vim.ui.select
+        local picked = false
+        vim.ui.select = function()
+            picked = true
+        end
+        fire(b.result_buf, "differ: continue, skip or abort the operation")
+        vim.ui.select = select
+        assert.is_false(picked)
+        assert.are.equal(
+            "differ: 1 conflicted file left: resolve them before continuing",
+            _G.notifs[#_G.notifs].msg
+        )
         fire(b.result_buf, "differ: take theirs")
         assert.are.equal(
-            "differ: all conflicts resolved: :Differ continue",
+            "differ: all conflicts resolved: gC to continue",
             _G.notifs[#_G.notifs].msg
         )
     end)

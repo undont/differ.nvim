@@ -76,6 +76,14 @@ local function run(root, op, action, accept)
     end, accept)
 end
 
+---@param left integer
+local function warn_left(left)
+    notify(
+        ("%s left: resolve them before continuing"):format(plural(left, "conflicted file")),
+        vim.log.levels.WARN
+    )
+end
+
 -- a continue with files still conflicted only gets git's refusal, so refuse here. the
 -- merge tool's open result is saved and staged first
 ---@param root string
@@ -88,11 +96,27 @@ local function resolved(root)
     if left == 0 then
         return true
     end
-    notify(
-        ("%s left: resolve them before continuing"):format(plural(left, "conflicted file")),
-        vim.log.levels.WARN
-    )
+    warn_left(left)
     return false
+end
+
+-- the conflicted files left, counting the merge tool's open file by its buffer: the index
+-- keeps it conflicted until settle() stages it
+---@param root string
+---@return integer
+local function conflicts_left(root)
+    local conflicted = require("differ.git").conflicted(root)
+    local s = require("differ.merge").current()
+    if not s or s.root ~= root then
+        return #conflicted
+    end
+    local left = #vim.tbl_filter(function(p)
+        return p ~= s.path
+    end, conflicted)
+    if #s.regions > 0 or ((s.deleted or s.binary) and not s.staged) then
+        left = left + 1
+    end
+    return left
 end
 
 ---@param prompt string
@@ -164,12 +188,38 @@ function M.running()
     return running ~= nil
 end
 
+-- how a done notify or winbar names the continue step: the bound key, else the command
+---@param km table  -- a resolved surface keymap table
+---@return string
+function M.hint(km)
+    local key = require("differ.ui.help").fmt(km.commit)
+    if not key then
+        return ":Differ continue"
+    end
+    return key .. " to continue"
+end
+
+-- the commit key: mid-operation, the picker once every conflict is resolved
+---@param root string|nil  -- the surface's repo, else the command's
+function M.pick_resolved(root)
+    root = root or target_root()
+    if not root or not require("differ.git").operation(root) then
+        return notify("nothing to continue")
+    end
+    local left = conflicts_left(root)
+    if left > 0 then
+        return warn_left(left)
+    end
+    M.pick(root)
+end
+
 -- the picker, continue first
-function M.pick()
+---@param root string|nil  -- the surface's repo, else the command's
+function M.pick(root)
     if refuse_while_running() then
         return
     end
-    local root = target_root()
+    root = root or target_root()
     local op = root and require("differ.git").operation(root)
     if not root or not op then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")

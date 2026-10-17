@@ -862,6 +862,81 @@ describe(":Differ continue", function()
         end)
     end
 
+    describe("the commit key", function()
+        after_each(function()
+            local p = require("differ.panel").current()
+            if p then
+                p:close()
+            end
+        end)
+
+        -- gC's buffer-local map on `buf`
+        local function press(buf)
+            vim.api.nvim_buf_call(buf, function()
+                vim.fn.maparg("gC", "n", false, true).callback()
+            end)
+        end
+
+        local function blocked(left)
+            assert.is_nil(shown)
+            assert.are.equal(vim.log.levels.WARN, noted(left .. " left").level)
+        end
+
+        local function panel_on(root)
+            in_repo(root)
+            git_src.panel({ rev = {}, open_first = true })
+            local p = assert(require("differ.panel").current())
+            assert(require("differ.view").current())
+            return p, vim.api.nvim_win_get_buf(p.origin_win)
+        end
+
+        it("waits for every conflict on the panel and diff view", function()
+            local root = stopped("merge")
+            local p, diff_buf = panel_on(root)
+            press(p.bufnr)
+            blocked("2 conflicted files")
+            press(diff_buf)
+            blocked("2 conflicted files")
+            resolve_all(root)
+            press(p.bufnr)
+            assert.are.equal("merge options", shown.prompt)
+            shown = nil
+            press(diff_buf)
+            assert.are.equal("merge options", shown.prompt)
+        end)
+
+        it("says there's nothing to continue with no operation", function()
+            local root = diverged_repo()
+            write(root .. "/f.txt", "edited\n")
+            local p = panel_on(root)
+            press(p.bufnr)
+            assert.is_nil(shown)
+            assert.is_not_nil(noted("nothing to continue"))
+        end)
+
+        it("counts the merge tool's open file by its buffer", function()
+            local root = stopped("merge")
+            in_repo(root)
+            merge.open({})
+            local s = assert(merge.current())
+            press(s.result_buf)
+            blocked("2 conflicted files")
+            write(root .. "/g.txt", "resolved\n")
+            git_ok(root, "add", "g.txt")
+            press(s.result_buf)
+            blocked("1 conflicted file")
+            vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "resolved" })
+            vim.api.nvim_exec_autocmds("TextChanged", { buffer = s.result_buf })
+            press(s.result_buf)
+            assert.are.equal("merge options", shown.prompt)
+        end)
+
+        it("names the key in the hints, or the command when it's disabled", function()
+            assert.are.equal("gC to continue", continue.hint({ commit = "gC" }))
+            assert.are.equal(":Differ continue", continue.hint({ commit = false }))
+        end)
+    end)
+
     describe("from the merge tool", function()
         -- a session on f.txt with its result resolved but unsaved
         local function session_on(root)
@@ -1087,10 +1162,7 @@ describe("local panel mid-operation", function()
         it("drops the operation lines after a " .. action, function()
             local root = stopped("merge")
             local p = panel_on(root)
-            assert.are.same(
-                { "(merging) feature → main", ":Differ continue" },
-                operation_lines(p)
-            )
+            assert.are.same({ "(merging) feature → main", "gC to continue" }, operation_lines(p))
             assert.is_true(run(root, action).ok)
             assert(
                 vim.wait(5000, function()

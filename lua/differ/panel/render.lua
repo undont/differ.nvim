@@ -55,6 +55,7 @@ end
 ---@class differ.panel.Header
 ---@field path string|nil   -- repo/worktree path shown on the top line
 ---@field operation string|nil  -- in-progress git operation, `(<verb>) <detail>`, above the path
+---@field continue string|nil  -- the continue hint under the operation
 ---@field help string|nil   -- keymap hint (rendered as "Help: <help>")
 
 -- build the panel buffer lines and a parallel metadata list (one per line). an
@@ -77,7 +78,7 @@ function M.lines(blocks, header, icon_for, footer, width)
         if header.operation then
             lines[#lines + 1] = header.operation
             meta[#meta + 1] = { kind = "operation", verb_end = header.operation:find(")", 1, true) }
-            lines[#lines + 1] = ":Differ continue"
+            lines[#lines + 1] = header.continue or ":Differ continue"
             meta[#meta + 1] = { kind = "continue" }
         end
         if header.path then

@@ -703,7 +703,8 @@ local function result_winbar(s)
     if remaining == 0 and s.staged then
         local done = tint(s.removed and "deleted" or "staged", "differMergeStaged")
         if s.left == 0 and s.operation then
-            return ("%s · %s · all conflicts resolved · :Differ continue"):format(file, done)
+            local hint = require("differ.merge.continue").hint(s.keymaps)
+            return ("%s · %s · all conflicts resolved · %s"):format(file, done, hint)
         end
         if s.left == 0 then
             return ("%s · %s · all conflicts resolved"):format(file, done)
@@ -906,6 +907,7 @@ local function show_help()
     end
     vim.list_extend(rows, {
         { pair(km.next_file, km.prev_file), "next / previous file" },
+        { fmt(km.commit), "continue, skip or abort (once resolved)" },
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
     })
@@ -1235,6 +1237,9 @@ local function lay_out(root, relpath, model, layout, files)
     rb("prev_file", function()
         merge_files.step("prev")
     end, "differ: previous conflicted file")
+    rb("commit", function()
+        require("differ.merge.continue").pick_resolved()
+    end, "differ: continue, skip or abort the operation")
     rb("help", show_help, "differ: keymap help")
     -- the input panes are scratch buffers deleted on close, so these need no unbind
     for _, buf in ipairs(bufs) do

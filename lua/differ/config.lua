@@ -164,6 +164,7 @@ M.defaults = {
         toggle_layout = "dl", -- diff: flip stacked / split
         toggle_local = "dw", -- diff/panel: a partly staged file's changes since staging, and back
         commit_preview = "ds", -- panel/diff: list only what a commit would take, HEAD↔index rows
+        commit = "gC", -- panel/diff/merge: commit, or continue the operation in progress
         -- merge tool, bound on the result buffer. nav + take-this resolution,
         -- the result buffer is the real worktree
         -- file and stays editable, so the whole choose family sits behind <leader>

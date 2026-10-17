@@ -343,6 +343,9 @@ function Panel:render()
     local header ---@type differ.panel.Header|nil
     if self.root then
         header = { path = self.root, operation = self.chrome.operation, help = "g?" }
+        if header.operation then
+            header.continue = require("differ.merge.continue").hint(self.keymaps)
+        end
     end
     -- live window width, falling back to the configured width when the window
     -- isn't open yet (headless construction / tests)

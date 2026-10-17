@@ -162,6 +162,7 @@ require("differ").setup({
     help = "g?",
     close = "dc",                -- end the session
     toggle_panel = "dd",         -- hide/show the file panel
+    commit = "gC",               -- commit, or continue the operation in progress
 
     -- diffs
     toggle_layout = "dl",        -- flip between stacked / split

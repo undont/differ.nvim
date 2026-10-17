@@ -1116,6 +1116,20 @@ function M.resolve_base()
     return base
 end
 
+-- the commit key on the panel and diff view of a worktree session
+---@param root string
+---@param spec string|string[]|false
+---@return differ.panel.ExtraMap
+local function commit_map(root, spec)
+    return {
+        spec = spec,
+        fn = function()
+            require("differ.merge.continue").pick_resolved(root)
+        end,
+        desc = "continue, skip or abort the operation (once resolved)",
+    }
+end
+
 -- :Differ panel: open the file panel over a git change set (opts.toggle hides/shows
 -- a live one). selecting a file re-sources the one View in place rather than spawning a new
 -- one. `opts.rev` is the rev spec; position/listing/height/width pass through to
@@ -1304,6 +1318,8 @@ function M.panel(opts)
     -- hunk-level staging. content edits stage by hunk; anything with no lines to stage
     -- sets `whole_file`. `apply` stages one hunk, or unstages it with `reverse`
     local stageable = is_worktree_status(source)
+    local diff_keys = require("differ").get_config().keymaps.diff
+        or require("differ.config").defaults.keymaps
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
 
     -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status + the shown
@@ -1544,6 +1560,7 @@ function M.panel(opts)
                 commit_preview = stageable and function()
                     set_preview(not preview)
                 end or nil,
+                extra_keymaps = stageable and { commit_map(root, diff_keys.commit) } or nil,
             })
         end
         active_entry = entry
@@ -1762,6 +1779,7 @@ function M.panel(opts)
                 end,
                 desc = "local view: changes since staging",
             },
+            commit_map(root, panel_keys.commit),
         } or nil,
         listing = opts.listing or panel_cfg.listing,
         position = opts.position or panel_cfg.position,

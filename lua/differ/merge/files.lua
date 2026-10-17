@@ -31,20 +31,20 @@ function M.first_openable(root, conflicted)
     return nil, nil
 end
 
--- with no conflict left to open here, report done (pointing at :Differ continue when an
+-- with no conflict left to open here, report done (pointing at the continue step when an
 -- operation is in progress), or name the conflicts left for git add/rm
----@param root string
+---@param s differ.MergeSession
 ---@param conflicted string[]
-local function report_progress(root, conflicted)
+local function report_progress(s, conflicted)
     if #conflicted == 0 then
-        if require("differ.git").operation(root) then
-            notify("all conflicts resolved: :Differ continue")
+        if require("differ.git").operation(s.root) then
+            notify("all conflicts resolved: " .. require("differ.merge.continue").hint(s.keymaps))
         else
             notify("all conflicts resolved and staged")
         end
         return
     end
-    if not M.first_openable(root, conflicted) then
+    if not M.first_openable(s.root, conflicted) then
         M.report_unopenable(conflicted)
     end
 end
@@ -56,7 +56,7 @@ function M.mark_staged(s)
     s.staged = true
     local conflicted = require("differ.git").conflicted(s.root)
     s.left = #conflicted
-    report_progress(s.root, conflicted)
+    report_progress(s, conflicted)
 end
 
 -- the next/prev file in the session's list that is still conflicted and builds, wrapping
@@ -100,7 +100,9 @@ function M.step(direction)
             return p ~= s.path
         end, conflicted)
         if #conflicted == 0 and s.operation then
-            return notify("no conflicted files left: :Differ continue")
+            return notify(
+                "no conflicted files left: " .. require("differ.merge.continue").hint(s.keymaps)
+            )
         end
         if #conflicted == 0 then
             return notify("no conflicted files left")
