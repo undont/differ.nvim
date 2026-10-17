@@ -76,14 +76,6 @@ local function run(root, op, action, accept)
     end, accept)
 end
 
----@param left integer
-local function warn_left(left)
-    notify(
-        ("%s left: resolve them before continuing"):format(plural(left, "conflicted file")),
-        vim.log.levels.WARN
-    )
-end
-
 -- a continue with files still conflicted only gets git's refusal, so refuse here. the
 -- merge tool's open result is saved and staged first
 ---@param root string
@@ -96,7 +88,10 @@ local function resolved(root)
     if left == 0 then
         return true
     end
-    warn_left(left)
+    notify(
+        ("%s left: resolve them before continuing"):format(plural(left, "conflicted file")),
+        vim.log.levels.WARN
+    )
     return false
 end
 
@@ -134,20 +129,22 @@ end
 
 ---@param root string
 ---@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
+---@param left integer  -- conflicts left: above zero, only skip and abort
 ---@return differ.merge.ContinueEntry[]
-local function entries(root, op)
-    local list = {
-        {
+local function entries(root, op, left)
+    local list = {}
+    if left == 0 then
+        list[1] = {
             label = "continue",
             run = function()
                 if resolved(root) then
                     run(root, op, "continue", true)
                 end
             end,
-        },
-    }
+        }
+    end
     -- git am never asks for a message
-    if op ~= "am" then
+    if left == 0 and op ~= "am" then
         list[#list + 1] = {
             label = "continue and edit the message",
             run = function()
@@ -202,18 +199,42 @@ function M.hint(km)
     return key .. " to continue"
 end
 
--- the commit key: mid-operation, the picker once every conflict is resolved
+---@param root string
+---@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
+---@param left integer
+local function show(root, op, left)
+    local prompt = op .. " options"
+    if left > 0 then
+        prompt = ("%s left"):format(plural(left, "conflicted file"))
+    end
+    vim.ui.select(entries(root, op, left), {
+        prompt = prompt,
+        format_item = function(entry)
+            return entry.label
+        end,
+    }, function(choice)
+        if not choice then
+            return
+        end
+        -- the builtin inputlist calls back mid-prompt, which holds the float's first redraw
+        -- for seconds
+        vim.schedule(choice.run)
+    end)
+end
+
+-- the commit key: mid-operation, the picker once every conflict is resolved, skip and
+-- abort before then
 ---@param root string|nil  -- the surface's repo, else the command's
 function M.pick_resolved(root)
+    if refuse_while_running() then
+        return
+    end
     root = root or target_root()
-    if not root or not require("differ.git").operation(root) then
+    local op = root and require("differ.git").operation(root)
+    if not root or not op then
         return notify("nothing to continue")
     end
-    local left = conflicts_left(root)
-    if left > 0 then
-        return warn_left(left)
-    end
-    M.pick(root)
+    show(root, op, conflicts_left(root))
 end
 
 -- the picker, continue first
@@ -227,19 +248,7 @@ function M.pick(root)
     if not root or not op then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")
     end
-    vim.ui.select(entries(root, op), {
-        prompt = op .. " options",
-        format_item = function(entry)
-            return entry.label
-        end,
-    }, function(choice)
-        if not choice then
-            return
-        end
-        -- the builtin inputlist calls back mid-prompt, which holds the float's first redraw
-        -- for seconds
-        vim.schedule(choice.run)
-    end)
+    show(root, op, 0)
 end
 
 return M

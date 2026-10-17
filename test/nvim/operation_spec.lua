@@ -877,9 +877,11 @@ describe(":Differ continue", function()
             end)
         end
 
-        local function blocked(left)
-            assert.is_nil(shown)
-            assert.are.equal(vim.log.levels.WARN, noted(left .. " left").level)
+        -- the menu with conflicts left: skip and abort under the count
+        local function reduced(left, labels)
+            assert.are.equal(left .. " left", shown.prompt)
+            assert.are.same(labels, shown.labels)
+            shown = nil
         end
 
         local function panel_on(root)
@@ -890,19 +892,39 @@ describe(":Differ continue", function()
             return p, vim.api.nvim_win_get_buf(p.origin_win)
         end
 
-        it("waits for every conflict on the panel and diff view", function()
+        it("offers only abort on a merge with conflicts left, everything once resolved", function()
             local root = stopped("merge")
             local p, diff_buf = panel_on(root)
             press(p.bufnr)
-            blocked("2 conflicted files")
+            reduced("2 conflicted files", { "abort" })
             press(diff_buf)
-            blocked("2 conflicted files")
+            reduced("2 conflicted files", { "abort" })
             resolve_all(root)
             press(p.bufnr)
             assert.are.equal("merge options", shown.prompt)
             shown = nil
             press(diff_buf)
             assert.are.equal("merge options", shown.prompt)
+        end)
+
+        it("offers skip and abort on a rebase with conflicts left", function()
+            local root = stopped("rebase")
+            local p = panel_on(root)
+            press(p.bufnr)
+            reduced("1 conflicted file", { "skip", "abort" })
+        end)
+
+        it("skips from the reduced menu once confirmed", function()
+            local root = stopped("rebase")
+            local p = panel_on(root)
+            vim.fn.confirm = function()
+                return 1
+            end
+            chosen = "skip"
+            press(p.bufnr)
+            assert(vim.wait(10000, function()
+                return noted("rebase stopped on 1 conflicted file") ~= nil
+            end))
         end)
 
         it("says there's nothing to continue with no operation", function()
@@ -920,11 +942,11 @@ describe(":Differ continue", function()
             merge.open({})
             local s = assert(merge.current())
             press(s.result_buf)
-            blocked("2 conflicted files")
+            reduced("2 conflicted files", { "abort" })
             write(root .. "/g.txt", "resolved\n")
             git_ok(root, "add", "g.txt")
             press(s.result_buf)
-            blocked("1 conflicted file")
+            reduced("1 conflicted file", { "abort" })
             vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "resolved" })
             vim.api.nvim_exec_autocmds("TextChanged", { buffer = s.result_buf })
             press(s.result_buf)

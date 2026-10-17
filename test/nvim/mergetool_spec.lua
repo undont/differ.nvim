@@ -2524,17 +2524,13 @@ describe(":Differ mergetool binary", function()
         assert.are.equal("a.bin", b.path)
         _G.notifs = {}
         local select = vim.ui.select
-        local picked = false
-        vim.ui.select = function()
-            picked = true
+        local prompt
+        vim.ui.select = function(_, opts)
+            prompt = opts.prompt
         end
         fire(b.result_buf, "differ: continue, skip or abort the operation")
         vim.ui.select = select
-        assert.is_false(picked)
-        assert.are.equal(
-            "differ: 1 conflicted file left: resolve them before continuing",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.are.equal("1 conflicted file left", prompt)
         fire(b.result_buf, "differ: take theirs")
         assert.are.equal(
             "differ: all conflicts resolved: gC to continue",
