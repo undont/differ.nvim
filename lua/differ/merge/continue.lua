@@ -122,7 +122,10 @@ end
 ---@param prompt string
 ---@return boolean
 local function confirm(prompt)
-    return vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
+    local yes = vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
+    -- the prompt left on screen holds the terminal float's first redraw for seconds
+    vim.cmd.redraw()
+    return yes
 end
 
 ---@class differ.merge.ContinueEntry
