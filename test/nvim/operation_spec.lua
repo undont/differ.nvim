@@ -326,6 +326,33 @@ describe("git operation runner", function()
         assert.are.equal("Merge branch 'feature'", subject(root))
     end)
 
+    it("names the commit message in the float's title while it shows", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        local res = start(root, "continue")
+        local buf = assert(message_buffer(res), "git never asked for a message")
+        local win = vim.fn.bufwinid(buf)
+        assert.are.same(
+            { { " git merge · commit message " } },
+            vim.api.nvim_win_get_config(win).title
+        )
+        assert.are.equal("", vim.wo[win].winbar)
+        local back
+        local group = vim.api.nvim_create_augroup("differ_test_title", {})
+        vim.api.nvim_create_autocmd("BufWinEnter", {
+            group = group,
+            callback = function(args)
+                if vim.bo[args.buf].buftype == "terminal" then
+                    back = vim.api.nvim_win_get_config(vim.fn.bufwinid(args.buf)).title
+                end
+            end,
+        })
+        reply(buf)
+        assert.is_true(finished(res).ok, res().output)
+        vim.api.nvim_del_augroup_by_id(group)
+        assert.are.same({ { " git merge " } }, back)
+    end)
+
     it("commits the stopped commit's message unasked when accepting it", function()
         local root = stopped("merge")
         resolve_all(root)

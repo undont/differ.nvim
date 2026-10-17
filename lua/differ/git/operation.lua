@@ -223,13 +223,32 @@ end
 ---@type table<integer, string>
 local floats = {}
 
+---@param title string
+---@return string
+local function padded(title)
+    return " " .. title .. " "
+end
+
 ---@param buf integer
 ---@param title string
 ---@return integer
 local function open_float(buf, title)
     local width = math.floor(vim.o.columns * 0.8)
     local height = math.floor(vim.o.lines * 0.6)
-    return require("differ.util.win").open_centred(buf, width, height, { title = title })
+    return require("differ.util.win").open_centred(buf, width, height, { title = padded(title) })
+end
+
+-- title float `win` of terminal buffer `buf` for `shown`, a buffer showing in its place,
+-- or for the terminal itself when nil
+---@param win integer
+---@param buf integer
+---@param shown string?
+function M.title_float(win, buf, shown)
+    local title = floats[buf]
+    if shown then
+        title = title .. " · " .. shown
+    end
+    vim.api.nvim_win_set_config(win, { title = padded(title) })
 end
 
 -- reopen the float of terminal buffer `buf` when nothing shows it
@@ -256,7 +275,7 @@ local function in_float(root, cmd, accept, on_exit)
     if stop then
         vim.b[buf].differ_accept = { root = root, stop = stop }
     end
-    floats[buf] = " git " .. cmd[#exec.GIT + 1] .. " "
+    floats[buf] = "git " .. cmd[#exec.GIT + 1]
     local win = open_float(buf, floats[buf])
     local argv = vim.list_extend({ "sh", "-c", 'GPG_TTY=$(tty) exec "$@"', "sh" }, cmd)
     local job = vim.fn.jobstart(argv, {

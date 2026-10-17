@@ -65,7 +65,7 @@ function M.open(path, chan, float)
     vim.cmd.stopinsert()
     vim.bo[buf].bufhidden = "wipe"
     vim.bo[buf].swapfile = false
-    vim.wo[win].winbar = "commit message"
+    require("differ.git.operation").title_float(win, float, "commit message")
     vim.api.nvim_create_autocmd("BufUnload", {
         buffer = buf,
         once = true,
@@ -74,7 +74,7 @@ function M.open(path, chan, float)
                 if vim.api.nvim_buf_is_valid(float) then
                     vim.b[float].differ_message = nil
                     local back = float_win(float)
-                    vim.wo[back].winbar = ""
+                    require("differ.git.operation").title_float(back, float)
                     vim.api.nvim_win_set_buf(back, float)
                     vim.api.nvim_set_current_win(back)
                     vim.cmd.startinsert()
