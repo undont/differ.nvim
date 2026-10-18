@@ -66,7 +66,7 @@ local function delete_file(s)
         return
     end
     if require("differ.merge").current() ~= s then
-        return notify("the merge tool closed while the prompt was up; nothing was deleted")
+        return
     end
     if not require("differ.git").remove(s.root, s.path) then
         return

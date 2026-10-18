@@ -24,21 +24,25 @@ end
 ---@param action string
 ---@param ok boolean
 ---@param output string
-local function report(root, op, action, ok, output)
+---@param cancelled boolean
+local function report(root, op, action, ok, output, cancelled)
     local git = require("differ.git")
     local now = git.operation(root)
+    if cancelled and now then
+        -- git committed the reword before asking, so nothing was cancelled
+        if git_op.reword_kept(root) then
+            return
+        end
+        return notify(("commit cancelled, %s still in progress"):format(op))
+    end
     if ok and not now then
         if action == "abort" then
             return notify(op .. " aborted")
         end
         return notify(op .. " finished")
     end
-    local conflicted = git.conflicted(root)
-    if now and #conflicted > 0 then
-        return notify(("%s stopped on %s"):format(op, plural(#conflicted, "conflicted file")))
-    end
-    if ok then
-        return notify(op .. " continued")
+    if now and (ok or #git.conflicted(root) > 0) then
+        return
     end
     notify(
         exec.with_stderr(("git %s --%s failed"):format(op, action), output),
@@ -69,9 +73,9 @@ local function run(root, op, action, accept)
     end
     local merge = require("differ.merge")
     running = op
-    git_op.run(root, op, action, function(ok, output)
+    git_op.run(root, op, action, function(ok, output, cancelled)
         running = nil
-        report(root, op, action, ok, output)
+        report(root, op, action, ok, output, cancelled)
         merge.after_operation(root)
     end, accept)
 end
@@ -188,7 +192,7 @@ function M.running()
     return running ~= nil
 end
 
--- how a done notify or winbar names the continue step: the bound key, else the command
+-- how a notify, winbar or panel header names the continue step: the bound key, else the command
 ---@param km table  -- a resolved surface keymap table
 ---@return string
 function M.hint(km)
@@ -232,7 +236,7 @@ function M.pick_resolved(root)
     root = root or target_root()
     local op = root and require("differ.git").operation(root)
     if not root or not op then
-        return notify("nothing to continue")
+        return notify("no merge, rebase, cherry-pick, revert or am in progress")
     end
     show(root, op, conflicts_left(root))
 end

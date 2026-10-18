@@ -1,6 +1,6 @@
 -- git's editor while differ runs an operation, run as `nvim --clean -l shim.lua <file>`:
--- asks the nvim in $NVIM to open the file, then exits once it says the buffer closed.
--- never required as a module
+-- asks the nvim in $NVIM to open the file, then exits once it says the buffer closed:
+-- 0 when it was written, else 1 so git drops that commit. never required as a module
 
 local addr = vim.env.NVIM
 if not addr or addr == "" then
@@ -19,6 +19,7 @@ end
 
 -- set by the parent through nvim_exec_lua once the message buffer closes
 _G.differ_closed = false
+_G.differ_written = false
 local own = vim.rpcrequest(chan, "nvim_get_api_info")[1]
 vim.rpcrequest(
     chan,
@@ -34,5 +35,8 @@ while not _G.differ_closed do
     if not _G.differ_closed and not pcall(vim.rpcrequest, chan, "nvim_get_api_info") then
         os.exit(1)
     end
+end
+if not _G.differ_written then
+    os.exit(1)
 end
 os.exit(0)

@@ -451,9 +451,7 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
                                       terminal, and each commit message
                                       it asks for opens there, except the
                                       stopped commit’s on a plain
-                                      continue. Closing it commits; an
-                                      emptied message drops that commit
-                                      and leaves the operation stopped
+                                      continue
 
   :Differ sidecar                     Smoke-check the Go sidecar: start
                                       it, round-trip a handshake, and

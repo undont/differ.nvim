@@ -31,32 +31,17 @@ function M.first_openable(root, conflicted)
     return nil, nil
 end
 
--- with no conflict left to open here, report done (pointing at the continue step when an
--- operation is in progress), or name the conflicts left for git add/rm
----@param s differ.MergeSession
----@param conflicted string[]
-local function report_progress(s, conflicted)
-    if #conflicted == 0 then
-        if require("differ.git").operation(s.root) then
-            notify("all conflicts resolved: " .. require("differ.merge.continue").hint(s.keymaps))
-        else
-            notify("all conflicts resolved and staged")
-        end
-        return
-    end
-    if not M.first_openable(s.root, conflicted) then
-        M.report_unopenable(conflicted)
-    end
-end
-
 -- mark this file resolved in the same tick as the index write, so the git-dir watcher
--- doesn't read it as resolved outside the session, and report progress
+-- doesn't read it as resolved outside the session, and name the conflicts left that only
+-- git add/rm can resolve
 ---@param s differ.MergeSession
 function M.mark_staged(s)
     s.staged = true
     local conflicted = require("differ.git").conflicted(s.root)
     s.left = #conflicted
-    report_progress(s, conflicted)
+    if #conflicted > 0 and not M.first_openable(s.root, conflicted) then
+        M.report_unopenable(conflicted)
+    end
 end
 
 -- the next/prev file in the session's list that is still conflicted and builds, wrapping

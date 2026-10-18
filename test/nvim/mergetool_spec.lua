@@ -723,7 +723,7 @@ describe(":Differ mergetool resolution", function()
         assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
     end)
 
-    it("reports done once the last conflict is written, staying open", function()
+    it("stays open and quiet once the last conflict is written", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
@@ -731,10 +731,7 @@ describe(":Differ mergetool resolution", function()
         _G.notifs = {}
         take_ours_and_write(s)
         assert.are.equal(s, merge.current())
-        assert.are.equal(
-            "differ: all conflicts resolved: gC to continue",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.are.same({}, _G.notifs)
         assert.are.same({}, require("differ.git").conflicted(root))
     end)
 
@@ -899,26 +896,18 @@ describe(":Differ mergetool in-progress operation", function()
         assert.is_nil(git_mod.operation(root))
     end)
 
-    ---@param op string
-    ---@return string message the last notify
-    local function resolve_last(op)
-        local root = operation_repo(op)
-        vim.cmd.edit(root .. "/f.txt")
-        merge.open({})
-        local s = merge.current()
-        _G.notifs = {}
-        take_ours_and_write(s)
-        assert.are.equal(s, merge.current())
-        return _G.notifs[#_G.notifs].msg
+    for _, op in ipairs({ "rebase", "stash" }) do
+        it("says nothing once the last file of a " .. op .. " is written", function()
+            local root = operation_repo(op)
+            vim.cmd.edit(root .. "/f.txt")
+            merge.open({})
+            local s = merge.current()
+            _G.notifs = {}
+            take_ours_and_write(s)
+            assert.are.equal(s, merge.current())
+            assert.are.same({}, _G.notifs)
+        end)
     end
-
-    it("points at the continue key once the last file is written", function()
-        assert.are.equal("differ: all conflicts resolved: gC to continue", resolve_last("rebase"))
-    end)
-
-    it("reports plain done when no operation is in progress", function()
-        assert.are.equal("differ: all conflicts resolved and staged", resolve_last("stash"))
-    end)
 end)
 
 describe(":Differ mergetool file stepping", function()
@@ -2265,10 +2254,7 @@ describe(":Differ mergetool modify/delete", function()
             end
             fire(s.result_buf, "differ: take theirs")
         end)
-        assert.are.equal(
-            "differ: the merge tool closed while the prompt was up; nothing was deleted",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.are.same({}, _G.notifs)
         assert.are.equal("UD a.txt", status(root, "a.txt"))
         assert.are.equal(1, vim.fn.filereadable(root .. "/a.txt"))
     end)
@@ -2351,7 +2337,7 @@ describe(":Differ mergetool modify/delete", function()
     end)
 
     for _, case in ipairs({ { "delete", "theirs", "deleted" }, { "keep", "ours", "staged" } }) do
-        it("fires the done notify when a " .. case[1] .. " resolves the last conflict", function()
+        it("shows done in the winbar after a " .. case[1] .. " of the last conflict", function()
             local root = conflict_repo_modify_delete({ "f.txt" })
             vim.cmd.edit(root .. "/f.txt")
             local s = open_at(root, "f.txt")
@@ -2359,14 +2345,9 @@ describe(":Differ mergetool modify/delete", function()
             fire(s.result_buf, "differ: next conflicted file")
             local a = merge.current()
             assert.are.equal("a.txt", a.path)
-            _G.notifs = {}
             confirming(1, function()
                 fire(a.result_buf, "differ: take " .. case[2])
             end)
-            assert.are.equal(
-                "differ: all conflicts resolved: gC to continue",
-                _G.notifs[#_G.notifs].msg
-            )
             vim.g.statusline_winid = a.result_win
             local bar = "RESULT · file 1/2 · %s · all conflicts resolved · gC to continue"
             assert.are.equal(bar:format(case[3]), plain(merge.winbar()))
@@ -2532,10 +2513,7 @@ describe(":Differ mergetool binary", function()
         vim.ui.select = select
         assert.are.equal("1 conflicted file left", prompt)
         fire(b.result_buf, "differ: take theirs")
-        assert.are.equal(
-            "differ: all conflicts resolved: gC to continue",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.is_true(b.staged)
     end)
 
     it("lists only the take keys in g?", function()

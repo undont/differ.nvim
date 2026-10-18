@@ -198,6 +198,17 @@ local function keeps_message(line)
     return false
 end
 
+-- the todo line a rebase last ran, nil outside one
+---@param dir string
+---@return string|nil
+local function last_done(dir)
+    local done = read(dir .. "/rebase-merge/done")
+    if not done then
+        return nil
+    end
+    return vim.trim(done):match("([^\n]*)$")
+end
+
 -- what identifies the stop git is on: HEAD, plus a rebase's step. nil when the commit it
 -- stopped on is one whose message the todo asks to edit (a reword, squash, fixup, or a
 -- merge without -C)
@@ -209,14 +220,27 @@ function M.stop(root)
     if not dir then
         return head
     end
-    local done = read(dir .. "/rebase-merge/done")
-    if not done then
+    local line = last_done(dir)
+    if not line then
         return head
     end
-    if not keeps_message(vim.trim(done):match("([^\n]*)$")) then
+    if not keeps_message(line) then
         return nil
     end
     return head .. " " .. (state_line(dir, "rebase-merge/msgnum") or "")
+end
+
+-- whether a rebase stopped on a reword whose message edit failed: git commits the pick
+-- before asking, so a continue keeps the original message
+---@param root string
+---@return boolean
+function M.reword_kept(root)
+    local dir = git_dir(root)
+    local line = dir and last_done(dir)
+    if not line or not (line:match("^reword ") or line:match("^r ")) then
+        return false
+    end
+    return exec.git({ "diff", "--cached", "--quiet" }, root) ~= nil
 end
 
 -- the terminal buffers git runs in, and their float titles
@@ -268,7 +292,7 @@ end
 ---@param root string
 ---@param cmd string[]
 ---@param accept boolean
----@param on_exit fun(ok: boolean, output: string)
+---@param on_exit fun(ok: boolean, output: string, cancelled: boolean)
 local function in_float(root, cmd, accept, on_exit)
     local buf = vim.api.nvim_create_buf(false, true)
     local stop = accept and M.stop(root)
@@ -285,9 +309,11 @@ local function in_float(root, cmd, accept, on_exit)
         on_exit = function(_, code)
             vim.schedule(function()
                 floats[buf] = nil
-                local lines = {}
+                local lines, cancelled = {}, false
                 if vim.api.nvim_buf_is_valid(buf) then
                     lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+                    -- a cleanup that keeps comments commits a comment-only message
+                    cancelled = code ~= 0 and vim.b[buf].differ_cancelled == true
                 end
                 for _, shown in ipairs(vim.fn.win_findbuf(buf)) do
                     vim.api.nvim_win_close(shown, true)
@@ -299,14 +325,26 @@ local function in_float(root, cmd, accept, on_exit)
                 if output == "" and code ~= 0 then
                     output = "the terminal was closed"
                 end
-                on_exit(code == 0, output)
+                local function finish()
+                    on_exit(code == 0, output, cancelled)
+                end
+                -- leaving terminal mode clears the message line, so report after it
+                if vim.api.nvim_get_mode().mode == "t" and vim.bo.buftype ~= "terminal" then
+                    vim.api.nvim_create_autocmd("ModeChanged", {
+                        pattern = "t:*",
+                        once = true,
+                        callback = vim.schedule_wrap(finish),
+                    })
+                    return
+                end
+                finish()
             end)
         end,
     })
     if job <= 0 then
         floats[buf] = nil
         vim.api.nvim_win_close(win, true)
-        return on_exit(false, "couldn't start git in a terminal")
+        return on_exit(false, "couldn't start git in a terminal", false)
     end
     vim.api.nvim_create_autocmd({ "BufHidden", "BufUnload" }, {
         buffer = buf,
@@ -324,12 +362,12 @@ end
 -- run `cmd` detached and off the main loop, with no editor: an abort never commits
 ---@param root string
 ---@param cmd string[]
----@param on_exit fun(ok: boolean, output: string)
+---@param on_exit fun(ok: boolean, output: string, cancelled: boolean)
 local function in_background(root, cmd, on_exit)
     local function done(res)
         local output = vim.trim((res.stderr or "") .. "\n" .. (res.stdout or ""))
         vim.schedule(function()
-            on_exit(res.code == 0, output)
+            on_exit(res.code == 0, output, false)
         end)
     end
     local ok, err = pcall(vim.system, cmd, {
@@ -343,14 +381,15 @@ local function in_background(root, cmd, on_exit)
     end
 end
 
--- run `git <op> --<action>`; `on_exit` gets whether it exited 0 and what it printed. a
+-- run `git <op> --<action>`; `on_exit` gets whether it exited 0, what it printed, and
+-- whether a commit message closed unwritten stopped it. a
 -- continue or skip runs in the float, where git asks for each commit message through
 -- git/editor.lua as it would in a terminal, a later reword or squash in a rebase included.
 -- `accept` commits the stopped commit's message as it stands, where `M.stop` allows it
 ---@param root string
 ---@param op "merge"|"rebase"|"am"|"cherry-pick"|"revert"
 ---@param action "continue"|"skip"|"abort"
----@param on_exit fun(ok: boolean, output: string)
+---@param on_exit fun(ok: boolean, output: string, cancelled: boolean)
 ---@param accept boolean|nil
 function M.run(root, op, action, on_exit, accept)
     local cmd = vim.list_extend(vim.list_extend({}, exec.GIT), { op, "--" .. action })

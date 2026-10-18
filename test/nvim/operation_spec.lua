@@ -102,8 +102,8 @@ end
 -- start the action; the returned function gives its result once it has finished
 local function start(root, action, accept)
     local result
-    operation.run(root, assert(git_src.operation(root)), action, function(ok, output)
-        result = { ok = ok, output = output }
+    operation.run(root, assert(git_src.operation(root)), action, function(ok, output, cancelled)
+        result = { ok = ok, output = output, cancelled = cancelled }
     end, accept)
     return function()
         return result
@@ -307,22 +307,98 @@ describe("git operation runner", function()
             local root = stopped(op)
             resolve_all(root)
             local head = git_ok(root, "rev-parse", "HEAD")
-            local res = run(root, "continue", {})
+            local res = run(root, "continue", { "", "# only a comment" })
             assert.is_false(res.ok)
-            assert.matches("empty commit message", res.output)
+            assert.is_true(res.cancelled)
             assert.are.equal(op, git_src.operation(root))
             assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
         end)
     end
 
-    it("commits git's message when the edited message closes unwritten", function()
+    -- close git's next message prompt without writing it
+    local function cancel(res)
+        local buf = assert(message_buffer(res), "git never asked for a message")
+        vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "unwritten" })
+        vim.api.nvim_buf_delete(buf, { force = true })
+    end
+
+    it("leaves the operation stopped when the message closes unwritten", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        local head = git_ok(root, "rev-parse", "HEAD")
+        local res = start(root, "continue")
+        cancel(res)
+        assert.is_false(finished(res).ok)
+        assert.is_true(res().cancelled)
+        assert.is_false(operation.reword_kept(root))
+        assert.are.equal("merge", git_src.operation(root))
+        assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
+    end)
+
+    it("keeps a later reword's original message when it closes unwritten", function()
+        local root = todo_rebase("reword")
+        resolve_all(root)
+        local res = start(root, "continue")
+        answer(res) -- the stop on f.txt
+        cancel(res)
+        assert.is_true(finished(res).cancelled)
+        assert.are.equal("rebase", git_src.operation(root))
+        -- git picks a reword before asking for its message
+        assert.are.equal("feature i", subject(root))
+        assert.is_true(operation.reword_kept(root))
+        res = run(root, "continue")
+        assert.is_true(res.ok, res.output)
+        assert.are.equal("feature i", subject(root))
+    end)
+
+    for _, verb in ipairs({ "squash", "fixup -c" }) do
+        it("asks again for a later " .. verb .. " closed unwritten", function()
+            local root = todo_rebase(verb)
+            resolve_all(root)
+            local res = start(root, "continue")
+            answer(res) -- the stop on f.txt
+            cancel(res)
+            assert.is_true(finished(res).cancelled)
+            assert.are.equal("feature h", subject(root))
+            assert.is_false(operation.reword_kept(root))
+            res = start(root, "continue")
+            answer(res, { "combined" })
+            assert.is_true(finished(res).ok, res().output)
+            assert.are.equal("combined", subject(root))
+        end)
+    end
+
+    it("commits a comment-only message when the cleanup keeps comments", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        git_ok(root, "config", "commit.cleanup", "verbatim")
+        local res = run(root, "continue", { "# kept" })
+        assert.is_true(res.ok, res.output)
+        assert.is_false(res.cancelled)
+        assert.are.equal("# kept", subject(root))
+    end)
+
+    it("reads core.commentChar when deciding a message was emptied", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        git_ok(root, "config", "core.commentChar", ";")
+        local res = run(root, "continue", { "; only a comment" })
+        assert.is_true(res.cancelled)
+        assert.are.equal("merge", git_src.operation(root))
+    end)
+
+    it("isn't cancelled when the message is written before closing", function()
         local root = stopped("merge")
         resolve_all(root)
         local res = start(root, "continue")
         local buf = assert(message_buffer(res), "git never asked for a message")
+        vim.api.nvim_buf_call(buf, function()
+            vim.cmd("silent write")
+        end)
         vim.api.nvim_buf_set_lines(buf, 0, 1, false, { "unwritten" })
         vim.api.nvim_buf_delete(buf, { force = true })
         assert.is_true(finished(res).ok, res().output)
+        assert.is_false(res().cancelled)
         assert.are.equal("Merge branch 'feature'", subject(root))
     end)
 
@@ -824,20 +900,53 @@ describe(":Differ continue", function()
         assert.is_not_nil(noted("merge finished"))
     end)
 
-    it("reports a rebase stopping again", function()
+    it("reports a commit message closed unwritten as cancelled", function()
+        local root = stopped("merge")
+        resolve_all(root)
+        in_repo(root)
+        vim.api.nvim_create_augroup("differ_test_messages", {})
+        chosen = "continue and edit the message"
+        continue_cmd()
+        local buf
+        assert(vim.wait(10000, function()
+            buf = vim.fn.bufnr("COMMIT_EDITMSG$")
+            return buf ~= -1
+        end))
+        vim.api.nvim_buf_delete(buf, { force = true })
+        assert(vim.wait(10000, function()
+            return not continue.running()
+        end))
+        local n = assert(noted("commit cancelled, merge still in progress"))
+        assert.are.equal(vim.log.levels.INFO, n.level)
+        assert.is_nil(noted("failed"))
+    end)
+
+    -- the run is over and the rebase stopped on its second conflict
+    local function stopped_again(root)
+        return not continue.running() and vim.deep_equal({ "g.txt" }, git_src.conflicted(root))
+    end
+
+    it("says nothing when a rebase stops again", function()
         local root = stopped("rebase")
         resolve_all(root)
         in_repo(root)
         chosen = "continue"
         continue_cmd()
         assert(vim.wait(10000, function()
-            return noted("rebase stopped on 1 conflicted file") ~= nil
+            return stopped_again(root)
         end))
+        assert.is_nil(noted("rebase"))
     end)
 
     for _, case in ipairs({
-        { "abort", "merge", "merge aborted" },
-        { "skip", "rebase", "rebase stopped on 1 conflicted file" },
+        {
+            "abort",
+            "merge",
+            function()
+                return noted("merge aborted") ~= nil
+            end,
+        },
+        { "skip", "rebase", stopped_again },
     }) do
         it(case[1] .. "s once confirmed, and not otherwise", function()
             local root = stopped(case[2])
@@ -857,7 +966,7 @@ describe(":Differ continue", function()
             end
             continue_cmd()
             assert(vim.wait(10000, function()
-                return noted(case[3]) ~= nil
+                return case[3](root)
             end))
         end)
     end
@@ -923,17 +1032,17 @@ describe(":Differ continue", function()
             chosen = "skip"
             press(p.bufnr)
             assert(vim.wait(10000, function()
-                return noted("rebase stopped on 1 conflicted file") ~= nil
+                return stopped_again(root)
             end))
         end)
 
-        it("says there's nothing to continue with no operation", function()
+        it("says nothing is in progress with no operation", function()
             local root = diverged_repo()
             write(root .. "/f.txt", "edited\n")
             local p = panel_on(root)
             press(p.bufnr)
             assert.is_nil(shown)
-            assert.is_not_nil(noted("nothing to continue"))
+            assert.is_not_nil(noted("no merge, rebase, cherry%-pick, revert or am in progress"))
         end)
 
         it("counts the merge tool's open file by its buffer", function()
