@@ -71,8 +71,6 @@ If a formatter reformats the markers anyway, differ notices on save, refuses to 
 
 `:Differ continue` runs git in a floating terminal and points `GPG_TTY` at it, so with `commit.gpgsign` on a terminal pinentry or an `ssh-keygen` passphrase prompt draws there. A key held by gpg-agent's SSH support is the exception: its prompt goes to the terminal the agent started in. A GUI pinentry (pinentry-mac) or a cached passphrase avoids the prompt entirely.
 
-A cherry-pick or revert range started with `-S` leaves the commit it stopped on unsigned after `:Differ continue`, as `git cherry-pick --continue` does on the command line; `commit.gpgsign` signs it.
-
 ## render-markdown.nvim in the merge result
 
 The merge result disables in-buffer markdown rendering for the session so the conflict markers aren't concealed as block-quotes, restoring it on close.

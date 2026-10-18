@@ -8,10 +8,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `:Differ continue` finishes the merge, rebase, cherry-pick, revert or `am` in progress without leaving nvim: continue, edit the message, skip or abort
+- `:Differ continue` finishes the merge, rebase, cherry-pick, revert or `am` in progress without leaving nvim: continue, edit the message in a buffer, skip or abort
 - The merge tool keeps or deletes a file changed on one side and deleted on the other
-- The local panel names the operation in progress and points to `:Differ continue`
-- An edited commit message closed without writing is kept as a draft for the next edit
+- The merge tool resolves a binary conflict by taking ours or theirs
+- `gC` in the panel, diff view and merge tool opens the continue menu: skip or abort while conflicts are left, continue once they're resolved
+- The local panel names the operation in progress and how to continue it
 
 ### Changed
 

@@ -151,10 +151,6 @@ prompt draws there. A key held by gpg-agent’s SSH support is the exception:
 its prompt goes to the terminal the agent started in. A GUI pinentry
 (pinentry-mac) or a cached passphrase avoids the prompt entirely.
 
-A cherry-pick or revert range started with `-S` leaves the commit it stopped on
-unsigned after `:Differ continue`, as `git cherry-pick --continue` does on the
-command line; `commit.gpgsign` signs it.
-
 
 ==============================================================================
 10. render-markdown.nvim in the merge result*differ-troubleshooting-render-markdown.nvim-in-the-merge-result*
