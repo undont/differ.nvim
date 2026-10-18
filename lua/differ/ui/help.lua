@@ -64,14 +64,7 @@ function M.show(lines, opts)
     vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
     vim.bo[buf].modifiable = false
     vim.bo[buf].bufhidden = "wipe"
-    local win = vim.api.nvim_open_win(buf, true, {
-        relative = "editor",
-        width = width + 1,
-        height = #lines,
-        row = math.floor((vim.o.lines - #lines) / 2),
-        col = math.floor((vim.o.columns - width) / 2),
-        style = "minimal",
-        border = "rounded",
+    local win = require("differ.util.win").open_centred(buf, width + 1, #lines, {
         title = opts.title or " Differ ",
     })
     local function close()

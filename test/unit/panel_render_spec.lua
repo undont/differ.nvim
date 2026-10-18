@@ -19,6 +19,22 @@ describe("panel.render.lines", function()
         assert.are.equal("header", out.meta[4].kind)
     end)
 
+    it("puts an in-progress operation and its continue line above the root path", function()
+        local root = tree.build({ entry("a.lua") })
+        local out = render.lines(
+            { { title = "Changes", rows = tree.rows(root, "tree", {}) } },
+            { path = "~/repo", operation = "(merging) topic → main", help = "g?" }
+        )
+        assert.are.same(
+            { "(merging) topic → main", ":Differ continue", "~/repo", "Help: g?" },
+            { out.lines[1], out.lines[2], out.lines[3], out.lines[4] }
+        )
+        assert.are.equal("operation", out.meta[1].kind)
+        assert.are.equal("(merging)", out.lines[1]:sub(1, out.meta[1].verb_end))
+        assert.are.equal("continue", out.meta[2].kind)
+        assert.are.equal("root", out.meta[3].kind)
+    end)
+
     it("appends a 'Showing changes for:' footer when given a rev", function()
         local root = tree.build({ entry("a.lua") })
         local out = render.lines({ { rows = tree.rows(root, "tree", {}) } }, nil, nil, "main...")

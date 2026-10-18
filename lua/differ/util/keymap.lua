@@ -38,6 +38,53 @@ function M.unbind(bufnr, spec, mode)
     end
 end
 
+---@class differ.keymap.Held
+---@field lhs string
+---@field fn fun()
+---@field prior table|nil -- the buffer-local maparg() dict bind replaced
+
+-- bind on a buffer we don't own, keeping each lhs's prior buffer-local map for release
+---@param bufnr integer
+---@param spec string|string[]|false|nil
+---@param fn fun()
+---@param desc string
+---@return differ.keymap.Held[]
+function M.hold(bufnr, spec, fn, desc)
+    if not spec then
+        return {}
+    end
+    local held = {}
+    vim.api.nvim_buf_call(bufnr, function()
+        for _, lhs in ipairs(type(spec) == "table" and spec or { spec }) do
+            local prior = vim.fn.maparg(lhs, "n", false, true)
+            held[#held + 1] = { lhs = lhs, fn = fn, prior = prior.buffer == 1 and prior or nil }
+        end
+    end)
+    M.bind(bufnr, spec, fn, desc)
+    return held
+end
+
+-- the inverse of hold: drop each map still ours and put back the one it replaced. a map
+-- set over ours since (an LSP attaching mid-session) stays
+---@param bufnr integer
+---@param held differ.keymap.Held[]
+function M.release(bufnr, held)
+    if not vim.api.nvim_buf_is_valid(bufnr) then
+        return
+    end
+    vim.api.nvim_buf_call(bufnr, function()
+        for _, h in ipairs(held) do
+            local now = vim.fn.maparg(h.lhs, "n", false, true)
+            if now.buffer == 1 and now.callback == h.fn then
+                vim.keymap.del("n", h.lhs, { buffer = bufnr })
+                if h.prior then
+                    vim.fn.mapset(h.prior)
+                end
+            end
+        end
+    end)
+end
+
 -- true when every lhs in `spec` is mapped buffer-locally on `bufnr`
 ---@param bufnr integer
 ---@param spec string|string[]|false|nil

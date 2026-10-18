@@ -8,6 +8,29 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:Differ continue` finishes the merge, rebase, cherry-pick, revert or `am` in progress without leaving nvim: continue, edit the message in a buffer, skip or abort
+- The merge tool keeps or deletes a file changed on one side and deleted on the other
+- The merge tool resolves a binary conflict by taking ours or theirs
+- `gC` in the panel, diff view and merge tool opens the continue menu: skip or abort while conflicts are left, continue once they're resolved
+- The local panel names the operation in progress and how to continue it
+
+### Changed
+
+- The merge tool no longer jumps to the next file on save: `]f`/`[f` step between conflicted files and the winbar shows progress
+
+### Fixed
+
+- The merge tool reported a file staged when `git add` failed, and moved on
+- Inline diagnostic plugins showed LSP errors over the merge result's conflict markers
+- The merge tool stopped at a conflict it couldn't open instead of moving to the next one
+- The panel footer kept showing the old `HEAD` after a commit
+- A file reopened after the merge tool closed kept its empty winbar row, hidden sign column and scrollbind
+- A buffer-local keymap on the merged file was lost after the merge tool closed
+
+## [0.2.4] — 2026-10-10
+
+### Added
+
 - In the merge tool, `g?`, `]x` and `[x` also work from the ours, theirs and base panes
 
 ## [0.2.3] — 2026-10-09

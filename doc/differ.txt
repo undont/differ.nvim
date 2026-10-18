@@ -198,6 +198,7 @@ you’re in doubt, `:Differ sidecar` reports which one is actually running.
         help = "g?",
         close = "dc",                -- end the session
         toggle_panel = "dd",         -- hide/show the file panel
+        commit = "gC",               -- commit, or continue the operation in progress
     
         -- diffs
         toggle_layout = "dl",        -- flip between stacked / split
@@ -441,9 +442,16 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
                                       the diff. The df key
 
   :Differ mergetool [path]            Open the merge tool on a conflicted
-                                      file; no argument takes the current
-                                      file, else the only conflicted one,
-                                      else a picker
+                                      file; ]f/[f step between conflicted
+                                      files
+
+  :Differ continue                    Continue, skip or abort the merge,
+                                      rebase, cherry-pick, revert or am
+                                      in progress. Git runs in a floating
+                                      terminal, and each commit message
+                                      it asks for opens there, except the
+                                      stopped commit’s on a plain
+                                      continue
 
   :Differ sidecar                     Smoke-check the Go sidecar: start
                                       it, round-trip a handshake, and

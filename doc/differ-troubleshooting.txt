@@ -11,7 +11,8 @@ Table of Contents                   *differ-troubleshooting-table-of-contents*
 6. which-key popups over differ buffers|differ-troubleshooting-which-key-popups-over-differ-buffers|
 7. Statusline requires under lazy-loading|differ-troubleshooting-statusline-requires-under-lazy-loading|
 8. Format-on-save over conflict markers|differ-troubleshooting-format-on-save-over-conflict-markers|
-9. render-markdown.nvim in the merge result|differ-troubleshooting-render-markdown.nvim-in-the-merge-result|
+9. Signing prompts during :Differ continue|differ-troubleshooting-signing-prompts-during-:differ-continue|
+10. render-markdown.nvim in the merge result|differ-troubleshooting-render-markdown.nvim-in-the-merge-result|
 Working out what’s wrong, and the edge cases in how differ interacts with
 lazy-loading and other plugins. It lives here rather than in the README so that
 stays a reference rather than a FAQ.
@@ -142,7 +143,17 @@ stage the file, and warns once that the flag isn’t being honoured.
 
 
 ==============================================================================
-9. render-markdown.nvim in the merge result*differ-troubleshooting-render-markdown.nvim-in-the-merge-result*
+9. Signing prompts during :Differ continue*differ-troubleshooting-signing-prompts-during-:differ-continue*
+
+`:Differ continue` runs git in a floating terminal and points `GPG_TTY` at it,
+so with `commit.gpgsign` on a terminal pinentry or an `ssh-keygen` passphrase
+prompt draws there. A key held by gpg-agent’s SSH support is the exception:
+its prompt goes to the terminal the agent started in. A GUI pinentry
+(pinentry-mac) or a cached passphrase avoids the prompt entirely.
+
+
+==============================================================================
+10. render-markdown.nvim in the merge result*differ-troubleshooting-render-markdown.nvim-in-the-merge-result*
 
 The merge result disables in-buffer markdown rendering for the session so the
 conflict markers aren’t concealed as block-quotes, restoring it on close.

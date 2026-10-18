@@ -107,7 +107,7 @@ M.defaults = {
     keymaps = {
         next_hunk = "]c", -- diff, panel, history
         prev_hunk = "[c",
-        next_file = "]f", -- diff; panel/history step the selection
+        next_file = "]f", -- diff, merge; panel/history step the selection
         prev_file = "[f",
         first_file = "gg", -- panel/history: jump to the first/last file or commit
         last_file = "G",
@@ -164,6 +164,7 @@ M.defaults = {
         toggle_layout = "dl", -- diff: flip stacked / split
         toggle_local = "dw", -- diff/panel: a partly staged file's changes since staging, and back
         commit_preview = "ds", -- panel/diff: list only what a commit would take, HEAD↔index rows
+        commit = "gC", -- panel/diff/merge: commit, or continue the operation in progress
         -- merge tool, bound on the result buffer. nav + take-this resolution,
         -- the result buffer is the real worktree
         -- file and stays editable, so the whole choose family sits behind <leader>

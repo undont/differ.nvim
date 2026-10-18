@@ -54,6 +54,16 @@ local STATUS_HL = {
     ["?"] = "differPanelUntracked",
 }
 
+-- rows painted from column 0 to the line's end, or to the operation row's verb_end
+---@type table<string, string>
+local LINE_HL = {
+    root = "differPanelRoot",
+    operation = "differPanelOperation",
+    continue = "differPanelContinue",
+    help = "differPanelHelp",
+    footrev = "differPanelHelp",
+}
+
 -- `one` takes the path; `many` the names of the files that lose content
 ---@class differ.panel.DropPrompt
 ---@field one string
@@ -97,7 +107,8 @@ local STATUS_HL = {
 ---@field on_refresh fun()|nil
 ---@field on_staged fun(paths: table<string, boolean>|nil)|nil
 ---@field root string|nil
----@field footer string|nil
+---@field chrome_sources { footer?: string|(fun(): string|nil), operation?: (fun(): string|nil) }
+---@field chrome { footer?: string, operation?: string } -- chrome_sources as last read
 ---@field actions differ.panel.Actions|nil
 ---@field keymaps table<string, string|string[]|false>
 -- session-supplied buffer maps (e.g. pr viewed nav) the generic panel doesn't own
@@ -144,7 +155,10 @@ Panel.__index = Panel
 -- s / u keep their frozen marks
 ---@field on_staged? fun(paths: table<string, boolean>|nil)
 ---@field root? string  -- repo/worktree path shown in the panel header
----@field footer? string -- rev spec shown under "Showing changes for:"
+-- rev spec shown under "Showing changes for:"; a function is re-read on every reload, as
+-- is `operation`, the in-progress git operation
+---@field footer? string|fun(): string|nil
+---@field operation? fun(): string|nil
 ---@field actions? differ.panel.Actions -- file-level staging hooks (slice C)
 ---@field keymaps? table<string, string|string[]|false> -- resolved panel action -> lhs
 ---@field extra_keymaps? differ.panel.ExtraMap[] -- session maps (pr viewed nav)
@@ -189,7 +203,7 @@ function Panel.new(opts)
     if not pcall(vim.api.nvim_buf_set_name, bufnr, "differ://panel") then
         pcall(vim.api.nvim_buf_set_name, bufnr, "differ://panel#" .. bufnr)
     end
-    return setmetatable({
+    local self = setmetatable({
         bufnr = bufnr,
         sections = opts.sections,
         on_select = opts.on_select,
@@ -199,7 +213,8 @@ function Panel.new(opts)
         on_refresh = opts.on_refresh,
         on_staged = opts.on_staged,
         root = opts.root,
-        footer = opts.footer,
+        chrome_sources = { footer = opts.footer, operation = opts.operation },
+        chrome = {},
         actions = opts.actions,
         extra_keymaps = opts.extra_keymaps,
         on_step = opts.on_step,
@@ -219,6 +234,8 @@ function Panel.new(opts)
         lines = {},
         meta = {},
     }, Panel)
+    self:_read_chrome()
+    return self
 end
 
 -- 1-based line of the first file row, or 1 if there are none
@@ -323,7 +340,13 @@ function Panel:render()
     -- diff --stat totals, painted on the help line (the file count already sits in the
     -- winbar meter, so the totals show the +A -B the count doesn't repeat)
     self.add_total, self.del_total = add_total, del_total
-    local header = self.root and { path = self.root, help = "g?" } or nil
+    local header ---@type differ.panel.Header|nil
+    if self.root then
+        header = { path = self.root, operation = self.chrome.operation, help = "g?" }
+        if header.operation then
+            header.continue = require("differ.merge.continue").hint(self.keymaps)
+        end
+    end
     -- live window width, falling back to the configured width when the window
     -- isn't open yet (headless construction / tests)
     local live = self:is_open() and vim.api.nvim_win_get_width(self.winid) or self.width
@@ -337,7 +360,7 @@ function Panel:render()
     local horizontal = self.position == "top" or self.position == "bottom"
     local out, width
     if horizontal then
-        out = render.lines(blocks, header, self.icon_for, self.footer, nil)
+        out = render.lines(blocks, header, self.icon_for, self.chrome.footer, nil)
         local needed = 0
         for i, m in ipairs(out.meta) do
             if m.kind == "file" then
@@ -352,11 +375,11 @@ function Panel:render()
         -- the untruncated render stands unless the content overflows the window, in
         -- which case re-render truncated to the live edge
         if width < needed then
-            out = render.lines(blocks, header, self.icon_for, self.footer, width)
+            out = render.lines(blocks, header, self.icon_for, self.chrome.footer, width)
         end
     else
         width = live
-        out = render.lines(blocks, header, self.icon_for, self.footer, width)
+        out = render.lines(blocks, header, self.icon_for, self.chrome.footer, width)
     end
     self.content_width = width
     self.lines, self.meta = out.lines, out.meta
@@ -390,22 +413,17 @@ function Panel:_highlight()
     for i, m in ipairs(self.meta) do
         local row = i - 1
         local eol = #self.lines[i]
-        if m.kind == "root" then
+        local line_hl = LINE_HL[m.kind]
+        if line_hl then
             vim.api.nvim_buf_set_extmark(
                 self.bufnr,
                 ns,
                 row,
                 0,
-                { end_col = eol, hl_group = "differPanelRoot" }
+                { end_col = m.verb_end or eol, hl_group = line_hl }
             )
-        elseif m.kind == "help" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = eol, hl_group = "differPanelHelp" }
-            )
+        end
+        if m.kind == "help" then
             -- the diff --stat totals ride the (otherwise sparse) help line, pinned to
             -- the same content column as the per-file counts so they stack directly
             -- above them as a column total. virt_text, not line text, so it can't be
@@ -445,14 +463,6 @@ function Panel:_highlight()
                     { end_col = m.prefix_end, hl_group = "differPanelContext" }
                 )
             end
-        elseif m.kind == "footrev" then
-            vim.api.nvim_buf_set_extmark(
-                self.bufnr,
-                ns,
-                row,
-                0,
-                { end_col = eol, hl_group = "differPanelHelp" }
-            )
         elseif m.kind == "dir" then
             vim.api.nvim_buf_set_extmark(
                 self.bufnr,
@@ -524,10 +534,20 @@ function Panel:_highlight()
     end
 end
 
+function Panel:_read_chrome()
+    for key, source in pairs(self.chrome_sources) do
+        if type(source) == "function" then
+            source = source()
+        end
+        self.chrome[key] = source
+    end
+end
+
 -- replace the file-list model and repaint (used on refresh / source change)
 ---@param sections differ.panel.Section[]
 function Panel:set_sections(sections)
     self.sections = sections
+    self:_read_chrome()
     self:render()
 end
 

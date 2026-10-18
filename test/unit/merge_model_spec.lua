@@ -110,8 +110,11 @@ local function fake_git(opts)
         merge_file_diff3 = function()
             return opts.diff3
         end,
-        -- stage presence, only consulted when the stage read back empty; present by default
-        has_stage = function()
+        -- stage presence: present by default, `false` for none, or a per-stage table
+        has_stage = function(_, _, stage)
+            if type(opts.has_stage) == "table" then
+                return opts.has_stage[stage] == true
+            end
             return opts.has_stage ~= false
         end,
     }
@@ -151,12 +154,51 @@ describe("merge.model.build", function()
         assert.is_string(err)
     end)
 
-    it("reads an absent stage as empty (modify/delete conflict)", function()
+    it("reads an absent stage as empty", function()
         package.loaded["differ.git"] = fake_git({ stages = { [2] = "ours\n" } })
         local m = model.build("/repo", "a.txt", nil)
         assert.are.equal("ours\n", m.ours_text)
         assert.are.equal("", m.base_text)
         assert.are.equal("", m.theirs_text)
+    end)
+
+    it("builds a modify/delete file with no markers, naming the deleting side", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "kept\n",
+            stages = { [1] = "base\n", [2] = "kept\n" },
+            has_stage = { [1] = true, [2] = true },
+        })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(err)
+        assert.are.equal("theirs", m.deleted)
+        assert.are.same({}, m.regions)
+        assert.are.equal("", m.theirs_text)
+        assert.is_false(m.no_ancestor)
+    end)
+
+    it("names ours as the deleting side of a delete/modify file", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "kept\n",
+            stages = { [1] = "base\n", [3] = "kept\n" },
+            has_stage = { [1] = true, [3] = true },
+        })
+        assert.are.equal("ours", model.build("/repo", "a.txt", nil).deleted)
+    end)
+
+    it("refuses a file with no markers that one side added", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "added\n",
+            stages = { [2] = "added\n" },
+            has_stage = { [2] = true },
+        })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m)
+        assert.is_string(err)
+    end)
+
+    it("leaves deleted unset on a content conflict", function()
+        package.loaded["differ.git"] = fake_git()
+        assert.is_nil(model.build("/repo", "a.txt", nil).deleted)
     end)
 end)
 
