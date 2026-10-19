@@ -302,6 +302,12 @@ and `u` stage and unstage entire rows/files (works on sections, directories and
 individual rows). `S` and `U` are available in both contexts as
 stage/unstage-all.
 
+In visual mode, `s` and `u` stage and unstage only the selected lines. In
+split-view, a selection takes whole rows, so a modified line moves with both
+its halves. In stacked-view, the old and new lines are rows of their own, so
+you can take one side alone. A selection is refused on a file that stages whole
+(untracked, deleted, binary, a mode change) and in the `dw` and `ds` views.
+
 Certain changes can’t be displayed in that span, e.g. a change staged and
 then put back on disk, or a staged and then further modified hunk. Those hunks
 carry a `!` in the gutter and the winbar says how many exist in the current
