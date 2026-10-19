@@ -940,12 +940,14 @@ function View:show_help()
     end
     -- per-file, not session-wide: a source without `apply` would advertise keys that refuse
     if self:_can_stage_hunk() then
-        local unit = self:_whole_file() and "file" or "hunk"
-        rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage " .. unit }
+        local what = "stage / unstage hunk"
+        if self:_whole_file() then
+            what = "stage / unstage file"
+        elseif self:_can_stage_lines() then
+            what = "stage / unstage hunk (visual: selected lines)"
+        end
+        rows[#rows + 1] = { pair(km.stage, km.unstage), what }
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
-    end
-    if self:_can_stage_lines() then
-        rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage selected lines (visual)" }
     end
     if self.staging and self.staging.revert then
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
