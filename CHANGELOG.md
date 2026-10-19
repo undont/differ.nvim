@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `s` and `u` in visual mode stage and unstage only the selected lines of the diff
+
+## [0.2.5] — 2026-10-18
+
+### Added
+
 - `:Differ continue` finishes the merge, rebase, cherry-pick, revert or `am` in progress without leaving nvim: continue, edit the message in a buffer, skip or abort
 - The merge tool keeps or deletes a file changed on one side and deleted on the other
 - The merge tool resolves a binary conflict by taking ours or theirs
