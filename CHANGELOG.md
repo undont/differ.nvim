@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `X` in visual mode reverts only the selected lines of the diff, in the index and the file
+
 ### Fixed
 
 - In split layout, `s`, `u`, `X` and `]c`/`[c` skipped a pure insertion from the old column and a pure deletion from the new one
