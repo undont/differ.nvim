@@ -110,6 +110,116 @@ function M.next_index(union, cached, unstaged, hunk, take)
     return text
 end
 
+---@class differ.model.Selection
+---@field old table<integer, boolean>  -- union old lnums
+---@field new table<integer, boolean>  -- union new lnums
+
+---@alias differ.model.SelectRefusal
+---| "between"  -- the index changes a line between hunks, so it can't be cut into blocks
+---| "large"    -- a hunk too big to compare against its block
+---| "hidden"   -- a selected hunk's block holds a line neither side has
+
+-- whether the selection has a line on either side of `h`
+---@param h differ.Hunk
+---@param selection differ.model.Selection
+---@return boolean
+local function touches(h, selection)
+    for l = h.old_start, h.old_start + h.old_count - 1 do
+        if selection.old[l] then
+            return true
+        end
+    end
+    for l = h.new_start, h.new_start + h.new_count - 1 do
+        if selection.new[l] then
+            return true
+        end
+    end
+    return false
+end
+
+-- one hunk's index block with the selected lines staged (`take`) or not. sides of the
+-- same length go row by row, each kept old line then its held new line; otherwise the
+-- old lines the index keeps, then the new lines it holds
+---@param h differ.Hunk  -- an ended hunk
+---@param held differ.model.Marks
+---@param selection differ.model.Selection
+---@param take boolean
+---@return string[]
+local function select_block(h, held, selection, take)
+    ---@param side "old"|"new"
+    ---@param k integer
+    ---@return boolean  -- the index has this line once the op is done
+    local function in_index(side, k)
+        local l = h[side .. "_start"] + k - 1
+        local staged = held[side][l]
+        if selection[side][l] then
+            staged = take
+        end
+        if side == "old" then
+            return not staged
+        end
+        return staged == true
+    end
+    local block = {}
+    ---@param side "old"|"new"
+    ---@param k integer
+    local function push(side, k)
+        if in_index(side, k) then
+            block[#block + 1] = h[side .. "_lines"][k]
+        end
+    end
+    if h.old_count == h.new_count then
+        for k = 1, h.old_count do
+            push("old", k)
+            push("new", k)
+        end
+        return block
+    end
+    for k = 1, h.old_count do
+        push("old", k)
+    end
+    for k = 1, h.new_count do
+        push("new", k)
+    end
+    return block
+end
+
+-- the text the index takes when the selected union lines are staged (`take`) or
+-- unstaged. only the hunks the selection touches are rebuilt; every other block stays
+-- as the index has it. nil text with no refusal is a selection with nothing to move
+---@param union differ.DiffModel   -- HEAD↔worktree
+---@param cached differ.DiffModel  -- HEAD↔index
+---@param selection differ.model.Selection
+---@param take boolean
+---@return string|nil text, differ.model.SelectRefusal|nil refusal
+function M.select_index(union, cached, selection, take)
+    local blocks, ended = M.index_blocks(union, cached.new_text)
+    if not blocks then
+        return nil, "between"
+    end
+    local held, hidden = marks.of_blocks(ended.hunks, blocks)
+    if not held then
+        return nil, "large"
+    end
+    local hides = {} ---@type table<integer, boolean>
+    for _, i in ipairs(hidden) do
+        hides[i] = true
+    end
+    for i, h in ipairs(ended.hunks) do
+        if touches(h, selection) then
+            if hides[i] then
+                return nil, "hidden"
+            end
+            blocks[i] = select_block(h, held, selection, take)
+        end
+    end
+    local text = apply.join(ended, blocks)
+    if text == cached.new_text then
+        return nil
+    end
+    return text
+end
+
 -- the index text with its lines `first`..`last` back to HEAD's, where they sit inside
 -- HEAD↔index hunk `ci` and that hunk's two sides are the same length, so each index line
 -- has one HEAD line at the same place in it. every other hunk stays applied
