@@ -220,6 +220,77 @@ function M.select_index(union, cached, selection, take)
     return text
 end
 
+-- `h`'s lines read as staged, so select_block with `take` false keeps the selected old
+-- lines and the new lines left unselected
+---@param h differ.Hunk
+---@return differ.model.Marks
+local function all_held(h)
+    local held = { old = {}, new = {} }
+    for l = h.old_start, h.old_start + h.old_count - 1 do
+        held.old[l] = true
+    end
+    for l = h.new_start, h.new_start + h.new_count - 1 do
+        held.new[l] = true
+    end
+    return held
+end
+
+---@param lines string[]  -- ended lines
+---@return string[]
+local function unended(lines)
+    local out = {}
+    for i, line in ipairs(lines) do
+        if line:sub(-1) == text_util.NO_EOL then
+            line = line:sub(1, -2)
+        end
+        out[i] = line
+    end
+    return out
+end
+
+-- the worktree with the selected union lines reverted, as a diff from that text to the
+-- worktree: one hunk per touched union hunk, its old side the lines the revert leaves
+-- there and its new side the worktree's own. nil is a selection that touches no hunk
+---@param union differ.DiffModel  -- HEAD↔worktree
+---@param selection differ.model.Selection
+---@return differ.DiffModel|nil
+function M.select_worktree(union, selection)
+    local ended = apply.ended(union)
+    local blocks, hunks, shift = {}, {}, 0
+    for i, h in ipairs(ended.hunks) do
+        blocks[i] = h.new_lines
+        if touches(h, selection) then
+            blocks[i] = select_block(h, all_held(h), selection, false)
+            -- the line the block starts on, where a side with no lines names the one before
+            local old_start = h.new_start + shift
+            if h.new_count == 0 then
+                old_start = old_start + 1
+            end
+            if #blocks[i] == 0 then
+                old_start = old_start - 1
+            end
+            hunks[#hunks + 1] = {
+                old_start = old_start,
+                old_count = #blocks[i],
+                old_lines = unended(blocks[i]),
+                new_start = h.new_start,
+                new_count = h.new_count,
+                new_lines = unended(h.new_lines),
+            }
+            shift = shift + #blocks[i] - h.new_count
+        end
+    end
+    if #hunks == 0 then
+        return nil
+    end
+    local out = {}
+    for k, v in pairs(union) do
+        out[k] = v
+    end
+    out.old_text, out.hunks = apply.join(ended, blocks), hunks
+    return out
+end
+
 -- the index text with its lines `first`..`last` back to HEAD's, where they sit inside
 -- HEAD↔index hunk `ci` and that hunk's two sides are the same length, so each index line
 -- has one HEAD line at the same place in it. every other hunk stays applied
