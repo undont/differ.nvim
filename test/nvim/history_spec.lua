@@ -234,7 +234,7 @@ describe(":Differ log (single-file history)", function()
             local v = view_in_origin(h)
             local col = v.columns[1]
             local cur = vim.api.nvim_win_get_cursor(h.origin_win)[1]
-            assert.are.equal(v:_first_review_line(col), cur) -- first hunk, origin not re-applied
+            assert.are.equal(v:_first_review_line(), cur) -- first hunk, origin not re-applied
             h:close()
         end
     )
@@ -254,7 +254,7 @@ describe(":Differ log (single-file history)", function()
         local v = view_in_origin(h)
         local col = v.columns[1]
         local cur = vim.api.nvim_win_get_cursor(h.origin_win)[1]
-        assert.are.equal(v:_first_review_line(col), cur) -- first hunk, origin ignored
+        assert.are.equal(v:_first_review_line(), cur) -- first hunk, origin ignored
         h:close()
     end)
 

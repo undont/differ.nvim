@@ -5823,7 +5823,7 @@ func getDownloadSpeed() {
         local p, v = open_panel()
         local cur = vim.api.nvim_win_get_cursor(p.origin_win)[1]
         assert.is_not_nil(v.columns[1].map.lines[cur].hunk) -- on a hunk, not context
-        assert.are.equal(v:_first_review_line(v.columns[1]), cur)
+        assert.are.equal(v:_first_review_line(), cur)
         p:close()
     end)
 
@@ -5835,11 +5835,11 @@ func getDownloadSpeed() {
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_panel()
-        assert.are.equal(1, v:_first_review_line(v.columns[1])) -- both unstaged -> hunk 1
+        assert.are.equal(1, v:_first_review_line()) -- both unstaged -> hunk 1
 
         vim.api.nvim_win_set_cursor(p.origin_win, { 1, 0 })
         v:stage_hunk() -- stage hunk 1; the next place to review is hunk 2 (buffer line 9)
-        assert.are.equal(9, v:_first_review_line(v.columns[1]))
+        assert.are.equal(9, v:_first_review_line())
         p:close()
     end)
 
@@ -7206,6 +7206,130 @@ describe(":Differ panel (zero-hunk entries)", function()
     end)
 end)
 
+-- split pairs a pure deletion with filler rows in the new column and a pure insertion
+-- with filler in the old one; staging and hunk nav find those hunks from either column
+describe(":Differ diff split hunks across filler rows", function()
+    local TWENTY = {}
+    for i = 1, 20 do
+        TWENTY[i] = tostring(i)
+    end
+    local BASE = table.concat(TWENTY, "\n") .. "\n"
+
+    -- a.lua with line 3 deleted (hunk 1) and a line added after 15 (hunk 2), opened
+    -- in split. `seed` adds to the repo before the panel lists it
+    ---@param seed? fun(root: string)
+    local function split_repo(seed)
+        local root = fresh_repo()
+        write(root .. "/a.lua", BASE)
+        git(root, "commit", "-q", "-am", "twenty lines")
+        local lines = vim.list_slice(TWENTY, 1, 2)
+        vim.list_extend(lines, vim.list_slice(TWENTY, 4, 15))
+        lines[#lines + 1] = "15a"
+        vim.list_extend(lines, vim.list_slice(TWENTY, 16, 20))
+        write(root .. "/a.lua", table.concat(lines, "\n") .. "\n")
+        if seed then
+            seed(root)
+        end
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_layout()
+        assert.are.equal(2, #v.columns)
+        return root, p, v
+    end
+    local function indexed(root)
+        return git(root, "show", ":a.lua")
+    end
+    -- the rows of the deletion and the insertion, the same in both columns
+    local function rows(v)
+        return v.columns[1].map.from_old[3], v.columns[2].map.from_new[15]
+    end
+    local function at(col, row)
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { row, 0 })
+    end
+    local function cursor(col)
+        return vim.api.nvim_win_get_cursor(col.winid)[1]
+    end
+
+    it("s from the old column steps past a staged deletion to a pure insertion", function()
+        local _, p, v = split_repo()
+        local old = v.columns[1]
+        local del, ins = rows(v)
+        at(old, del)
+        v:stage_hunk()
+        assert.are.equal("staged", v:_hunk_state(1))
+
+        v:stage_hunk()
+        assert.are.equal(old.winid, vim.api.nvim_get_current_win())
+        assert.are.equal(ins, cursor(old))
+        p:close()
+    end)
+
+    it("s on a pure insertion's filler row in the old column stages it", function()
+        local root, p, v = split_repo()
+        local _, ins = rows(v)
+        at(v.columns[1], ins)
+        assert.are.equal(2, v:_hunk_index_under_cursor())
+
+        v:stage_hunk()
+        assert.are.equal("unstaged", v:_hunk_state(1))
+        assert.are.equal("staged", v:_hunk_state(2))
+        assert.is_truthy(indexed(root):find("15\n15a\n16\n", 1, true))
+        p:close()
+    end)
+
+    it("]c from the old column visits a pure insertion", function()
+        local _, p, v = split_repo()
+        local old = v.columns[1]
+        local del, ins = rows(v)
+        at(old, 1)
+        v:goto_hunk("next")
+        assert.are.equal(del, cursor(old))
+        v:goto_hunk("next")
+        assert.are.equal(ins, cursor(old))
+        v:goto_hunk("prev")
+        assert.are.equal(del, cursor(old))
+        p:close()
+    end)
+
+    it("]c and s from the new column reach a pure deletion", function()
+        local root, p, v = split_repo()
+        local new = v.columns[2]
+        local del, ins = rows(v)
+        at(new, 1)
+        v:goto_hunk("next")
+        assert.are.equal(del, cursor(new))
+        assert.are.equal(1, v:_hunk_index_under_cursor())
+
+        v:stage_hunk()
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.is_nil(indexed(root):find("\n3\n", 1, true))
+
+        v:stage_hunk()
+        assert.are.equal(ins, cursor(new))
+        p:close()
+    end)
+
+    it("a file opening on a pure insertion lands on it in split", function()
+        local _, p, v = split_repo(function(root)
+            write(root .. "/b.lua", "one\n")
+            git(root, "add", "b.lua")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/b.lua", "one\n" .. BASE)
+        end)
+        assert.are.equal("a.lua", v.model.path)
+        v:step_file("next")
+        v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal(2, #v.columns)
+
+        local old = v.columns[1]
+        assert.are.equal(v.columns[2].map.from_new[2], cursor(old))
+        assert.are.equal(1, v:_hunk_index_under_cursor())
+        p:close()
+    end)
+end)
+
 -- a whole-file source (a new or deleted file, a binary one, a change with no lines
 -- to show) stages as a unit. the keys act on the file rather than on the hunk under
 -- the cursor, which is what used to send them stepping off to another file
@@ -7276,11 +7400,11 @@ describe(":Differ diff whole-file staging", function()
         v:toggle_layout() -- -> split; the old column is all filler
         assert.are.equal(2, #v.columns)
 
-        -- a pure add carries no old lines, so every old-column row is a meta row with
-        -- no hunk on it: the cursor lookup finds nothing there
+        -- a pure add carries no old lines, so every old-column row is filler; the row
+        -- still resolves to the add through the new column
         vim.api.nvim_set_current_win(v.columns[1].winid)
         vim.api.nvim_win_set_cursor(v.columns[1].winid, { 1, 0 })
-        assert.is_nil(v:_hunk_index_under_cursor())
+        assert.are.equal(1, v:_hunk_index_under_cursor())
 
         v:stage_hunk()
 
