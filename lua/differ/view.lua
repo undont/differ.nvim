@@ -84,9 +84,11 @@ local armed_view = nil
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field apply_lines? fun(model: differ.DiffModel, lines: differ.model.Selection, reverse: boolean): boolean, boolean?
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
+---@field revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?
 ---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
+---@field no_revert_lines? string  -- why X on a selection does nothing here
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
 ---@field hidden? boolean  -- union source: some staged content isn't on screen
