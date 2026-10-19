@@ -3080,6 +3080,180 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    it("visual X in split reverts both halves of a row", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_layout()
+
+        local row = v.columns[1].map.from_old[3]
+        local prompt = confirming(1, function()
+            visual(v.columns[2], row, row, "X")
+        end)
+        assert.are.equal("Revert 2 lines in a.lua?", prompt)
+        assert.are.equal("1\n2\n3\n4x\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
+        assert.are.equal(worktree(root, "a.lua"), v.model.new_text)
+        assert.are.equal(1, #v.model.hunks)
+        p:close()
+    end)
+
+    it("visual X in stacked can put back the deleted line alone", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local row = col.map.from_old[3]
+        confirming(1, function()
+            visual(col, row, row, "X")
+        end)
+        assert.are.equal("1\n2\n3\n3x\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X drops a selected staged line from the index and the file", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        assert.are.equal("partial", v:_hunk_state(1))
+        v:toggle_layout()
+
+        local row = v.columns[1].map.from_old[3]
+        confirming(1, function()
+            visual(v.columns[2], row, row, "X")
+        end)
+        assert.are.equal("1\n2\n3\n4x\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
+        assert.are.equal("unstaged", v:_hunk_state(1))
+        p:close()
+    end)
+
+    it("visual X reverts a selection across two hunks", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2x\n3\n4\n5\n6\n7\n8\n9x\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        assert.are.equal(2, #v.model.hunks)
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_old[2], col.map.from_old[9], "X")
+        end)
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8\n9\n9x\n10\n", worktree(root, "a.lua"))
+        assert.are.equal(1, #v.model.hunks)
+        p:close()
+    end)
+
+    -- the diff is -b / +b +c, so c alone goes with the newline b gained
+    it("visual X on the line after an unterminated last line keeps b's newline", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "a\nb")
+        git(root, "add", "a.lua")
+        git(root, "commit", "-q", "-m", "unterminated")
+        write(root .. "/a.lua", "a\nb\nc")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local row = col.map.from_new[3]
+        confirming(1, function()
+            visual(col, row, row, "X")
+        end)
+        assert.are.equal("a\nb\n", worktree(root, "a.lua"))
+        assert.are.equal("a\nb", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X on a file that reverts whole says so and reverts nothing", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, 1, #col.map.lines, "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("reverts whole", 1, true))
+        assert.are.equal("one\ntwo\n", worktree(root, "new.lua"))
+        p:close()
+    end)
+
+    for _, case in ipairs({
+        { key = "dw", toggle = "toggle_local" },
+        { key = "ds", toggle = "toggle_commit_preview" },
+    }) do
+        it(("visual X in %s says to go back and reverts nothing"):format(case.key), function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+            git(root, "commit", "-q", "-am", "ten lines")
+            write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+            git(root, "add", "a.lua")
+            write(root .. "/a.lua", "1\n2\n3y\n4\n5\n6\n7\n8\n9\n10\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+            v[case.toggle](v)
+            v = view_in_origin(p)
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, 1, #col.map.lines, "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find(case.key .. " goes back", 1, true))
+            assert.are.equal("1\n2\n3y\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+            assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+    end
+
+    it("visual X reverts nothing when the diff is re-read under the prompt", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local row = col.map.from_new[3]
+        local edited = "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10y\n"
+        local asked_on, swapped = v.model, false
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            write(root .. "/a.lua", edited)
+            p:refresh()
+            vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+            p:select()
+            swapped = v.model ~= asked_on
+            return 1
+        end
+        local ok, err = pcall(visual, col, row, row, "X")
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.is_true(swapped)
+        assert.are.equal(edited, worktree(root, "a.lua"))
+        assert.is_truthy(last_said():find("nothing was changed", 1, true))
+        p:close()
+    end)
+
     -- a staged insertion sits after line 2, and the edit below it starts at line 3: the
     -- one hunk they merge into holds both, so u and X reach the insertion too
     ---@param root string
