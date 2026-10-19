@@ -313,6 +313,11 @@ function M.new(ctx)
                 return false, true
             end
             if not text then
+                local state = "unstaged"
+                if take then
+                    state = "staged"
+                end
+                notify("these lines are already " .. state, vim.log.levels.INFO)
                 return false
             end
             if not put_index(entry, text) then

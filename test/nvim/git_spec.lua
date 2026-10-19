@@ -2993,6 +2993,93 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    -- select buffer rows `first`..`last` of `col` and press `keys` (s or u)
+    local function visual(col, first, last, keys)
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { first, 0 })
+        vim.api.nvim_feedkeys(("V%dG%s"):format(last, keys), "mx", false)
+    end
+    local function last_said()
+        return (_G.notifs[#_G.notifs] or {}).msg or ""
+    end
+
+    it("visual s in split takes both halves of a row, and s takes the rest", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_layout()
+        assert.are.equal(2, #v.columns)
+
+        local row = v.columns[1].map.from_old[3]
+        assert.are.equal(row, v.columns[2].map.from_new[3])
+        visual(v.columns[2], row, row, "s")
+        assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        assert.are.equal("partial", v:_hunk_state(1))
+
+        visual(v.columns[2], row, row, "s")
+        assert.is_truthy(last_said():find("already staged", 1, true))
+        assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+
+        v:stage_hunk()
+        assert.are.equal("staged", v:_hunk_state(1))
+        assert.are.equal(worktree(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s in stacked can take the added line alone", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        assert.are.equal(1, #v.columns)
+
+        local col = v.columns[1]
+        local row = col.map.from_new[3]
+        visual(col, row, row, "s")
+        assert.are.equal("1\n2\n3\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        assert.are.equal("partial", v:_hunk_state(1))
+        p:close()
+    end)
+
+    it("visual u gives back part of a staged hunk", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9y\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        assert.are.equal("staged", v:_hunk_state(1))
+
+        v:toggle_layout()
+        local row = v.columns[1].map.from_old[4]
+        visual(v.columns[1], row, row, "u")
+        assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        assert.are.equal("partial", v:_hunk_state(1))
+        assert.are.equal("unstaged", v:_hunk_state(2))
+        p:close()
+    end)
+
+    it("visual s on a file that stages whole says so and stages nothing", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        assert.are.equal("new.lua", v.model.path)
+
+        local col = v.columns[1]
+        visual(col, 1, #col.map.lines, "s")
+        assert.is_truthy(last_said():find("stages whole", 1, true))
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        p:close()
+    end)
+
     -- a staged insertion sits after line 2, and the edit below it starts at line 3: the
     -- one hunk they merge into holds both, so u and X reach the insertion too
     ---@param root string

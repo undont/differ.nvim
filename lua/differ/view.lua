@@ -837,6 +837,12 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.unstage, function()
             self:unstage_hunk()
         end, "differ: unstage hunk")
+        bind(bufnr, km.stage, function()
+            self:stage_lines()
+        end, "differ: stage selected lines", "x")
+        bind(bufnr, km.unstage, function()
+            self:unstage_lines()
+        end, "differ: unstage selected lines", "x")
         bind(bufnr, km.stage_all, function()
             self:stage_all()
         end, "differ: stage all hunks")
@@ -937,6 +943,9 @@ function View:show_help()
         local unit = self:_whole_file() and "file" or "hunk"
         rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage " .. unit }
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
+    end
+    if self:_can_stage_lines() then
+        rows[#rows + 1] = { pair(km.stage, km.unstage), "stage / unstage selected lines (visual)" }
     end
     if self.staging and self.staging.revert then
         rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
@@ -1185,6 +1194,11 @@ function View:_can_stage_hunk()
     return self.can_stage and self.staging ~= nil and self.staging.apply ~= nil
 end
 
+---@return boolean
+function View:_can_stage_lines()
+    return self:_can_stage_hunk() and self.staging.apply_lines ~= nil
+end
+
 -- whether this file stages as one unit (e.g. a new/deleted file, a binary one,
 -- a change with no lines to show).
 ---@return boolean
@@ -1331,6 +1345,61 @@ function View:unstage_hunk()
     else
         self:_step_review("prev")
     end
+end
+
+-- the changed lines in the visual selection, leaving visual mode. a split row range
+-- covers both columns, so a row pairing a deleted and an added line takes both
+---@return differ.model.Selection|nil
+function View:_selected_lines()
+    local r1, r2 = vim.fn.line("v"), vim.fn.line(".")
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+    if r1 > r2 then
+        r1, r2 = r2, r1
+    end
+    local selection = { old = {}, new = {} }
+    local any = false
+    for _, col in ipairs(self.columns) do
+        for row = r1, r2 do
+            local line = col.map.lines[row]
+            if line and line.kind == "old" then
+                selection.old[line.old] = true
+                any = true
+            elseif line and line.kind == "new" then
+                selection.new[line.new] = true
+                any = true
+            end
+        end
+    end
+    if not any then
+        return nil
+    end
+    return selection
+end
+
+-- s / u on a visual selection: those lines alone move, and the cursor stays put
+---@param want_staged boolean
+function View:_toggle_lines(want_staged)
+    local selection = self:_selected_lines()
+    if self:_whole_file() then
+        return vim.notify("differ: this file stages whole, not by line", vim.log.levels.WARN)
+    end
+    if not self:_can_stage_lines() then
+        return vim.notify("differ: line staging isn't available here", vim.log.levels.WARN)
+    end
+    if not selection then
+        return vim.notify("differ: no changed lines selected", vim.log.levels.WARN)
+    end
+    if self.staging.apply_lines(self.model, selection, not want_staged) then
+        self:_after_staging()
+    end
+end
+
+function View:stage_lines()
+    self:_toggle_lines(true)
+end
+
+function View:unstage_lines()
+    self:_toggle_lines(false)
 end
 
 -- ask `prompt` before an op that drops content, and whether to go ahead. the prompt
