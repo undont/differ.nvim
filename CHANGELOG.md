@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In split layout, `s`, `u`, `X` and `]c`/`[c` skipped a pure insertion from the old column and a pure deletion from the new one
+- A visual selection didn't show on split filler rows
+
+## [0.2.6] — 2026-10-19
+
 ### Added
 
 - `s` and `u` in visual mode stage and unstage only the selected lines of the diff
