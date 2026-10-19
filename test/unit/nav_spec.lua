@@ -1,4 +1,5 @@
 local stacked = require("differ.render.stacked")
+local split = require("differ.render.split")
 local nav = require("differ.nav")
 
 -- two hunks far apart -> stacked (full context) buffer:
@@ -207,5 +208,86 @@ describe("nav with no hunks", function()
         assert.is_nil(nav.prev_hunk(map, 1))
         assert.is_nil(nav.first_hunk(map))
         assert.is_nil(nav.last_hunk(map))
+    end)
+end)
+
+-- a moved pair: histogram diff reports a pure deletion then a pure insertion, so
+-- each split column sees only one of them:
+--   row  old    new
+--   1    a      a
+--   2    /10    .      h1
+--   3    +11    .      h1
+--   4    *2     *2
+--   5    .      +11    h2
+--   6    .      /10    h2
+--   7    z      z
+local function moved_pair_columns()
+    return split.render({
+        path = "x",
+        old_rev = "A",
+        new_rev = "B",
+        old_text = "a\n/10\n+11\n*2\nz\n",
+        new_text = "a\n*2\n+11\n/10\nz\n",
+        hunks = {
+            {
+                old_start = 2,
+                old_count = 2,
+                new_start = 1,
+                new_count = 0,
+                old_lines = { "/10", "+11" },
+                new_lines = {},
+            },
+            {
+                old_start = 4,
+                old_count = 0,
+                new_start = 3,
+                new_count = 2,
+                old_lines = {},
+                new_lines = { "+11", "/10" },
+            },
+        },
+    }, { context = math.huge }).columns
+end
+
+describe("nav.merge", function()
+    local columns = moved_pair_columns()
+    local old_map, new_map = columns[1].map, columns[2].map
+
+    it("leaves each column seeing one hunk", function()
+        assert.are.equal(2, nav.first_hunk(old_map))
+        assert.are.equal(2, nav.last_hunk(old_map))
+        assert.are.equal(5, nav.first_hunk(new_map))
+        assert.are.equal(5, nav.last_hunk(new_map))
+    end)
+
+    it("resolves filler rows to the hunk beside them", function()
+        local map = nav.merge({ old_map, new_map })
+        assert.are.equal(1, map.lines[2].hunk)
+        assert.are.equal(2, map.lines[5].hunk)
+        assert.are.equal(2, nav.next_hunk(map, 0))
+        assert.are.equal(5, nav.next_hunk(map, 2))
+        assert.are.equal(2, nav.prev_hunk(map, 5))
+        assert.are.equal(5, nav.last_hunk(map))
+    end)
+
+    it("keeps both sides' reverse indices", function()
+        local map = nav.merge({ old_map, new_map })
+        assert.are.equal(2, map.from_old[2])
+        assert.are.equal(5, map.from_new[3])
+        assert.are.equal(7, map.from_old[5])
+        assert.are.equal(7, map.from_new[5])
+    end)
+
+    it("still applies the filter", function()
+        local map = nav.merge({ old_map, new_map })
+        local function second(h)
+            return h == 2
+        end
+        assert.are.equal(5, nav.first_hunk(map, second))
+        assert.is_nil(nav.prev_hunk(map, 5, second))
+    end)
+
+    it("passes a single map through", function()
+        assert.are.equal(old_map, nav.merge({ old_map }))
     end)
 end)

@@ -989,6 +989,15 @@ function View:_focused_column()
     return self.columns[1]
 end
 
+-- every column's hunks on one map, so a split row resolves to its hunk from either
+-- column, filler rows included. stacked has one column and passes it through
+---@return differ.LineMap
+function View:_hunk_map()
+    return nav.merge(vim.tbl_map(function(c)
+        return c.map
+    end, self.columns))
+end
+
 local function run_hunk_fallback(direction, opts)
     return opts and opts.fallback and opts.fallback(direction)
 end
@@ -1009,11 +1018,12 @@ function View:goto_hunk(direction, opts)
     local lnum = vim.api.nvim_win_get_cursor(col.winid or win)[1]
     -- explicit branch, not `a and next() or prev()`: next_hunk returns nil at the
     -- last hunk, which the and/or idiom would wrongly fall through to prev_hunk
+    local map = self:_hunk_map()
     local target
     if direction == "next" then
-        target = nav.next_hunk(col.map, lnum)
+        target = nav.next_hunk(map, lnum)
     else
-        target = nav.prev_hunk(col.map, lnum)
+        target = nav.prev_hunk(map, lnum)
     end
     if target then
         return vim.api.nvim_win_set_cursor(col.winid or win, { target, 0 })
@@ -1062,10 +1072,10 @@ end
 -- the buffer line to land on when a file opens: the start of the first
 -- unstaged hunk, the natural place to begin reviewing, falling back to the first
 -- hunk when everything is already staged, or nil for a file with no hunks
----@param col differ.ViewColumn
 ---@return integer|nil
-function View:_first_review_line(col)
-    return nav.first_hunk(col.map, self:_review_filter(false)) or nav.first_hunk(col.map)
+function View:_first_review_line()
+    local map = self:_hunk_map()
+    return nav.first_hunk(map, self:_review_filter(false)) or nav.first_hunk(map)
 end
 
 -- move the primary window's cursor to the first unstaged hunk (or first hunk). run
@@ -1076,7 +1086,7 @@ function View:_focus_first_hunk()
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
         return
     end
-    local lnum = self:_first_review_line(col)
+    local lnum = self:_first_review_line()
     if lnum then
         pcall(vim.api.nvim_win_set_cursor, col.winid, { lnum, 0 })
     end
@@ -1161,10 +1171,10 @@ end
 -- the mirror of _first_review_line: the start of the last hunk still staged, where the
 -- backward review flow lands when it steps into another file (so u keeps unstaging
 -- through it), falling back to the last hunk when none of them are staged
----@param col differ.ViewColumn
 ---@return integer|nil
-function View:_last_review_line(col)
-    return nav.last_hunk(col.map, self:_review_filter(true)) or nav.last_hunk(col.map)
+function View:_last_review_line()
+    local map = self:_hunk_map()
+    return nav.last_hunk(map, self:_review_filter(true)) or nav.last_hunk(map)
 end
 
 -- move the primary window's cursor to the last staged hunk (backward file-step landing)
@@ -1173,19 +1183,19 @@ function View:_focus_last_hunk()
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
         return
     end
-    local lnum = self:_last_review_line(col)
+    local lnum = self:_last_review_line()
     if lnum then
         pcall(vim.api.nvim_win_set_cursor, col.winid, { lnum, 0 })
     end
 end
 
--- the index of the hunk the cursor sits in, via the focused column's map
--- (staging). nil on a context / meta / unchanged line that belongs to no hunk
+-- the index of the hunk on the cursor's row (staging). nil on a context / meta /
+-- unchanged row that belongs to no hunk in any column
 ---@return integer|nil
 function View:_hunk_index_under_cursor()
     local col = self:_focused_column()
     local win = col.winid or vim.api.nvim_get_current_win()
-    local line = col.map.lines[vim.api.nvim_win_get_cursor(win)[1]]
+    local line = self:_hunk_map().lines[vim.api.nvim_win_get_cursor(win)[1]]
     return line and line.hunk or nil
 end
 
@@ -1568,12 +1578,13 @@ function View:_step_review(direction)
     local lnum = vim.api.nvim_win_get_cursor(win)[1]
     local want = self:_review_filter(staged)
 
-    local onward = (forward and nav.next_hunk or nav.prev_hunk)(col.map, lnum, want)
+    local map = self:_hunk_map()
+    local onward = (forward and nav.next_hunk or nav.prev_hunk)(map, lnum, want)
     if onward then
         return vim.api.nvim_win_set_cursor(win, { onward, 0 })
     end
 
-    local back = (forward and nav.first_hunk or nav.last_hunk)(col.map, want)
+    local back = (forward and nav.first_hunk or nav.last_hunk)(map, want)
     if back then
         vim.api.nvim_win_set_cursor(win, { back, 0 })
         return vim.notify(
