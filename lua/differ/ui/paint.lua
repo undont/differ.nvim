@@ -26,6 +26,7 @@ function M.apply(bufnr, ns, column)
             vim.api.nvim_buf_set_extmark(bufnr, ns, row, 0, {
                 virt_text = { { string.rep("-", vim.o.columns), "differFiller" } },
                 virt_text_win_col = 0,
+                hl_mode = "combine",
                 priority = 100,
             })
         end
