@@ -232,6 +232,23 @@ function M.new(ctx)
             return msg:format(reaches)
         end
 
+        -- why a selection can't move, staged (`take`) or not
+        ---@type table<differ.model.SelectRefusal, { stage: string, unstage: string }>
+        local SELECT_REFUSALS = {
+            between = {
+                stage = "these lines can't be staged on their own here; stage them from dw",
+                unstage = "these lines can't be unstaged on their own here; unstage them from ds",
+            },
+            large = {
+                stage = "this file's changes are too large to stage by line; s stages a hunk whole",
+                unstage = "this file's changes are too large to unstage by line; u unstages a hunk whole",
+            },
+            hidden = {
+                stage = "this hunk holds staged content it can't show; s stages it whole",
+                unstage = "this hunk holds staged content it can't show; u unstages it whole",
+            },
+        }
+
         -- whether the diff still shows the file as it is. one drawn before the file or
         -- HEAD moved would place an op by stale line numbers, so it refuses and re-reads
         ---@param model differ.DiffModel  -- the view's
@@ -268,6 +285,35 @@ function M.new(ctx)
                 -- where this hunk's change can be taken whole
                 notify(refusal(take, reaches), vim.log.levels.WARN)
                 return false, true
+            end
+            if not put_index(entry, text) then
+                return false
+            end
+            remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
+            return true
+        end
+        -- s and u on a visual selection: those lines alone move. lines already where the
+        -- op would put them leave the index as it is
+        staging.apply_lines = function(model, selection, reverse)
+            local union, cached = gitmod.union_models(root, entry)
+            if not (union and cached) then
+                return index_unreadable(entry)
+            end
+            if not drawn_current(model, union) then
+                return false
+            end
+            local take = not reverse
+            local text, refused = stage.select_index(union, cached, selection, take)
+            if refused then
+                local msg = SELECT_REFUSALS[refused].unstage
+                if take then
+                    msg = SELECT_REFUSALS[refused].stage
+                end
+                notify(msg, vim.log.levels.WARN)
+                return false, true
+            end
+            if not text then
+                return false
             end
             if not put_index(entry, text) then
                 return false

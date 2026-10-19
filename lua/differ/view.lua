@@ -82,6 +82,7 @@ local armed_view = nil
 -- the second return says the op refused because this hunk can't move on its own, as
 -- against a failure: the source has named the view that can take it whole
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
+---@field apply_lines? fun(model: differ.DiffModel, lines: differ.model.Selection, reverse: boolean): boolean, boolean?
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
 ---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
 ---@field revert_label? string  -- e.g. "deletes the file"
