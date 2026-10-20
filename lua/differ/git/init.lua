@@ -28,8 +28,7 @@ M.read = content_ops.read
 -- so its files list and read as pure adds (history)
 local EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
--- git's mode for a submodule entry (a commit pointer)
-local GITLINK = "160000"
+local GITLINK = index_ops.GITLINK
 
 -- how long a network git call may block the editor; `wait()` has no budget of its own
 M.fetch_timeout_ms = 20000
@@ -805,21 +804,19 @@ function M.discard(root, entry, preview)
         )
         return false
     end
-    -- restoring a staged deletion from HEAD would overwrite the copy still on disk
-    if entry.kept then
-        local msg = "discard skipped: X would overwrite %s on disk; u unstages the deletion instead"
-        notify(msg:format(entry.path), vim.log.levels.WARN)
+    local why = index_ops.discard_refusal(entry)
+    if why then
+        notify("discard skipped: " .. why, vim.log.levels.WARN)
         return false
     end
     if not preview then
         if restores_staged(entry) then
             return index_ops.restore_deleted(root, entry)
         end
-        -- checkout moves the commit a submodule records, never the checkout inside it
         local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
-        if old_mode == GITLINK or new_mode == GITLINK then
-            local msg = "discard skipped: X can't move the checkout inside the submodule %s"
-            notify(msg:format(entry.path), vim.log.levels.WARN)
+        why = index_ops.discard_refusal(entry, old_mode, new_mode)
+        if why then
+            notify("discard skipped: " .. why, vim.log.levels.WARN)
             return false
         end
     end

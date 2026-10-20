@@ -6,6 +6,25 @@ local git, git_ok, notify = exec.git, exec.git_ok, exec.notify
 
 local M = {}
 
+-- git's mode for a submodule entry (a commit pointer)
+M.GITLINK = "160000"
+
+-- why X refuses an entry, or nil: a staged deletion's copy on disk would be overwritten,
+-- and a submodule's checkout can't be moved. the modes are HEAD's and the worktree's
+---@param entry differ.FileEntry
+---@param old_mode? string
+---@param new_mode? string
+---@return string|nil
+function M.discard_refusal(entry, old_mode, new_mode)
+    if entry.kept then
+        return ("X would overwrite %s on disk; u unstages the deletion instead"):format(entry.path)
+    end
+    if old_mode == M.GITLINK or new_mode == M.GITLINK then
+        return ("X can't move the checkout inside the submodule %s"):format(entry.path)
+    end
+    return nil
+end
+
 ---@param root string
 ---@param path string
 ---@return boolean ok
@@ -135,9 +154,9 @@ end
 ---@param entry differ.FileEntry
 ---@return boolean
 function M.restore_deleted(root, entry)
-    if entry.kept then
-        local msg = "X would overwrite %s on disk; u unstages the deletion instead"
-        notify(msg:format(entry.path), vim.log.levels.WARN)
+    local why = M.discard_refusal(entry)
+    if why then
+        notify(why, vim.log.levels.WARN)
         return false
     end
     local cmd = entry.x == "D" and { "checkout", "HEAD", "--", entry.path }

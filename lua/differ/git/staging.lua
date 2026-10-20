@@ -26,8 +26,6 @@ local REVERTABLE_WHOLE = { ["?"] = true, A = true, D = true, T = true }
 ---@type table<string, string>
 local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
 
-local GITLINK = "160000"
-
 -- the confirms before s/S or u/U drop staged content nothing else holds, in the panel
 -- and a file's own view
 ---@type differ.panel.DropPrompts
@@ -598,9 +596,9 @@ function M.new(ctx)
     ---@return (fun(): boolean)|nil revert, string|nil label, string|nil no_revert
     local function whole_file_revert(entry, letter, preview)
         if letter == "D" then
-            if entry.kept then
-                local why = "X would overwrite %s on disk; u unstages the deletion instead"
-                return nil, nil, why:format(entry.path)
+            local why = index_ops.discard_refusal(entry)
+            if why then
+                return nil, nil, why
             end
             return function()
                 return index_ops.restore_deleted(root, entry)
@@ -726,17 +724,17 @@ function M.new(ctx)
         if entry.status == "M" then
             local head_mode, work_mode =
                 rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
-            if head_mode ~= GITLINK and work_mode ~= GITLINK then
+            local why = index_ops.discard_refusal(entry, head_mode, work_mode)
+            if why then
+                staging.no_revert = why
+                staging.no_revert_lines = "a submodule has no lines to revert"
+            else
                 staging.revert, staging.revert_label = whole_file_revert(entry, "M", false)
                 staging.no_revert_lines = "a mode change has no lines to revert; X resets it whole"
                 if diff.binary then
                     staging.no_revert_lines =
                         "a binary file has no lines to revert; X resets it whole"
                 end
-            else
-                local why = "X can't move the checkout inside the submodule %s"
-                staging.no_revert = why:format(entry.path)
-                staging.no_revert_lines = "a submodule has no lines to revert"
             end
         end
         if entry.status == "M" or entry.status == "R" or entry.status == "C" then
