@@ -8,7 +8,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
-- `X` in visual mode reverts only the selected lines of the diff, in the index and the file
+- `X` in visual mode reverts only the selected lines of the diff, including in `dw` and on untracked files
+
+### Fixed
+
+- Visual `s` and `u` refused lines in a file with a staged change the diff can't show elsewhere; they now act on them
+- Visual `s` and `u` could reorder the index around repeated lines; they now refuse instead
+
+## [0.2.7] — 2026-10-19
 
 ### Fixed
 
