@@ -2091,8 +2091,8 @@ function M.close()
 end
 
 -- what git/staging.lua reads back: the pair models it re-marks from, a row's raw diff
--- line, and the index ref
-M.raw_line, M.union_pairs, M.INDEX = raw_line, union_pairs, INDEX
+-- line, and the index and worktree refs
+M.raw_line, M.union_pairs, M.INDEX, M.WORKTREE = raw_line, union_pairs, INDEX, WORKTREE
 M.live_row = live_row
 
 return M

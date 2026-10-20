@@ -958,7 +958,7 @@ function View:show_help()
     end
     if self.staging and self.staging.revert then
         local what = "revert hunk (confirm)"
-        if self.staging.revert_lines and not self:_whole_file() then
+        if self.staging.revert_lines then
             what = "revert hunk (visual: selected lines, confirm)"
         end
         rows[#rows + 1] = { fmt(km.discard), what }
@@ -1859,17 +1859,17 @@ function View:_show_reverted(model, focus)
     self:_paint_cursorline()
 end
 
--- X on a visual selection: those lines go back to HEAD in the index and the file, after
--- a confirm. the view rebuilds its model from the reverted text, as revert_hunk does
+-- X on a visual selection: those lines go back to the view's old side, after a confirm.
+-- the view rebuilds its model from the reverted text, as revert_hunk does
 function View:revert_lines()
     local selection = self:_selected_lines()
-    if self:_whole_file() then
-        return vim.notify("differ: this file reverts whole, not by line", vim.log.levels.WARN)
-    end
     local revert = self.staging and self.staging.revert_lines
     if not revert then
         local why = self.staging and self.staging.no_revert_lines
-            or "line revert isn't available here"
+        if not why and self:_whole_file() then
+            why = "this file reverts whole, not by line"
+        end
+        why = why or "line revert isn't available here"
         return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
     if not selection then

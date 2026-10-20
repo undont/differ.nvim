@@ -3179,21 +3179,86 @@ func getDownloadSpeed() {
         p:close()
     end)
 
-    it("visual X on a file that reverts whole says so and reverts nothing", function()
+    it("visual X drops the selected lines from an untracked file", function()
         local root = fresh_repo()
-        write(root .. "/new.lua", "one\ntwo\n")
+        write(root .. "/new.lua", "one\ntwo\nthree\n")
         vim.cmd.edit(root .. "/new.lua")
         local p, v = open_panel()
 
         local col = v.columns[1]
         local prompt = confirming(1, function()
-            visual(col, 1, #col.map.lines, "X")
+            visual(col, col.map.from_new[2], col.map.from_new[2], "X")
         end)
-        assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("reverts whole", 1, true))
-        assert.are.equal("one\ntwo\n", worktree(root, "new.lua"))
+        assert.are.equal("Revert 1 line in new.lua?", prompt)
+        assert.are.equal("one\nthree\n", worktree(root, "new.lua"))
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
         p:close()
     end)
+
+    it("visual X on an untracked file edited under the view re-reads and drops nothing", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\nthree\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        write(root .. "/new.lua", "one\ntwo\nthree\nfour\n")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_new[2], col.map.from_new[2], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("re-reading", 1, true))
+        assert.are.equal("one\ntwo\nthree\nfour\n", worktree(root, "new.lua"))
+        p:close()
+    end)
+
+    -- each change X takes whole, with no lines of its own to revert
+    for _, case in ipairs({
+        {
+            what = "a deleted file",
+            said = "a deleted file has no lines to revert",
+            change = function(root)
+                os.remove(root .. "/a.lua")
+            end,
+        },
+        {
+            what = "a mode change",
+            said = "a mode change has no lines to revert",
+            change = function(root)
+                vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+            end,
+        },
+        {
+            what = "a binary file",
+            said = "a binary file has no lines to revert",
+            change = function(root)
+                write(root .. "/a.lua", "\0bin\0two\n")
+            end,
+        },
+    }) do
+        it(("visual X on %s says why it reverts whole"):format(case.what), function()
+            local root = fresh_repo()
+            write(root .. "/keep.lua", "keep\n") -- an untouched file to open the panel from
+            git(root, "add", "keep.lua")
+            write(root .. "/a.lua", "\0bin\0one\n")
+            git(root, "commit", "-q", "-am", "binary base")
+            if case.what ~= "a binary file" then
+                write(root .. "/a.lua", "one\ntwo\n")
+                git(root, "commit", "-q", "-am", "text base")
+            end
+            case.change(root)
+            vim.cmd.edit(root .. "/keep.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, 1, 1, "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find(case.said, 1, true))
+            p:close()
+        end)
+    end
 
     -- lines 3 and 4 staged, then `work` on disk. putting 3 back leaves the index
     -- changing a line between hunks
@@ -3361,8 +3426,78 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    -- line 3 staged as 3x, then edited again on disk to 3y, with `work` on disk after it
+    ---@param root string
+    ---@param work? string
+    ---@return differ.Panel, differ.View
+    local function in_dw(root, work)
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", work or "1\n2\n3y\n4\n5\n6\n7\n8\n9y\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        v:toggle_local()
+        return p, view_in_origin(p)
+    end
+
+    it("visual X in dw puts the selected lines back to the index's text on disk", function()
+        local root = fresh_repo()
+        local p, v = in_dw(root)
+        assert.are.equal("LOCAL", v.staging.badge)
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[9], col.map.from_new[9], "X")
+        end)
+        assert.are.equal("Revert 2 lines in a.lua?", prompt)
+        assert.are.equal("1\n2\n3y\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it(
+        "visual X in dw refuses before the prompt when the file would read back as others",
+        function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nb\n")
+            git(root, "commit", "-q", "-am", "base")
+            write(root .. "/a.lua", "a\nb\na\n")
+            git(root, "add", "a.lua")
+            write(root .. "/a.lua", "x\na\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+            v:toggle_local()
+            v = view_in_origin(p)
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, col.map.from_new[1], col.map.from_new[1], "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find("without changing others", 1, true))
+            assert.are.equal("x\na\n", worktree(root, "a.lua"))
+            p:close()
+        end
+    )
+
+    it("visual X in dw on a file edited under the view re-reads and reverts nothing", function()
+        local root = fresh_repo()
+        local p, v = in_dw(root)
+        write(root .. "/a.lua", "1\n2\n3y\n4\n5\n6\n7\n8z\n9y\n10\n")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[9], col.map.from_new[9], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("re-reading", 1, true))
+        assert.are.equal("1\n2\n3y\n4\n5\n6\n7\n8z\n9y\n10\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
     for _, case in ipairs({
-        { key = "dw", toggle = "toggle_local" },
         { key = "ds", toggle = "toggle_commit_preview" },
     }) do
         it(("visual X in %s says to go back and reverts nothing"):format(case.key), function()

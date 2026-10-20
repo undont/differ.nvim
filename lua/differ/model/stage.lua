@@ -708,4 +708,24 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
     return true
 end
 
+-- whether X's file text for a view that only moves the file reads back as `want`: the
+-- unselected lines where reverted() puts them, and a minimal diff from the old file
+-- that stays within the selected lines
+---@param want differ.model.LineStates  -- reverted() with no line staged
+---@param work string                   -- the file before
+---@param after differ.DiffModel        -- the view's old side against the file after
+---@param edits fun(a: string, b: string): integer, integer
+---@return boolean
+function M.file_reads_as(want, work, after, edits)
+    local got = line_states(after.hunks, { old = {}, new = {} })
+    local old_lines = text_util.ended_lines(after.old_text)
+    local new_lines = text_util.ended_lines(after.new_text)
+    if
+        not same_side(got.old, want.old, old_lines) or not same_side(got.new, want.new, new_lines)
+    then
+        return false
+    end
+    return moves_only(edits, work, after.new_text, want.work_leave, want.work_enter)
+end
+
 return M

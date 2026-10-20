@@ -305,9 +305,8 @@ stage/unstage-all.
 In visual mode, `s`, `u` and `X` stage, unstage and discard only the selected
 lines. In split-view, a selection takes whole rows, so a modified line moves
 with both its halves. In stacked-view, the old and new lines are rows of their
-own, so you can take one side alone. A selection is refused on a file that
-stages whole (untracked, deleted, binary, a mode change) and in the `dw` and
-`ds` views.
+own, so you can take one side alone. Deleted, binary and mode-change files and
+submodules have no lines to select, so they only act whole.
 
 Certain changes can’t be displayed in that span, e.g. a change staged and
 then put back on disk, or a staged and then further modified hunk. Those hunks
