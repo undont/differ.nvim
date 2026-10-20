@@ -22,6 +22,17 @@ local function h(old_start, old_lines, new_start, new_lines)
     }
 end
 
+local function sel(old, new)
+    local out = { old = {}, new = {} }
+    for _, l in ipairs(old) do
+        out.old[l] = true
+    end
+    for _, l in ipairs(new) do
+        out.new[l] = true
+    end
+    return out
+end
+
 -- HEAD 1..5, worktree 1 2x 3 4 5y: one hunk on line 2 and one on the last line
 local HEAD = "1\n2\n3\n4\n5\n"
 local WORK = "1\n2x\n3\n4\n5y\n"
@@ -141,17 +152,6 @@ describe("model.stage.drop_lines", function()
 end)
 
 describe("model.stage.select_index", function()
-    local function sel(old, new)
-        local out = { old = {}, new = {} }
-        for _, l in ipairs(old) do
-            out.old[l] = true
-        end
-        for _, l in ipairs(new) do
-            out.new[l] = true
-        end
-        return out
-    end
-
     it("stages part of an insertion", function()
         local union = model("1\n2\n", "1\nA\nB\nC\n2\n", { h(1, {}, 2, { "A", "B", "C" }) })
         local cached = model("1\n2\n", "1\n2\n", {})
@@ -222,9 +222,44 @@ describe("model.stage.select_index", function()
         assert.is_nil(refusal)
     end)
 
-    it("refuses when the index changes a line between hunks", function()
-        local union, cached = pairs_of("1\n2\n3x\n4\n5\n")
-        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
+    it("leaves an uncut index alone when it changes nothing at the hunks unstaged", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
+        assert.is_nil(text)
+        assert.is_nil(refusal)
+    end)
+
+    it("stages into an uncut index below a change that adds lines", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2\n3x\n3y\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x", "3y" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 5 }, { 5 }), true)
+        assert.is_nil(refusal)
+        assert.are.equal("1\n2\n3x\n3y\n4\n5y\n", text)
+    end)
+
+    it("stages part of a hunk into an uncut index", function()
+        local union = model(HEAD, "1\n2x\n3\n4\nA\nB\n5\n", {
+            h(2, { "2" }, 2, { "2x" }),
+            h(4, {}, 5, { "A", "B" }),
+        })
+        local index = "1\n2\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({}, { 6 }), true)
+        assert.is_nil(refusal)
+        assert.are.equal("1\n2\n3x\n4\nB\n5\n", text)
+    end)
+
+    it("refuses to unstage from an uncut index that changes a selected hunk", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2z\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(2, { "2", "3" }, 2, { "2z", "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
+        assert.is_nil(text)
+        assert.are.equal("between", refusal)
+        text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
         assert.is_nil(text)
         assert.are.equal("between", refusal)
     end)
@@ -235,5 +270,80 @@ describe("model.stage.select_index", function()
         local text, refusal = stage.select_index(union, cached, sel({}, { 2 }), true)
         assert.is_nil(text)
         assert.are.equal("hidden", refusal)
+    end)
+end)
+
+describe("model.stage.select_worktree", function()
+    it("drops part of an insertion", function()
+        local union = model("1\n2\n", "1\nA\nB\nC\n2\n", { h(1, {}, 2, { "A", "B", "C" }) })
+        local out = stage.select_worktree(union, sel({}, { 3 }))
+        assert.are.equal("1\nA\nC\n2\n", out.old_text)
+        assert.are.equal(union.new_text, out.new_text)
+        assert.are.same({ h(2, { "A", "C" }, 2, { "A", "B", "C" }) }, out.hunks)
+    end)
+
+    it("puts back part of a deletion", function()
+        local union = model("1\na\nb\nc\n2\n", "1\n2\n", { h(2, { "a", "b", "c" }, 1, {}) })
+        local out = stage.select_worktree(union, sel({ 3 }, {}))
+        assert.are.equal("1\nb\n2\n", out.old_text)
+        assert.are.same({ h(2, { "b" }, 1, {}) }, out.hunks)
+    end)
+
+    it("reverts a replacement of equal length row by row", function()
+        local union = model("1\na\nb\n2\n", "1\nx\ny\n2\n", { h(2, { "a", "b" }, 2, { "x", "y" }) })
+        local out = stage.select_worktree(union, sel({ 2 }, { 2 }))
+        assert.are.equal("1\na\ny\n2\n", out.old_text)
+        out = stage.select_worktree(union, sel({ 3 }, {}))
+        assert.are.equal("1\nx\nb\ny\n2\n", out.old_text)
+    end)
+
+    it("puts old lines before new ones when the sides differ in length", function()
+        local union = model("1\na\nb\nc\n2\n", "1\nx\n2\n", { h(2, { "a", "b", "c" }, 2, { "x" }) })
+        local out = stage.select_worktree(union, sel({ 2 }, {}))
+        assert.are.equal("1\na\nx\n2\n", out.old_text)
+        assert.are.same({ h(2, { "a", "x" }, 2, { "x" }) }, out.hunks)
+    end)
+
+    it("places a later hunk where the earlier reverts leave it", function()
+        local union = model("1\n2\n3\n", "1\nA\nB\n2\n3x\n", {
+            h(1, {}, 2, { "A", "B" }),
+            h(3, { "3" }, 5, { "3x" }),
+        })
+        local out = stage.select_worktree(union, sel({ 3 }, { 2, 5 }))
+        assert.are.equal("1\nB\n2\n3\n", out.old_text)
+        assert.are.same({ h(2, { "B" }, 2, { "A", "B" }), h(4, { "3" }, 5, { "3x" }) }, out.hunks)
+    end)
+
+    it("names the line before a block the revert empties", function()
+        local union = model("1\n2\n", "1\nA\n2\n", { h(1, {}, 2, { "A" }) })
+        local out = stage.select_worktree(union, sel({}, { 2 }))
+        assert.are.equal("1\n2\n", out.old_text)
+        assert.are.same({ h(1, {}, 2, { "A" }) }, out.hunks)
+    end)
+
+    it("ends an unterminated HEAD line once a line follows it", function()
+        local union = model("1\na", "1\nx\n", { h(2, { "a" }, 2, { "x" }) })
+        local out = stage.select_worktree(union, sel({ 2 }, {}))
+        assert.are.equal("1\na\nx\n", out.old_text)
+        assert.are.same({ h(2, { "a", "x" }, 2, { "x" }) }, out.hunks)
+    end)
+
+    it("keeps a reverted last line unterminated as HEAD has it", function()
+        local union = model("1\na", "1\nx\n", { h(2, { "a" }, 2, { "x" }) })
+        local out = stage.select_worktree(union, sel({ 2 }, { 2 }))
+        assert.are.equal("1\na", out.old_text)
+        assert.are.same({ h(2, { "a" }, 2, { "x" }) }, out.hunks)
+    end)
+
+    it("leaves a worktree's unterminated last line as the file's end", function()
+        local union = model("1\na\n", "1\nx\ny", { h(2, { "a" }, 2, { "x", "y" }) })
+        local out = stage.select_worktree(union, sel({}, { 2 }))
+        assert.are.equal("1\ny", out.old_text)
+        assert.are.same({ h(2, { "y" }, 2, { "x", "y" }) }, out.hunks)
+    end)
+
+    it("gives nothing for a selection that touches no hunk", function()
+        local union = model("1\na\n2\n", "1\nx\n2\n", { h(2, { "a" }, 2, { "x" }) })
+        assert.is_nil(stage.select_worktree(union, sel({ 1 }, { 3 })))
     end)
 end)

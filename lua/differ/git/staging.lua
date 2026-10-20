@@ -53,6 +53,23 @@ function M.new(ctx)
     local root, stageable = ctx.root, ctx.stageable
     local refresh_panel, retarget_view = ctx.refresh, ctx.retarget
 
+    -- the lines a minimal diff drops from `a` and adds to reach `b`
+    ---@param a string
+    ---@param b string
+    ---@return integer dropped, integer added
+    local function edits(a, b)
+        local dropped, added = 0, 0
+        local hunks = vim.diff(a, b, { result_type = "indices", algorithm = "minimal" })
+        ---@cast hunks integer[][]
+        for _, h in ipairs(hunks) do
+            dropped, added = dropped + h[2], added + h[4]
+        end
+        return dropped, added
+    end
+
+    -- why a selection whose texts read back as other marks writes nothing
+    local MOVES_OTHERS = "these lines can't be moved on their own without changing others"
+
     -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
     -- the index, and a worktree rename stages with its content; both move the row
     ---@param entry differ.FileEntry
@@ -126,18 +143,15 @@ function M.new(ctx)
         return false
     end
 
-    -- X on a hunk: the file gives those lines back, and `stage_index` moves the index's
-    -- half. the file is checked first, so one that changed those lines refuses before the
-    -- index moves. it patches rather than writes: the new side came through the clean
-    -- filter, and writing it back would push that conversion to disk
+    -- X on a hunk or a selection: the file gives those lines back, and `stage_index`
+    -- moves the index's half. the file is checked first, so one that changed those lines
+    -- refuses before the index moves. it patches rather than writes: the new side came
+    -- through the clean filter, and writing it back would push that conversion to disk
     ---@param entry differ.FileEntry
-    ---@param model differ.DiffModel
-    ---@param hunk differ.Hunk
-    ---@param offset integer  -- the model's new-side lines to the file's, see patch.hunk
+    ---@param p string  -- the patch to reverse-apply to the file
     ---@param stage_index fun(): boolean
     ---@return boolean
-    local function revert_worktree(entry, model, hunk, offset, stage_index)
-        local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
+    local function revert_worktree(entry, p, stage_index)
         if not gitmod.revert_patch(root, p, true) then
             notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
             return false
@@ -148,10 +162,75 @@ function M.new(ctx)
         local ok, err = gitmod.revert_patch(root, p)
         reload_buffer(root, entry.path)
         if not ok then
-            notify(exec.with_stderr("hunk revert failed", err), vim.log.levels.ERROR)
+            notify(exec.with_stderr("revert failed", err), vim.log.levels.ERROR)
             return false
         end
         return true
+    end
+
+    -- visual X where the view's old side is what the file goes back to: the selected
+    -- lines leave the file and the index stays as it is. both sides are read fresh, so a
+    -- view drawn before either moved refuses and re-reads, and the file's text reads back
+    -- before the prompt
+    ---@param entry differ.FileEntry
+    ---@param staging differ.view.Staging
+    ---@param base fun(): string  -- the view's old side, read now
+    ---@param reread fun()         -- re-sources the view
+    ---@param written? fun()       -- runs once the file is patched
+    local function file_lines(entry, staging, base, reread, written)
+        local stage = require("differ.model.stage")
+        ---@param model differ.DiffModel
+        ---@param selection differ.model.Selection
+        ---@return differ.DiffModel|nil reverted, boolean|nil refused
+        local function reverted_text(model, selection)
+            local work = gitmod.read(gitmod.WORKTREE, root, entry.path) or ""
+            if base() ~= model.old_text or work ~= model.new_text then
+                notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
+                vim.schedule(reread)
+                return nil, true
+            end
+            local reverted = stage.select_worktree(model, selection)
+            if not reverted then
+                return nil
+            end
+            local after = require("differ.model.diff").build({
+                path = model.path,
+                old_rev = model.old_rev,
+                new_rev = model.new_rev,
+                old_text = model.old_text,
+                new_text = reverted.old_text,
+            })
+            local want = stage.reverted(model, { old = {}, new = {} }, selection)
+            if not stage.file_reads_as(want, work, after, edits) then
+                notify(MOVES_OTHERS, vim.log.levels.WARN)
+                return nil, true
+            end
+            return reverted
+        end
+        staging.refuses_revert_lines = function(model, selection)
+            local _, refused = reverted_text(model, selection)
+            return refused == true
+        end
+        staging.revert_lines = function(model, selection)
+            local reverted, refused = reverted_text(model, selection)
+            if not reverted then
+                return false, refused
+            end
+            -- last to first, so each hunk's lines are still where the file has them
+            local patches = {}
+            for i = #reverted.hunks, 1, -1 do
+                local h = reverted.hunks[i]
+                patches[#patches + 1] =
+                    patch.hunk(model.path, h, reverted.old_text, reverted.new_text, 0, "new")
+            end
+            local ok = revert_worktree(entry, table.concat(patches), function()
+                return true
+            end)
+            if ok and written then
+                written()
+            end
+            return ok
+        end
     end
 
     -- staging for a row shown as HEAD↔worktree. staging a hunk gives the index the
@@ -179,35 +258,14 @@ function M.new(ctx)
             if not (union and cached and unstaged) then
                 return
             end
-            staging.hidden_in = nil
-            local blocks, ended = stage.index_blocks(union, cached.new_text)
-            local held, hidden_in = nil, {} ---@type differ.model.Marks|nil, integer[]
-            if blocks then
-                held, hidden_in = marks.of_blocks(ended.hunks, blocks)
-            end
-            if held then
-                staging.marks.old, staging.marks.new = held.old, held.new
-                staging.hidden = nil
-                if mode_change then
-                    staging.hidden = true
-                end
-                if #hidden_in > 0 then
-                    staging.hidden = true
-                    staging.hidden_in = hidden_in
-                end
-                return
-            end
-            local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
-            staging.marks.old, staging.marks.new = fresh.old, fresh.new
-            local complete = marks.complete(union.hunks, cached.hunks, unstaged.hunks)
-            staging.hidden = nil
+            local m, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
+            staging.marks.old, staging.marks.new = m.old, m.new
+            staging.hidden, staging.hidden_in = nil, nil
             if mode_change then
                 staging.hidden = true
             end
-            if not complete then
-                staging.hidden = true
-                local head = require("differ.util.text").to_lines(union.old_text)
-                staging.hidden_in = marks.hidden_in(head, union.hunks, cached.hunks, fresh)
+            if hidden then
+                staging.hidden, staging.hidden_in = true, hidden_in
             end
         end
 
@@ -232,22 +290,42 @@ function M.new(ctx)
             return msg:format(reaches)
         end
 
-        -- why a selection can't move, staged (`take`) or not
-        ---@type table<differ.model.SelectRefusal, { stage: string, unstage: string }>
+        -- why a selection can't move, staged (`take`), unstaged or reverted
+        ---@type table<differ.model.SelectRefusal, { stage: string, unstage: string, revert: string }>
         local SELECT_REFUSALS = {
             between = {
                 stage = "these lines can't be staged on their own here; stage them from dw",
                 unstage = "these lines can't be unstaged on their own here; unstage them from ds",
+                revert = "these lines can't be reverted on their own here",
             },
             large = {
                 stage = "this file's changes are too large to stage by line; s stages a hunk whole",
                 unstage = "this file's changes are too large to unstage by line; u unstages a hunk whole",
+                revert = "this file's changes are too large to revert by line; X reverts a hunk whole",
             },
             hidden = {
                 stage = "this hunk holds staged content it can't show; s stages it whole",
                 unstage = "this hunk holds staged content it can't show; u unstages it whole",
+                revert = "this hunk holds staged content it can't show; X reverts it whole",
             },
         }
+
+        -- X's refusal for a selection. an index that can't be cut holds a change the
+        -- union can't show, or only repeats lines the cut can't place
+        ---@param refused differ.model.SelectRefusal
+        ---@param union differ.DiffModel     -- HEAD↔worktree
+        ---@param cached differ.DiffModel    -- HEAD↔index
+        ---@param unstaged differ.DiffModel  -- index↔worktree
+        ---@return string
+        local function revert_refusal(refused, union, cached, unstaged)
+            if refused ~= "between" then
+                return SELECT_REFUSALS[refused].revert
+            end
+            if not marks.complete(union.hunks, cached.hunks, unstaged.hunks) then
+                return "blocked by a staged change only dw shows (the ! hunk)"
+            end
+            return SELECT_REFUSALS[refused].revert
+        end
 
         -- whether the diff still shows the file as it is. one drawn before the file or
         -- HEAD moved would place an op by stale line numbers, so it refuses and re-reads
@@ -295,8 +373,8 @@ function M.new(ctx)
         -- s and u on a visual selection: those lines alone move. lines already where the
         -- op would put them leave the index as it is
         staging.apply_lines = function(model, selection, reverse)
-            local union, cached = gitmod.union_models(root, entry)
-            if not (union and cached) then
+            local union, cached, unstaged = gitmod.union_models(root, entry)
+            if not (union and cached and unstaged) then
                 return index_unreadable(entry)
             end
             if not drawn_current(model, union) then
@@ -320,10 +398,19 @@ function M.new(ctx)
                 notify("these lines are already " .. state, vim.log.levels.INFO)
                 return false
             end
+            local m, hidden = stage.marks_of(union, cached, unstaged)
+            local want = stage.flipped(union, m, selection, take)
+            local after =
+                { gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text) }
+            local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+            if not stage.reads_as(want, before, selection, unpack(after)) then
+                notify(MOVES_OTHERS, vim.log.levels.WARN)
+                return false, true
+            end
             if not put_index(entry, text) then
                 return false
             end
-            remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
+            remark(unpack(after))
             return true
         end
         -- X on a hunk whose staged change reaches another can't take it alone, and a
@@ -366,7 +453,8 @@ function M.new(ctx)
             -- a hunk the index holds nothing of on its own leaves the index where it is,
             -- and the worktree still has the whole change to give back
             local index_text = text or cached.new_text
-            local ok = revert_worktree(entry, model, hunk, 0, function()
+            local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+            local ok = revert_worktree(entry, p, function()
                 return index_text == cached.new_text or put_index(entry, index_text)
             end)
             if not ok then
@@ -375,6 +463,88 @@ function M.new(ctx)
             end
             local work = require("differ.model.diff").revert_hunk(model, idx).new_text
             remark(gitmod.union_pairs(root, entry.path, union.old_text, index_text, work))
+            return true
+        end
+        -- the index and file X on `selection` writes, read back before anything is. nil
+        -- and why where it refuses; nil alone where it touches no hunk
+        ---@param union differ.DiffModel
+        ---@param cached differ.DiffModel
+        ---@param unstaged differ.DiffModel
+        ---@param selection differ.model.Selection
+        ---@return string|nil index_text, differ.DiffModel|nil reverted, string|nil why
+        local function revert_texts(union, cached, unstaged, selection)
+            local text, refused = stage.select_index(union, cached, selection, false)
+            if refused then
+                return nil, nil, revert_refusal(refused, union, cached, unstaged)
+            end
+            local reverted = stage.select_worktree(union, selection)
+            if not reverted then
+                return nil
+            end
+            local index_text = text or cached.new_text
+            local m, hidden = stage.marks_of(union, cached, unstaged)
+            local want = stage.reverted(union, m, selection)
+            local after = {
+                gitmod.union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text),
+            }
+            local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+            if not stage.reads_as(want, before, selection, unpack(after)) then
+                return nil, nil, MOVES_OTHERS
+            end
+            return index_text, reverted
+        end
+        -- the selection's revert_lines refusals, said before X's prompt
+        staging.refuses_revert_lines = function(model, selection)
+            local union, cached, unstaged = gitmod.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                index_unreadable(entry)
+                return true
+            end
+            if not drawn_current(model, union) then
+                return true
+            end
+            local _, _, why = revert_texts(union, cached, unstaged, selection)
+            if why then
+                notify(why, vim.log.levels.WARN)
+                return true
+            end
+            return false
+        end
+        -- X on a visual selection: those lines go back to HEAD in the index and the file
+        -- at once. an index already without them stays as it is
+        staging.revert_lines = function(model, selection)
+            local union, cached, unstaged = gitmod.union_models(root, entry)
+            if not (union and cached and unstaged) then
+                return index_unreadable(entry)
+            end
+            if not drawn_current(model, union) then
+                return false
+            end
+            local index_text, reverted, why = revert_texts(union, cached, unstaged, selection)
+            if why then
+                notify(why, vim.log.levels.WARN)
+                return false, true
+            end
+            if not (index_text and reverted) then
+                return false
+            end
+            -- last to first, so each hunk's lines are still where the file has them
+            local patches = {}
+            for i = #reverted.hunks, 1, -1 do
+                local h = reverted.hunks[i]
+                patches[#patches + 1] =
+                    patch.hunk(model.path, h, reverted.old_text, reverted.new_text, 0, "new")
+            end
+            local ok = revert_worktree(entry, table.concat(patches), function()
+                return index_text == cached.new_text or put_index(entry, index_text)
+            end)
+            if not ok then
+                remark(gitmod.union_models(root, entry))
+                return false
+            end
+            remark(
+                gitmod.union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text)
+            )
             return true
         end
         -- S and U: the index takes the worktree's or HEAD's side of the file whole,
@@ -510,7 +680,7 @@ function M.new(ctx)
     end
 
     ---@param entry differ.FileEntry
-    ---@param diff differ.DiffModel  -- the entry's built model; only its hunk count is read
+    ---@param diff differ.DiffModel  -- the entry's built model; its hunk count and binary flag are read
     ---@return differ.view.Staging|nil
     local function for_whole(entry, diff)
         if not stageable then
@@ -557,9 +727,15 @@ function M.new(ctx)
                 rev.parse_raw_modes(gitmod.raw_line(root, { "HEAD" }, entry) or "")
             if head_mode ~= GITLINK and work_mode ~= GITLINK then
                 staging.revert, staging.revert_label = whole_file_revert(entry, "M", false)
+                staging.no_revert_lines = "a mode change has no lines to revert; X resets it whole"
+                if diff.binary then
+                    staging.no_revert_lines =
+                        "a binary file has no lines to revert; X resets it whole"
+                end
             else
                 local why = "X can't move the checkout inside the submodule %s"
                 staging.no_revert = why:format(entry.path)
+                staging.no_revert_lines = "a submodule has no lines to revert"
             end
         end
         if entry.status == "M" or entry.status == "R" or entry.status == "C" then
@@ -573,6 +749,20 @@ function M.new(ctx)
         if REVERTABLE_WHOLE[entry.status] then
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(entry, entry.status, false)
+            if entry.status == "D" then
+                staging.no_revert_lines =
+                    "a deleted file has no lines to revert; X restores it whole"
+            elseif diff.binary then
+                staging.no_revert_lines = "a binary file has no lines to revert; X resets it whole"
+            elseif entry.status == "?" and #diff.hunks > 0 then
+                -- an untracked file goes back to nothing, so its selected lines just leave it
+                file_lines(entry, staging, function()
+                    return ""
+                end, function()
+                    refresh_panel()
+                    retarget_view(false)
+                end)
+            end
             return staging
         end
         return nil
@@ -742,7 +932,8 @@ function M.new(ctx)
         if index_only then
             ok = stage_index()
         else
-            ok = revert_worktree(entry, model, hunk, offset, stage_index)
+            local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, offset, "new")
+            ok = revert_worktree(entry, p, stage_index)
         end
         if not ok then
             return false
@@ -913,6 +1104,7 @@ function M.new(ctx)
         local staging = for_index(entry, model, true)
         staging.badge = "STAGED"
         staging.no_local = "the commit preview has no local view: ds goes back"
+        staging.no_revert_lines = "X reverts lines from the whole change; ds goes back"
         staging.leave = function()
             ctx.preview_off()
         end
@@ -1079,6 +1271,23 @@ function M.new(ctx)
             staging.revert = function(m, idx)
                 return revert_frozen(entry, m, staging, idx, 0, reopen)
             end
+            file_lines(
+                entry,
+                staging,
+                function()
+                    return gitmod.read(gitmod.INDEX, root, index_path(entry)) or ""
+                end,
+                reopen,
+                function()
+                    -- the frozen marks number the lines the view opened on
+                    vim.schedule(function()
+                        local current = ctx.current_view()
+                        if current and current.staging == staging then
+                            reopen()
+                        end
+                    end)
+                end
+            )
             -- staging the last hunk empties "changes since staging", so there's nothing
             -- left for this view to show and it hands back to the whole change
             local stage_hunk = staging.apply

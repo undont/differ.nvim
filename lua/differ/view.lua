@@ -23,6 +23,7 @@ local STATUSCOLUMN_EXPR = '%!v:lua.require("differ.ui.statuscolumn").render()'
 local FOLDTEXT_EXPR = 'v:lua.require("differ.ui.foldtext").render()'
 local CTRL_D = vim.api.nvim_replace_termcodes("<C-d>", true, false, true)
 local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
+local ESC = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
 -- where the first narrow step lands when coming down from whole-file, which has no
 -- finite neighbour to decrement
 local FULL_STEP_DOWN = 10
@@ -84,9 +85,12 @@ local armed_view = nil
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field apply_lines? fun(model: differ.DiffModel, lines: differ.model.Selection, reverse: boolean): boolean, boolean?
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
+---@field revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?
 ---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
+---@field refuses_revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean  -- said why
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
+---@field no_revert_lines? string  -- why X on a selection does nothing here
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
 ---@field hidden? boolean  -- union source: some staged content isn't on screen
@@ -862,6 +866,9 @@ function View:_setup_window(winid, bufnr)
         bind(bufnr, km.discard, function()
             self:revert_hunk()
         end, "differ: revert hunk")
+        bind(bufnr, km.discard, function()
+            self:revert_lines()
+        end, "differ: revert selected lines", "x")
     end
     for _, m in ipairs(self.extra_keymaps or {}) do
         bind(bufnr, m.spec, m.fn, m.desc, m.mode)
@@ -950,7 +957,11 @@ function View:show_help()
         rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
     end
     if self.staging and self.staging.revert then
-        rows[#rows + 1] = { fmt(km.discard), "revert hunk (confirm)" }
+        local what = "revert hunk (confirm)"
+        if self.staging.revert_lines then
+            what = "revert hunk (visual: selected lines, confirm)"
+        end
+        rows[#rows + 1] = { fmt(km.discard), what }
     end
     if self.staging and self.staging.toggle_local then
         local what = self.staging.badge == "LOCAL" and "back to the whole change"
@@ -1364,7 +1375,7 @@ end
 ---@return differ.model.Selection|nil
 function View:_selected_lines()
     local r1, r2 = vim.fn.line("v"), vim.fn.line(".")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+    vim.cmd.normal({ ESC, bang = true })
     if r1 > r2 then
         r1, r2 = r2, r1
     end
@@ -1807,11 +1818,25 @@ function View:revert_hunk()
     if not revert(self.model, idx) then
         return
     end
+    if emptied then
+        return self:_show_reverted(nil)
+    end
+    -- stay where the reverted hunk was rather than being pulled to the next one
+    self:_show_reverted(
+        require("differ.model.diff").revert_hunk(self.model, idx),
+        focus and reverted_focus(hunk, focus)
+    )
+end
 
+-- rerender on `model` after a revert, the cursor held on its new-side line `focus`.
+-- nil `model` is a revert that left no diff
+---@param model differ.DiffModel|nil
+---@param focus? integer
+function View:_show_reverted(model, focus)
     -- nothing left to show here, and the refresh has just dropped the entry from the
     -- panel: hand over to whatever took its place rather than stranding the window on
     -- an empty diff
-    if emptied then
+    if not model then
         self.staging.refresh()
         -- that refresh ends the session when this was the change set's last change, and
         -- reports it; only speak up when the panel is still there but has nowhere to go
@@ -1821,19 +1846,76 @@ function View:revert_hunk()
         end
         return
     end
-
     local opened = self:_opened_folds() -- before rerender replaces col.folds
-    self:_forget_stuck() -- the hunks renumber around the one that just left
-    self.model = require("differ.model.diff").revert_hunk(self.model, idx)
+    self:_forget_stuck() -- the hunks renumber around the ones that just left
+    self.model = model
     self:rerender({ layout = self.layout, context = self.context, deep_diff = self.deep_diff })
     self:_apply_folds(opened)
-    -- stay where the reverted hunk was rather than being pulled to the next one
     if focus then
-        self:_hold_new_line(reverted_focus(hunk, focus))
+        self:_hold_new_line(focus)
     end
     self.staging.refresh()
     self:_paint_staged()
     self:_paint_cursorline()
+end
+
+-- X on a visual selection: those lines go back to the view's old side, after a confirm.
+-- the view rebuilds its model from the reverted text, as revert_hunk does
+function View:revert_lines()
+    local selection = self:_selected_lines()
+    local revert = self.staging and self.staging.revert_lines
+    if not revert then
+        local why = self.staging and self.staging.no_revert_lines
+        if not why and self:_whole_file() then
+            why = "this file reverts whole, not by line"
+        end
+        why = why or "line revert isn't available here"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
+    end
+    if not selection then
+        return vim.notify("differ: no changed lines selected", vim.log.levels.WARN)
+    end
+    local refuses = self.staging.refuses_revert_lines
+    if refuses and refuses(self.model, selection) then
+        return
+    end
+    local n = vim.tbl_count(selection.old) + vim.tbl_count(selection.new)
+    local unit = "lines"
+    if n == 1 then
+        unit = "line"
+    end
+    if not self:_confirmed(("Revert %d %s in %s?"):format(n, unit, self.model.path)) then
+        return
+    end
+
+    local reverted = require("differ.model.stage").select_worktree(self.model, selection)
+    local focus = self:cursor_new_line()
+    if not (reverted and revert(self.model, selection)) then
+        return
+    end
+
+    local model = self.model
+    if reverted.old_text == model.old_text then
+        return self:_show_reverted(nil)
+    end
+    if focus then
+        -- last to first, so a hunk's worktree lines are still where `focus` counts them
+        for i = #reverted.hunks, 1, -1 do
+            focus = reverted_focus(reverted.hunks[i], focus)
+        end
+    end
+    self:_show_reverted(
+        require("differ.model.diff").build({
+            path = model.path,
+            old_rev = model.old_rev,
+            new_rev = model.new_rev,
+            old_text = model.old_text,
+            new_text = reverted.old_text,
+            head = model.head,
+            root = model.root,
+        }),
+        focus
+    )
 end
 
 -- jump-to-file (the `de` verb): leave the diff and open the real file on disk
