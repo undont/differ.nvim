@@ -45,6 +45,7 @@ M.DROP_PROMPTS = {
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
 ---@field refresh fun()                        -- reload the panel's list
 ---@field retarget fun(outside: boolean)       -- re-source the view onto the row's state now
+---@field retarget_later fun(refresh?: boolean) -- retarget once the op returns; `refresh` reloads the list first
 ---@field preview_off fun()                    -- leave the commit preview
 ---@field current_view fun(): differ.View|nil
 
@@ -83,9 +84,7 @@ function M.new(ctx)
             if not gitmod.unstage(root, entry.path) then
                 return false
             end
-            vim.schedule(function()
-                retarget_view(false)
-            end)
+            ctx.retarget_later()
             return true
         end
         if not write_index(root, entry.path, text, mode) then
@@ -96,9 +95,7 @@ function M.new(ctx)
             if not git_ok(drop, root, "staging " .. entry.path) then
                 return false
             end
-            vim.schedule(function()
-                retarget_view(false)
-            end)
+            ctx.retarget_later()
         end
         return true
     end
@@ -339,10 +336,7 @@ function M.new(ctx)
                 return true
             end
             notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
-            vim.schedule(function()
-                refresh_panel()
-                retarget_view(false)
-            end)
+            ctx.retarget_later(true)
             return false
         end
 
@@ -706,9 +700,7 @@ function M.new(ctx)
                     return false
                 end
                 -- the op moves the row's letters, which X and the next s or u act on
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
+                ctx.retarget_later()
                 return true
             end,
             unheld = function()
@@ -1300,9 +1292,7 @@ function M.new(ctx)
                         return true
                     end
                 end
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
+                ctx.retarget_later()
                 return true
             end
             return staging
@@ -1320,9 +1310,7 @@ function M.new(ctx)
                 if reverse or not set_staged(root, entry, true) then
                     return false
                 end
-                vim.schedule(function()
-                    retarget_view(false)
-                end)
+                ctx.retarget_later()
                 return true
             end,
         }

@@ -1239,6 +1239,14 @@ function M.panel(opts)
         retarget = function(outside)
             retarget_view(outside)
         end,
+        retarget_later = function(refresh)
+            vim.schedule(function()
+                if refresh then
+                    refresh_panel()
+                end
+                retarget_view(false)
+            end)
+        end,
         preview_off = function()
             set_preview(false)
         end,
