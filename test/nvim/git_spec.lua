@@ -3,6 +3,7 @@
 -- merge-base resolution, and the :Differ picker building a correct DiffModel)
 local git_src = require("differ.git")
 local rev = require("differ.git.rev")
+local content_ops = require("differ.git.content")
 
 -- run git in `cwd`, asserting success. identity is pinned inline so commits work
 -- in CI without a global gitconfig
@@ -4841,8 +4842,8 @@ func getDownloadSpeed() {
 
     it("refuses s when the index can't be read", function()
         local root, p, v = staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [12] = "12x" }))
-        local read = git_src.read
-        git_src.read = function(ref, ...)
+        local read = content_ops.read
+        content_ops.read = function(ref, ...)
             if ref.kind == "index" then
                 return nil
             end
@@ -4853,7 +4854,7 @@ func getDownloadSpeed() {
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
         v:stage_hunk()
-        git_src.read = read
+        content_ops.read = read
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index = indexed(root, "a.lua")
         p:close()

@@ -10,6 +10,10 @@ local notify, git, git_ok = exec.notify, exec.git, exec.git_ok
 local reload_buffer = exec.reload_buffer
 local write_index, entry_paths = index_ops.write_index, index_ops.entry_paths
 local set_staged, index_path = index_ops.set_staged, index_ops.index_path
+local content_ops = require("differ.git.content")
+local read, raw_line = content_ops.read, content_ops.raw_line
+local union_models, union_pairs = content_ops.union_models, content_ops.union_pairs
+local INDEX, WORKTREE = content_ops.INDEX, content_ops.WORKTREE
 
 local M = {}
 
@@ -107,7 +111,7 @@ function M.new(ctx)
     ---@param staged boolean
     ---@return string|nil
     local function side_mode(entry, staged)
-        local line = gitmod.raw_line(root, staged and {} or { "--cached" }, entry)
+        local line = raw_line(root, staged and {} or { "--cached" }, entry)
         if not line then
             return nil
         end
@@ -125,8 +129,8 @@ function M.new(ctx)
     ---@param entry differ.FileEntry
     ---@return boolean
     local function mode_hidden(entry)
-        local cached = gitmod.raw_line(root, { "--cached" }, entry)
-        local unstaged = gitmod.raw_line(root, {}, entry)
+        local cached = raw_line(root, { "--cached" }, entry)
+        local unstaged = raw_line(root, {}, entry)
         if not (cached and unstaged) then
             return false
         end
@@ -183,7 +187,7 @@ function M.new(ctx)
         ---@param selection differ.model.Selection
         ---@return differ.DiffModel|nil reverted, boolean|nil refused
         local function reverted_text(model, selection)
-            local work = gitmod.read(gitmod.WORKTREE, root, entry.path) or ""
+            local work = read(WORKTREE, root, entry.path) or ""
             if base() ~= model.old_text or work ~= model.new_text then
                 notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
                 vim.schedule(reread)
@@ -344,12 +348,12 @@ function M.new(ctx)
             return false
         end
 
-        remark(gitmod.union_models(root, entry))
+        remark(union_models(root, entry))
         staging.apply = function(model, hunk, reverse)
             if not hunk then
                 return false
             end
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 return index_unreadable(entry)
             end
@@ -367,13 +371,13 @@ function M.new(ctx)
             if not put_index(entry, text) then
                 return false
             end
-            remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
+            remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true
         end
         -- s and u on a visual selection: those lines alone move. lines already where the
         -- op would put them leave the index as it is
         staging.apply_lines = function(model, selection, reverse)
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 return index_unreadable(entry)
             end
@@ -400,8 +404,7 @@ function M.new(ctx)
             end
             local m, hidden = stage.marks_of(union, cached, unstaged)
             local want = stage.flipped(union, m, selection, take)
-            local after =
-                { gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text) }
+            local after = { union_pairs(root, entry.path, union.old_text, text, union.new_text) }
             local before = { union = union, cached = cached, hidden = hidden, edits = edits }
             if not stage.reads_as(want, before, selection, unpack(after)) then
                 notify(MOVES_OTHERS, vim.log.levels.WARN)
@@ -417,7 +420,7 @@ function M.new(ctx)
         -- drawing the file has moved on from places it by stale lines: both said before
         -- the prompt, which says as much itself
         staging.refuses_revert = function(model, idx)
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 index_unreadable(entry)
                 return true
@@ -436,7 +439,7 @@ function M.new(ctx)
         -- X throws the hunk away on both sides at once: the index gives up whatever of
         -- it it holds and the worktree gives up the rest
         staging.revert = function(model, idx)
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 return index_unreadable(entry)
             end
@@ -458,11 +461,11 @@ function M.new(ctx)
                 return index_text == cached.new_text or put_index(entry, index_text)
             end)
             if not ok then
-                remark(gitmod.union_models(root, entry))
+                remark(union_models(root, entry))
                 return false
             end
             local work = require("differ.model.diff").revert_hunk(model, idx).new_text
-            remark(gitmod.union_pairs(root, entry.path, union.old_text, index_text, work))
+            remark(union_pairs(root, entry.path, union.old_text, index_text, work))
             return true
         end
         -- the index and file X on `selection` writes, read back before anything is. nil
@@ -485,7 +488,7 @@ function M.new(ctx)
             local m, hidden = stage.marks_of(union, cached, unstaged)
             local want = stage.reverted(union, m, selection)
             local after = {
-                gitmod.union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text),
+                union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text),
             }
             local before = { union = union, cached = cached, hidden = hidden, edits = edits }
             if not stage.reads_as(want, before, selection, unpack(after)) then
@@ -495,7 +498,7 @@ function M.new(ctx)
         end
         -- the selection's revert_lines refusals, said before X's prompt
         staging.refuses_revert_lines = function(model, selection)
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 index_unreadable(entry)
                 return true
@@ -513,7 +516,7 @@ function M.new(ctx)
         -- X on a visual selection: those lines go back to HEAD in the index and the file
         -- at once. an index already without them stays as it is
         staging.revert_lines = function(model, selection)
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 return index_unreadable(entry)
             end
@@ -539,19 +542,17 @@ function M.new(ctx)
                 return index_text == cached.new_text or put_index(entry, index_text)
             end)
             if not ok then
-                remark(gitmod.union_models(root, entry))
+                remark(union_models(root, entry))
                 return false
             end
-            remark(
-                gitmod.union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text)
-            )
+            remark(union_pairs(root, entry.path, union.old_text, index_text, reverted.old_text))
             return true
         end
         -- S and U: the index takes the worktree's or HEAD's side of the file whole,
         -- staged content no hunk shows and the mode included. the move a rename made
         -- stays staged either way; the panel row's keys own that
         staging.set_all = function(model, staged)
-            local union, cached = gitmod.union_models(root, entry)
+            local union, cached = union_models(root, entry)
             if not (union and cached) then
                 return index_unreadable(entry), true
             end
@@ -566,7 +567,7 @@ function M.new(ctx)
             if not put_index(entry, text, mode) then
                 return false, true
             end
-            remark(gitmod.union_pairs(root, entry.path, union.old_text, text, union.new_text))
+            remark(union_pairs(root, entry.path, union.old_text, text, union.new_text))
             return true
         end
         -- the `!` hunks hold staged content neither side shows, and U takes all of it. a
@@ -578,7 +579,7 @@ function M.new(ctx)
             if not vim.tbl_contains(staging.hidden_in or {}, idx) then
                 return false
             end
-            local union, cached, unstaged = gitmod.union_models(root, entry)
+            local union, cached, unstaged = union_models(root, entry)
             if not (union and cached and unstaged) then
                 return true
             end
@@ -724,7 +725,7 @@ function M.new(ctx)
         -- panel row's keys, and a submodule has no X
         if entry.status == "M" then
             local head_mode, work_mode =
-                rev.parse_raw_modes(gitmod.raw_line(root, { "HEAD" }, entry) or "")
+                rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
             if head_mode ~= GITLINK and work_mode ~= GITLINK then
                 staging.revert, staging.revert_label = whole_file_revert(entry, "M", false)
                 staging.no_revert_lines = "a mode change has no lines to revert; X resets it whole"
@@ -834,7 +835,7 @@ function M.new(ctx)
                 if not hunk then
                     return false
                 end
-                if (gitmod.read(gitmod.INDEX, root, at_index) or "") ~= held then
+                if (read(INDEX, root, at_index) or "") ~= held then
                     notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
                     vim.schedule(reopen)
                     return false
@@ -1001,7 +1002,7 @@ function M.new(ctx)
             ---@param m differ.DiffModel
             ---@return differ.Hunk[]|nil drift, string|nil work
             local function drift_of(m)
-                local union = gitmod.union_models(root, entry)
+                local union = union_models(root, entry)
                 if not union then
                     return nil
                 end
@@ -1133,7 +1134,7 @@ function M.new(ctx)
                 moved[#moved + 1] = h
             end
         end
-        local _, cached = gitmod.union_models(root, entry)
+        local _, cached = union_models(root, entry)
         if not cached then
             return nil, nil, "unreadable"
         end
@@ -1226,7 +1227,7 @@ function M.new(ctx)
             end
         end
         local head_mode, index_mode =
-            rev.parse_raw_modes(gitmod.raw_line(root, { "--cached" }, entry) or "")
+            rev.parse_raw_modes(raw_line(root, { "--cached" }, entry) or "")
         local flag = CHMOD[head_mode]
         if not flag or head_mode == index_mode then
             return nil
@@ -1256,7 +1257,7 @@ function M.new(ctx)
     local function for_local(entry, model, reopen)
         if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
             local staging = frozen_staging(entry, model, false, reopen)
-            local _, cached = gitmod.union_models(root, entry)
+            local _, cached = union_models(root, entry)
             -- an add has no HEAD lines for a rewritten line to go back to
             if cached and entry.x ~= "A" then
                 staging.hidden_in =
@@ -1275,7 +1276,7 @@ function M.new(ctx)
                 entry,
                 staging,
                 function()
-                    return gitmod.read(gitmod.INDEX, root, index_path(entry)) or ""
+                    return read(INDEX, root, index_path(entry)) or ""
                 end,
                 reopen,
                 function()
