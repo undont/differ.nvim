@@ -222,44 +222,56 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("", status)
     end)
 
-    it("u in a local view drops a staged binary add changed again on disk", function()
-        local root = fresh_repo()
-        write(root .. "/b.dat", "\0one")
-        git(root, "add", "b.dat")
-        write(root .. "/b.dat", "\0two")
-        vim.cmd.edit(root .. "/a.lua")
-        local p = open_panel()
-        assert.is_true(p:goto_path("b.dat", true))
-        local v = view_in_origin(p)
-        v:toggle_local()
-        confirming(1, function()
-            v:unstage_hunk()
-        end)
-        local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
-        p:close()
-        assert.are.equal("?? b.dat\n", status)
-    end)
-
-    it("u in a binary file's local view puts HEAD's blob back in the index", function()
-        local root = fresh_repo()
+    -- b.dat committed as one, staged as two, then three on disk
+    local function binary_staged_then_changed(root)
         write(root .. "/b.dat", "\0one")
         git(root, "add", "b.dat")
         git(root, "commit", "-q", "-m", "b")
         write(root .. "/b.dat", "\0two")
         git(root, "add", "b.dat")
         write(root .. "/b.dat", "\0three")
-        vim.cmd.edit(root .. "/a.lua")
-        local p = open_panel()
-        assert.is_true(p:goto_path("b.dat", true))
-        local v = view_in_origin(p)
-        v:toggle_local()
-        confirming(1, function()
-            v:unstage_hunk()
+    end
+
+    for _, case in ipairs({
+        {
+            name = "u in a local view drops a staged binary add changed again on disk",
+            setup = function(root)
+                write(root .. "/b.dat", "\0one")
+                git(root, "add", "b.dat")
+                write(root .. "/b.dat", "\0two")
+            end,
+            op = "unstage_hunk",
+            status = "?? b.dat\n",
+        },
+        {
+            name = "u in a binary file's local view puts HEAD's blob back in the index",
+            setup = binary_staged_then_changed,
+            op = "unstage_hunk",
+            status = " M b.dat\n",
+        },
+        {
+            name = "X in a binary file's local view puts the index's blob back on disk",
+            setup = binary_staged_then_changed,
+            op = "revert_hunk",
+            status = "M  b.dat\n",
+        },
+    }) do
+        it(case.name, function()
+            local root = fresh_repo()
+            case.setup(root)
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            assert.is_true(p:goto_path("b.dat", true))
+            local v = view_in_origin(p)
+            v:toggle_local()
+            confirming(1, function()
+                v[case.op](v)
+            end)
+            local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
+            p:close()
+            assert.are.equal(case.status, status)
         end)
-        local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
-        p:close()
-        assert.are.equal(" M b.dat\n", status)
-    end)
+    end
 
     it("X in a local view with only a mode change puts the index's mode back on disk", function()
         local root = fresh_repo()
@@ -298,27 +310,6 @@ describe(":Differ diff hunk staging", function()
         p:close()
         assert.are.equal("A  c.lua\n", status)
         assert.are.equal("one\n", worktree(root, "c.lua"))
-    end)
-
-    it("X in a binary file's local view puts the index's blob back on disk", function()
-        local root = fresh_repo()
-        write(root .. "/b.dat", "\0one")
-        git(root, "add", "b.dat")
-        git(root, "commit", "-q", "-m", "b")
-        write(root .. "/b.dat", "\0two")
-        git(root, "add", "b.dat")
-        write(root .. "/b.dat", "\0three")
-        vim.cmd.edit(root .. "/a.lua")
-        local p = open_panel()
-        assert.is_true(p:goto_path("b.dat", true))
-        local v = view_in_origin(p)
-        v:toggle_local()
-        confirming(1, function()
-            v:revert_hunk()
-        end)
-        local status = git(root, "status", "--porcelain=v1", "--", "b.dat")
-        p:close()
-        assert.are.equal("M  b.dat\n", status)
     end)
 
     it("X after s on an untracked file acts on the file as s left it", function()
