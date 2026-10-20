@@ -222,9 +222,44 @@ describe("model.stage.select_index", function()
         assert.is_nil(refusal)
     end)
 
-    it("refuses when the index changes a line between hunks", function()
-        local union, cached = pairs_of("1\n2\n3x\n4\n5\n")
-        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
+    it("leaves an uncut index alone when it changes nothing at the hunks unstaged", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
+        assert.is_nil(text)
+        assert.is_nil(refusal)
+    end)
+
+    it("stages into an uncut index below a change that adds lines", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2\n3x\n3y\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x", "3y" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 5 }, { 5 }), true)
+        assert.is_nil(refusal)
+        assert.are.equal("1\n2\n3x\n3y\n4\n5y\n", text)
+    end)
+
+    it("stages part of a hunk into an uncut index", function()
+        local union = model(HEAD, "1\n2x\n3\n4\nA\nB\n5\n", {
+            h(2, { "2" }, 2, { "2x" }),
+            h(4, {}, 5, { "A", "B" }),
+        })
+        local index = "1\n2\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({}, { 6 }), true)
+        assert.is_nil(refusal)
+        assert.are.equal("1\n2\n3x\n4\nB\n5\n", text)
+    end)
+
+    it("refuses to unstage from an uncut index that changes a selected hunk", function()
+        local union = (pairs_of(HEAD))
+        local index = "1\n2z\n3x\n4\n5\n"
+        local cached = model(HEAD, index, { h(2, { "2", "3" }, 2, { "2z", "3x" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
+        assert.is_nil(text)
+        assert.are.equal("between", refusal)
+        text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
         assert.is_nil(text)
         assert.are.equal("between", refusal)
     end)

@@ -3195,6 +3195,172 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    -- lines 3 and 4 staged, then `work` on disk. putting 3 back leaves the index
+    -- changing a line between hunks
+    ---@param root string
+    ---@param work string
+    ---@return differ.Panel, differ.View
+    local function put_back(root, work)
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", work)
+        vim.cmd.edit(root .. "/a.lua")
+        return open_panel()
+    end
+
+    it("visual X reverts lines a hidden staged change elsewhere leaves alone", function()
+        local root = fresh_repo()
+        local p, v = put_back(root, "1\n2\n3\n4\n5\n6\n7\n8\n9y\n10\n")
+        assert.is_true(v.staging.hidden)
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[9], col.map.from_new[9], "X")
+        end)
+        assert.are.equal("Revert 2 lines in a.lua?", prompt)
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual u on lines a hidden staged change leaves alone has nothing to unstage", function()
+        local root = fresh_repo()
+        local p, v = put_back(root, "1\n2\n3\n4\n5\n6\n7\n8\n9y\n10\n")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[9], col.map.from_new[9], "u")
+        assert.is_truthy(last_said():find("already unstaged", 1, true))
+        assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s stages lines a hidden staged change elsewhere leaves alone", function()
+        local root = fresh_repo()
+        local p, v = put_back(root, "1\n2\n3\n4\n5\n6\n7\n8\n9y\n10\n")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[9], col.map.from_new[9], "s")
+        assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9y\n10\n", indexed(root, "a.lua"))
+        assert.are.equal("1\n2\n3\n4\n5\n6\n7\n8\n9y\n10\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s refuses a hunk a hidden staged change meets", function()
+        local root = fresh_repo()
+        local p, v = put_back(root, "1\n2\n3\n4y\n5\n6\n7\n8\n9\n10\n")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[4], col.map.from_new[4], "s")
+        assert.is_truthy(last_said():find("can't be staged on their own", 1, true))
+        assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- the unequal hunk's block rebuilt old lines first would move the index's x3 after
+    -- its d: the texts read back as other marks, so nothing is written
+    for _, key in ipairs({ "s", "u", "X" }) do
+        it(("visual %s refuses lines that would read back as others"):format(key), function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nd\nd\n")
+            git(root, "commit", "-q", "-am", "repeats")
+            write(root .. "/a.lua", "a\nx3\nd\n")
+            git(root, "add", "a.lua")
+            write(root .. "/a.lua", "a\nx3\nc\nx5\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, col.map.from_new[3], col.map.from_new[4], key)
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find("without changing others", 1, true))
+            assert.are.equal("a\nx3\nd\n", indexed(root, "a.lua"))
+            assert.are.equal("a\nx3\nc\nx5\n", worktree(root, "a.lua"))
+            p:close()
+        end)
+    end
+
+    -- the restored file has two l18 lines in a row: the diff may mark either as added
+    it("visual X reverts among identical lines the diff can pair either way", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "l23\nl2\nl1\nl18\nl31\n")
+        git(root, "commit", "-q", "-am", "base")
+        write(root .. "/a.lua", "l23\nl2\nl18\nl31\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "l23\nl2\nl18\nl18\nl31\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[3], col.map.from_old[3], "X")
+        end)
+        assert.are.equal("Revert 1 line in a.lua?", prompt)
+        assert.are.equal("l23\nl2\nl1\nl18\nl18\nl31\n", worktree(root, "a.lua"))
+        assert.are.equal(committed(root, "a.lua"), indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- x7 is unstaged already, and the block rebuilt old lines first would move the
+    -- index's l33 after l12
+    it("visual u refuses rather than reorder the index", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "l14\nl12\nl9\nl29\n")
+        git(root, "commit", "-q", "-am", "base")
+        write(root .. "/a.lua", "l14\nl33\nl12\nl9\nl29\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "l14\nl33\nx7\nl9\nl29\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[3], col.map.from_new[3], "u")
+        assert.is_truthy(last_said():find("without changing others", 1, true))
+        assert.are.equal("l14\nl33\nl12\nl9\nl29\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X refuses before the prompt on a hunk a hidden staged change meets", function()
+        local root = fresh_repo()
+        local p, v = put_back(root, "1\n2\n3\n4y\n5\n6\n7\n8\n9\n10\n")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[4], col.map.from_new[4], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.are.equal("1\n2\n3\n4y\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- repeated lines let the index cut against the hunks more than one way, with
+    -- nothing hidden
+    it("visual X on repeated lines refuses without naming a hidden change", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "a\nb\na\nc\n")
+        git(root, "commit", "-q", "-am", "repeats")
+        write(root .. "/a.lua", "a\nb\na\nc\nc\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "a\nb\nc\nc\nb\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        assert.is_nil(v.staging.hidden)
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, 1, #col.map.lines, "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("can't be reverted on their own", 1, true))
+        assert.are.equal("a\nb\nc\nc\nb\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
     for _, case in ipairs({
         { key = "dw", toggle = "toggle_local" },
         { key = "ds", toggle = "toggle_commit_preview" },
@@ -3222,6 +3388,37 @@ func getDownloadSpeed() {
             p:close()
         end)
     end
+
+    -- a real confirm reads typeahead, so a queued key would answer it
+    it("visual X asks in normal mode with nothing left in typeahead", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
+        git(root, "commit", "-q", "-am", "ten lines")
+        write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local row = col.map.from_new[3]
+        local mode, pending
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            mode = vim.api.nvim_get_mode().mode
+            pending = vim.fn.getcharstr(0)
+            return 1
+        end
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { row, 0 })
+        -- `!`: without it the `x` flag queues an <Esc> of its own
+        local ok, err = pcall(vim.api.nvim_feedkeys, ("V%dGX"):format(row), "mx!", false)
+        vim.fn.confirm = orig
+        assert(ok, err)
+
+        assert.are.equal("n", mode)
+        assert.are.equal("", pending)
+        assert.are.equal("1\n2\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
+        p:close()
+    end)
 
     it("visual X reverts nothing when the diff is re-read under the prompt", function()
         local root = fresh_repo()

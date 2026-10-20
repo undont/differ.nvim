@@ -23,6 +23,7 @@ local STATUSCOLUMN_EXPR = '%!v:lua.require("differ.ui.statuscolumn").render()'
 local FOLDTEXT_EXPR = 'v:lua.require("differ.ui.foldtext").render()'
 local CTRL_D = vim.api.nvim_replace_termcodes("<C-d>", true, false, true)
 local CTRL_U = vim.api.nvim_replace_termcodes("<C-u>", true, false, true)
+local ESC = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
 -- where the first narrow step lands when coming down from whole-file, which has no
 -- finite neighbour to decrement
 local FULL_STEP_DOWN = 10
@@ -86,6 +87,7 @@ local armed_view = nil
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
 ---@field revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?
 ---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
+---@field refuses_revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean  -- said why
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field no_revert_lines? string  -- why X on a selection does nothing here
@@ -1373,7 +1375,7 @@ end
 ---@return differ.model.Selection|nil
 function View:_selected_lines()
     local r1, r2 = vim.fn.line("v"), vim.fn.line(".")
-    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+    vim.cmd.normal({ ESC, bang = true })
     if r1 > r2 then
         r1, r2 = r2, r1
     end
@@ -1872,6 +1874,10 @@ function View:revert_lines()
     end
     if not selection then
         return vim.notify("differ: no changed lines selected", vim.log.levels.WARN)
+    end
+    local refuses = self.staging.refuses_revert_lines
+    if refuses and refuses(self.model, selection) then
+        return
     end
     local n = vim.tbl_count(selection.old) + vim.tbl_count(selection.new)
     local unit = "lines"
