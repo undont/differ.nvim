@@ -44,11 +44,12 @@ local function by_line(entry)
     return (content or added) and entry.x ~= "D" and entry.y ~= "T"
 end
 
+-- staging for a row's HEAD↔worktree diff: by hunk through union_staging, else the file as one unit
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param diff differ.DiffModel  -- the entry's built model; its hunk count and binary flag are read
 ---@return differ.view.Staging|nil
-local function for_whole(ctx, entry, diff)
+local function for_union(ctx, entry, diff)
     if not ctx.stageable then
         return nil
     end
@@ -165,8 +166,8 @@ end
 ---@return table
 function M.new(ctx)
     return {
-        for_whole = function(entry, diff)
-            return for_whole(ctx, entry, diff)
+        for_union = function(entry, diff)
+            return for_union(ctx, entry, diff)
         end,
         for_local = function(entry, model, reopen)
             return for_local(ctx, entry, model, reopen)

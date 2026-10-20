@@ -403,6 +403,7 @@ local function drop_index(ctx, entry, model, staging, idx)
     return text, ("lines %d-%d"):format(lo, hi)
 end
 
+-- u on `!` hunk `idx`: the index drops the staged change the hunk undoes
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
@@ -430,18 +431,6 @@ local function drop_hidden(ctx, entry, model, staging, idx, reopen)
     return true
 end
 
--- the index lines u on `!` hunk `idx` takes back when they reach past its own
----@param ctx differ.git.StagingCtx
----@param entry differ.FileEntry
----@param model differ.DiffModel
----@param staging differ.view.Staging
----@param idx integer
----@return string|nil
-local function drop_scope(ctx, entry, model, staging, idx)
-    local _, scope = drop_index(ctx, entry, model, staging, idx)
-    return scope
-end
-
 -- u in a whole-file local view: the index takes HEAD's side where it holds what the
 -- worktree doesn't. an add goes, a binary takes HEAD's blob, and a mode HEAD's mode,
 -- keeping the staged content. nil when the index holds nothing of the kind
@@ -449,7 +438,7 @@ end
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel  -- index↔worktree
 ---@return (fun(): boolean)|nil
-local function whole_drop(ctx, entry, model)
+local function local_file_unstage(ctx, entry, model)
     if entry.x == "A" or model.binary then
         return function()
             return index_ops.unstage(ctx.root, entry.path)
@@ -471,7 +460,7 @@ end
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@return boolean
-local function whole_restore(ctx, entry)
+local function local_file_revert(ctx, entry)
     if not git_ok({ "checkout", "--", entry.path }, ctx.root, "revert") then
         return false
     end
@@ -497,7 +486,8 @@ local function for_local(ctx, entry, model, reopen)
             return drop_hidden(ctx, entry, model, staging, idx, reopen)
         end
         staging.drop_scope = function(idx)
-            return drop_scope(ctx, entry, model, staging, idx)
+            local _, scope = drop_index(ctx, entry, model, staging, idx)
+            return scope
         end
         staging.revert = function(m, idx)
             return revert_frozen(ctx, entry, m, staging, idx, 0, reopen)
@@ -559,10 +549,10 @@ local function for_local(ctx, entry, model, reopen)
         staging.confirm_stage = DROP_PROMPTS.stage.one
     end
     staging.revert = function()
-        return whole_restore(ctx, entry)
+        return local_file_revert(ctx, entry)
     end
     staging.revert_label = "resets it to the index"
-    local drop = whole_drop(ctx, entry, model)
+    local drop = local_file_unstage(ctx, entry, model)
     if drop then
         staging.hidden_in = { 1 }
         staging.unstage_hidden = function()

@@ -1360,7 +1360,7 @@ function M.panel(opts)
         elseif staged_only then
             staging = staging_ops.for_index(entry, model, false)
         else
-            staging = staging_ops.for_whole(entry, model)
+            staging = staging_ops.for_union(entry, model)
         end
         if staging and not preview then
             if staging_ops.partly_staged(entry) then
