@@ -86,19 +86,19 @@ describe("marks_of", function()
     it("draws a file too big to read from its pairs", function()
         local head, index, work = {}, { "x" }, {}
         for l = 1, 1100 do
-            head[l], index[l + 1], work[l] = "l" .. l, "l" .. l, "l" .. l
+            head[l], index[l + 1], work[l] = "l", "l", "l"
         end
         work[1100] = "z"
         local text = function(lines)
             return table.concat(lines, "\n") .. "\n"
         end
-        local edit = h(1100, { "l1100" }, 1100, { "z" })
+        local edit = h(1100, { "l" }, 1100, { "z" })
         local union = model(text(head), text(work), { edit })
         local cached = model(text(head), text(index), { h(0, {}, 1, { "x" }) })
         local unstaged = model(
             text(index),
             text(work),
-            { h(1, { "x" }, 0, {}), h(1101, { "l1100" }, 1100, { "z" }) }
+            { h(1, { "x" }, 0, {}), h(1101, { "l" }, 1100, { "z" }) }
         )
         local m, hidden, hidden_in, unread = stage.marks_of(union, cached, unstaged)
         assert.are.same({ [1100] = false }, m.old)

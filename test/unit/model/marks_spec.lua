@@ -515,13 +515,57 @@ describe("union marks", function()
             end)
         end
 
+        -- HEAD l1..l1100, worktree with the first and last lines changed, and an index
+        -- that holds the unchanged lines between them
+        local function far_apart()
+            local head, index = {}, {}
+            for l = 1, 1100 do
+                head[l] = "l" .. l
+            end
+            for l = 2, 1099 do
+                index[#index + 1] = head[l]
+            end
+            return { hl(1, { "l1" }, 1, { "n1" }), hl(1100, { "l1100" }, 1100, { "n1100" }) },
+                head,
+                index
+        end
+
+        it("reads hunks far apart with hidden lines at each", function()
+            local union, head, index = far_apart()
+            table.insert(index, 1, "x")
+            index[#index + 1] = "y"
+            local read = marks.reading(union, head, index) --[[@as differ.model.Reading]]
+            assert.are.equal(2, read.cost)
+            assert.are.same({ 1, 2 }, read.hidden_in)
+        end)
+
+        it("reads a hidden line in the gap between hunks", function()
+            local union, head, index = far_apart()
+            table.insert(index, 500, "x")
+            local read = marks.reading(union, head, index) --[[@as differ.model.Reading]]
+            assert.are.equal(1, read.cost)
+            assert.are.same({}, read.hidden_in)
+            assert.are.same({ [1] = true, [1100] = true }, read.marks.old)
+        end)
+
+        it("leaves out a unique line the index holds out of place", function()
+            -- l2 sits at the bottom: matching it would leave every line after it unmatched
+            local union, head, index = far_apart()
+            local moved = table.remove(index, 1)
+            index[#index + 1] = moved
+            local read = marks.reading(union, head, index) --[[@as differ.model.Reading]]
+            assert.are.equal(2, read.cost) -- l2 missing, and hidden at the bottom
+            assert.are.same({ 2 }, read.hidden_in)
+            assert.are.same({ { 1, 1 }, { 1098, 1099 } }, slices(read))
+        end)
+
         it("gives nil for a file too big to read", function()
             local head, index = {}, { "x" }
             for l = 1, 1100 do
-                head[l], index[l + 1] = "l" .. l, "l" .. l
+                head[l], index[l + 1] = "l", "l"
             end
             index[#index] = "z"
-            local union = { hl(1100, { "l1100" }, 1100, { "z" }) }
+            local union = { hl(1100, { "l" }, 1100, { "z" }) }
             assert.is_nil(marks.reading(union, head, index))
         end)
     end)
