@@ -1,7 +1,7 @@
 -- runs under headless nvim against a throwaway git repo: the :Differ panel, its
 -- staging keys, and how it drives and tears down the diff beside it
 local git_src = require("differ.git")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local V1 = helpers.V1

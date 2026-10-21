@@ -1,7 +1,7 @@
 -- runs under headless nvim against a throwaway git repo: dw's local view of a
 -- partly staged file, and the keys inside it
 local content_ops = require("differ.git.content")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local fresh_repo = helpers.fresh_repo

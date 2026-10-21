@@ -3,7 +3,7 @@
 -- merge-base resolution, and the :Differ picker building a correct DiffModel)
 local git_src = require("differ.git")
 local rev = require("differ.git.rev")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local V1 = helpers.V1

@@ -1,7 +1,7 @@
 -- runs under headless nvim against a throwaway git repo: ds's commit preview of
 -- the staged changes, and X / u / s inside it
 local git_src = require("differ.git")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local fresh_repo = helpers.fresh_repo

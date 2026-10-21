@@ -1,7 +1,7 @@
 -- runs under headless nvim against a throwaway git repo: df, the review walk of
 -- s / u / S / U across files, ]c / [c / ]f / [f, and where the walk stops
 local git_src = require("differ.git")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local fresh_repo = helpers.fresh_repo

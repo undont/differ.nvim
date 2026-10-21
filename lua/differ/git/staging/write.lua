@@ -19,7 +19,7 @@ end
 ---@return integer dropped, integer added
 local function edits(a, b)
     local dropped, added = 0, 0
-    local hunks = vim.diff(a, b, { result_type = "indices", algorithm = "minimal" })
+    local hunks = vim.text.diff(a, b, { result_type = "indices", algorithm = "minimal" })
     ---@cast hunks integer[][]
     for _, h in ipairs(hunks) do
         dropped, added = dropped + h[2], added + h[4]

@@ -1,7 +1,7 @@
 -- runs under headless nvim against a throwaway git repo: s / u / S / U on the
 -- diff's hunks, in place, and how the open diff re-sources around them
 local git_src = require("differ.git")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local V1 = helpers.V1

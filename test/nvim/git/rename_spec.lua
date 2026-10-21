@@ -1,6 +1,6 @@
 -- runs under headless nvim against a throwaway git repo: staging renames
 local git_src = require("differ.git")
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local view_in_origin = helpers.view_in_origin

@@ -1,6 +1,6 @@
 -- runs under headless nvim against a throwaway git repo: X reverting hunks and
 -- files from the diff, and where the session lands after
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local V1 = helpers.V1

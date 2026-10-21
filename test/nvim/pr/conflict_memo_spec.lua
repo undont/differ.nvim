@@ -1,6 +1,6 @@
 -- runs under headless nvim: a get_file_versions issued before handle_conflict must not
 -- land its old-sha blob in the memo the conflict cleared, and the file refetches at the
--- fresh pins. same harness pattern as pr_nav_spec.lua: stub differ.sidecar.request per
+-- fresh pins. same harness pattern as nav_spec.lua: stub differ.sidecar.request per
 -- method, boot a real session, hold one request in flight by capturing its cb
 
 require("differ").setup({})

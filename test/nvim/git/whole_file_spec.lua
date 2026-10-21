@@ -1,6 +1,6 @@
 -- runs under headless nvim against a throwaway git repo: staging a file that only
 -- stages as a unit
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local fresh_repo = helpers.fresh_repo

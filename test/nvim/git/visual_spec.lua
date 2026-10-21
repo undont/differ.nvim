@@ -1,6 +1,6 @@
 -- runs under headless nvim against a throwaway git repo: visual s / u / X on a
 -- line selection of the diff
-local helpers = require("test.nvim.git_helpers")
+local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
 local fresh_repo = helpers.fresh_repo

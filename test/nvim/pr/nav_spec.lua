@@ -1,6 +1,6 @@
 -- runs under headless nvim: exercises the overview<->review navigation loop (thread
 -- jump, go-to-overview, e/q round-trips) against a stubbed sidecar. same harness
--- pattern as pr_spec.lua: stub differ.sidecar.request per-method, boot a real session,
+-- pattern as session_spec.lua: stub differ.sidecar.request per-method, boot a real session,
 -- fire buffer-local keymaps, poll observable state with vim.wait (never sleep)
 
 require("differ").setup({})
@@ -103,7 +103,7 @@ local function default_responses()
     }
 end
 
--- fire a buffer-local keymap by its description (mergetool_spec.lua / pr_spec.lua)
+-- fire a buffer-local keymap by its description (mergetool_spec.lua / session_spec.lua)
 local function fire(buf, desc)
     for _, m in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
         if m.desc == desc and m.callback then
