@@ -415,27 +415,48 @@ function M.drop_lines(cached, ci, first, last)
     return apply.splice(split --[[@as differ.DiffModel]], applied)
 end
 
--- the marks the view draws for the union: the index's block at each hunk, or the two
--- pairs where the index can't be cut. `hidden` is index content no hunk shows, and
--- `hidden_in` the hunks holding some of it
+-- the index read against the union's rows at the least cost (marks.reading), or nil for
+-- a file too big to read that way
+---@param union differ.DiffModel
+---@param index string  -- the index's text
+---@return differ.model.Reading|nil
+function M.reading(union, index)
+    local ended = apply.ended(union)
+    local head_lines, index_lines =
+        text_util.ended_lines(union.old_text), text_util.ended_lines(index)
+    return marks.reading(ended.hunks, head_lines, index_lines)
+end
+
+-- the marks the view draws for the union: the least-cost reading of the index
+-- (marks.reading), or its blocks where they cut with nothing hidden, which read the
+-- same. `hidden` is index content no hunk shows, and `hidden_in` the hunks holding some
+-- of it. `unread` is a file too big to read, drawn from its blocks or the two pairs
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
----@return differ.model.Marks marks, boolean hidden, integer[] hidden_in
+---@return differ.model.Marks marks, boolean hidden, integer[] hidden_in, boolean unread
 function M.marks_of(union, cached, unstaged)
     local blocks, ended = M.index_blocks(union, cached.new_text)
+    local held, hidden_in = nil, {}
     if blocks then
-        local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
-        if held then
-            return held, #hidden_in > 0, hidden_in
+        held, hidden_in = marks.of_blocks(ended.hunks, blocks)
+        if held and #hidden_in == 0 then
+            return held, false, hidden_in, false
         end
     end
-    local fresh = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
+    local read = M.reading(union, cached.new_text)
+    if read then
+        return read.marks, read.cost > 0, read.hidden_in, false
+    end
+    if held then
+        return held, true, hidden_in, true
+    end
+    held = marks.classify(union.hunks, cached.hunks, unstaged.hunks)
     if marks.complete(union.hunks, cached.hunks, unstaged.hunks) then
-        return fresh, false, {}
+        return held, false, {}, true
     end
     local head = text_util.to_lines(union.old_text)
-    return fresh, true, marks.hidden_in(head, union.hunks, cached.hunks, fresh)
+    return held, true, marks.hidden_in(head, union.hunks, cached.hunks, held), true
 end
 
 ---@class differ.model.LineStates

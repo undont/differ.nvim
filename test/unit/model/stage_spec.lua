@@ -54,6 +54,60 @@ describe("index_blocks", function()
     end)
 end)
 
+describe("marks_of", function()
+    it("draws a file with nothing hidden from its blocks", function()
+        local union, cached, unstaged = pairs_of("1\n2x\n3\n4\n5\n")
+        local m, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
+        assert.are.same({ [2] = true, [5] = false }, m.old)
+        assert.are.same({ [2] = true, [5] = false }, m.new)
+        assert.is_false(hidden)
+        assert.are.same({}, hidden_in)
+    end)
+
+    it("draws a file with hidden lines from the least-cost reading", function()
+        -- HEAD b a c x, worktree a c y, and an index with a second a. its blocks put
+        -- that a inside the first hunk; the reading matches it as the unchanged line
+        local union =
+            model("b\na\nc\nx\n", "a\nc\ny\n", { h(1, { "b" }, 0, {}), h(4, { "x" }, 3, { "y" }) })
+        local cached = model(
+            "b\na\nc\nx\n",
+            "b\na\na\nc\ny\n",
+            { h(2, {}, 3, { "a" }), h(4, { "x" }, 5, { "y" }) }
+        )
+        local unstaged =
+            model("b\na\na\nc\ny\n", "a\nc\ny\n", { h(1, { "b" }, 0, {}), h(3, { "a" }, 2, {}) })
+        local m, hidden, hidden_in, unread = stage.marks_of(union, cached, unstaged)
+        assert.are.same({ [1] = false, [4] = true }, m.old)
+        assert.is_true(hidden)
+        assert.are.same({}, hidden_in)
+        assert.is_false(unread)
+    end)
+
+    it("draws a file too big to read from its pairs", function()
+        local head, index, work = {}, { "x" }, {}
+        for l = 1, 1100 do
+            head[l], index[l + 1], work[l] = "l" .. l, "l" .. l, "l" .. l
+        end
+        work[1100] = "z"
+        local text = function(lines)
+            return table.concat(lines, "\n") .. "\n"
+        end
+        local edit = h(1100, { "l1100" }, 1100, { "z" })
+        local union = model(text(head), text(work), { edit })
+        local cached = model(text(head), text(index), { h(0, {}, 1, { "x" }) })
+        local unstaged = model(
+            text(index),
+            text(work),
+            { h(1, { "x" }, 0, {}), h(1101, { "l1100" }, 1100, { "z" }) }
+        )
+        local m, hidden, hidden_in, unread = stage.marks_of(union, cached, unstaged)
+        assert.are.same({ [1100] = false }, m.old)
+        assert.is_true(hidden)
+        assert.are.same({}, hidden_in)
+        assert.is_true(unread)
+    end)
+end)
+
 describe("next_index", function()
     it("stages a hunk by giving the index the worktree's lines", function()
         local union, cached, unstaged = pairs_of(HEAD)

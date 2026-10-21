@@ -384,6 +384,148 @@ describe("union marks", function()
         end)
     end)
 
+    describe("reading", function()
+        ---@param read differ.model.Reading
+        local function slices(read)
+            local out = {}
+            for i, s in ipairs(read.slices) do
+                out[i] = s
+            end
+            return out
+        end
+
+        -- HEAD b a, worktree a: one hunk dropping b
+        local drop_b = { hl(1, { "b" }, 0, {}) }
+
+        it("reads an index that is HEAD or the worktree at no cost", function()
+            local read = marks.reading(drop_b, { "b", "a" }, { "b", "a" }) --[[@as differ.model.Reading]]
+            assert.are.equal(0, read.cost)
+            assert.are.same({ [1] = false }, read.marks.old)
+            assert.are.same({ { 1, 2 } }, slices(read))
+            read = marks.reading(drop_b, { "b", "a" }, { "a" }) --[[@as differ.model.Reading]]
+            assert.are.equal(0, read.cost)
+            assert.are.same({ [1] = true }, read.marks.old)
+            assert.are.same({ { 1, 1 } }, slices(read))
+        end)
+
+        it("reads part of a hunk in any interleaving of its sides", function()
+            local union = { hl(2, { "a", "b" }, 2, { "c", "d" }) }
+            local read = marks.reading(union, { "1", "a", "b", "4" }, { "1", "c", "a", "4" })
+            assert.are.equal(0, read and read.cost)
+            assert.are.same({ [2] = false, [3] = true }, read and read.marks.old)
+            assert.are.same({ [2] = true, [3] = false }, read and read.marks.new)
+        end)
+
+        it("keeps an old line before holding an equal new one", function()
+            local union = { hl(1, { "b", "y" }, 1, { "b", "z" }) }
+            local read = marks.reading(union, { "b", "y" }, { "b" })
+            assert.are.same({ [1] = false, [2] = true }, read and read.marks.old)
+            assert.are.same({ [1] = false, [2] = false }, read and read.marks.new)
+        end)
+
+        it("names the hunk whose lines hold a hidden line", function()
+            local read = marks.reading(drop_b, { "b", "a" }, { "b", "x", "a" }) --[[@as differ.model.Reading]]
+            assert.are.equal(1, read.cost)
+            assert.are.same({ 1 }, read.hidden_in)
+            assert.are.same({ { 1, 3 } }, slices(read))
+        end)
+
+        it("matches unchanged lines from the end before reading the rest", function()
+            local read = marks.reading(drop_b, { "b", "a" }, { "b", "a", "a" }) --[[@as differ.model.Reading]]
+            assert.are.equal(1, read.cost)
+            assert.are.same({ [1] = false }, read.marks.old)
+            assert.are.same({ 1 }, read.hidden_in)
+            assert.are.same({ { 1, 3 } }, slices(read))
+        end)
+
+        it("matches an unchanged line before hiding an equal one", function()
+            -- HEAD b a c x, worktree a c y, and the index has a second a between hunks
+            local union = { hl(1, { "b" }, 0, {}), hl(4, { "x" }, 3, { "y" }) }
+            local head, index = { "b", "a", "c", "x" }, { "b", "a", "a", "c", "y" }
+            local read = marks.reading(union, head, index) --[[@as differ.model.Reading]]
+            assert.are.equal(1, read.cost)
+            assert.are.same({}, read.hidden_in)
+            assert.are.same({ { 1, 2 }, { 5, 6 } }, slices(read))
+        end)
+
+        it("gives a hidden line between two hunks to the earlier one", function()
+            -- HEAD p c q, worktree P c Q, and an index that lacks c
+            local union = { hl(1, { "p" }, 1, { "P" }), hl(3, { "q" }, 3, { "Q" }) }
+            local read = marks.reading(union, { "p", "c", "q" }, { "P", "x", "Q" }) --[[@as differ.model.Reading]]
+            assert.are.equal(2, read.cost)
+            assert.are.same({ 1 }, read.hidden_in)
+            assert.are.same({ { 1, 3 }, { 3, 4 } }, slices(read))
+        end)
+
+        it("gives a hidden line next to a hunk with no lines in the index to that hunk", function()
+            -- HEAD d b c, worktree d c, the index d x c
+            local union = { hl(2, { "b" }, 1, {}) }
+            local read = marks.reading(union, { "d", "b", "c" }, { "d", "x", "c" }) --[[@as differ.model.Reading]]
+            assert.are.same({ [2] = true }, read.marks.old)
+            assert.are.same({ 1 }, read.hidden_in)
+            assert.are.same({ { 2, 3 } }, slices(read))
+        end)
+
+        it("counts a missing unchanged line without naming a hunk", function()
+            local read = marks.reading(drop_b, { "b", "a" }, {}) --[[@as differ.model.Reading]]
+            assert.are.equal(1, read.cost)
+            assert.are.same({}, read.hidden_in)
+        end)
+
+        -- the shapes where a walk on its own reads other lines than the blocks do
+        for _, case in ipairs({
+            {
+                name = "an index that is HEAD next to an inserted repeated line",
+                union = { hl(2, {}, 3, { "x", "b" }), hl(4, { "b", "b" }, 5, {}) },
+                head = { "x", "b", "b", "b", "b", "x" },
+                index = { "x", "b", "b", "b", "b", "x" },
+            },
+            {
+                name = "a block that is the new side and shares a line with the old",
+                union = { hl(1, { "b", "b" }, 1, { "b", "x" }) },
+                head = { "b", "b", "b", "b" },
+                index = { "b", "x", "b", "b" },
+            },
+            {
+                name = "a block that keeps one of several equal old lines",
+                union = { hl(1, { "a", "b", "a", "b" }, 1, { "x", "x" }) },
+                head = { "a", "b", "a", "b" },
+                index = { "x", "b" },
+            },
+            {
+                name = "a block with a new line between equal old ones",
+                union = { hl(1, { "b", "b", "b" }, 1, { "x", "x" }) },
+                head = { "b", "b", "b" },
+                index = { "b", "x", "b" },
+            },
+            {
+                name = "a block that is a whole side",
+                union = { hl(2, { "a", "b" }, 2, { "A", "B", "C" }) },
+                head = { "1", "a", "b", "4" },
+                index = { "1", "A", "B", "C", "4" },
+            },
+        }) do
+            it("reads as the blocks do: " .. case.name, function()
+                local blocks = marks.blocks(case.union, case.head, case.index)
+                local held, hidden = marks.of_blocks(case.union, blocks or {})
+                assert.are.same({}, hidden)
+                local read = marks.reading(case.union, case.head, case.index) --[[@as differ.model.Reading]]
+                assert.are.equal(0, read.cost)
+                assert.are.same(held, read.marks)
+            end)
+        end
+
+        it("gives nil for a file too big to read", function()
+            local head, index = {}, { "x" }
+            for l = 1, 1100 do
+                head[l], index[l + 1] = "l" .. l, "l" .. l
+            end
+            index[#index] = "z"
+            local union = { hl(1100, { "l1100" }, 1100, { "z" }) }
+            assert.is_nil(marks.reading(union, head, index))
+        end)
+    end)
+
     describe("shift", function()
         -- three lines inserted at the top, and line 5 replaced by two
         local hunks = { h(0, 0, 1, 3), h(5, 1, 8, 2) }

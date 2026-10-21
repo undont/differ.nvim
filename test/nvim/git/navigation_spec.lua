@@ -722,6 +722,7 @@ describe(":Differ diff hunk staging", function()
     it("steps s off a hunk it refused instead of parking on it", function()
         local root = stuck_repo()
         local p, v = open_panel()
+        local before = indexed(root, "a.lua")
         local stuck
         for i = 1, #v.model.hunks do
             if v:_hunk_state(i) == "partial" then
@@ -732,9 +733,9 @@ describe(":Differ diff hunk staging", function()
         v:stage_hunk() -- refuses, and the walk carries on past it
         assert.are_not.equal(stuck, v:_hunk_index_under_cursor())
         assert.is_true(v.stuck.staged[stuck])
-        -- the hunk it wrapped to does move, and takes the refused one with it
+        -- the hunk it wrapped to can't move on its own either
         v:stage_hunk()
-        assert.are.equal(indexed(root, "a.lua"), worktree(root, "a.lua"))
+        assert.are.equal(before, indexed(root, "a.lua"))
         p:close()
     end)
 

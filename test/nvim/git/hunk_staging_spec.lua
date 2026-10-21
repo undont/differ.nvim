@@ -1202,11 +1202,21 @@ func getDownloadSpeed() {
         p:close()
     end)
 
-    -- repeated lines the pairs line up another way than the union: s on hunk 1 would
-    -- give back the b whose deletion hunk 2 holds staged, and u on hunk 1 would drop
-    -- hunk 2's staged x along with it
+    -- repeated lines the pairs line up another way than the union: the index a b b
+    -- they make reads as hunk 1 staged and hunk 2 as it was
+    it("stages a hunk next to repeated lines the pairs line up differently", function()
+        local root, p, v = staged_as("b\nb\nb\n", "b\nb\n", "a\nb\nx\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("a\nb\nb\n", index)
+    end)
+
+    -- u on hunk 1 would drop hunk 2's staged x along with it
     for _, case in ipairs({
-        { key = "s", op = "stage_hunk", head = "b\nb\nb\n", index = "b\nb\n", work = "a\nb\nx\n" },
         {
             key = "u",
             op = "unstage_hunk",

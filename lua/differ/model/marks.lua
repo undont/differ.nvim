@@ -367,6 +367,392 @@ function M.of_blocks(union, blocks)
     return marks, hidden
 end
 
+---@class differ.model.Segment
+---@field line? string     -- a HEAD line the union leaves unchanged
+---@field hunk? integer    -- else a union hunk
+---@field olds? string[]
+---@field news? string[]
+
+-- the union as rows in file order: each unchanged line, and each hunk as one segment
+---@param hunks differ.Hunk[]
+---@param head string[]
+---@return differ.model.Segment[]
+local function segments(hunks, head)
+    local segs, from = {}, 1
+    for i, h in ipairs(hunks) do
+        local first, after = old_bounds(h)
+        for l = from, first - 1 do
+            segs[#segs + 1] = { line = head[l] }
+        end
+        segs[#segs + 1] = { hunk = i, olds = h.old_lines, news = h.new_lines }
+        from = after
+    end
+    for l = from, #head do
+        segs[#segs + 1] = { line = head[l] }
+    end
+    return segs
+end
+
+---@class differ.model.Reading
+---@field marks differ.model.Marks
+---@field cost integer          -- index lines no row holds, plus unchanged lines the index lacks
+---@field slices integer[][]    -- hunk -> its index lines, {first, after}
+---@field hidden_in integer[]   -- the hunks whose slice holds an index line no row holds
+
+-- a hunk segment's state for a old and b new lines passed, as a key into its costs
+---@param seg differ.model.Segment
+---@param a integer
+---@param b integer
+---@return integer
+local function state(seg, a, b)
+    return a * (#seg.news + 1) + b
+end
+
+-- the costs a hunk state moves on to: past the next old line, past the next new line,
+-- each nil where that side is used up
+---@param seg differ.model.Segment
+---@param g table<integer, number[]>
+---@param a integer
+---@param b integer
+---@return number[]|nil drop, number[]|nil pass
+local function onward(seg, g, a, b)
+    local drop, pass = nil, nil
+    if a < #seg.olds then
+        drop = g[state(seg, a + 1, b)]
+    end
+    if b < #seg.news then
+        pass = g[state(seg, a, b + 1)]
+    end
+    return drop, pass
+end
+
+-- the least cost from each index line on, at an unchanged line with `after` beyond it
+---@param line string
+---@param index string[]
+---@param after number[]
+---@param big integer
+---@return number[]
+local function line_costs(line, index, after, big)
+    local n = #index
+    local here = { [n + 1] = big + after[n + 1] }
+    for i = n, 1, -1 do
+        local best = math.min(big + after[i], big + here[i + 1])
+        if index[i] == line then
+            best = math.min(best, after[i + 1])
+        end
+        here[i] = best
+    end
+    return here
+end
+
+-- the least cost from each hunk state and index line on, with `after` beyond the hunk,
+-- and from the hunk's start, where it can also be read as one whole side
+---@param seg differ.model.Segment
+---@param index string[]
+---@param after number[]
+---@param big integer
+---@return table<integer, number[]> states, number[] enter
+local function hunk_costs(seg, index, after, big)
+    local n, g = #index, {}
+    for a = #seg.olds, 0, -1 do
+        for b = #seg.news, 0, -1 do
+            local drop, pass = onward(seg, g, a, b)
+            local here = {}
+            for i = n + 1, 1, -1 do
+                local best = math.huge
+                if not (drop or pass) then
+                    best = after[i] + 1
+                end
+                best = math.min(best, drop and drop[i] or math.huge, pass and pass[i] or math.huge)
+                if i <= n then
+                    best = math.min(best, big + here[i + 1])
+                    if drop and index[i] == seg.olds[a + 1] then
+                        best = math.min(best, drop[i + 1])
+                    end
+                    if pass and index[i] == seg.news[b + 1] then
+                        best = math.min(best, pass[i + 1])
+                    end
+                end
+                here[i] = best
+            end
+            g[state(seg, a, b)] = here
+        end
+    end
+    local enter = {}
+    for i = 1, n + 1 do
+        enter[i] = g[0][i]
+        for _, side in ipairs({ seg.news, seg.olds }) do
+            if holds(index, i, side) then
+                enter[i] = math.min(enter[i], after[i + #side])
+            end
+        end
+    end
+    return g, enter
+end
+
+-- the least cost from each segment and index line on, and each hunk segment's states.
+-- a hidden or missing line costs `big`, more than all the hunks together, and a hunk
+-- read line by line rather than as one whole side costs 1
+---@param segs differ.model.Segment[]
+---@param index string[]
+---@param big integer
+---@return table<integer, number[]> cost, table<integer, table<integer, number[]>> states
+local function costs(segs, index, big)
+    local cost, states = { [#segs + 1] = {} }, {}
+    for i = 1, #index + 1 do
+        cost[#segs + 1][i] = (#index + 1 - i) * big
+    end
+    for s = #segs, 1, -1 do
+        local seg = segs[s]
+        if seg.line then
+            cost[s] = line_costs(seg.line, index, cost[s + 1], big)
+        else
+            states[s], cost[s] = hunk_costs(seg, index, cost[s + 1], big)
+        end
+    end
+    return cost, states
+end
+
+-- the cheapest reading's walk: the marks, and each index line's segment and whether a
+-- row holds it
+---@param hunks differ.Hunk[]
+---@param segs differ.model.Segment[]
+---@param index string[]
+---@return differ.model.Marks marks, integer[] seg_of, table<integer, boolean> matched, integer total
+local function walk(hunks, segs, index)
+    local big = #hunks + 1
+    local cost, states = costs(segs, index, big)
+    local n, marks = #index, { old = {}, new = {} }
+    local seg_of, matched = {}, {} ---@type integer[], table<integer, boolean>
+    local total = cost[1][1]
+    local left, s, i, a, b, inside = total, 1, 1, 0, 0, false
+    -- move to segment `to`, past index line i when `line`, held by a row when `match`
+    local function step(to, line, match)
+        if line then
+            seg_of[i], matched[i] = s, match
+            i = i + 1
+        end
+        s = to
+    end
+    local function hide()
+        left = left - big
+        step(s, true, false)
+    end
+    -- the hunk at `s` as one whole side, when that stays cheapest
+    ---@param h differ.Hunk
+    ---@param seg differ.model.Segment
+    ---@return boolean
+    local function whole(h, seg)
+        for _, staged in ipairs({ true, false }) do
+            local side = (staged and seg.news or seg.olds) --[[@as string[] ]]
+            if holds(index, i, side) and cost[s + 1][i + #side] == left then
+                for l = h.old_start, h.old_start + h.old_count - 1 do
+                    marks.old[l] = staged
+                end
+                for l = h.new_start, h.new_start + h.new_count - 1 do
+                    marks.new[l] = staged
+                end
+                for _ = 1, #side do
+                    step(s, true, true)
+                end
+                s = s + 1
+                return true
+            end
+        end
+        return false
+    end
+    while s <= #segs or i <= n do
+        local seg = segs[s]
+        local here = index[i]
+        if not seg then
+            hide()
+        elseif seg.line then
+            local after = cost[s + 1]
+            if here == seg.line and after[i + 1] == left then
+                step(s + 1, true, true)
+            elseif big + after[i] == left then
+                left = left - big
+                step(s + 1, false, false)
+            else
+                hide()
+            end
+        elseif inside or not whole(hunks[seg.hunk], seg) then
+            inside = true
+            local h = hunks[seg.hunk]
+            local drop, pass = onward(seg, states[s], a, b)
+            if drop and here == seg.olds[a + 1] and drop[i + 1] == left then
+                marks.old[h.old_start + a], a = false, a + 1
+                step(s, true, true)
+            elseif pass and here == seg.news[b + 1] and pass[i + 1] == left then
+                marks.new[h.new_start + b], b = true, b + 1
+                step(s, true, true)
+            elseif drop and drop[i] == left then
+                marks.old[h.old_start + a], a = true, a + 1
+            elseif pass and pass[i] == left then
+                marks.new[h.new_start + b], b = false, b + 1
+            elseif not (drop or pass) and cost[s + 1][i] + 1 == left then
+                left = left - 1
+                a, b, inside = 0, 0, false
+                step(s + 1, false, false)
+            else
+                hide()
+            end
+        end
+    end
+    return marks, seg_of, matched, math.floor(total / big)
+end
+
+-- each index line's owning segment: its own for a held line, and for a hidden one the
+-- hunk of the held line before it, else the first hunk up to the held line after it,
+-- else the segment before it. owners never decrease down the index
+---@param segs differ.model.Segment[]
+---@param seg_of integer[]
+---@param matched table<integer, boolean>
+---@return integer[] owner, table<integer, boolean> hides  -- hunk segments owning a hidden line
+local function owners(segs, seg_of, matched)
+    local next_hunk = { [#segs + 1] = math.huge }
+    for k = #segs, 1, -1 do
+        next_hunk[k] = segs[k].hunk and k or next_hunk[k + 1]
+    end
+    local next_held, upto = {}, #segs
+    for l = #seg_of, 1, -1 do
+        next_held[l] = upto
+        if matched[l] then
+            upto = seg_of[l]
+        end
+    end
+    local owner, hides, prev = {}, {}, 0
+    for l = 1, #seg_of do
+        if matched[l] then
+            prev = seg_of[l]
+            owner[l] = prev
+        elseif segs[prev] and segs[prev].hunk then
+            owner[l], hides[prev] = prev, true
+        elseif next_hunk[prev + 1] <= next_held[l] then
+            owner[l] = next_hunk[prev + 1]
+            hides[owner[l]] = true
+        else
+            owner[l] = prev
+        end
+    end
+    return owner, hides
+end
+
+-- `segs` and `index` with `lead` and `tail` entries cut from their ends
+---@generic T
+---@param list T[]
+---@param lead integer
+---@param tail integer
+---@return T[]
+local function middle(list, lead, tail)
+    local out = {}
+    for k = lead + 1, #list - tail do
+        out[#out + 1] = list[k]
+    end
+    return out
+end
+
+-- the walk over all but `lead` and `tail` unchanged lines the index holds at its ends,
+-- those matched line for line. nil past MAX_CELLS
+---@param hunks differ.Hunk[]
+---@param segs differ.model.Segment[]
+---@param index string[]
+---@param lead integer
+---@param tail integer
+---@return differ.model.Marks|nil marks, integer[] seg_of, table<integer, boolean> matched, integer total
+local function walk_between(hunks, segs, index, lead, tail)
+    local mid_segs, mid_index = middle(segs, lead, tail), middle(index, lead, tail)
+    local cells = 0
+    for _, seg in ipairs(mid_segs) do
+        cells = cells + (seg.line and 1 or (#seg.olds + 1) * (#seg.news + 1)) * (#mid_index + 1)
+    end
+    if cells > MAX_CELLS then
+        return nil, {}, {}, 0
+    end
+    local marks, mid_seg_of, mid_matched, total = walk(hunks, mid_segs, mid_index)
+    local seg_of, matched = {}, {} ---@type integer[], table<integer, boolean>
+    for l = 1, #index do
+        if l <= lead then
+            seg_of[l], matched[l] = l, true
+        elseif l > #index - tail then
+            seg_of[l], matched[l] = #segs - (#index - l), true
+        else
+            seg_of[l], matched[l] = mid_seg_of[l - lead] + lead, mid_matched[l - lead]
+        end
+    end
+    return marks, seg_of, matched, total
+end
+
+-- a hunk's marks from its slice as of_blocks reads a block, where that reads every
+-- line of it; else the walk's marks stay
+---@param h differ.Hunk
+---@param slice string[]
+---@param marks differ.model.Marks
+local function remark(h, slice, marks)
+    local own = { old = {}, new = {} }
+    local compared, hidden = mark_block(h, slice, own)
+    if not compared or hidden then
+        return
+    end
+    for l, v in pairs(own.old) do
+        marks.old[l] = v
+    end
+    for l, v in pairs(own.new) do
+        marks.new[l] = v
+    end
+end
+
+-- the index read against the union's rows: unchanged lines held or missing, each
+-- hunk's old lines kept or dropped and new lines held or not in any interleaving,
+-- other index lines hidden. unchanged lines the index holds from either end up to a
+-- hunk are matched line for line; of the rest, the cheapest reading hides fewest lines,
+-- then reads fewest hunks other than as one whole side (new, then old), then follows a
+-- walk from the top taking keep old, hold new, match, drop old, pass new, leave, miss,
+-- hide. a hunk with nothing hidden reads its slice as of_blocks does where that holds
+-- every line. nil past MAX_CELLS
+---@param hunks differ.Hunk[]  -- ended
+---@param head string[]        -- ended lines
+---@param index string[]       -- ended lines
+---@return differ.model.Reading|nil
+function M.reading(hunks, head, index)
+    local segs = segments(hunks, head)
+    local lead, tail = 0, 0
+    while segs[lead + 1] and segs[lead + 1].line and segs[lead + 1].line == index[lead + 1] do
+        lead = lead + 1
+    end
+    while tail < #segs - lead and tail < #index - lead do
+        local seg = segs[#segs - tail]
+        if not (seg.line and seg.line == index[#index - tail]) then
+            break
+        end
+        tail = tail + 1
+    end
+    local marks, seg_of, matched, total = walk_between(hunks, segs, index, lead, tail)
+    if not marks then
+        return nil
+    end
+    local owner, hides = owners(segs, seg_of, matched)
+    local slices, hidden_in, l = {}, {}, 1
+    for k, seg in ipairs(segs) do
+        if seg.hunk then
+            while owner[l] and owner[l] < k do
+                l = l + 1
+            end
+            local first = l
+            while owner[l] == k do
+                l = l + 1
+            end
+            slices[seg.hunk] = { first, l }
+            if hides[k] then
+                hidden_in[#hidden_in + 1] = seg.hunk
+            else
+                remark(hunks[seg.hunk], middle(index, first - 1, #index - l + 1), marks)
+            end
+        end
+    end
+    return { marks = marks, cost = total, slices = slices, hidden_in = hidden_in }
+end
+
 -- a hunk's real lines on one side, [start, stop). a zero-count hunk has none
 ---@param h differ.Hunk
 ---@param side "old"|"new"
