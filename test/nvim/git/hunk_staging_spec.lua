@@ -1226,7 +1226,7 @@ func getDownloadSpeed() {
             local index = indexed(root, "a.lua")
             p:close()
             assert.are.equal(case.index, index)
-            assert.is_truthy(said:find("without changing others", 1, true), said)
+            assert.is_truthy(said:find("on its own here", 1, true), said)
         end)
     end
 

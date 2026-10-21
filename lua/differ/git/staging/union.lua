@@ -242,7 +242,7 @@ local function apply(source, model, hunk, reverse)
     local selection = stage.hunk_selection(hunk)
     local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
     if not after then
-        notify(MOVES_OTHERS, vim.log.levels.WARN)
+        notify(refusal(take, nil), vim.log.levels.WARN)
         return false, true
     end
     if not put_index(ctx, entry, text) then
@@ -299,15 +299,49 @@ local function apply_lines(source, model, selection, reverse)
     return true
 end
 
--- X on a hunk whose staged change reaches another can't take it alone, and a
--- drawing the file has moved on from places it by stale lines: both said before
--- the prompt, which says as much itself
+-- the index and file X on hunk `idx` writes, read back before anything is: nil and
+-- why where it refuses. a file whose index holds content no hunk shows goes
+-- unchecked, as for s and u
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param model differ.DiffModel
+---@param idx integer
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@return string|nil index_text, string|nil work_text, string|nil why
+local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+    local stage = require("differ.model.stage")
+    local hunk = model.hunks[idx]
+    local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
+    if reaches then
+        return nil, nil, ("this hunk can't be reverted without hunk %d"):format(reaches)
+    end
+    -- a hunk the index holds nothing of on its own leaves the index where it is,
+    -- and the worktree still has the whole change to give back
+    local index_text = text or cached.new_text
+    local work_text = require("differ.model.diff").revert_hunk(model, idx).new_text
+    local m, hidden = stage.marks_of(union, cached, unstaged)
+    if hidden then
+        return index_text, work_text
+    end
+    local selection = stage.hunk_selection(hunk)
+    local want = stage.reverted(union, m, selection)
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
+    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    if not stage.reads_as(want, before, selection, unpack(after)) then
+        return nil, nil, "this hunk can't be reverted on its own here"
+    end
+    return index_text, work_text
+end
+
+-- X's refusals on a hunk, said before the prompt, which says as much itself: a
+-- drawing the file has moved on from, and any revert_hunk_texts gives
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param idx integer
 ---@return boolean
 local function refuses_revert(source, model, idx)
-    local stage = require("differ.model.stage")
     local ctx, entry = source.ctx, source.entry
     local union, cached, unstaged = union_models(ctx.root, entry)
     if not (union and cached and unstaged) then
@@ -317,10 +351,9 @@ local function refuses_revert(source, model, idx)
     if not drawn_current(ctx, model, union) then
         return true
     end
-    local _, reaches = stage.next_index(union, cached, unstaged, model.hunks[idx], false)
-    if reaches then
-        local msg = "this hunk can't be reverted without hunk %d"
-        notify(msg:format(reaches), vim.log.levels.WARN)
+    local _, _, why = revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+    if why then
+        notify(why, vim.log.levels.WARN)
         return true
     end
     return false
@@ -333,7 +366,6 @@ end
 ---@param idx integer
 ---@return boolean
 local function revert(source, model, idx)
-    local stage = require("differ.model.stage")
     local ctx, entry = source.ctx, source.entry
     local union, cached, unstaged = union_models(ctx.root, entry)
     if not (union and cached and unstaged) then
@@ -342,17 +374,16 @@ local function revert(source, model, idx)
     if not drawn_current(ctx, model, union) then
         return false
     end
-    local hunk = model.hunks[idx]
-    local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
-    if reaches then
-        local msg = "this hunk can't be reverted without hunk %d"
-        notify(msg:format(reaches), vim.log.levels.WARN)
+    local index_text, work_text, why =
+        revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+    if why then
+        notify(why, vim.log.levels.WARN)
         return false
     end
-    -- a hunk the index holds nothing of on its own leaves the index where it is,
-    -- and the worktree still has the whole change to give back
-    local index_text = text or cached.new_text
-    local p = patch.hunk(model.path, hunk, model.old_text, model.new_text, 0, "new")
+    if not (index_text and work_text) then
+        return false
+    end
+    local p = patch.hunk(model.path, model.hunks[idx], model.old_text, model.new_text, 0, "new")
     local ok = revert_worktree(ctx, entry, p, function()
         return index_text == cached.new_text or put_index(ctx, entry, index_text)
     end)
@@ -360,8 +391,7 @@ local function revert(source, model, idx)
         remark(source, union_models(ctx.root, entry))
         return false
     end
-    local work = require("differ.model.diff").revert_hunk(model, idx).new_text
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, work))
+    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text))
     return true
 end
 

@@ -13,6 +13,7 @@ local indexed = helpers.indexed
 local worktree = helpers.worktree
 local committed = helpers.committed
 local hunk_line = helpers.hunk_line
+local staged_as = helpers.staged_as
 
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
@@ -236,6 +237,47 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(1, #v.model.hunks)
         assert.are.equal("unstaged", v:_hunk_state(1))
         p:close()
+    end)
+
+    -- repeated lines the pairs line up another way than the union: X on hunk 1 would
+    -- drop hunk 2's staged x from the index, and X on hunk 2 would leave it there
+    for idx = 1, 2 do
+        it(("refuses X on hunk %d whose write would move another"):format(idx), function()
+            local head, index, work = "b\nx\na\n", "x\nx\na\n", "x\nx\n"
+            local root, p, v = staged_as(head, index, work)
+            local col = v.columns[#v.columns]
+            vim.api.nvim_set_current_win(col.winid)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, idx), 0 })
+            _G.notifs = {}
+            local prompt = confirming(1, function()
+                v:revert_hunk()
+            end)
+            local said = (_G.notifs[1] or {}).msg or ""
+            local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
+            p:close()
+            assert.is_nil(prompt)
+            assert.are.equal(index, indexed_now)
+            assert.are.equal(work, work_now)
+            assert.is_truthy(said:find("on its own here", 1, true), said)
+        end)
+    end
+
+    -- 1x staged and then put back to 1 on disk: no hunk shows it, and X on 8x still
+    -- reverts the worktree, the index keeping 1x
+    it("reverts a hunk in a file whose index holds a put-back change", function()
+        local head = "1\n2\n3\n4\n5\n6\n7\n8\n"
+        local index = "1x\n2\n3\n4\n5\n6\n7\n8\n"
+        local root, p, v = staged_as(head, index, "1\n2\n3\n4\n5\n6\n7\n8x\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+        local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.are.equal(index, indexed_now)
+        assert.are.equal(head, work_now)
     end)
 
     -- a new file's content is its only hunk, so reverting it deletes the file; the
