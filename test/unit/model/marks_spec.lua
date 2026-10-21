@@ -570,6 +570,44 @@ describe("union marks", function()
         end)
     end)
 
+    describe("splits", function()
+        it("gives a clean file's one slice", function()
+            local drop_b = { hl(1, { "b" }, 0, {}) }
+            assert.are.same({ { 1, 1 } }, marks.splits(drop_b, { "b", "a" }, { "a" }, 1))
+        end)
+
+        it("gives each slice a hidden line between two hunks can sit in", function()
+            -- HEAD p c q, worktree P c Q, and an index with x in place of c
+            local union = { hl(1, { "p" }, 1, { "P" }), hl(3, { "q" }, 3, { "Q" }) }
+            local head, index = { "p", "c", "q" }, { "P", "x", "Q" }
+            assert.are.same({ { 1, 2 }, { 1, 3 } }, marks.splits(union, head, index, 1))
+            assert.are.same({ { 2, 4 }, { 3, 4 } }, marks.splits(union, head, index, 2))
+        end)
+
+        it("gives slices by line of the whole index for a hunk past matched lines", function()
+            local head, index = {}, {}
+            for l = 1, 1100 do
+                head[l] = "l" .. l
+            end
+            for l = 2, 1100 do
+                index[#index + 1] = head[l]
+            end
+            index[#index] = "n1100"
+            local union = { hl(1, { "l1" }, 1, { "n1" }), hl(1100, { "l1100" }, 1100, { "n1100" }) }
+            assert.are.same({ { 1099, 1100 } }, marks.splits(union, head, index, 2))
+        end)
+
+        it("gives nil for a file too big to read", function()
+            local head, index = {}, { "x" }
+            for l = 1, 1100 do
+                head[l], index[l + 1] = "l", "l"
+            end
+            index[#index] = "z"
+            local union = { hl(1100, { "l" }, 1100, { "z" }) }
+            assert.is_nil(marks.splits(union, head, index, 1))
+        end)
+    end)
+
     describe("shift", function()
         -- three lines inserted at the top, and line 5 replaced by two
         local hunks = { h(0, 0, 1, 3), h(5, 1, 8, 2) }

@@ -213,6 +213,42 @@ local function checked(ctx, entry, union, cached, unstaged, selection, take, tex
     return after
 end
 
+-- the most texts beyond the drawn one an op on a hunk checks
+local MAX_OTHERS = 8
+
+-- the first index text s (`take`) or u on `hunk` can write that checked() accepts, and
+-- the pairs it makes: the drawn reading's `text`, then stage.other_indexes, each of
+-- those checked whatever the file holds
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@param text string|nil  -- stage.next_index's
+---@return string|nil text, differ.DiffModel[]|nil after
+local function first_checked(ctx, entry, union, cached, unstaged, hunk, take, text)
+    local stage = require("differ.model.stage")
+    local selection = stage.hunk_selection(hunk)
+    if text then
+        local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
+        if after then
+            return text, after
+        end
+    end
+    local others = stage.other_indexes(union, cached, hunk, take, text)
+    for k = 1, math.min(#others, MAX_OTHERS) do
+        if others[k] ~= cached.new_text then
+            local after = checked(ctx, entry, union, cached, unstaged, selection, take, others[k])
+            if after then
+                return others[k], after
+            end
+        end
+    end
+    return nil
+end
+
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param hunk differ.Hunk|nil
@@ -233,16 +269,14 @@ local function apply(source, model, hunk, reverse)
     end
     local take = not reverse
     local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
-    if not text then
+    local after
+    if not reaches then
+        text, after = first_checked(ctx, entry, union, cached, unstaged, hunk, take, text)
+    end
+    if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
         -- where this hunk's change can be taken whole
         notify(refusal(take, reaches), vim.log.levels.WARN)
-        return false, true
-    end
-    local selection = stage.hunk_selection(hunk)
-    local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
-    if not after then
-        notify(refusal(take, nil), vim.log.levels.WARN)
         return false, true
     end
     if not put_index(ctx, entry, text) then
@@ -299,9 +333,9 @@ local function apply_lines(source, model, selection, reverse)
     return true
 end
 
--- the index and file X on hunk `idx` writes, read back before anything is: nil and
--- why where it refuses. a file whose index holds content no hunk shows goes
--- unchecked, as for s and u
+-- the index and file X on hunk `idx` writes, read back before anything is: the drawn
+-- reading's index, then the others as for s and u. nil and why where it refuses. a
+-- file whose index holds content no hunk shows goes unchecked
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
@@ -327,12 +361,21 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
     end
     local selection = stage.hunk_selection(hunk)
     local want = stage.reverted(union, m, selection)
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
-        return nil, nil, "this hunk can't be reverted on its own here"
+    local function reads(candidate)
+        local after = { union_pairs(ctx.root, entry.path, union.old_text, candidate, work_text) }
+        return stage.reads_as(want, before, selection, unpack(after))
     end
-    return index_text, work_text
+    if reads(index_text) then
+        return index_text, work_text
+    end
+    local others = stage.other_indexes(union, cached, hunk, false, index_text)
+    for k = 1, math.min(#others, MAX_OTHERS) do
+        if reads(others[k]) then
+            return others[k], work_text
+        end
+    end
+    return nil, nil, "this hunk can't be reverted on its own here"
 end
 
 -- X's refusals on a hunk, said before the prompt, which says as much itself: a

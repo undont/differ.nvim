@@ -685,59 +685,25 @@ describe(":Differ diff hunk staging", function()
     end)
 
     -- HEAD's "x x" pair loses one line in the worktree, which the union shows under the
-    -- first hunk: the second hunk reads partial, but neither pair holds anything of it
-    -- on its own, so s has no text to write and has to say where the change can be taken
-    local function stuck_repo()
-        local root = fresh_repo()
-        write(root .. "/a.lua", "1\n2\nx\nx\n5\n")
-        git(root, "commit", "-q", "-am", "five")
-        write(root .. "/a.lua", "1\nx\nx\n5x\n")
-        git(root, "add", "a.lua")
-        write(root .. "/a.lua", "1\n2x\nx\n5x\n")
-        vim.cmd.edit(root .. "/a.lua")
-        return root
+    -- first hunk. the index's x x reads as hunk 1's x held and hunk 2's dropped, so s on
+    -- either takes the worktree's lines there and keeps the other as drawn
+    for idx, want in ipairs({ "1\n2x\nx\nx\n5x\n", "1\nx\n5x\n" }) do
+        it(("stages hunk %d next to a pair the union lines up differently"):format(idx), function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "1\n2\nx\nx\n5\n")
+            git(root, "commit", "-q", "-am", "five")
+            write(root .. "/a.lua", "1\nx\nx\n5x\n")
+            git(root, "add", "a.lua")
+            write(root .. "/a.lua", "1\n2x\nx\n5x\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+            local changed = v:_apply_hunk(idx, true)
+            local index = indexed(root, "a.lua")
+            p:close()
+            assert.is_true(changed)
+            assert.are.equal(want, index)
+        end)
     end
-
-    it("refuses a hunk neither pair holds alone rather than rewriting the index", function()
-        local root = stuck_repo()
-        local p, v = open_panel()
-        local before = indexed(root, "a.lua")
-        local stuck
-        for i = 1, #v.model.hunks do
-            if v:_hunk_state(i) == "partial" then
-                stuck = i
-            end
-        end
-        assert.is_not_nil(stuck)
-        local changed, refused = v:_apply_hunk(stuck, true)
-        assert.is_false(changed)
-        assert.is_true(refused)
-        assert.are.equal(before, indexed(root, "a.lua")) -- no identical blob written
-        local said = _G.notifs[#_G.notifs].msg
-        assert.is_truthy(said:find("can't be staged on its own here", 1, true))
-        assert.is_truthy(said:find("dw", 1, true))
-        p:close()
-    end)
-
-    it("steps s off a hunk it refused instead of parking on it", function()
-        local root = stuck_repo()
-        local p, v = open_panel()
-        local before = indexed(root, "a.lua")
-        local stuck
-        for i = 1, #v.model.hunks do
-            if v:_hunk_state(i) == "partial" then
-                stuck = i
-            end
-        end
-        vim.api.nvim_win_set_cursor(v.columns[1].winid, { hunk_line(v, stuck), 0 })
-        v:stage_hunk() -- refuses, and the walk carries on past it
-        assert.are_not.equal(stuck, v:_hunk_index_under_cursor())
-        assert.is_true(v.stuck.staged[stuck])
-        -- the hunk it wrapped to can't move on its own either
-        v:stage_hunk()
-        assert.are.equal(before, indexed(root, "a.lua"))
-        p:close()
-    end)
 
     -- staged, then the worktree puts the committed content back, so only dw reaches it
     local function put_back(root, paths)

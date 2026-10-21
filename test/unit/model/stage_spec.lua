@@ -158,10 +158,9 @@ describe("next_index", function()
         assert.are.equal(2, reaches)
     end)
 
-    -- HEAD 1 2 x x 5, index 1 x x 5x, worktree 1 2x x 5x: the index drops a line the
-    -- union shows under hunk 1, so the pair hunks leave hunk 2 nothing of its own. the
-    -- op has to say so rather than hand back the index's own text
-    it("gives no text and no reaches for a hunk neither pair sits at", function()
+    -- HEAD 1 2 x x 5, index 1 x x 5x, worktree 1 2x x 5x: the pairs give hunk 2 nothing
+    -- of its own, and the drawn reading holds hunk 2's x and 5x as the slice to replace
+    it("takes a hunk's slice in the drawn reading where the index can't be cut", function()
         local head = "1\n2\nx\nx\n5\n"
         local index = "1\nx\nx\n5x\n"
         local work = "1\n2x\nx\n5x\n"
@@ -172,7 +171,7 @@ describe("next_index", function()
         local cached = model(head, index, { h(2, { "2" }, 2, {}), h(5, { "5" }, 4, { "5x" }) })
         local unstaged = model(index, work, { h(2, {}, 2, { "2x" }) })
         local text, reaches = stage.next_index(union, cached, unstaged, union.hunks[2], true)
-        assert.is_nil(text)
+        assert.are.equal("1\nx\n5x\n", text)
         assert.is_nil(reaches)
     end)
 
@@ -180,6 +179,27 @@ describe("next_index", function()
         local union, cached, unstaged = pairs_of(HEAD)
         -- both hunks are unstaged, so unstaging one has nothing to write
         assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
+    end)
+end)
+
+describe("other_indexes", function()
+    -- HEAD p c q, worktree P c Q, and an index with x in place of c: x reads as hidden
+    -- after P or before Q at the same cost
+    it("gives the hunk's other least-cost slices, the drawn one left out", function()
+        local union = model("p\nc\nq\n", "P\nc\nQ\n", {
+            h(1, { "p" }, 1, { "P" }),
+            h(3, { "q" }, 3, { "Q" }),
+        })
+        local cached =
+            model("p\nc\nq\n", "P\nx\nQ\n", { h(1, { "p", "c", "q" }, 1, { "P", "x", "Q" }) })
+        local texts = stage.other_indexes(union, cached, union.hunks[1], false, "p\nx\nQ\n")
+        assert.are.same({ "p\nQ\n" }, texts)
+    end)
+
+    it("gives none for a hunk the union no longer has", function()
+        local union = model("p\n", "P\n", { h(1, { "p" }, 1, { "P" }) })
+        local cached = model("p\n", "p\n", {})
+        assert.are.same({}, stage.other_indexes(union, cached, h(2, { "q" }, 2, {}), true))
     end)
 end)
 

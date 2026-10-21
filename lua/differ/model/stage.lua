@@ -1,6 +1,6 @@
 -- what the index should hold after a hunk of a HEAD↔worktree diff is staged or
--- unstaged. the index's lines at each hunk come from marks.blocks where the index holds
--- every unchanged line between them; otherwise the op moves whole pair hunks.
+-- unstaged. the index's lines at each hunk are their slice in the reading the view
+-- draws (marks.reading), or its blocks where they cut with nothing hidden.
 -- pure lua, no vim API
 
 local apply = require("differ.model.apply")
@@ -59,32 +59,96 @@ local function hunk_index(union, hunk)
     return nil
 end
 
--- the index's lines at each union hunk with `hunk`'s own replaced by the side the op
--- takes, or nil where the index can't be cut into blocks
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param hunk differ.Hunk
+-- the side of `h` s (`take`) or u gives the index
+---@param h differ.Hunk
 ---@param take boolean
----@return string|nil
-local function by_blocks(union, cached, hunk, take)
-    local blocks, ended = M.index_blocks(union, cached.new_text)
-    local i = hunk_index(union, hunk)
-    if not (blocks and i) then
-        return nil
-    end
-    blocks[i] = ended.hunks[i].old_lines
+---@return string[]
+local function taken(h, take)
     if take then
-        blocks[i] = ended.hunks[i].new_lines
+        return h.new_lines
     end
-    return apply.join(ended, blocks)
+    return h.old_lines
 end
 
--- the text the index takes when `hunk` is staged (`take`) or unstaged. the index's lines
--- at the hunk become the hunk's new or old lines; an index that changes a line between
--- hunks moves by the pair hunks meeting it on the side that pair shares. `reaches` names
--- another union hunk such a pair hunk covers too, and then there is no text: staging by
--- hunk can't take one without the other. no text and no `reaches` is a hunk the pair the
--- op reads for lines up under a different union hunk, leaving the index where it is
+-- the index with its lines from slice[1] up to slice[2] replaced by `lines`
+---@param index string[]  -- ended lines
+---@param slice integer[]
+---@param lines string[]
+---@return string
+local function resliced(index, slice, lines)
+    local out = {}
+    for l = 1, slice[1] - 1 do
+        out[#out + 1] = index[l]
+    end
+    for _, line in ipairs(lines) do
+        out[#out + 1] = line
+    end
+    for l = slice[2], #index do
+        out[#out + 1] = index[l]
+    end
+    return text_util.ended_text(out)
+end
+
+-- the index's text with union hunk `i`'s lines in the drawn reading replaced by the
+-- side the op takes, or nil past the reading
+---@param union differ.DiffModel
+---@param index string  -- the index's text
+---@param i integer
+---@param take boolean
+---@return string|nil
+local function by_reading(union, index, i, take)
+    local read = M.reading(union, index)
+    if not read then
+        return nil
+    end
+    local h = apply.ended(union).hunks[i]
+    return resliced(text_util.ended_lines(index), read.slices[i], taken(h, take))
+end
+
+-- the index's text with `hunk`'s lines in the drawn reading replaced by the side the
+-- op takes: its block where the index cuts into blocks with nothing hidden, else its
+-- slice in marks.reading. past the reading, its block, else the pair hunks meeting it
+-- on the side that pair shares. `reaches` names another union hunk such a pair hunk
+-- covers too, and then there is no text
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@return string|nil text, integer|nil reaches
+local function drawn_index(union, cached, unstaged, hunk, take)
+    local blocks, ended = M.index_blocks(union, cached.new_text)
+    local i = hunk_index(union, hunk)
+    if blocks and i then
+        local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
+        if not held or #hidden_in > 0 then
+            local text = by_reading(union, cached.new_text, i, take)
+            if text then
+                return text
+            end
+        end
+        blocks[i] = taken(ended.hunks[i], take)
+        return apply.join(ended, blocks)
+    end
+    local from, side = unstaged, "new"
+    if not take then
+        from, side = cached, "old"
+    end
+    local reaches = marks.shared_with(union.hunks, hunk, from.hunks, side)
+    if reaches then
+        return nil, reaches
+    end
+    local text = i and by_reading(union, cached.new_text, i, take)
+    if text then
+        return text
+    end
+    return apply.splice(from, M.select_hunks(from.hunks, side, hunk, side, take))
+end
+
+-- the text the index takes when `hunk` is staged (`take`) or unstaged, as the view
+-- draws it (drawn_index). no text and no `reaches` is a hunk the drawn reading already
+-- has where the op puts it, or one the pair the op reads for lines up under a
+-- different union hunk, leaving the index where it is
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
@@ -92,22 +156,45 @@ end
 ---@param take boolean
 ---@return string|nil text, integer|nil reaches
 function M.next_index(union, cached, unstaged, hunk, take)
-    local text = by_blocks(union, cached, hunk, take)
-    if not text then
-        local from, side = unstaged, "new"
-        if not take then
-            from, side = cached, "old"
-        end
-        local reaches = marks.shared_with(union.hunks, hunk, from.hunks, side)
-        if reaches then
-            return nil, reaches
-        end
-        text = apply.splice(from, M.select_hunks(from.hunks, side, hunk, side, take))
+    local text, reaches = drawn_index(union, cached, unstaged, hunk, take)
+    if reaches then
+        return nil, reaches
     end
     if text == cached.new_text then
         return nil -- the op has nothing of this hunk to move on its own
     end
     return text
+end
+
+-- the other texts s (`take`) or u on `hunk` can give the index: its slice in each
+-- least-cost reading (marks.splits) replaced by the side the op takes, in that order,
+-- `drawn` and repeats left out. none past the reading
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@param drawn string|nil  -- the text already tried
+---@return string[]
+function M.other_indexes(union, cached, hunk, take, drawn)
+    local i = hunk_index(union, hunk)
+    if not i then
+        return {}
+    end
+    local ended = apply.ended(union)
+    local head, index =
+        text_util.ended_lines(union.old_text), text_util.ended_lines(cached.new_text)
+    local out, seen = {}, {}
+    if drawn then
+        seen[drawn] = true
+    end
+    for _, slice in ipairs(marks.splits(ended.hunks, head, index, i) or {}) do
+        local text = resliced(index, slice, taken(ended.hunks[i], take))
+        if not seen[text] then
+            seen[text] = true
+            out[#out + 1] = text
+        end
+    end
+    return out
 end
 
 ---@class differ.model.Selection

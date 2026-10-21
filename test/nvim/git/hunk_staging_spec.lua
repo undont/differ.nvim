@@ -1215,30 +1215,18 @@ func getDownloadSpeed() {
         assert.are.equal("a\nb\nb\n", index)
     end)
 
-    -- u on hunk 1 would drop hunk 2's staged x along with it
-    for _, case in ipairs({
-        {
-            key = "u",
-            op = "unstage_hunk",
-            head = "b\nx\na\n",
-            index = "x\nx\na\n",
-            work = "x\nx\n",
-        },
-    }) do
-        it(("refuses %s on a hunk whose write would move another"):format(case.key), function()
-            local root, p, v = staged_as(case.head, case.index, case.work)
-            local col = v.columns[#v.columns]
-            vim.api.nvim_set_current_win(col.winid)
-            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-            _G.notifs = {}
-            v[case.op](v)
-            local said = (_G.notifs[1] or {}).msg or ""
-            local index = indexed(root, "a.lua")
-            p:close()
-            assert.are.equal(case.index, index)
-            assert.is_truthy(said:find("on its own here", 1, true), said)
-        end)
-    end
+    -- the drawn reading has hunk 1's b dropped and hunk 2's x held: u gives b back and
+    -- keeps the x
+    it("unstages a hunk next to repeated lines as the view draws it", function()
+        local root, p, v = staged_as("b\nx\na\n", "x\nx\na\n", "x\nx\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("b\nx\nx\na\n", index)
+    end)
 
     -- 2x staged and then edited again to 2y: the marks don't place 2x, and s still
     -- takes the worktree's line
