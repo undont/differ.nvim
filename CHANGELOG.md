@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.8] — 2026-10-20
+
 ### Added
 
 - `X` in visual mode reverts only the selected lines of the diff, including in `dw` and on untracked files
