@@ -185,6 +185,34 @@ local function remark(source, union, cached, unstaged)
     end
 end
 
+-- the pairs `text` as the index makes, or nil where they read back as other marks
+-- than s (`take`) or u on `selection` leaves. a whole hunk's op (`whole`) in a file
+-- whose index holds content no hunk shows goes unchecked: the marks don't place it
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@param selection differ.model.Selection
+---@param take boolean
+---@param text string
+---@param whole? boolean
+---@return differ.DiffModel[]|nil
+local function checked(ctx, entry, union, cached, unstaged, selection, take, text, whole)
+    local stage = require("differ.model.stage")
+    local m, hidden = stage.marks_of(union, cached, unstaged)
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
+    if whole and hidden then
+        return after
+    end
+    local want = stage.flipped(union, m, selection, take)
+    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    if not stage.reads_as(want, before, selection, unpack(after)) then
+        return nil
+    end
+    return after
+end
+
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param hunk differ.Hunk|nil
@@ -211,10 +239,16 @@ local function apply(source, model, hunk, reverse)
         notify(refusal(take, reaches), vim.log.levels.WARN)
         return false, true
     end
+    local selection = stage.hunk_selection(hunk)
+    local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
+    if not after then
+        notify(MOVES_OTHERS, vim.log.levels.WARN)
+        return false, true
+    end
     if not put_index(ctx, entry, text) then
         return false
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text))
+    remark(source, unpack(after))
     return true
 end
 
@@ -253,11 +287,8 @@ local function apply_lines(source, model, selection, reverse)
         notify("these lines are already " .. state, vim.log.levels.INFO)
         return false
     end
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    local want = stage.flipped(union, m, selection, take)
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
+    local after = checked(ctx, entry, union, cached, unstaged, selection, take, text)
+    if not after then
         notify(MOVES_OTHERS, vim.log.levels.WARN)
         return false, true
     end
