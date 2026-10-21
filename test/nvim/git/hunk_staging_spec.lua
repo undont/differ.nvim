@@ -21,14 +21,6 @@ local gutter_of = helpers.gutter_of
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
-    -- a spec that aborts before its p:close() would otherwise leak its panel into every
-    -- spec after it, and the count would name them all rather than the one that broke
-    after_each(function()
-        local open = Panel.current()
-        if open then
-            open:close()
-        end
-    end)
     -- an "RM": a.lua renamed to b.lua and edited in the index, then edited again in the
     -- worktree
     ---@return string path  -- the new name

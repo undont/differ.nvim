@@ -17,15 +17,6 @@ local hunk_line = helpers.hunk_line
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
-    -- a spec that aborts before its p:close() would otherwise leak its panel into every
-    -- spec after it, and the count would name them all rather than the one that broke
-    after_each(function()
-        local open = Panel.current()
-        if open then
-            open:close()
-        end
-    end)
-
     -- on a two-row file X refuses a staged hunk, since reverting only the worktree copy
     -- would leave index and worktree differing the opposite way round. a union row has
     -- both sides in one diff, so it takes them both and the refusal doesn't apply

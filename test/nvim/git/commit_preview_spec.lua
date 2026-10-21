@@ -23,15 +23,6 @@ local paths = helpers.paths
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
-    -- a spec that aborts before its p:close() would otherwise leak its panel into every
-    -- spec after it, and the count would name them all rather than the one that broke
-    after_each(function()
-        local open = Panel.current()
-        if open then
-            open:close()
-        end
-    end)
-
     it("says so when the commit preview empties and hands back every change", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "staged\n")

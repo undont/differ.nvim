@@ -25,15 +25,6 @@ local stage_behind = helpers.stage_behind
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
-    -- a spec that aborts before its p:close() would otherwise leak its panel into every
-    -- spec after it, and the count would name them all rather than the one that broke
-    after_each(function()
-        local open = Panel.current()
-        if open then
-            open:close()
-        end
-    end)
-
     it("dw opens a partly staged file's local view and goes back", function()
         partly_staged_repo()
         local p, v = open_panel()
