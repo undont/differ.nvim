@@ -45,7 +45,7 @@ end
 ---@param union differ.DiffModel
 ---@param hunk differ.Hunk
 ---@return integer|nil
-function M.hunk_index(union, hunk)
+local function hunk_index(union, hunk)
     for i, u in ipairs(union.hunks) do
         if
             u.old_start == hunk.old_start
@@ -68,7 +68,7 @@ end
 ---@return string|nil
 local function by_blocks(union, cached, hunk, take)
     local blocks, ended = M.index_blocks(union, cached.new_text)
-    local i = M.hunk_index(union, hunk)
+    local i = hunk_index(union, hunk)
     if not (blocks and i) then
         return nil
     end

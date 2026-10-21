@@ -8,7 +8,6 @@ local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
 local operation_ops = require("differ.git.operation")
-local GIT = exec.GIT
 local notify, chomp, reload_buffer = exec.notify, exec.chomp, exec.reload_buffer
 local git, git_raw, git_ok = exec.git, exec.git_raw, exec.git_ok
 local set_staged, index_path = index_ops.set_staged, index_ops.index_path
@@ -17,22 +16,19 @@ local watch = require("differ.git.watch")
 local text_util = require("differ.util.text")
 local tab_util = require("differ.util.tab")
 local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
+local content_ops = require("differ.git.content")
+local HEAD, INDEX, WORKTREE = content_ops.HEAD, content_ops.INDEX, content_ops.WORKTREE
+local read_file, raw_line = content_ops.read_file, content_ops.raw_line
 
 local M = {}
 
--- the three working-tree side refs (slice B). staged diffs read HEAD↔index,
--- unstaged diffs read index↔worktree; an untracked file is absent from the index
--- so its index read returns nil and the diff renders as a pure add
-local HEAD = { kind = "rev", rev = "HEAD", label = "HEAD" }
-local INDEX = { kind = "index", label = "INDEX" }
-local WORKTREE = { kind = "worktree", label = "WORKTREE" }
+M.read = content_ops.read
 
 -- git's canonical empty-tree object: the "old" side for a root commit (no parent),
 -- so its files list and read as pure adds (history)
 local EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
--- git's mode for a submodule entry (a commit pointer)
-local GITLINK = "160000"
+local GITLINK = index_ops.GITLINK
 
 -- how long a network git call may block the editor; `wait()` has no budget of its own
 M.fetch_timeout_ms = 20000
@@ -179,123 +175,6 @@ local function resolve_ref(ref, root)
         return nil
     end
     return { kind = "rev", rev = chomp(out), label = ref.label }
-end
-
--- a file's bytes as they sit on disk, or nil when it isn't readable
----@param abs string
----@return string|nil
-local function read_file(abs)
-    local uv = vim.uv or vim.loop
-    local st = uv.fs_lstat(abs)
-    if st and st.type == "link" then
-        return uv.fs_readlink(abs) -- git stores a symlink as its target path
-    end
-    if vim.fn.filereadable(abs) == 0 then
-        return nil
-    end
-    local fd = io.open(abs, "rb")
-    if not fd then
-        return nil
-    end
-    local data = fd:read("*a")
-    fd:close()
-    return data
-end
-
--- whether an attribute that rewrites LF-only content on `git add` is set for `relpath`
----@param root string
----@param relpath string
----@return boolean
-local function has_clean_attr(root, relpath)
-    local attrs = { "filter", "ident", "working-tree-encoding" }
-    local out =
-        git(vim.list_extend({ "check-attr" }, vim.list_extend(attrs, { "--", relpath })), root)
-    if not out then
-        return false
-    end
-    for line in out:gmatch("[^\n]+") do
-        local value = line:match(": ([^:]*)$")
-        if value ~= "unspecified" and value ~= "unset" then
-            return true
-        end
-    end
-    return false
-end
-
--- worktree bytes as `git add` would store them (the clean filter: eol
--- conversion, text attrs, custom filters), so worktree-side diffs compare in
--- the repo domain, like `git diff`, and the hunk patches built from the model
--- stage the same blob a `git add` of the file would write. runs the real
--- `git add` against a throwaway copy of the index and reads the entry back, so
--- every conversion rule (safe-crlf stickiness included) is git's own, not a
--- reimplementation. gated on non-binary content that has a CR byte or a
--- converting attribute (has_clean_attr): nothing else converts, so the common
--- case pays one check-attr. any failure falls back to the raw bytes
----@param root string
----@param relpath string
----@param data string
----@return string
-local function as_staged(root, relpath, data)
-    if text_util.is_binary(data) then
-        return data
-    end
-    if not data:find("\r", 1, true) and not has_clean_attr(root, relpath) then
-        return data
-    end
-    local index = git({ "rev-parse", "--git-path", "index" }, root)
-    if not index then
-        return data
-    end
-    index = chomp(index)
-    if index:sub(1, 1) ~= "/" then
-        index = root .. "/" .. index -- --git-path can print relative to the cwd
-    end
-    local tmp = vim.fn.tempname()
-    local src = io.open(index, "rb") -- absent in a fresh repo: git add creates tmp
-    if src then
-        local blob = src:read("*a")
-        src:close()
-        local dst = io.open(tmp, "wb")
-        if not dst then
-            return data
-        end
-        dst:write(blob)
-        dst:close()
-    end
-    local env = { GIT_INDEX_FILE = tmp }
-    local add_cmd = vim.list_extend(vim.list_extend({}, GIT), { "add", "--", relpath })
-    local add = vim.system(add_cmd, { cwd = root, env = env }):wait()
-    if add.code ~= 0 then
-        os.remove(tmp)
-        return data
-    end
-    -- raw read, no text=true: that would strip the CRs git chose to keep
-    local show = vim.system({ "git", "show", ":0:" .. relpath }, { cwd = root, env = env }):wait()
-    os.remove(tmp)
-    if show.code ~= 0 or not show.stdout then
-        return data
-    end
-    return show.stdout
-end
-
--- read a side's content for `relpath` (repo-root-relative). returns the content
--- (possibly ""), or nil when the file is absent on that side (added/deleted);
--- callers treat nil as an empty file so the diff renders an add/delete.
--- the worktree side reads through the clean filter (as_staged) so it lands in
--- the same domain as the index/rev sides
----@param ref differ.git.Ref
----@param root string
----@param relpath string
----@return string|nil
-function M.read(ref, root, relpath)
-    if ref.kind == "worktree" then
-        local data = read_file(root .. "/" .. relpath)
-        return data and as_staged(root, relpath, data) or nil
-    end
-    -- a rev is `<rev>:path`; the index is `:0:path`, since `:path` reads a leading
-    -- `1:` as a stage number
-    local spec = (ref.kind == "index" and ":0:" or (ref.rev .. ":")) .. relpath
-    return git_raw({ "show", spec }, root) -- nil if the path is absent in that tree
 end
 
 -- one conflict stage's full content for `relpath`: 1=base, 2=ours, 3=theirs.
@@ -623,51 +502,6 @@ function M.file_entries(source, root)
     return out
 end
 
--- a file's three diffs over texts already read: HEAD↔worktree to show, and the two
--- real pairs its marks come from
----@param root string
----@param path string
----@param head string
----@param index string
----@param work string
----@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
-local function union_pairs(root, path, head, index, work)
-    local build = require("differ.model.diff").build
-    local function pair(old_rev, new_rev, old_text, new_text)
-        return build({
-            path = path,
-            old_rev = old_rev,
-            new_rev = new_rev,
-            old_text = old_text,
-            new_text = new_text,
-            root = root,
-        })
-    end
-    return pair("HEAD", "WORKTREE", head, work),
-        pair("HEAD", "INDEX", head, index),
-        pair("INDEX", "WORKTREE", index, work)
-end
-
--- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
--- a rename's old path
----@param root string
----@param entry differ.FileEntry
----@return differ.DiffModel|nil union, differ.DiffModel|nil cached, differ.DiffModel|nil unstaged
-function M.union_models(root, entry)
-    local at_head = entry.previous_path or entry.path
-    local index = M.read(INDEX, root, index_path(entry))
-    if not index then
-        return nil
-    end
-    return union_pairs(
-        root,
-        entry.path,
-        M.read(HEAD, root, at_head) or "",
-        index,
-        M.read(WORKTREE, root, entry.path) or ""
-    )
-end
-
 -- a porcelain entry's section and the letter its row shows. the section comes from
 -- which of the index (X) and the worktree (Y) hold a change; the letter is the change
 -- the row's HEAD↔worktree diff shows
@@ -890,26 +724,6 @@ local function live_status(root, entry, preview)
     return select(2, row_of(s))
 end
 
--- the entry's `diff --raw` line under `args`'s pair, or nil when the pair no longer
--- lists it at all. git pairs a rename only with both paths in the pathspec
----@param root string
----@param args string[]
----@param entry differ.FileEntry
----@return string|nil
-local function raw_line(root, args, entry)
-    local full = { "diff", "--raw" }
-    vim.list_extend(full, args)
-    vim.list_extend(full, { "--", entry.path })
-    if entry.previous_path then
-        full[#full + 1] = entry.previous_path
-    end
-    local out = git(full, root)
-    if not out or chomp(out) == "" then
-        return nil
-    end
-    return out
-end
-
 -- the notice a zero-hunk entry opens on, or nil when it's stale (committed, staged
 -- away or reverted outside differ) and the caller should re-source instead.
 ---@param root string
@@ -990,21 +804,19 @@ function M.discard(root, entry, preview)
         )
         return false
     end
-    -- restoring a staged deletion from HEAD would overwrite the copy still on disk
-    if entry.kept then
-        local msg = "discard skipped: X would overwrite %s on disk; u unstages the deletion instead"
-        notify(msg:format(entry.path), vim.log.levels.WARN)
+    local why = index_ops.discard_refusal(entry)
+    if why then
+        notify("discard skipped: " .. why, vim.log.levels.WARN)
         return false
     end
     if not preview then
         if restores_staged(entry) then
             return index_ops.restore_deleted(root, entry)
         end
-        -- checkout moves the commit a submodule records, never the checkout inside it
         local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
-        if old_mode == GITLINK or new_mode == GITLINK then
-            local msg = "discard skipped: X can't move the checkout inside the submodule %s"
-            notify(msg:format(entry.path), vim.log.levels.WARN)
+        why = index_ops.discard_refusal(entry, old_mode, new_mode)
+        if why then
+            notify("discard skipped: " .. why, vim.log.levels.WARN)
             return false
         end
     end
@@ -1427,6 +1239,14 @@ function M.panel(opts)
         retarget = function(outside)
             retarget_view(outside)
         end,
+        retarget_later = function(refresh)
+            vim.schedule(function()
+                if refresh then
+                    refresh_panel()
+                end
+                retarget_view(false)
+            end)
+        end,
         preview_off = function()
             set_preview(false)
         end,
@@ -1540,7 +1360,7 @@ function M.panel(opts)
         elseif staged_only then
             staging = staging_ops.for_index(entry, model, false)
         else
-            staging = staging_ops.for_whole(entry, model)
+            staging = staging_ops.for_union(entry, model)
         end
         if staging and not preview then
             if staging_ops.partly_staged(entry) then
@@ -2090,9 +1910,6 @@ function M.close()
     notify("no differ view open")
 end
 
--- what git/staging.lua reads back: the pair models it re-marks from, a row's raw diff
--- line, and the index and worktree refs
-M.raw_line, M.union_pairs, M.INDEX, M.WORKTREE = raw_line, union_pairs, INDEX, WORKTREE
 M.live_row = live_row
 
 return M

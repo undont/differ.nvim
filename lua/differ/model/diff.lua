@@ -1,4 +1,4 @@
--- canonical hunk model built from vim.diff(); buffers are projections of this
+-- canonical hunk model built from vim.text.diff(); buffers are projections of this
 
 ---@class differ.Hunk
 ---@field old_start integer
