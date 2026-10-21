@@ -495,6 +495,20 @@ function M.flipped(union, m, selection, take)
     return want
 end
 
+-- every line of `hunk`, as a selection
+---@param hunk differ.Hunk
+---@return differ.model.Selection
+function M.hunk_selection(hunk)
+    local selection = { old = {}, new = {} }
+    for l = hunk.old_start, hunk.old_start + hunk.old_count - 1 do
+        selection.old[l] = true
+    end
+    for l = hunk.new_start, hunk.new_start + hunk.new_count - 1 do
+        selection.new[l] = true
+    end
+    return selection
+end
+
 -- what X on `selection` should leave: the selected lines gone and every other line as
 -- `m` has it, its new side placed where select_worktree's text puts it
 ---@param union differ.DiffModel

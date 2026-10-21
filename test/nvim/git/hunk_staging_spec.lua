@@ -1202,6 +1202,48 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    -- repeated lines the pairs line up another way than the union: s on hunk 1 would
+    -- give back the b whose deletion hunk 2 holds staged, and u on hunk 1 would drop
+    -- hunk 2's staged x along with it
+    for _, case in ipairs({
+        { key = "s", op = "stage_hunk", head = "b\nb\nb\n", index = "b\nb\n", work = "a\nb\nx\n" },
+        {
+            key = "u",
+            op = "unstage_hunk",
+            head = "b\nx\na\n",
+            index = "x\nx\na\n",
+            work = "x\nx\n",
+        },
+    }) do
+        it(("refuses %s on a hunk whose write would move another"):format(case.key), function()
+            local root, p, v = staged_as(case.head, case.index, case.work)
+            local col = v.columns[#v.columns]
+            vim.api.nvim_set_current_win(col.winid)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+            _G.notifs = {}
+            v[case.op](v)
+            local said = (_G.notifs[1] or {}).msg or ""
+            local index = indexed(root, "a.lua")
+            p:close()
+            assert.are.equal(case.index, index)
+            assert.is_truthy(said:find("on its own here", 1, true), said)
+        end)
+    end
+
+    -- 2x staged and then edited again to 2y: the marks don't place 2x, and s still
+    -- takes the worktree's line
+    it("stages a ! hunk whole", function()
+        local head, work = lines_of({ "1", "2", "3" }), lines_of({ "1", "2y", "3" })
+        local root, p, v = staged_as(head, lines_of({ "1", "2x", "3" }), work)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(work, index)
+    end)
+
     -- the file is edited under the open view: X refuses before either side moves, so the
     -- index keeps its half too rather than dropping it alone
     it("X leaves the index alone when the file won't take the revert", function()

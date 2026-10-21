@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `s`, `u` and `X` on a hunk could misplace lines in the index or file around repeated lines; they now refuse instead
+
+## [0.2.9] — 2026-10-21
+
 ### Changed
 
 - Staging's internals are restructured into one module per view, with no change in behaviour or messages
