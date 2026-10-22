@@ -260,6 +260,22 @@ describe(":Differ diff hunk staging", function()
         end)
     end
 
+    -- the index's x is hunk 3's, staged. git pairs HEAD's first b with x b a once the x
+    -- goes, which reads as the same lines
+    it("reverts a staged hunk among repeated lines", function()
+        local root, p, v = staged_as("b\nb\nb\n", "b\nb\nx\nb\n", "x\nb\na\nb\nx\nb\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 3), 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+        local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.are.equal("b\nb\nb\n", indexed_now)
+        assert.are.equal("x\nb\na\nb\nb\n", work_now)
+    end)
+
     -- 1x staged and then put back to 1 on disk: no hunk shows it, and X on 8x still
     -- reverts the worktree, the index keeping 1x
     it("reverts a hunk in a file whose index holds a put-back change", function()

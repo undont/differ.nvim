@@ -166,37 +166,6 @@ function M.next_index(union, cached, unstaged, hunk, take)
     return text
 end
 
--- the other texts s (`take`) or u on `hunk` can give the index: its slice in each
--- least-cost reading (marks.splits) replaced by the side the op takes, in that order,
--- `drawn` and repeats left out. none past the reading
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param hunk differ.Hunk
----@param take boolean
----@param drawn string|nil  -- the text already tried
----@return string[]
-function M.other_indexes(union, cached, hunk, take, drawn)
-    local i = hunk_index(union, hunk)
-    if not i then
-        return {}
-    end
-    local ended = apply.ended(union)
-    local head, index =
-        text_util.ended_lines(union.old_text), text_util.ended_lines(cached.new_text)
-    local out, seen = {}, {}
-    if drawn then
-        seen[drawn] = true
-    end
-    for _, slice in ipairs(marks.splits(ended.hunks, head, index, i) or {}) do
-        local text = resliced(index, slice, taken(ended.hunks[i], take))
-        if not seen[text] then
-            seen[text] = true
-            out[#out + 1] = text
-        end
-    end
-    return out
-end
-
 ---@class differ.model.Selection
 ---@field old table<integer, boolean>  -- union old lnums
 ---@field new table<integer, boolean>  -- union new lnums
@@ -723,28 +692,115 @@ local function same_side(a, b, lines)
     return true
 end
 
--- the HEAD↔index hunks clear of every union hunk the selection touches, by place and
--- text
+-- the span of the drawn slices of the hunks the selection touches, {first, after} index
+-- lines, and how many lines in them no row of their hunk holds. first > after where
+-- the selection touches no hunk
+---@param read differ.model.Reading
 ---@param union differ.DiffModel
----@param cached differ.DiffModel
 ---@param selection differ.model.Selection
----@return table<string, boolean>
-local function index_elsewhere(union, cached, selection)
-    local out = {}
-    for _, c in ipairs(cached.hunks) do
-        local clear = true
-        for _, h in ipairs(union.hunks) do
-            if touches(h, selection) and marks.meets(c, "old", h, "old") then
-                clear = false
+---@return integer first, integer after, integer hidden
+local function touched_slices(read, union, selection)
+    local first, after, hidden = math.huge, -math.huge, 0
+    for i, h in ipairs(union.hunks) do
+        if touches(h, selection) then
+            local slice = read.slices[i]
+            first, after = math.min(first, slice[1]), math.max(after, slice[2])
+            hidden = hidden + slice[2] - slice[1]
+            for l = h.old_start, h.old_start + h.old_count - 1 do
+                if read.marks.old[l] == false then
+                    hidden = hidden - 1
+                end
+            end
+            for l = h.new_start, h.new_start + h.new_count - 1 do
+                if read.marks.new[l] == true then
+                    hidden = hidden - 1
+                end
             end
         end
-        if clear then
-            local key = ("%d,%d:%s"):format(
-                c.old_start,
-                c.old_count,
-                table.concat(c.new_lines, "\n")
-            )
-            out[key] = true
+    end
+    return first, after, hidden
+end
+
+-- whether `to` holds the lines of `from` before index line `first` and from `after` on,
+-- unchanged
+---@param from string[]
+---@param to string[]
+---@param first integer
+---@param after integer
+---@return boolean
+local function outside_kept(from, to, first, after)
+    if first > after then
+        first, after = #from + 1, #from + 1
+    end
+    local tail = #from - after + 1
+    if #to < first - 1 + tail then
+        return false
+    end
+    for l = 1, first - 1 do
+        if from[l] ~= to[l] then
+            return false
+        end
+    end
+    for d = 0, tail - 1 do
+        if from[#from - d] ~= to[#to - d] then
+            return false
+        end
+    end
+    return true
+end
+
+-- the hidden lines in the drawn slices the selection touches, which the op drops, where
+-- it leaves the index outside those slices as it was and the reading after it hides
+-- exactly the rest. nil otherwise, or past either reading
+---@param before differ.model.Before
+---@param selection differ.model.Selection
+---@param union differ.DiffModel   -- read from the op's texts
+---@param cached differ.DiffModel
+---@return integer|nil
+local function hidden_dropped(before, selection, union, cached)
+    local read = M.reading(before.union, before.cached.new_text)
+    local now = M.reading(union, cached.new_text)
+    if not (read and now) then
+        return nil
+    end
+    local first, after, hidden = touched_slices(read, before.union, selection)
+    if now.cost ~= read.cost - hidden then
+        return nil
+    end
+    local from = text_util.ended_lines(before.cached.new_text)
+    if not outside_kept(from, text_util.ended_lines(cached.new_text), first, after) then
+        return nil
+    end
+    return hidden
+end
+
+-- `states` less each old line and a new line of the same hunk with the same text and
+-- state: together they put that line in the index once, as an unchanged line does
+---@param states differ.model.LineStates
+---@param hunks differ.Hunk[]
+---@param old_lines string[]
+---@param new_lines string[]
+---@return differ.model.LineStates
+local function paired_out(states, hunks, old_lines, new_lines)
+    local out = { old = {}, new = {} }
+    for l, v in pairs(states.old) do
+        out.old[l] = v
+    end
+    for l, v in pairs(states.new) do
+        out.new[l] = v
+    end
+    for _, h in ipairs(hunks) do
+        for o = h.old_start, h.old_start + h.old_count - 1 do
+            for n = h.new_start, h.new_start + h.new_count - 1 do
+                if
+                    out.old[o] ~= nil
+                    and out.new[n] == out.old[o]
+                    and old_lines[o] == new_lines[n]
+                then
+                    out.old[o], out.new[n] = nil, nil
+                    break
+                end
+            end
         end
     end
     return out
@@ -772,8 +828,8 @@ end
 
 -- whether the pairs an op's texts make read back as `want`. a minimal diff from each old
 -- text to its new one stays within the lines the op moves (moves_only), so nothing else
--- changes place. index content no hunk shows stays exactly as it was, so where there is
--- some, the HEAD↔index hunks away from the selection come through unchanged
+-- changes place. where the index holds content no hunk shows, the op also drops the
+-- hidden lines in the drawn slices it touches, and nothing else of it (hidden_dropped)
 ---@param want differ.model.LineStates
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
@@ -783,26 +839,27 @@ end
 ---@return boolean
 function M.reads_as(want, before, selection, union, cached, unstaged)
     local m, hidden = M.marks_of(union, cached, unstaged)
-    if hidden ~= before.hidden then
+    local dropped = 0 ---@type integer|nil
+    if before.hidden then
+        dropped = hidden_dropped(before, selection, union, cached)
+        if not dropped then
+            return false
+        end
+    elseif hidden then
         return false
     end
-    local got = line_states(union.hunks, m)
     local old_lines = text_util.ended_lines(union.old_text)
     local new_lines = text_util.ended_lines(union.new_text)
+    local got = paired_out(line_states(union.hunks, m), union.hunks, old_lines, new_lines)
+    local expect = paired_out(want, union.hunks, old_lines, new_lines)
     if
-        not same_side(got.old, want.old, old_lines) or not same_side(got.new, want.new, new_lines)
+        not same_side(got.old, expect.old, old_lines)
+        or not same_side(got.new, expect.new, new_lines)
     then
         return false
     end
-    if
-        not moves_only(
-            before.edits,
-            before.cached.new_text,
-            cached.new_text,
-            want.leave,
-            want.enter
-        )
-    then
+    local index_from, index_to = before.cached.new_text, cached.new_text
+    if not moves_only(before.edits, index_from, index_to, want.leave + dropped, want.enter) then
         return false
     end
     local work_from, work_to = before.union.new_text, union.new_text
@@ -811,21 +868,6 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
         and not moves_only(before.edits, work_from, work_to, want.work_leave, want.work_enter)
     then
         return false
-    end
-    if not hidden then
-        return true
-    end
-    local kept = index_elsewhere(before.union, before.cached, selection)
-    local now = index_elsewhere(before.union, cached, selection)
-    for key in pairs(kept) do
-        if not now[key] then
-            return false
-        end
-    end
-    for key in pairs(now) do
-        if not kept[key] then
-            return false
-        end
     end
     return true
 end

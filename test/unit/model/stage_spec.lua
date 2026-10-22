@@ -182,27 +182,6 @@ describe("next_index", function()
     end)
 end)
 
-describe("other_indexes", function()
-    -- HEAD p c q, worktree P c Q, and an index with x in place of c: x reads as hidden
-    -- after P or before Q at the same cost
-    it("gives the hunk's other least-cost slices, the drawn one left out", function()
-        local union = model("p\nc\nq\n", "P\nc\nQ\n", {
-            h(1, { "p" }, 1, { "P" }),
-            h(3, { "q" }, 3, { "Q" }),
-        })
-        local cached =
-            model("p\nc\nq\n", "P\nx\nQ\n", { h(1, { "p", "c", "q" }, 1, { "P", "x", "Q" }) })
-        local texts = stage.other_indexes(union, cached, union.hunks[1], false, "p\nx\nQ\n")
-        assert.are.same({ "p\nQ\n" }, texts)
-    end)
-
-    it("gives none for a hunk the union no longer has", function()
-        local union = model("p\n", "P\n", { h(1, { "p" }, 1, { "P" }) })
-        local cached = model("p\n", "p\n", {})
-        assert.are.same({}, stage.other_indexes(union, cached, h(2, { "q" }, 2, {}), true))
-    end)
-end)
-
 describe("model.stage.drop_lines", function()
     it("takes back only the lines asked for inside a block of the same length", function()
         local cached = model("1\n2\n3\n4\n5\n", "1\nB\nC\nD\n5\n", {

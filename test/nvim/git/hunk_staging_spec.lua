@@ -1228,6 +1228,19 @@ func getDownloadSpeed() {
         assert.are.equal("b\nx\nx\na\n", index)
     end)
 
+    -- the index's extra x and a sit away from hunk 1, and git pairs them differently
+    -- once its a is staged: s still writes, and they stay where they were
+    it("stages a ! hunk where the write re-pairs the staged lines elsewhere", function()
+        local root, p, v = staged_as("x\nx\na\nx\n", "x\nx\nx\na\na\nx\n", "a\nx\nx\na\nb\nx\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal("a\nx\nx\nx\na\na\nx\n", index)
+    end)
+
     -- 2x staged and then edited again to 2y: the marks don't place 2x, and s still
     -- takes the worktree's line
     it("stages a ! hunk whole", function()

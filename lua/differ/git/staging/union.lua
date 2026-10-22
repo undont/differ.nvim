@@ -186,8 +186,7 @@ local function remark(source, union, cached, unstaged)
 end
 
 -- the pairs `text` as the index makes, or nil where they read back as other marks
--- than s (`take`) or u on `selection` leaves. a whole hunk's op (`whole`) in a file
--- whose index holds content no hunk shows goes unchecked: the marks don't place it
+-- than s (`take`) or u on `selection` leaves, or the file is too big to read
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param union differ.DiffModel
@@ -196,57 +195,20 @@ end
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param text string
----@param whole? boolean
 ---@return differ.DiffModel[]|nil
-local function checked(ctx, entry, union, cached, unstaged, selection, take, text, whole)
+local function checked(ctx, entry, union, cached, unstaged, selection, take, text)
     local stage = require("differ.model.stage")
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
-    if whole and hidden then
-        return after
+    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
+    if unread then
+        return nil
     end
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
     local want = stage.flipped(union, m, selection, take)
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
     if not stage.reads_as(want, before, selection, unpack(after)) then
         return nil
     end
     return after
-end
-
--- the most texts beyond the drawn one an op on a hunk checks
-local MAX_OTHERS = 8
-
--- the first index text s (`take`) or u on `hunk` can write that checked() accepts, and
--- the pairs it makes: the drawn reading's `text`, then stage.other_indexes, each of
--- those checked whatever the file holds
----@param ctx differ.git.StagingCtx
----@param entry differ.FileEntry
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
----@param hunk differ.Hunk
----@param take boolean
----@param text string|nil  -- stage.next_index's
----@return string|nil text, differ.DiffModel[]|nil after
-local function first_checked(ctx, entry, union, cached, unstaged, hunk, take, text)
-    local stage = require("differ.model.stage")
-    local selection = stage.hunk_selection(hunk)
-    if text then
-        local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
-        if after then
-            return text, after
-        end
-    end
-    local others = stage.other_indexes(union, cached, hunk, take, text)
-    for k = 1, math.min(#others, MAX_OTHERS) do
-        if others[k] ~= cached.new_text then
-            local after = checked(ctx, entry, union, cached, unstaged, selection, take, others[k])
-            if after then
-                return others[k], after
-            end
-        end
-    end
-    return nil
 end
 
 ---@param source differ.git.UnionSource
@@ -270,8 +232,9 @@ local function apply(source, model, hunk, reverse)
     local take = not reverse
     local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
     local after
-    if not reaches then
-        text, after = first_checked(ctx, entry, union, cached, unstaged, hunk, take, text)
+    if text then
+        local selection = stage.hunk_selection(hunk)
+        after = checked(ctx, entry, union, cached, unstaged, selection, take, text)
     end
     if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
@@ -334,8 +297,7 @@ local function apply_lines(source, model, selection, reverse)
 end
 
 -- the index and file X on hunk `idx` writes, read back before anything is: the drawn
--- reading's index, then the others as for s and u. nil and why where it refuses. a
--- file whose index holds content no hunk shows goes unchecked
+-- reading's index, as for u. nil and why where it refuses
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
@@ -355,27 +317,15 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
     -- and the worktree still has the whole change to give back
     local index_text = text or cached.new_text
     local work_text = require("differ.model.diff").revert_hunk(model, idx).new_text
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    if hidden then
-        return index_text, work_text
-    end
+    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
     local selection = stage.hunk_selection(hunk)
     local want = stage.reverted(union, m, selection)
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    local function reads(candidate)
-        local after = { union_pairs(ctx.root, entry.path, union.old_text, candidate, work_text) }
-        return stage.reads_as(want, before, selection, unpack(after))
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
+    if unread or not stage.reads_as(want, before, selection, unpack(after)) then
+        return nil, nil, "this hunk can't be reverted on its own here"
     end
-    if reads(index_text) then
-        return index_text, work_text
-    end
-    local others = stage.other_indexes(union, cached, hunk, false, index_text)
-    for k = 1, math.min(#others, MAX_OTHERS) do
-        if reads(others[k]) then
-            return others[k], work_text
-        end
-    end
-    return nil, nil, "this hunk can't be reverted on its own here"
+    return index_text, work_text
 end
 
 -- X's refusals on a hunk, said before the prompt, which says as much itself: a
