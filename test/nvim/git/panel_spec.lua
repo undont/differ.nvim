@@ -10,6 +10,7 @@ local file_line = helpers.file_line
 local view_in_origin = helpers.view_in_origin
 local open_panel = helpers.open_panel
 local confirming = helpers.confirming
+local worktree = helpers.worktree
 
 describe(":Differ panel", function()
     local Panel = require("differ.panel")
@@ -920,10 +921,11 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
 
-        confirming(1, function()
+        local prompt = confirming(1, function()
             p:discard()
         end)
 
+        assert.are.equal("Discard changes to a.lua?", prompt)
         assert.is_nil(entry_of(p, "a.lua")) -- no longer a change
         assert.are.equal(V1, table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
         -- the file's own buffer is reloaded too, not left showing the discarded edit
@@ -1001,17 +1003,42 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "sub"), 0 })
         _G.notifs = {}
-        confirming(1, function()
+        local prompt = confirming(1, function()
             p:discard()
         end)
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local status = git(root, "status", "--porcelain=v1")
         p:close()
+        assert.is_nil(prompt)
         assert.are.equal(
             "differ: discard skipped: X can't move the checkout inside the submodule sub",
             said
         )
         assert.are.equal(" M sub\n", status)
+    end)
+
+    it("refuses X on a deletion kept on disk before asking", function()
+        local root = fresh_repo()
+        git(root, "rm", "-q", "--cached", "a.lua")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        _G.notifs = {}
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.is_nil(prompt)
+        assert.are.equal(
+            "differ: discard skipped: X would overwrite a.lua on disk; u unstages the deletion instead",
+            said
+        )
+        assert.are.equal("D  a.lua\n?? a.lua\n", status)
+        assert.are.equal("local x = 2\nreturn x\n", worktree(root, "a.lua"))
     end)
 
     it("discards an untracked file by deleting it", function()
@@ -1118,14 +1145,163 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { dir_line(p, "src"), 0 })
 
-        confirming(1, function()
+        local prompt = confirming(1, function()
             p:discard()
         end)
 
+        assert.are.equal("Discard changes to src/a.lua, src/b.lua?", prompt)
         assert.are.equal(0, vim.fn.filereadable(root .. "/src/a.lua")) -- both deleted
         assert.are.equal(0, vim.fn.filereadable(root .. "/src/b.lua"))
         assert.are.equal(1, vim.fn.filereadable(root .. "/top.lua")) -- sibling kept
         p:close()
+    end)
+
+    it("names the first three files in a directory row's X prompt", function()
+        local root = fresh_repo()
+        vim.fn.mkdir(root .. "/src", "p")
+        for _, name in ipairs({ "a", "b", "c", "d", "e" }) do
+            write(root .. "/src/" .. name .. ".lua", name .. "\n")
+        end
+        write(root .. "/top.lua", "t\n")
+        vim.cmd.edit(root .. "/top.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { dir_line(p, "src"), 0 })
+
+        local prompt = confirming(2, function()
+            p:discard()
+        end)
+
+        p:close()
+        assert.are.equal("Discard changes to src/a.lua, src/b.lua, src/c.lua, +2 more?", prompt)
+        assert.are.equal(1, vim.fn.filereadable(root .. "/src/a.lua")) -- declined
+    end)
+
+    it("skips a kept deletion under a section header and discards the rest", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        git(root, "rm", "-q", "--cached", "a.lua")
+        write(root .. "/b.lua", "edited\n")
+        git(root, "add", "b.lua")
+        vim.cmd.edit(root .. "/b.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { header_line(p, "Staged"), 0 })
+        _G.notifs = {}
+
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal("Discard changes to b.lua?", prompt)
+        assert.are.equal(
+            "differ: discard skipped: X would overwrite a.lua on disk; u unstages the deletion instead",
+            said
+        )
+        assert.are.equal("D  a.lua\n?? a.lua\n", status)
+        assert.are.equal("b\n", worktree(root, "b.lua"))
+    end)
+
+    it("skips a submodule under a directory row and discards the rest", function()
+        local root = fresh_repo()
+        local sub = root .. "/src/sub"
+        vim.fn.mkdir(sub, "p")
+        write(root .. "/src/edit.lua", "edit\n")
+        git(sub, "init", "-q")
+        git(sub, "commit", "-q", "--allow-empty", "-m", "one")
+        git(root, "add", "src")
+        git(root, "commit", "-q", "-m", "src")
+        git(sub, "commit", "-q", "--allow-empty", "-m", "two")
+        write(root .. "/src/edit.lua", "edited\n")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n") -- keeps src/ a dir row
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { dir_line(p, "src"), 0 })
+        _G.notifs = {}
+
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal("Discard changes to src/edit.lua?", prompt)
+        assert.are.equal(
+            "differ: discard skipped: X can't move the checkout inside the submodule src/sub",
+            said
+        )
+        assert.are.equal(" M a.lua\n M src/sub\n", status)
+        assert.are.equal("edit\n", worktree(root, "src/edit.lua"))
+    end)
+
+    it("discards a worktree rename beside a submodule under a directory row", function()
+        local root = fresh_repo()
+        local sub = root .. "/src/sub"
+        vim.fn.mkdir(sub, "p")
+        write(root .. "/b.lua", "b\n")
+        git(sub, "init", "-q")
+        git(sub, "commit", "-q", "--allow-empty", "-m", "one")
+        git(root, "add", "src", "b.lua")
+        git(root, "commit", "-q", "-m", "src")
+        git(sub, "commit", "-q", "--allow-empty", "-m", "two")
+        os.rename(root .. "/a.lua", root .. "/src/moved.lua")
+        git(root, "add", "-N", "src/moved.lua")
+        write(root .. "/b.lua", "edited\n") -- keeps src/ a dir row
+        vim.cmd.edit(root .. "/b.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { dir_line(p, "src"), 0 })
+        _G.notifs = {}
+
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.are.equal("Discard changes to src/moved.lua (restoring a.lua)?", prompt)
+        assert.are.equal(
+            "differ: discard skipped: X can't move the checkout inside the submodule src/sub",
+            said
+        )
+        assert.are.equal(" M b.lua\n M src/sub\n", status)
+    end)
+
+    it("refuses X on a section with no prompt when every file is refused", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        git(root, "rm", "-q", "--cached", "a.lua", "b.lua")
+        local before = git(root, "status", "--porcelain=v1")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { header_line(p, "Staged"), 0 })
+        _G.notifs = {}
+
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.is_nil(prompt)
+        assert.are.equal(
+            "differ: discard skipped: X would overwrite a.lua on disk; u unstages the deletion instead\n"
+                .. "differ: discard skipped: X would overwrite b.lua on disk; u unstages the deletion instead",
+            said
+        )
+        assert.are.equal(before, status)
     end)
 
     it("binds staging keys for the worktree source", function()

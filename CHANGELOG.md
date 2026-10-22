@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Panel `X` asked to confirm and then refused a kept staged deletion or a submodule; it now refuses before asking, and on a directory or section row it skips those files, naming them, and discards the rest
+
+## [0.2.11] — 2026-10-22
+
+### Fixed
+
 - Hunk `s` and `u` could drop staged changes in a file with staged content the diff can't show (a `!` hunk), and `s`, `u` and `X` refused some hunks among repeated lines; they now write the lines the view shows, or refuse
 
 ## [0.2.10] — 2026-10-21

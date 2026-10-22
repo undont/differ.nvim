@@ -109,6 +109,27 @@ describe("git.rev.parse_name_status", function()
     end)
 end)
 
+describe("git.rev.parse_raw", function()
+    it("parses modes, status and paths, with old then new on a rename", function()
+        local out = ":160000 160000 abc def M\0sub\0"
+            .. ":100644 100644 abc abc R100\0old/name.lua\0new/name.lua\0"
+        assert.are.same({
+            { status = "M", old_mode = "160000", new_mode = "160000", path = "sub" },
+            {
+                status = "R",
+                old_mode = "100644",
+                new_mode = "100644",
+                path = "new/name.lua",
+                previous_path = "old/name.lua",
+            },
+        }, rev.parse_raw(out))
+    end)
+
+    it("returns nothing for empty output", function()
+        assert.are.same({}, rev.parse_raw(""))
+    end)
+end)
+
 describe("git.rev.parse_status", function()
     it("splits XY into staged (x) and unstaged (y) state", function()
         -- mM = staged + unstaged edit; ?? = untracked; " M" = unstaged-only

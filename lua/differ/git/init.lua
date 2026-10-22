@@ -785,6 +785,58 @@ local function restores_staged(entry)
     return entry.y == "D" and (entry.x == "M" or entry.x == "R")
 end
 
+-- every path of a submodule HEAD↔worktree changes, both sides of a rename. no
+-- pathspec, which would split rename pairs
+---@param root string
+---@return table<string, true>
+local function gitlink_paths(root)
+    local paths = {}
+    for _, f in ipairs(rev.parse_raw(git({ "diff", "--raw", "-z", "HEAD" }, root) or "")) do
+        if f.old_mode == GITLINK or f.new_mode == GITLINK then
+            paths[f.path] = true
+            if f.previous_path then
+                paths[f.previous_path] = true
+            end
+        end
+    end
+    return paths
+end
+
+-- whether `entry` is a submodule HEAD↔worktree changes, looked up in `gitlinks` when
+-- given, else read with its own diff
+---@param root string
+---@param entry differ.FileEntry
+---@param gitlinks? table<string, true>
+---@return boolean
+local function is_gitlink(root, entry, gitlinks)
+    if not gitlinks then
+        local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
+        return old_mode == GITLINK or new_mode == GITLINK
+    end
+    if gitlinks[entry.path] then
+        return true
+    end
+    return entry.previous_path ~= nil and gitlinks[entry.previous_path] == true
+end
+
+-- why X refuses an entry, or nil. a restore-as-staged row takes nothing from HEAD, so
+-- only a worktree row that discards to HEAD checks for a submodule
+---@param root string
+---@param entry differ.FileEntry
+---@param preview? boolean
+---@param gitlinks? table<string, true>  -- from gitlink_paths
+---@return string|nil
+local function discard_refusal(root, entry, preview, gitlinks)
+    local why = index_ops.discard_refusal(entry)
+    if why or preview or restores_staged(entry) then
+        return why
+    end
+    if is_gitlink(root, entry, gitlinks) then
+        return index_ops.discard_refusal(entry, GITLINK)
+    end
+    return nil
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); a staged edit or move then deleted on disk comes back as staged;
 -- anything else tracked in HEAD reverts index + worktree to HEAD.
@@ -804,21 +856,13 @@ function M.discard(root, entry, preview)
         )
         return false
     end
-    local why = index_ops.discard_refusal(entry)
+    local why = discard_refusal(root, entry, preview)
     if why then
         notify("discard skipped: " .. why, vim.log.levels.WARN)
         return false
     end
-    if not preview then
-        if restores_staged(entry) then
-            return index_ops.restore_deleted(root, entry)
-        end
-        local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
-        why = index_ops.discard_refusal(entry, old_mode, new_mode)
-        if why then
-            notify("discard skipped: " .. why, vim.log.levels.WARN)
-            return false
-        end
+    if not preview and restores_staged(entry) then
+        return index_ops.restore_deleted(root, entry)
     end
     local abs = root .. "/" .. entry.path
     -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
@@ -1088,6 +1132,17 @@ function M.panel(opts)
             end,
             discard = function(entry)
                 M.discard(root, entry, preview)
+            end,
+            discard_refusals = function(entries)
+                local gitlinks = {}
+                if not preview then
+                    gitlinks = gitlink_paths(root)
+                end
+                local refused = {}
+                for _, e in ipairs(entries) do
+                    refused[e] = discard_refusal(root, e, preview, gitlinks)
+                end
+                return refused
             end,
             discard_prompt = function(entry)
                 if not preview and restores_staged(entry) then
