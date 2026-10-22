@@ -239,28 +239,42 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- repeated lines the pairs line up another way than the union: X on hunk 1 would
-    -- drop hunk 2's staged x from the index, and X on hunk 2 would leave it there
-    for idx = 1, 2 do
-        it(("refuses X on hunk %d whose write would move another"):format(idx), function()
-            local head, index, work = "b\nx\na\n", "x\nx\na\n", "x\nx\n"
-            local root, p, v = staged_as(head, index, work)
+    -- repeated lines the pairs line up another way than the union: X follows the drawn
+    -- reading, hunk 1's b dropped and hunk 2's x held, and leaves the other hunk as drawn
+    for idx, want in ipairs({
+        { index = "b\nx\nx\na\n", work = "b\nx\nx\n" },
+        { index = "x\na\n", work = "x\na\n" },
+    }) do
+        it(("reverts hunk %d next to repeated lines as the view draws it"):format(idx), function()
+            local root, p, v = staged_as("b\nx\na\n", "x\nx\na\n", "x\nx\n")
             local col = v.columns[#v.columns]
             vim.api.nvim_set_current_win(col.winid)
             vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, idx), 0 })
-            _G.notifs = {}
-            local prompt = confirming(1, function()
+            confirming(1, function()
                 v:revert_hunk()
             end)
-            local said = (_G.notifs[1] or {}).msg or ""
             local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
             p:close()
-            assert.is_nil(prompt)
-            assert.are.equal(index, indexed_now)
-            assert.are.equal(work, work_now)
-            assert.is_truthy(said:find("on its own here", 1, true), said)
+            assert.are.equal(want.index, indexed_now)
+            assert.are.equal(want.work, work_now)
         end)
     end
+
+    -- the index's x is hunk 3's, staged. git pairs HEAD's first b with x b a once the x
+    -- goes, which reads as the same lines
+    it("reverts a staged hunk among repeated lines", function()
+        local root, p, v = staged_as("b\nb\nb\n", "b\nb\nx\nb\n", "x\nb\na\nb\nx\nb\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 3), 0 })
+        confirming(1, function()
+            v:revert_hunk()
+        end)
+        local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.are.equal("b\nb\nb\n", indexed_now)
+        assert.are.equal("x\nb\na\nb\nb\n", work_now)
+    end)
 
     -- 1x staged and then put back to 1 on disk: no hunk shows it, and X on 8x still
     -- reverts the worktree, the index keeping 1x

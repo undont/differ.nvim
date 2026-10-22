@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Hunk `s` and `u` could drop staged changes in a file with staged content the diff can't show (a `!` hunk), and `s`, `u` and `X` refused some hunks among repeated lines; they now write the lines the view shows, or refuse
+
+## [0.2.10] — 2026-10-21
+
+### Fixed
+
 - `s`, `u` and `X` on a hunk could misplace lines in the index or file around repeated lines; they now refuse instead
 
 ## [0.2.9] — 2026-10-21

@@ -186,8 +186,7 @@ local function remark(source, union, cached, unstaged)
 end
 
 -- the pairs `text` as the index makes, or nil where they read back as other marks
--- than s (`take`) or u on `selection` leaves. a whole hunk's op (`whole`) in a file
--- whose index holds content no hunk shows goes unchecked: the marks don't place it
+-- than s (`take`) or u on `selection` leaves, or the file is too big to read
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param union differ.DiffModel
@@ -196,15 +195,14 @@ end
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param text string
----@param whole? boolean
 ---@return differ.DiffModel[]|nil
-local function checked(ctx, entry, union, cached, unstaged, selection, take, text, whole)
+local function checked(ctx, entry, union, cached, unstaged, selection, take, text)
     local stage = require("differ.model.stage")
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
-    if whole and hidden then
-        return after
+    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
+    if unread then
+        return nil
     end
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
     local want = stage.flipped(union, m, selection, take)
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
     if not stage.reads_as(want, before, selection, unpack(after)) then
@@ -233,16 +231,15 @@ local function apply(source, model, hunk, reverse)
     end
     local take = not reverse
     local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
-    if not text then
+    local after
+    if text then
+        local selection = stage.hunk_selection(hunk)
+        after = checked(ctx, entry, union, cached, unstaged, selection, take, text)
+    end
+    if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
         -- where this hunk's change can be taken whole
         notify(refusal(take, reaches), vim.log.levels.WARN)
-        return false, true
-    end
-    local selection = stage.hunk_selection(hunk)
-    local after = checked(ctx, entry, union, cached, unstaged, selection, take, text, true)
-    if not after then
-        notify(refusal(take, nil), vim.log.levels.WARN)
         return false, true
     end
     if not put_index(ctx, entry, text) then
@@ -299,9 +296,8 @@ local function apply_lines(source, model, selection, reverse)
     return true
 end
 
--- the index and file X on hunk `idx` writes, read back before anything is: nil and
--- why where it refuses. a file whose index holds content no hunk shows goes
--- unchecked, as for s and u
+-- the index and file X on hunk `idx` writes, read back before anything is: the drawn
+-- reading's index, as for u. nil and why where it refuses
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
@@ -321,15 +317,12 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
     -- and the worktree still has the whole change to give back
     local index_text = text or cached.new_text
     local work_text = require("differ.model.diff").revert_hunk(model, idx).new_text
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    if hidden then
-        return index_text, work_text
-    end
+    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
     local selection = stage.hunk_selection(hunk)
     local want = stage.reverted(union, m, selection)
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
+    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
+    if unread or not stage.reads_as(want, before, selection, unpack(after)) then
         return nil, nil, "this hunk can't be reverted on its own here"
     end
     return index_text, work_text
