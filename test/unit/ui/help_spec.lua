@@ -14,6 +14,22 @@ describe("help.fmt", function()
     end)
 end)
 
+describe("help.key", function()
+    it("renders the set's lhs, joining a multi-lhs list", function()
+        assert.are.equal("gl", help.key({ toggle_local = "gl" }, "toggle_local"))
+        assert.are.equal("X / dx", help.key({ discard = { "X", "dx" } }, "discard"))
+    end)
+
+    it("returns nil for a disabled action", function()
+        assert.is_nil(help.key({ discard = false }, "discard"))
+    end)
+
+    it("falls back to the default when the set has no entry", function()
+        local defaults = require("differ.config").defaults.keymaps
+        assert.are.equal(help.fmt(defaults.stage), help.key({}, "stage"))
+    end)
+end)
+
 describe("help.pair", function()
     it("joins both sides", function()
         assert.are.equal("]c / [c", help.pair("]c", "[c"))

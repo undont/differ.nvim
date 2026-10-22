@@ -1504,7 +1504,7 @@ function View:_step_review_file(direction, staged)
     local st = self.staging
     local offers_local = st ~= nil and st.toggle_local ~= nil and st.badge ~= "LOCAL"
     if not staged and offers_local and panel:has_local_work() then
-        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        local key = require("differ.ui.help").key(self.keymaps, "toggle_local")
         local msg = ("differ: %s has local changes: %s shows them"):format(self.model.path, key)
         vim.notify(msg, vim.log.levels.INFO)
         return true
@@ -1562,7 +1562,7 @@ function View:_walk_done(staged)
             paths[i] = e.path
         end
         local verb = #left == 1 and "has" or "have"
-        local key = require("differ.ui.help").fmt(self.keymaps.toggle_local)
+        local key = require("differ.ui.help").key(self.keymaps, "toggle_local")
         msg = ("%s (%s %s local changes: %s shows them)"):format(msg, fit_names(paths), verb, key)
     end
     vim.notify(msg, vim.log.levels.INFO)

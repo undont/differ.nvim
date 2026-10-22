@@ -115,7 +115,7 @@ function M.hidden_note(view)
     end
     local where = staging.hidden_in or {}
     local text = #where > 0 and ("%d hidden"):format(#where) or "hidden"
-    local key = staging.toggle_local and require("differ.ui.help").fmt(view.keymaps.toggle_local)
+    local key = staging.toggle_local and require("differ.ui.help").key(view.keymaps, "toggle_local")
     if not key then
         return text
     end

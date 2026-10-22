@@ -15,6 +15,29 @@ function M.fmt(spec)
     return type(spec) == "table" and table.concat(spec, " / ") or tostring(spec)
 end
 
+-- the lhs `keys` binds to `action` for a notice, the default when the set has no
+-- entry, or nil when the action is disabled
+---@param keys differ.KeymapSet
+---@param action string
+---@return string|nil
+function M.key(keys, action)
+    local spec = keys[action]
+    if spec == nil then
+        spec = require("differ.config").defaults.keymaps[action]
+    end
+    return M.fmt(spec)
+end
+
+-- a surface's resolved keymaps, for call sites with no view or panel in reach.
+-- before setup the config is the flat defaults, which have no surface subtables
+---@param surface "diff"|"panel"|"history"|"merge"
+---@return differ.KeymapSet
+function M.keys(surface)
+    local keys = require("differ").get_config().keymaps[surface]
+        or require("differ.config").defaults.keymaps
+    return keys --[[@as differ.KeymapSet]]
+end
+
 -- two related actions sharing a row ("]c / [c"), keeping whichever side is enabled
 ---@param a string|string[]|false|nil
 ---@param b string|string[]|false|nil
