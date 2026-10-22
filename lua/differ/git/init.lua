@@ -785,6 +785,21 @@ local function restores_staged(entry)
     return entry.y == "D" and (entry.x == "M" or entry.x == "R")
 end
 
+-- why X refuses an entry, or nil. a restore-as-staged row takes nothing from HEAD, so
+-- only a worktree row that discards to HEAD checks for a submodule
+---@param root string
+---@param entry differ.FileEntry
+---@param preview? boolean
+---@return string|nil
+local function discard_refusal(root, entry, preview)
+    local why = index_ops.discard_refusal(entry)
+    if why or preview or restores_staged(entry) then
+        return why
+    end
+    local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
+    return index_ops.discard_refusal(entry, old_mode, new_mode)
+end
+
 -- discard a file's changes: untracked or a staged-add drops the file (unstaging
 -- first if needed); a staged edit or move then deleted on disk comes back as staged;
 -- anything else tracked in HEAD reverts index + worktree to HEAD.
@@ -804,21 +819,13 @@ function M.discard(root, entry, preview)
         )
         return false
     end
-    local why = index_ops.discard_refusal(entry)
+    local why = discard_refusal(root, entry, preview)
     if why then
         notify("discard skipped: " .. why, vim.log.levels.WARN)
         return false
     end
-    if not preview then
-        if restores_staged(entry) then
-            return index_ops.restore_deleted(root, entry)
-        end
-        local old_mode, new_mode = rev.parse_raw_modes(raw_line(root, { "HEAD" }, entry) or "")
-        why = index_ops.discard_refusal(entry, old_mode, new_mode)
-        if why then
-            notify("discard skipped: " .. why, vim.log.levels.WARN)
-            return false
-        end
+    if not preview and restores_staged(entry) then
+        return index_ops.restore_deleted(root, entry)
     end
     local abs = root .. "/" .. entry.path
     -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
@@ -1088,6 +1095,9 @@ function M.panel(opts)
             end,
             discard = function(entry)
                 M.discard(root, entry, preview)
+            end,
+            discard_refusal = function(entry)
+                return discard_refusal(root, entry, preview)
             end,
             discard_prompt = function(entry)
                 if not preview and restores_staged(entry) then

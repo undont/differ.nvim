@@ -88,6 +88,7 @@ local LINE_HL = {
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
+---@field discard_refusal? fun(entry: differ.FileEntry): string|nil  -- why X refuses, before its confirm
 ---@field discard_prompt? fun(entry: differ.FileEntry): string|nil  -- X's confirm where it isn't a discard
 ---@field reload fun(): differ.panel.Section[] -- recompute sections after an op
 
@@ -917,6 +918,13 @@ function Panel:discard()
     end
     local prompt = "Discard changes to these files?"
     if #entries == 1 then
+        if self.actions.discard_refusal then
+            local why = self.actions.discard_refusal(entries[1])
+            if why then
+                vim.notify("differ: discard skipped: " .. why, vim.log.levels.WARN)
+                return
+            end
+        end
         prompt = ("Discard changes to %s?"):format(discard_label(entries[1]))
         if self.actions.discard_prompt then
             prompt = self.actions.discard_prompt(entries[1]) or prompt

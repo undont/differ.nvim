@@ -10,6 +10,7 @@ local file_line = helpers.file_line
 local view_in_origin = helpers.view_in_origin
 local open_panel = helpers.open_panel
 local confirming = helpers.confirming
+local worktree = helpers.worktree
 
 describe(":Differ panel", function()
     local Panel = require("differ.panel")
@@ -920,10 +921,11 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
 
-        confirming(1, function()
+        local prompt = confirming(1, function()
             p:discard()
         end)
 
+        assert.are.equal("Discard changes to a.lua?", prompt)
         assert.is_nil(entry_of(p, "a.lua")) -- no longer a change
         assert.are.equal(V1, table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
         -- the file's own buffer is reloaded too, not left showing the discarded edit
@@ -1001,17 +1003,42 @@ describe(":Differ panel staging (slice C)", function()
         local p = Panel.current()
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "sub"), 0 })
         _G.notifs = {}
-        confirming(1, function()
+        local prompt = confirming(1, function()
             p:discard()
         end)
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local status = git(root, "status", "--porcelain=v1")
         p:close()
+        assert.is_nil(prompt)
         assert.are.equal(
             "differ: discard skipped: X can't move the checkout inside the submodule sub",
             said
         )
         assert.are.equal(" M sub\n", status)
+    end)
+
+    it("refuses X on a deletion kept on disk before asking", function()
+        local root = fresh_repo()
+        git(root, "rm", "-q", "--cached", "a.lua")
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.panel({})
+        local p = Panel.current()
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        _G.notifs = {}
+        local prompt = confirming(1, function()
+            p:discard()
+        end)
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1")
+        p:close()
+        assert.is_nil(prompt)
+        assert.are.equal(
+            "differ: discard skipped: X would overwrite a.lua on disk; u unstages the deletion instead",
+            said
+        )
+        assert.are.equal("D  a.lua\n?? a.lua\n", status)
+        assert.are.equal("local x = 2\nreturn x\n", worktree(root, "a.lua"))
     end)
 
     it("discards an untracked file by deleting it", function()
