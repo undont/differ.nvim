@@ -178,6 +178,34 @@ function M.parse_name_status(out)
     return files
 end
 
+---@class differ.git.RawFile: differ.git.ChangedFile
+---@field old_mode string
+---@field new_mode string
+
+-- parse `git diff --raw -z [...]`. each record is ":<oldmode> <newmode> <oldsha>
+-- <newsha> <status>" then its path, or old then new path on a rename/copy
+---@param out string
+---@return differ.git.RawFile[]
+function M.parse_raw(out)
+    local toks = nul_split(out)
+    local files, i = {}, 1
+    while i <= #toks do
+        local old_mode, new_mode, code = toks[i]:match("^:(%d+) (%d+) %S+ %S+ (%a)")
+        i = i + 1
+        if not old_mode then
+            break
+        end
+        local file = { status = code, old_mode = old_mode, new_mode = new_mode, path = toks[i] }
+        i = i + 1
+        if code == "R" or code == "C" then
+            file.previous_path, file.path = file.path, toks[i]
+            i = i + 1
+        end
+        files[#files + 1] = file
+    end
+    return files
+end
+
 ---@class differ.git.StatusEntry
 ---@field x string                  -- index/staged status letter (" " if clean)
 ---@field y string                  -- worktree/unstaged status letter (" " if clean)

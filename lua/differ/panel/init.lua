@@ -88,7 +88,7 @@ local LINE_HL = {
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
----@field discard_refusal? fun(entry: differ.FileEntry): string|nil  -- why X refuses, before its confirm
+---@field discard_refusals? fun(entries: differ.FileEntry[]): table<differ.FileEntry, string>  -- X's refusals
 ---@field discard_prompt? fun(entry: differ.FileEntry): string|nil  -- X's confirm where it isn't a discard
 ---@field reload fun(): differ.panel.Section[] -- recompute sections after an op
 
@@ -906,39 +906,74 @@ local function discard_label(e)
     return e.path
 end
 
+-- X's confirm, naming the first few of `entries`
+---@param actions differ.panel.Actions
+---@param entries differ.FileEntry[]
+---@return string
+local function discard_prompt(actions, entries)
+    if #entries == 1 then
+        local prompt
+        if actions.discard_prompt then
+            prompt = actions.discard_prompt(entries[1])
+        end
+        return prompt or ("Discard changes to %s?"):format(discard_label(entries[1]))
+    end
+    local list = table.concat(vim.tbl_map(discard_label, vim.list_slice(entries, 1, 3)), ", ")
+    if #entries > 3 then
+        list = ("%s, +%d more"):format(list, #entries - 3)
+    end
+    return ("Discard changes to %s?"):format(list)
+end
+
+---@param skipped string[]
+local function notify_skipped(skipped)
+    local lines = vim.tbl_map(function(why)
+        return "differ: discard skipped: " .. why
+    end, skipped)
+    vim.notify(table.concat(lines, "\n"), vim.log.levels.WARN)
+end
+
 -- X: discard the cursor's target after a confirm (destructive), then refresh. on a
--- directory row, discards every file beneath it
+-- directory row, discards every file beneath it except the ones X refuses
 function Panel:discard()
     if not self.actions then
         return
     end
-    local entries = self:_op_targets()
-    if #entries == 0 then
+    local targets = self:_op_targets()
+    if #targets == 0 then
         return
     end
-    local prompt = "Discard changes to these files?"
-    if #entries == 1 then
-        if self.actions.discard_refusal then
-            local why = self.actions.discard_refusal(entries[1])
-            if why then
-                vim.notify("differ: discard skipped: " .. why, vim.log.levels.WARN)
-                return
-            end
-        end
-        prompt = ("Discard changes to %s?"):format(discard_label(entries[1]))
-        if self.actions.discard_prompt then
-            prompt = self.actions.discard_prompt(entries[1]) or prompt
+    local refused = {} ---@type table<differ.FileEntry, string>
+    if self.actions.discard_refusals then
+        refused = self.actions.discard_refusals(targets)
+    end
+    local entries, skipped = {}, {} ---@type differ.FileEntry[], string[]
+    for _, e in ipairs(targets) do
+        local why = refused[e]
+        if why then
+            skipped[#skipped + 1] = why
+        else
+            entries[#entries + 1] = e
         end
     end
-    local choice = vim.fn.confirm(prompt, "&Yes\n&No", 2)
-    if choice == 1 then
-        local paths = {}
-        for _, e in ipairs(entries) do
-            self.actions.discard(e)
-            paths[e.path] = true
+    if #entries == 0 then
+        if #skipped > 0 then
+            notify_skipped(skipped)
         end
-        self:_after_stage_op(paths)
+        return
     end
+    if vim.fn.confirm(discard_prompt(self.actions, entries), "&Yes\n&No", 2) ~= 1 then
+        return
+    end
+    local paths = {}
+    for _, e in ipairs(entries) do
+        self.actions.discard(e)
+        paths[e.path] = true
+    end
+    if #skipped > 0 then
+        notify_skipped(skipped)
+    end
+    self:_after_stage_op(paths)
 end
 
 -- the next/prev file row from `lnum`. wraps past the ends by default so ]f / [f
