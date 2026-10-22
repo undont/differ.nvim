@@ -168,6 +168,16 @@ describe("differ.health", function()
         assert.are.equal("warn", find(calls, "configuration", "panel.position must be one of").kind)
     end)
 
+    it("warns on a locked keymap set to false", function()
+        require("differ").setup({ keymaps = { panel = { commit_preview = false } } })
+        local calls = capture()
+
+        assert.are.equal(
+            "warn",
+            find(calls, "configuration", "keymaps.panel.commit_preview cannot be false").kind
+        )
+    end)
+
     it("reports a sidecar that dies without abandoning the report", function()
         require("differ").setup({
             sidecar_bin = fake_sidecar({ "echo 'boom: cannot start' >&2", "exit 3" }),

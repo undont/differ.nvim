@@ -44,6 +44,10 @@ local M = {}
 local SURFACES = { "diff", "panel", "history", "merge" }
 local SURFACE_SET = { diff = true, panel = true, history = true, merge = true }
 
+-- actions with no :Differ command behind them, so `false` would cut the action off;
+-- validate() warns and resolve_keymaps() restores the key
+local LOCKED = { stage = true, unstage = true, toggle_local = true, commit_preview = true }
+
 -- the closed value sets the options below draw from. named once and shared, so a
 -- set used by two options (position) has one definition; `M.closed` maps each
 -- option to its set
@@ -103,7 +107,8 @@ M.defaults = {
     -- buffer-local maps, one flat table of action -> lhs shared across the diff,
     -- panel and history surfaces (each binds the actions it implements). a value is
     -- a string, a list of strings (multiple binds), or false to disable. override
-    -- globally here, or scope to one surface via a `diff`/`panel`/`history` subtable
+    -- globally here, or scope to one surface via a `diff`/`panel`/`history` subtable.
+    -- stage, unstage, toggle_local and commit_preview can be remapped but not disabled
     keymaps = {
         next_hunk = "]c", -- diff, panel, history
         prev_hunk = "[c",
@@ -273,6 +278,19 @@ local function check_section(key, value, diags)
     end
 end
 
+-- `top` is the top-level user value behind a per-surface lhs, which a locked false
+-- falls back to before the default, as in resolve_keymaps
+local function check_action(path, action, lhs, top, diags)
+    if M.defaults.keymaps[action] == nil then
+        diags[#diags + 1] = ('unknown keymap action "%s"'):format(path)
+    elseif lhs == false and LOCKED[action] then
+        diags[#diags + 1] = ("%s cannot be false; using %s"):format(
+            path,
+            show(top or M.defaults.keymaps[action])
+        )
+    end
+end
+
 -- keymaps is flat action -> lhs plus the per-surface subtables, so it doesn't
 -- follow the nested-table shape the other sections do
 local function check_keymaps(value, diags)
@@ -281,24 +299,18 @@ local function check_keymaps(value, diags)
         return
     end
     for action, lhs in pairs(value) do
-        if SURFACE_SET[action] then
-            if type(lhs) ~= "table" then
-                diags[#diags + 1] = ("keymaps.%s must be a table of actions (got %s)"):format(
-                    action,
-                    type(lhs)
-                )
-            else
-                for sub in pairs(lhs) do
-                    if M.defaults.keymaps[sub] == nil then
-                        diags[#diags + 1] = ('unknown keymap action "keymaps.%s.%s"'):format(
-                            action,
-                            sub
-                        )
-                    end
-                end
+        if not SURFACE_SET[action] then
+            check_action("keymaps." .. action, action, lhs, nil, diags)
+        elseif type(lhs) ~= "table" then
+            diags[#diags + 1] = ("keymaps.%s must be a table of actions (got %s)"):format(
+                action,
+                type(lhs)
+            )
+        else
+            for sub, sub_lhs in pairs(lhs) do
+                local path = ("keymaps.%s.%s"):format(action, sub)
+                check_action(path, sub, sub_lhs, value[sub], diags)
             end
-        elseif M.defaults.keymaps[action] == nil then
-            diags[#diags + 1] = ('unknown keymap action "keymaps.%s"'):format(action)
         end
     end
 end
@@ -336,8 +348,9 @@ end
 -- resolve the keymaps config into per-surface action tables. the shared (top-level)
 -- defaults take any top-level user override, then each surface layers its own
 -- `keymaps.<surface>` subtable on top. merges are shallow per action so a user list
--- or `false` replaces the default wholesale (tbl_deep_extend would index-merge lists)
--- pure (no vim) so it stays unit-testable under busted, like the other parsers
+-- or `false` replaces the default wholesale (tbl_deep_extend would index-merge lists),
+-- except a `false` on a LOCKED action, which keeps the top-level value, or the default
+-- when that is false too. pure (no vim) so it stays unit-testable under busted
 ---@param user_km table|nil
 ---@return table<string, table<string, string|string[]|false>>
 function M.resolve_keymaps(user_km)
@@ -361,6 +374,11 @@ function M.resolve_keymaps(user_km)
         if type(override) == "table" then
             for action, lhs in pairs(override) do
                 resolved[action] = lhs -- per-surface override wins
+            end
+        end
+        for action in pairs(LOCKED) do
+            if resolved[action] == false then
+                resolved[action] = shared[action] or M.defaults.keymaps[action]
             end
         end
         out[surface] = resolved
