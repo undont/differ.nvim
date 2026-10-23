@@ -38,16 +38,26 @@ function M.keys(surface)
     return keys --[[@as differ.KeymapSet]]
 end
 
--- two related actions sharing a row ("]c / [c"), keeping whichever side is enabled
+-- two related actions sharing a row: `label`'s %s is "a_word / b_word" when both are
+-- enabled, or the enabled side's word alone ("]c   next hunk")
 ---@param a string|string[]|false|nil
 ---@param b string|string[]|false|nil
----@return string|nil
-function M.pair(a, b)
+---@param label string
+---@param a_word string
+---@param b_word string
+---@return { [1]: string|nil, [2]: string }
+function M.row(a, b, label, a_word, b_word)
     local first, second = M.fmt(a), M.fmt(b)
     if first and second then
-        return first .. " / " .. second
+        return { first .. " / " .. second, label:format(a_word .. " / " .. b_word) }
     end
-    return first or second
+    if first then
+        return { first, label:format(a_word) }
+    end
+    if second then
+        return { second, label:format(b_word) }
+    end
+    return { nil, label:format(a_word .. " / " .. b_word) }
 end
 
 -- align {lhs, description} rows into help lines. a nil lhs means the action is

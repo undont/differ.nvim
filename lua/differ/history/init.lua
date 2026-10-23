@@ -687,29 +687,29 @@ end
 function History:show_help()
     local km = self.keymaps
     local help = require("differ.ui.help")
-    local fmt, pair = help.fmt, help.pair
+    local fmt, row = help.fmt, help.row
     local rows = {}
     if self.mode == "range" then
         vim.list_extend(rows, {
             { fmt(km.select), "toggle fold / open file" },
             { fmt(km.toggle_fold), "toggle fold" },
-            { pair(km.open_all, km.close_all), "expand / collapse all" },
+            row(km.open_all, km.close_all, "%s all", "expand", "collapse"),
             { fmt(km.close_node), "collapse commit" },
-            { pair(km.next_file, km.prev_file), "next / previous file" },
-            { pair(km.next_section, km.prev_section), "next / previous commit" },
-            { pair(km.first_file, km.last_file), "first / last commit" },
+            row(km.next_file, km.prev_file, "%s file", "next", "previous"),
+            row(km.next_section, km.prev_section, "%s commit", "next", "previous"),
+            row(km.first_file, km.last_file, "%s commit", "first", "last"),
         })
     else
         vim.list_extend(rows, {
             { fmt(km.select), "show commit" },
-            { pair(km.next_file, km.prev_file), "next / previous commit" },
-            { pair(km.next_section, km.prev_section), "move between commits" },
-            { pair(km.first_file, km.last_file), "first / last commit" },
+            row(km.next_file, km.prev_file, "%s commit", "next", "previous"),
+            row(km.next_section, km.prev_section, "%s commit", "next", "previous"),
+            row(km.first_file, km.last_file, "%s commit", "first", "last"),
         })
     end
     vim.list_extend(rows, {
-        { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
-        { pair(km.scroll_down, km.scroll_up), "scroll diff down / up" },
+        row(km.next_hunk, km.prev_hunk, "%s hunk", "next", "previous"),
+        row(km.scroll_down, km.scroll_up, "scroll diff %s", "down", "up"),
         { fmt(km.details), "commit details" },
         { fmt(km.close), "close the session" },
         { fmt(km.help), "this help" },
