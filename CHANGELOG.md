@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `stage`, `unstage`, `toggle_local` and `commit_preview` can no longer be disabled with `false`; `:checkhealth` warns and the key falls back to the top-level mapping or the default
+
+### Fixed
+
+- Notices and refusals named the default keys even when `keymaps` remapped them; they now name the key bound on the diff or panel they show on
+
+## [0.2.12] — 2026-10-22
+
 ### Fixed
 
 - Panel `X` asked to confirm and then refused a kept staged deletion or a submodule; it now refuses before asking, and on a directory or section row it skips those files, naming them, and discards the rest
