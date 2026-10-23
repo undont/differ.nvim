@@ -2,6 +2,7 @@
 
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
+local help = require("differ.ui.help")
 local patch = require("differ.git.patch")
 local notify = exec.notify
 local content_ops = require("differ.git.content")
@@ -52,59 +53,109 @@ end
 -- is a hunk of its own and can be taken whole. `reaches` names another union
 -- hunk a pair hunk would carry the op into; without one the two pairs line this
 -- hunk's change up under a different one, leaving nothing here to write
+---@param keys differ.KeymapSet
 ---@param take boolean
 ---@param reaches integer|nil
 ---@return string
-local function refusal(take, reaches)
+local function refusal(keys, take, reaches)
+    local whole = help.key(keys, "commit_preview")
+    if take then
+        whole = help.key(keys, "toggle_local")
+    end
     if not reaches then
         if take then
-            return "this hunk can't be staged on its own here; stage it from dw"
+            return ("this hunk can't be staged on its own here; stage it from %s"):format(whole)
         end
-        return "this hunk can't be unstaged on its own here; unstage it from ds"
+        return ("this hunk can't be unstaged on its own here; unstage it from %s"):format(whole)
     end
-    local msg = "this hunk can't be unstaged without hunk %d; unstage it from ds"
+    local msg = "this hunk can't be unstaged without hunk %d; unstage it from %s"
     if take then
-        msg = "this hunk can't be staged without hunk %d; stage it from dw"
+        msg = "this hunk can't be staged without hunk %d; stage it from %s"
     end
-    return msg:format(reaches)
+    return msg:format(reaches, whole)
 end
 
--- why a selection can't move, staged (`take`), unstaged or reverted
----@type table<differ.model.SelectRefusal, { stage: string, unstage: string, revert: string }>
+-- why a selection can't move, staged (`take`), unstaged or reverted: the refusal,
+-- then a hint naming the action's key
+---@type table<differ.model.SelectRefusal, table<"stage"|"unstage"|"revert", string[]>>
 local SELECT_REFUSALS = {
     between = {
-        stage = "these lines can't be staged on their own here; stage them from dw",
-        unstage = "these lines can't be unstaged on their own here; unstage them from ds",
-        revert = "these lines can't be reverted on their own here",
+        stage = {
+            "these lines can't be staged on their own here",
+            "stage them from %s",
+            "toggle_local",
+        },
+        unstage = {
+            "these lines can't be unstaged on their own here",
+            "unstage them from %s",
+            "commit_preview",
+        },
+        revert = { "these lines can't be reverted on their own here" },
     },
     large = {
-        stage = "this file's changes are too large to stage by line; s stages a hunk whole",
-        unstage = "this file's changes are too large to unstage by line; u unstages a hunk whole",
-        revert = "this file's changes are too large to revert by line; X reverts a hunk whole",
+        stage = {
+            "this file's changes are too large to stage by line",
+            "%s stages a hunk whole",
+            "stage",
+        },
+        unstage = {
+            "this file's changes are too large to unstage by line",
+            "%s unstages a hunk whole",
+            "unstage",
+        },
+        revert = {
+            "this file's changes are too large to revert by line",
+            "%s reverts a hunk whole",
+            "discard",
+        },
     },
     hidden = {
-        stage = "this hunk holds staged content it can't show; s stages it whole",
-        unstage = "this hunk holds staged content it can't show; u unstages it whole",
-        revert = "this hunk holds staged content it can't show; X reverts it whole",
+        stage = { "this hunk holds staged content it can't show", "%s stages it whole", "stage" },
+        unstage = {
+            "this hunk holds staged content it can't show",
+            "%s unstages it whole",
+            "unstage",
+        },
+        revert = {
+            "this hunk holds staged content it can't show",
+            "%s reverts it whole",
+            "discard",
+        },
     },
 }
 
+-- a selection's refusal for `op`, its hint dropped when the hint's action is disabled
+---@param keys differ.KeymapSet
+---@param refused differ.model.SelectRefusal
+---@param op "stage"|"unstage"|"revert"
+---@return string
+local function select_refusal(keys, refused, op)
+    local why, hint, action = unpack(SELECT_REFUSALS[refused][op])
+    local key = action and help.key(keys, action)
+    if not key then
+        return why
+    end
+    return ("%s; %s"):format(why, hint:format(key))
+end
+
 -- X's refusal for a selection. an index that can't be cut holds a change the
 -- union can't show, or only repeats lines the cut can't place
+---@param keys differ.KeymapSet
 ---@param refused differ.model.SelectRefusal
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
 ---@return string
-local function revert_refusal(refused, union, cached, unstaged)
+local function revert_refusal(keys, refused, union, cached, unstaged)
     local marks = require("differ.model.marks")
     if refused ~= "between" then
-        return SELECT_REFUSALS[refused].revert
+        return select_refusal(keys, refused, "revert")
     end
     if not marks.complete(union.hunks, cached.hunks, unstaged.hunks) then
-        return "blocked by a staged change only dw shows (the ! hunk)"
+        local msg = "blocked by a staged change only %s shows (the ! hunk)"
+        return msg:format(help.key(keys, "toggle_local"))
     end
-    return SELECT_REFUSALS[refused].revert
+    return select_refusal(keys, refused, "revert")
 end
 
 -- whether the diff still shows the file as it is. one drawn before the file or
@@ -135,7 +186,7 @@ local function revert_texts(ctx, entry, union, cached, unstaged, selection)
     local stage = require("differ.model.stage")
     local text, refused = stage.select_index(union, cached, selection, false)
     if refused then
-        return nil, nil, revert_refusal(refused, union, cached, unstaged)
+        return nil, nil, revert_refusal(ctx.keys, refused, union, cached, unstaged)
     end
     local reverted = stage.select_worktree(union, selection)
     if not reverted then
@@ -239,7 +290,7 @@ local function apply(source, model, hunk, reverse)
     if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
         -- where this hunk's change can be taken whole
-        notify(refusal(take, reaches), vim.log.levels.WARN)
+        notify(refusal(ctx.keys, take, reaches), vim.log.levels.WARN)
         return false, true
     end
     if not put_index(ctx, entry, text) then
@@ -269,11 +320,11 @@ local function apply_lines(source, model, selection, reverse)
     local take = not reverse
     local text, refused = stage.select_index(union, cached, selection, take)
     if refused then
-        local msg = SELECT_REFUSALS[refused].unstage
+        local op = "unstage"
         if take then
-            msg = SELECT_REFUSALS[refused].stage
+            op = "stage"
         end
-        notify(msg, vim.log.levels.WARN)
+        notify(select_refusal(ctx.keys, refused, op), vim.log.levels.WARN)
         return false, true
     end
     if not text then

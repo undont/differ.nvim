@@ -17,6 +17,7 @@ local text_util = require("differ.util.text")
 local tab_util = require("differ.util.tab")
 local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
 local content_ops = require("differ.git.content")
+local help = require("differ.ui.help")
 local HEAD, INDEX, WORKTREE = content_ops.HEAD, content_ops.INDEX, content_ops.WORKTREE
 local read_file, raw_line = content_ops.read_file, content_ops.raw_line
 
@@ -821,18 +822,19 @@ end
 
 -- why X refuses an entry, or nil. a restore-as-staged row takes nothing from HEAD, so
 -- only a worktree row that discards to HEAD checks for a submodule
+---@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@param root string
 ---@param entry differ.FileEntry
 ---@param preview? boolean
 ---@param gitlinks? table<string, true>  -- from gitlink_paths
 ---@return string|nil
-local function discard_refusal(root, entry, preview, gitlinks)
-    local why = index_ops.discard_refusal(entry)
+local function discard_refusal(keys, root, entry, preview, gitlinks)
+    local why = index_ops.discard_refusal(keys, entry)
     if why or preview or restores_staged(entry) then
         return why
     end
     if is_gitlink(root, entry, gitlinks) then
-        return index_ops.discard_refusal(entry, GITLINK)
+        return index_ops.discard_refusal(keys, entry, GITLINK)
     end
     return nil
 end
@@ -847,8 +849,9 @@ end
 ---@param root string
 ---@param entry differ.FileEntry
 ---@param preview? boolean  -- the entry comes from the commit preview's listing
+---@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@return boolean ok
-function M.discard(root, entry, preview)
+function M.discard(root, entry, preview, keys)
     if live_status(root, entry, preview) ~= entry.status then
         notify(
             ("discard skipped: %s isn't as the list showed it any more"):format(entry.path),
@@ -856,13 +859,13 @@ function M.discard(root, entry, preview)
         )
         return false
     end
-    local why = discard_refusal(root, entry, preview)
+    local why = discard_refusal(keys, root, entry, preview)
     if why then
         notify("discard skipped: " .. why, vim.log.levels.WARN)
         return false
     end
     if not preview and restores_staged(entry) then
-        return index_ops.restore_deleted(root, entry)
+        return index_ops.restore_deleted(root, entry, keys)
     end
     local abs = root .. "/" .. entry.path
     -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
@@ -1131,7 +1134,7 @@ function M.panel(opts)
                 M.unstage_all(root)
             end,
             discard = function(entry)
-                M.discard(root, entry, preview)
+                M.discard(root, entry, preview, help.keys("panel"))
             end,
             discard_refusals = function(entries)
                 local gitlinks = {}
@@ -1140,7 +1143,7 @@ function M.panel(opts)
                 end
                 local refused = {}
                 for _, e in ipairs(entries) do
-                    refused[e] = discard_refusal(root, e, preview, gitlinks)
+                    refused[e] = discard_refusal(help.keys("panel"), root, e, preview, gitlinks)
                 end
                 return refused
             end,
@@ -1185,8 +1188,7 @@ function M.panel(opts)
     -- hunk-level staging. content edits stage by hunk; anything with no lines to stage
     -- sets `whole_file`. `apply` stages one hunk, or unstages it with `reverse`
     local stageable = is_worktree_status(source)
-    local diff_keys = require("differ").get_config().keymaps.diff
-        or require("differ.config").defaults.keymaps
+    local diff_keys = help.keys("diff")
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
 
     -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status + the shown
@@ -1287,6 +1289,7 @@ function M.panel(opts)
     -- the list and re-source the view
     staging_ops = require("differ.git.staging").new({
         root = root,
+        keys = diff_keys,
         stageable = stageable,
         refresh = function()
             refresh_panel()
