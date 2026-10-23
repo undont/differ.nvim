@@ -160,8 +160,8 @@ M.defaults = {
         review_submit = "gS", -- pr: submit the pending review
         review_discard = "gD", -- pr: discard the pending review and its drafts
 
-        scroll_down = "f", -- all three (shadows native f/b; set false to restore)
-        scroll_up = "b",
+        scroll_down = false, -- diff/panel/history: quarter-page scroll, unbound by default
+        scroll_up = false,
 
         select = { "<CR>", "o" }, -- panel, history
 

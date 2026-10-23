@@ -5,7 +5,7 @@ describe("config.resolve_keymaps", function()
         local km = config.resolve_keymaps(nil)
         for _, surface in ipairs({ "diff", "panel", "history" }) do
             assert.are.equal("]c", km[surface].next_hunk)
-            assert.are.equal("f", km[surface].scroll_down)
+            assert.is_false(km[surface].scroll_down)
             assert.are.same({ "<CR>", "o" }, km[surface].select)
         end
     end)

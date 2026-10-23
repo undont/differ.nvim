@@ -156,8 +156,8 @@ require("differ").setup({
     last_file = "G",
     next_section = "]]",         -- sections in the panel, commits in log
     prev_section = "[[",
-    scroll_down = "f",           -- shadows native f/b; set false to restore
-    scroll_up = "b",
+    scroll_down = false,         -- quarter-page scroll, e.g. "f" / "b"
+    scroll_up = false,
     select = { "<CR>", "o" },
     help = "g?",
     close = "dc",                -- end the session
