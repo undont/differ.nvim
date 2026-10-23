@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- `scroll_down` and `scroll_up` are unbound by default, so `f` and `b` keep their native motions; set them to get quarter-page scrolling back
+
+### Fixed
+
+- A `g?` help row for a pair of keys with one side disabled named both actions; it now names only the bound one
+
+## [0.2.13] — 2026-10-23
+
+### Changed
+
 - `stage`, `unstage`, `toggle_local` and `commit_preview` can no longer be disabled with `false`; `:checkhealth` warns and the key falls back to the top-level mapping or the default
 
 ### Fixed
