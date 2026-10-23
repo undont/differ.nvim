@@ -1,4 +1,4 @@
--- pure-lua: the help cheatsheet's row formatting. `show` needs nvim, but fmt/pair/
+-- pure-lua: the help cheatsheet's row formatting. `show` needs nvim, but fmt/row/
 -- lines don't, so the disabled-action handling is unit-testable
 local help = require("differ.ui.help")
 
@@ -30,15 +30,23 @@ describe("help.key", function()
     end)
 end)
 
-describe("help.pair", function()
+describe("help.row", function()
+    local function row(a, b)
+        return help.row(a, b, "%s hunk", "next", "previous")
+    end
+
     it("joins both sides", function()
-        assert.are.equal("]c / [c", help.pair("]c", "[c"))
+        assert.are.same({ "]c / [c", "next / previous hunk" }, row("]c", "[c"))
     end)
 
-    it("keeps whichever side survives when the other is disabled", function()
-        assert.are.equal("]c", help.pair("]c", false))
-        assert.are.equal("[c", help.pair(false, "[c"))
-        assert.is_nil(help.pair(false, false))
+    it("names only the bound side when the other is disabled", function()
+        assert.are.same({ "]c", "next hunk" }, row("]c", false))
+        assert.are.same({ "[c", "previous hunk" }, row(false, "[c"))
+    end)
+
+    it("leaves a nil lhs when both are disabled, so lines drops the row", function()
+        assert.is_nil(row(false, false)[1])
+        assert.are.same({}, help.lines({ row(false, false) }))
     end)
 end)
 

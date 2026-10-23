@@ -120,24 +120,17 @@ M.defaults = {
     keymaps = {
         next_hunk = "]c", -- diff, panel, history
         prev_hunk = "[c",
-
         next_file = "]f", -- diff, merge; panel/history step the selection
         prev_file = "[f",
-
         first_file = "gg", -- panel/history: jump to the first/last file or commit
         last_file = "G",
-
         next_section = "]]", -- panel: next/prev section (Staged/Unstaged); history: commit
         prev_section = "[[",
-
         toggle_viewed = "<Tab>", -- pr panel: flip the github viewed checkbox
-
         next_unviewed = "]u", -- pr panel + diff: jump to the next/prev unviewed file
         prev_unviewed = "[u",
-
         next_thread = "]t", -- pr diff: jump to the next/prev review-thread anchor
         prev_thread = "[t",
-
         overview = "go", -- pr diff + panel: back to the PR overview home (shadows native go, goto-byte)
 
         -- both buffer-local to the read-only pr diff, so the g-family shadowing is
@@ -160,35 +153,25 @@ M.defaults = {
         review_submit = "gS", -- pr: submit the pending review
         review_discard = "gD", -- pr: discard the pending review and its drafts
 
-        scroll_down = "f", -- all three (shadows native f/b; set false to restore)
-        scroll_up = "b",
-
+        scroll_down = false, -- diff/panel/history: quarter-page scroll, unbound by default
+        scroll_up = false,
         select = { "<CR>", "o" }, -- panel, history
-
         details = "K", -- history: float the full commit message (subject + body)
-
         help = "g?", -- every surface
-
         toggle_listing = "i", -- panel: toggle tree / name
-
         close_node = "c", -- panel: collapse the dir under the cursor; history: the commit
         close_all = "C", -- panel/history: collapse every dir / commit
         open_all = "O", -- panel/history: expand every dir / commit
-
         stage = "s", -- diff (hunk-level), panel (file-level)
         unstage = "u",
         stage_all = "S",
         unstage_all = "U",
-
         more_context = "d=", -- diff
         less_context = "d-",
-
         edit_file = "df", -- diff/panel: edit-in-review; pr diff: worktree split beside the pinned diff
         goto_file = "de", -- diff/panel: open the real file and end the session; pr diff: zoom-edit in a tab instead
-
         discard = "X", -- diff (hunk/line), panel (file-level)
         refresh = "R", -- panel
-
         toggle_fold = "za", -- history (range mode)
 
         -- session-level verbs, joining the d-family the diff verbs already use. the
@@ -197,10 +180,8 @@ M.defaults = {
         close = "dc", -- diff/panel/history: end the session (merge, pr or local)
         toggle_panel = "dd", -- diff/panel: hide/show the file panel sidebar
         toggle_layout = "dl", -- diff: flip stacked / split
-
         toggle_local = "dw", -- diff/panel: a partly staged file's changes since staging, and back
         commit_preview = "ds", -- panel/diff: list only what a commit would take, HEAD↔index rows
-
         commit = "gC", -- panel/diff/merge: commit, or continue the operation in progress
 
         -- merge tool, bound on the result buffer. nav + take-this resolution,
@@ -209,10 +190,8 @@ M.defaults = {
         -- rather than shadowing live operators
         next_conflict = "]x", -- merge: jump to the next/prev conflict
         prev_conflict = "[x",
-
         next_marker = "]n", -- merge: jump to the next/prev conflict marker line
         prev_marker = "[n",
-
         choose_ours = "<leader>co", -- merge: take ours / theirs / base for the conflict
         choose_theirs = "<leader>ct",
         choose_base = "<leader>cb",
@@ -250,7 +229,8 @@ M.closed = {
 
 -- options that default to nil, so the defaults table carries no key for them and
 -- the unknown-key walk can't see them. keep in step with the nil entries above
-local NILABLE = { base = true, sidecar_bin = true, command_alias = true }
+---@type table<string, true>
+M.nilable = { base = true, sidecar_bin = true, command_alias = true }
 
 local function show(value)
     if type(value) == "string" then
@@ -372,7 +352,7 @@ function M.validate(user)
             check_keymaps(value, diags)
         elseif key == "context" then
             check_context(value, diags)
-        elseif M.defaults[key] == nil and not NILABLE[key] then
+        elseif M.defaults[key] == nil and not M.nilable[key] then
             diags[#diags + 1] = ('unknown option "%s"'):format(key)
         else
             check_enum(key, value, diags)

@@ -1448,24 +1448,24 @@ end
 function Panel:show_help()
     local km = self.keymaps
     local help = require("differ.ui.help")
-    local fmt, pair = help.fmt, help.pair
+    local fmt, row = help.fmt, help.row
     local rows = {
         { fmt(km.select), "open file / toggle fold" },
         { fmt(km.close_node), "close node / parent" },
-        { pair(km.close_all, km.open_all), "close / open all nodes" },
-        { pair(km.next_file, km.prev_file), "next / previous file" },
-        { pair(km.first_file, km.last_file), "first / last file" },
-        { pair(km.next_section, km.prev_section), "next / previous section" },
-        { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
-        { pair(km.scroll_down, km.scroll_up), "scroll diff down / up" },
+        row(km.close_all, km.open_all, "%s all nodes", "close", "open"),
+        row(km.next_file, km.prev_file, "%s file", "next", "previous"),
+        row(km.first_file, km.last_file, "%s file", "first", "last"),
+        row(km.next_section, km.prev_section, "%s section", "next", "previous"),
+        row(km.next_hunk, km.prev_hunk, "%s hunk", "next", "previous"),
+        row(km.scroll_down, km.scroll_up, "scroll diff %s", "down", "up"),
         { fmt(km.toggle_listing), "toggle listing (tree / name)" },
         { fmt(km.toggle_panel), "toggle the file panel" },
         { fmt(km.goto_file), "go to the real file" },
     }
     if self.actions then
         vim.list_extend(rows, {
-            { pair(km.stage, km.unstage), "stage / unstage file" },
-            { pair(km.stage_all, km.unstage_all), "stage / unstage all" },
+            row(km.stage, km.unstage, "%s file", "stage", "unstage"),
+            row(km.stage_all, km.unstage_all, "%s all", "stage", "unstage"),
             { fmt(km.discard), "discard file (confirm)" },
             { fmt(km.edit_file), "edit the real file (in review)" },
             { fmt(km.refresh), "refresh" },

@@ -245,11 +245,17 @@ describe("view in-view keymaps", function()
         return lhs
     end
 
-    it("binds ]f/[f and (by default) f/b in the diff window", function()
+    it("binds ]f/[f, and f/b once configured, in the diff window", function()
+        local default = View.new(model("a\nb\n", "a\nB\n"), { layout = "stacked" })
+        default:open()
+        assert.is_nil(maps(default)["f"]) -- unbound by default
+        default:close()
+
         local v = View.new(model("a\nb\n", "a\nB\n"), {
             layout = "stacked",
             context = math.huge,
             deep_diff = { enabled = true },
+            keymaps = { scroll_down = "f", scroll_up = "b" },
         })
         v:open()
         local lhs = maps(v)

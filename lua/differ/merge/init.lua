@@ -880,8 +880,8 @@ local function show_help()
     end
     local km = session.keymaps
     local help = require("differ.ui.help")
-    local fmt, pair = help.fmt, help.pair
-    local rows = { { pair(km.next_conflict, km.prev_conflict), "next / previous conflict" } }
+    local fmt, row = help.fmt, help.row
+    local rows = { row(km.next_conflict, km.prev_conflict, "%s conflict", "next", "previous") }
     local deleted = session.deleted
     local in_result = vim.api.nvim_get_current_buf() == session.result_buf and not session.removed
     if in_result and deleted then
@@ -896,7 +896,7 @@ local function show_help()
         })
     elseif in_result then
         vim.list_extend(rows, {
-            { pair(km.next_marker, km.prev_marker), "next / previous marker line" },
+            row(km.next_marker, km.prev_marker, "%s marker line", "next", "previous"),
             { fmt(km.choose_ours), "take ours" },
             { fmt(km.choose_theirs), "take theirs" },
             { fmt(km.choose_base), "take base" },
@@ -906,7 +906,7 @@ local function show_help()
         })
     end
     vim.list_extend(rows, {
-        { pair(km.next_file, km.prev_file), "next / previous file" },
+        row(km.next_file, km.prev_file, "%s file", "next", "previous"),
         { fmt(km.commit), "continue, skip or abort (once resolved)" },
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },

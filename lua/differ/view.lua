@@ -808,7 +808,6 @@ function View:_setup_window(winid, bufnr)
     bind(bufnr, km.prev_file, function()
         self:step_file("prev")
     end, "differ: previous file")
-    -- scroll defaults to f/b, which shadow native find-char / back-word (set false)
     bind(bufnr, km.scroll_down, function()
         self:quarter_scroll("down")
     end, "differ: scroll down a quarter page")
@@ -920,7 +919,7 @@ end
 function View:show_help()
     local km = self.keymaps
     local help = require("differ.ui.help")
-    local fmt, pair = help.fmt, help.pair
+    local fmt, row = help.fmt, help.row
     -- an extra map that reuses a fixed lhs overrides its bind (extras bind later), so
     -- the fixed row is dropped in favour of the extra's own. goto_file is the one
     -- fixed action a session overrides today (the pr zoom edit)
@@ -932,10 +931,10 @@ function View:show_help()
         end
     end
     local rows = {
-        { pair(km.next_hunk, km.prev_hunk), "next / previous hunk" },
-        { pair(km.next_file, km.prev_file), "next / previous file" },
-        { pair(km.scroll_down, km.scroll_up), "scroll down / up" },
-        { pair(km.more_context, km.less_context), "more / less context" },
+        row(km.next_hunk, km.prev_hunk, "%s hunk", "next", "previous"),
+        row(km.next_file, km.prev_file, "%s file", "next", "previous"),
+        row(km.scroll_down, km.scroll_up, "scroll %s", "down", "up"),
+        row(km.more_context, km.less_context, "%s context", "more", "less"),
         { fmt(km.toggle_layout), "toggle layout (stacked / split)" },
         { fmt(km.toggle_panel), "toggle the file panel" },
     }
@@ -947,14 +946,14 @@ function View:show_help()
     end
     -- per-file, not session-wide: a source without `apply` would advertise keys that refuse
     if self:_can_stage_hunk() then
-        local what = "stage / unstage hunk"
+        local what = "%s hunk"
         if self:_whole_file() then
-            what = "stage / unstage file"
+            what = "%s file"
         elseif self:_can_stage_lines() then
-            what = "stage / unstage hunk (visual: selected lines)"
+            what = "%s hunk (visual: selected lines)"
         end
-        rows[#rows + 1] = { pair(km.stage, km.unstage), what }
-        rows[#rows + 1] = { pair(km.stage_all, km.unstage_all), "stage / unstage all" }
+        rows[#rows + 1] = row(km.stage, km.unstage, what, "stage", "unstage")
+        rows[#rows + 1] = row(km.stage_all, km.unstage_all, "%s all", "stage", "unstage")
     end
     if self.staging and self.staging.revert then
         local what = "revert hunk (confirm)"

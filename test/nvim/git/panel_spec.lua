@@ -242,23 +242,33 @@ describe(":Differ panel", function()
         assert.are.same({ 2, 6 }, vim.api.nvim_win_get_cursor(0)) -- exact line + column
     end)
 
-    it("binds f/b quarter-scroll in the panel window too", function()
+    it("binds configured quarter-scroll keys in the panel window too", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
+        local function lhs_of(p)
+            local lhs = {}
+            for _, m in ipairs(vim.api.nvim_buf_get_keymap(p.bufnr, "n")) do
+                lhs[m.lhs] = true
+            end
+            return lhs
+        end
 
         git_src.panel({})
+        assert.is_nil(lhs_of(Panel.current())["f"]) -- unbound by default
+        Panel.current():close()
+
+        require("differ").setup({ keymaps = { scroll_down = "f", scroll_up = "b" } })
+        git_src.panel({})
         local p = Panel.current()
-        local lhs = {}
-        for _, m in ipairs(vim.api.nvim_buf_get_keymap(p.bufnr, "n")) do
-            lhs[m.lhs] = true
-        end
+        local lhs = lhs_of(p)
         assert.is_true(lhs["f"])
         assert.is_true(lhs["b"])
         -- invoking must not error (regression: the method was shadowed by the field)
         p:scroll("down")
         p:scroll("up")
         p:close()
+        require("differ").setup({}) -- restore defaults for the rest of the suite
     end)
 
     it("groups staged / unstaged / untracked into sections with counts", function()
