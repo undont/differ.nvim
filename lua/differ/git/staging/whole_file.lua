@@ -37,12 +37,12 @@ local function whole_file_revert(ctx, entry, letter, preview)
             return nil, nil, why
         end
         return function()
-            return index_ops.restore_deleted(ctx.root, entry, ctx.keys)
+            return index_ops.restore_deleted(ctx.keys, ctx.root, entry)
         end,
             "restores the file"
     end
     local discard = function()
-        return gitmod().discard(ctx.root, entry, preview, ctx.keys)
+        return gitmod().discard(ctx.keys, ctx.root, entry, preview)
     end
     if letter == "A" or letter == "?" then
         return discard, "deletes the file"

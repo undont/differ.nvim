@@ -591,7 +591,7 @@ describe("git.status_sections", function()
         end
         _G.notifs = {}
         local keys = require("differ.ui.help").keys("panel")
-        assert.is_false(git_src.discard(root, entry, nil, keys))
+        assert.is_false(git_src.discard(keys, root, entry))
         assert.is_truthy(_G.notifs[#_G.notifs].msg:find("overwrite a.lua on disk", 1, true))
         assert.are.equal("mine\n", table.concat(vim.fn.readfile(root .. "/a.lua"), "\n") .. "\n")
     end)

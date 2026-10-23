@@ -769,11 +769,13 @@ end
 
 -- why dw has no local view for `entry`: a staged edit or move then deleted on disk has
 -- one change on top, its deletion, which the whole change already stages
+---@param keys differ.KeymapSet  -- the surface the reason shows on
 ---@param entry differ.FileEntry
 ---@return string
-local function no_local_reason(entry)
+local function no_local_reason(keys, entry)
     if entry.y == "D" and (entry.x == "M" or entry.x == "R") then
-        return ("%s's only local change is its deletion, which s stages here"):format(entry.path)
+        local msg = "%s's only local change is its deletion, which %s stages here"
+        return msg:format(entry.path, help.key(keys, "stage"))
     end
     return "only a partly staged file has a local view"
 end
@@ -846,12 +848,12 @@ end
 -- callbacks while it blocks, so the status the caller holds can have moved under the
 -- prompt: the three branches differ in whether they delete the file, so a status that
 -- no longer matches refuses rather than picking by the stale one
+---@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@param root string
 ---@param entry differ.FileEntry
 ---@param preview? boolean  -- the entry comes from the commit preview's listing
----@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@return boolean ok
-function M.discard(root, entry, preview, keys)
+function M.discard(keys, root, entry, preview)
     if live_status(root, entry, preview) ~= entry.status then
         notify(
             ("discard skipped: %s isn't as the list showed it any more"):format(entry.path),
@@ -865,7 +867,7 @@ function M.discard(root, entry, preview, keys)
         return false
     end
     if not preview and restores_staged(entry) then
-        return index_ops.restore_deleted(root, entry, keys)
+        return index_ops.restore_deleted(keys, root, entry)
     end
     local abs = root .. "/" .. entry.path
     -- an add, copy or rename the worktree then deleted is lettered D in the whole list,
@@ -1083,6 +1085,10 @@ function M.panel(opts)
     -- worktree copy is a row of its own. `actions` (file-level staging) is only
     -- meaningful for the worktree-status source
     local preview = false -- ds: the panel lists only what a commit would take
+    local panel_keys = help.keys("panel")
+    local preview_unstages = ("the commit preview only unstages: %s goes back"):format(
+        help.key(panel_keys, "commit_preview")
+    )
     local sections, model_for, raw_args_for, actions
     local list_err ---@type string|nil -- git's own words when the listing failed
     local staging_ops ---@type table -- assigned below; the hooks read it at call time
@@ -1101,7 +1107,7 @@ function M.panel(opts)
         actions = {
             stage = function(entry)
                 if preview then
-                    notify("the commit preview only unstages: ds goes back", vim.log.levels.WARN)
+                    notify(preview_unstages, vim.log.levels.WARN)
                     return false
                 end
                 -- a Staged row has nothing on disk to take; a deletion kept on disk
@@ -1125,7 +1131,7 @@ function M.panel(opts)
             end,
             stage_all = function()
                 if preview then
-                    notify("the commit preview only unstages: ds goes back", vim.log.levels.WARN)
+                    notify(preview_unstages, vim.log.levels.WARN)
                     return false
                 end
                 M.stage_all(root)
@@ -1134,7 +1140,7 @@ function M.panel(opts)
                 M.unstage_all(root)
             end,
             discard = function(entry)
-                M.discard(root, entry, preview, help.keys("panel"))
+                M.discard(panel_keys, root, entry, preview)
             end,
             discard_refusals = function(entries)
                 local gitlinks = {}
@@ -1143,7 +1149,7 @@ function M.panel(opts)
                 end
                 local refused = {}
                 for _, e in ipairs(entries) do
-                    refused[e] = discard_refusal(help.keys("panel"), root, e, preview, gitlinks)
+                    refused[e] = discard_refusal(panel_keys, root, e, preview, gitlinks)
                 end
                 return refused
             end,
@@ -1426,7 +1432,7 @@ function M.panel(opts)
                     show_local(entry)
                 end
             else
-                staging.no_local = staging.no_local or no_local_reason(entry)
+                staging.no_local = staging.no_local or no_local_reason(diff_keys, entry)
             end
         end
         if view and view:is_open() then
@@ -1522,7 +1528,7 @@ function M.panel(opts)
         if not live then
             return
         end
-        staging.toggle_local, staging.no_local = nil, no_local_reason(live)
+        staging.toggle_local, staging.no_local = nil, no_local_reason(diff_keys, live)
         if staging_ops.partly_staged(live) then
             staging.toggle_local = function()
                 show_local(live)
@@ -1591,7 +1597,6 @@ function M.panel(opts)
     -- defaults, else Panel.new's own hardcoded fallbacks
     local cfg = require("differ").get_config()
     local panel_cfg = cfg.panel or {}
-    local panel_keys = cfg.keymaps.panel or require("differ.config").defaults.keymaps
     local return_tab, session_tab = open_session_tab()
     panel = Panel.new({
         sections = nonempty,
@@ -1635,13 +1640,14 @@ function M.panel(opts)
                         return
                     end
                     if preview then
+                        local msg = "the commit preview has no local view: %s goes back"
                         return notify(
-                            "the commit preview has no local view: ds goes back",
+                            msg:format(help.key(panel_keys, "commit_preview")),
                             vim.log.levels.WARN
                         )
                     end
                     if not staging_ops.partly_staged(entry) then
-                        return notify(no_local_reason(entry), vim.log.levels.WARN)
+                        return notify(no_local_reason(panel_keys, entry), vim.log.levels.WARN)
                     end
                     local on_row = active_entry ~= nil and active_entry.path == entry.path
                     local local_view = view ~= nil

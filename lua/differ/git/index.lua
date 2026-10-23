@@ -159,11 +159,11 @@ end
 -- bring a deleted file back: from HEAD for a staged deletion, which only HEAD still
 -- has, else from the index, which holds any edits staged before the delete. a staged
 -- deletion whose file is on disk would lose that copy, so it refuses
+---@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@param root string
 ---@param entry differ.FileEntry
----@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@return boolean
-function M.restore_deleted(root, entry, keys)
+function M.restore_deleted(keys, root, entry)
     local why = M.discard_refusal(keys, entry)
     if why then
         notify(why, vim.log.levels.WARN)
