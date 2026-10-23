@@ -250,7 +250,8 @@ M.closed = {
 
 -- options that default to nil, so the defaults table carries no key for them and
 -- the unknown-key walk can't see them. keep in step with the nil entries above
-local NILABLE = { base = true, sidecar_bin = true, command_alias = true }
+---@type table<string, true>
+M.nilable = { base = true, sidecar_bin = true, command_alias = true }
 
 local function show(value)
     if type(value) == "string" then
@@ -372,7 +373,7 @@ function M.validate(user)
             check_keymaps(value, diags)
         elseif key == "context" then
             check_context(value, diags)
-        elseif M.defaults[key] == nil and not NILABLE[key] then
+        elseif M.defaults[key] == nil and not M.nilable[key] then
             diags[#diags + 1] = ('unknown option "%s"'):format(key)
         else
             check_enum(key, value, diags)
