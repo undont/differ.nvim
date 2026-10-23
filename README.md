@@ -108,6 +108,7 @@ require("differ").setup({
   base = nil,                    -- base branch for `base`/`log base`; nil auto-detects origin/HEAD
   relative_dates = false,        -- "3 days ago" instead of YYYY-MM-DD wherever a date shows
   command_alias = nil,           -- extra :command(s) routing to :Differ, e.g. "D" or { "D", "Df" }
+
   panel = {                      -- can also be overridden with :Differ panel <position> in-session
     position = "right",          -- "bottom" | "top" | "left" | "right"
     height = 9,                  -- only applies to top/bottom
@@ -122,6 +123,7 @@ require("differ").setup({
   wrap = true,                   -- soft-wrap long lines in the diff view
   diff_counter = true,           -- hunk counter in the diff window's winbar
   cursorline_tint = true,        -- add/delete tint on the cursor line; only drawn when 'cursorline' is on
+
   deep_diff = {                  -- word-level diffing
     enabled = true,
     granularity = "word",        -- "word" | "char"
@@ -145,6 +147,7 @@ require("differ").setup({
                                  -- "markers" gives eol markers with a float, which split
                                  -- always does anyway
   },
+
   sidecar_bin = nil,             -- override the go sidecar path
 
   keymaps = {
@@ -156,8 +159,8 @@ require("differ").setup({
     last_file = "G",
     next_section = "]]",         -- sections in the panel, commits in log
     prev_section = "[[",
-    scroll_down = false,         -- quarter-page scroll, e.g. "f" / "b"
-    scroll_up = false,
+    scroll_down = false,         -- quarter-page scroll (off by default)
+    scroll_up = false,           -- enable if you want easy page scrolling
     select = { "<CR>", "o" },
     help = "g?",
     close = "dc",                -- end the session
@@ -168,9 +171,12 @@ require("differ").setup({
     toggle_layout = "dl",        -- flip between stacked / split
     toggle_local = "dw",         -- diff/panel: a partly staged file's changes since staging, and back
     commit_preview = "ds",       -- panel/diff: only the staged changes, each as HEAD↔index, and back
-    more_context = "d=", less_context = "d-",
-    stage = "s", unstage = "u",  -- stage/unstage[all] work on hunks/files (diff buffer/panel)
-    stage_all = "S", unstage_all = "U",
+    more_context = "d=",
+    less_context = "d-",
+    stage = "s",                 -- stage/unstage[all] work on hunks/files (diff buffer/panel)
+    unstage = "u",
+    stage_all = "S",
+    unstage_all = "U",
     discard = "X",               -- revert works on hunks/files (diff buffer/panel)
     edit_file = "df",            -- open window to edit current file
     goto_file = "de",            -- open the real file and close the session; in a pr it opens
@@ -184,16 +190,22 @@ require("differ").setup({
     details = "K",               -- in the log panel to see full commit messages
 
     -- mergetool
-    next_conflict = "]x", prev_conflict = "[x", -- step between conflicts
-    next_marker = "]n", prev_marker = "[n",  -- step between conflict markers
-    choose_ours = "<leader>co", choose_theirs = "<leader>ct", choose_base = "<leader>cb",
+    next_conflict = "]x",        -- step between conflicts
+    prev_conflict = "[x",
+    next_marker = "]n",          -- step between conflict markers
+    prev_marker = "[n",
+    choose_ours = "<leader>co",
+    choose_theirs = "<leader>ct",
+    choose_base = "<leader>cb",
     choose_all = "<leader>ca",   -- take both (ours then theirs)
     choose_none = "<leader>cx",  -- drop the conflict region
 
     -- pr
     toggle_viewed = "<Tab>",
-    next_unviewed = "]u", prev_unviewed = "[u",
-    next_thread = "]t", prev_thread = "[t",
+    next_unviewed = "]u",
+    prev_unviewed = "[u",
+    next_thread = "]t",
+    prev_thread = "[t",
     comment = "ga",              -- comment on the line (normal) or selection (visual)
     reply = "gp",                -- reply to the thread under the cursor
     delete_comment = "gx",       -- delete the latest comment of the thread
