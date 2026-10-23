@@ -32,6 +32,33 @@ describe("config.resolve_keymaps", function()
         assert.is_false(km.history.scroll_down)
     end)
 
+    it("keeps the default for a locked action set to false", function()
+        local km = config.resolve_keymaps({
+            stage = false,
+            toggle_local = false,
+            diff = { unstage = false },
+            panel = { commit_preview = false },
+        })
+        for _, surface in ipairs({ "diff", "panel", "history", "merge" }) do
+            assert.are.equal("s", km[surface].stage)
+            assert.are.equal("dw", km[surface].toggle_local)
+        end
+        assert.are.equal("u", km.diff.unstage)
+        assert.are.equal("ds", km.panel.commit_preview)
+    end)
+
+    it("falls back to the top-level remap for a per-surface false", function()
+        local km = config.resolve_keymaps({ stage = "gs", panel = { stage = false } })
+        assert.are.equal("gs", km.diff.stage)
+        assert.are.equal("gs", km.panel.stage)
+    end)
+
+    it("falls back to the default when the top level is false too", function()
+        local km = config.resolve_keymaps({ stage = false, panel = { stage = false } })
+        assert.are.equal("s", km.panel.stage)
+        assert.are.equal("s", km.diff.stage)
+    end)
+
     it("replaces a multi-lhs list wholesale (no index merge)", function()
         local km = config.resolve_keymaps({ select = { "x" } })
         assert.are.same({ "x" }, km.panel.select) -- not { "x", "o" }
@@ -129,6 +156,25 @@ describe("config.validate", function()
             { 'unknown keymap action "keymaps.panel.stag"' },
             config.validate({ keymaps = { panel = { stag = "s" } } })
         )
+    end)
+
+    it("flags false on a locked action, top-level and per-surface", function()
+        assert.are.same({
+            'keymaps.diff.toggle_local cannot be false; using "dw"',
+            'keymaps.stage cannot be false; using "s"',
+        }, config.validate({ keymaps = { stage = false, diff = { toggle_local = false } } }))
+        assert.are.same({}, config.validate({ keymaps = { discard = false, stage = "gs" } }))
+    end)
+
+    it("names the top-level remap a per-surface false falls back to", function()
+        assert.are.same(
+            { 'keymaps.diff.stage cannot be false; using "gs"' },
+            config.validate({ keymaps = { stage = "gs", diff = { stage = false } } })
+        )
+        assert.are.same({
+            'keymaps.diff.stage cannot be false; using "s"',
+            'keymaps.stage cannot be false; using "s"',
+        }, config.validate({ keymaps = { stage = false, diff = { stage = false } } }))
     end)
 
     it("does not mistake a surface subtable for an action", function()

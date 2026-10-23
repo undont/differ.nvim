@@ -2,6 +2,7 @@
 
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
+local help = require("differ.ui.help")
 local index_ops = require("differ.git.index")
 local patch = require("differ.git.patch")
 local notify, git, git_ok = exec.notify, exec.git, exec.git_ok
@@ -293,7 +294,14 @@ local function for_index(ctx, entry, model, preview)
         end
         -- a whole-file discard takes the worktree too, and this view shows none of it.
         -- read again at X: an edit since the view opened counts as well
-        local why = ("X would also discard the unstaged changes to %s"):format(entry.path)
+        local why = "discard is disabled"
+        local discard_key = help.key(ctx.keys, "discard")
+        if discard_key then
+            why = ("%s would also discard the unstaged changes to %s"):format(
+                discard_key,
+                entry.path
+            )
+        end
         local function unstaged_on_top(y)
             return y ~= " " and y ~= "D"
         end
@@ -306,7 +314,8 @@ local function for_index(ctx, entry, model, preview)
                 -- u here took the change out of the index: X has nothing staged to
                 -- discard, and s puts it back
                 if live and (live.x == " " or live.x == "?") then
-                    notify(("%s has nothing staged now: s stages it back"):format(entry.path))
+                    local msg = "%s has nothing staged now: %s stages it back"
+                    notify(msg:format(entry.path, help.key(ctx.keys, "stage")))
                     return false
                 end
                 if live and unstaged_on_top(live.y) then
@@ -329,8 +338,14 @@ end
 local function for_preview(ctx, entry, model)
     local staging = for_index(ctx, entry, model, true)
     staging.badge = "STAGED"
-    staging.no_local = "the commit preview has no local view: ds goes back"
-    staging.no_revert_lines = "X reverts lines from the whole change; ds goes back"
+    local back = help.key(ctx.keys, "commit_preview")
+    local discard = help.key(ctx.keys, "discard")
+    staging.no_local = ("the commit preview has no local view: %s goes back"):format(back)
+    staging.no_revert_lines = "discard is disabled"
+    if discard then
+        local msg = "%s reverts lines from the whole change; %s goes back"
+        staging.no_revert_lines = msg:format(discard, back)
+    end
     staging.leave = function()
         ctx.preview_off()
     end

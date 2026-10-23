@@ -3,6 +3,7 @@
 -- hold and writes it whole. the session passes in its root and its callbacks
 
 local rev = require("differ.git.rev")
+local help = require("differ.ui.help")
 local index_ops = require("differ.git.index")
 local set_staged = index_ops.set_staged
 local raw_line = require("differ.git.content").raw_line
@@ -25,6 +26,7 @@ M.DROP_PROMPTS = whole_file.DROP_PROMPTS
 
 ---@class differ.git.StagingCtx
 ---@field root string
+---@field keys differ.KeymapSet                -- the diff's, which its notices name
 ---@field stageable boolean                    -- a worktree source: rev-pair rows don't stage
 ---@field refresh fun()                        -- reload the panel's list
 ---@field retarget fun(outside: boolean)       -- re-source the view onto the row's state now
@@ -42,6 +44,20 @@ local function by_line(entry)
     local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
     local added = entry.status == "A" and entry.x == "A"
     return (content or added) and entry.x ~= "D" and entry.y ~= "T"
+end
+
+-- X's refusal on a selection of a file that reverts whole
+---@param ctx differ.git.StagingCtx
+---@param what string  -- the kind of file
+---@param does string  -- what X does to it
+---@return string
+local function no_lines(ctx, what, does)
+    local msg = what .. " has no lines to revert"
+    local discard = help.key(ctx.keys, "discard")
+    if discard then
+        msg = ("%s; %s %s it whole"):format(msg, discard, does)
+    end
+    return msg
 end
 
 -- staging for a row's HEAD↔worktree diff: by hunk through union_staging, else the file as one unit
@@ -90,21 +106,25 @@ local function for_union(ctx, entry, diff)
     if entry.status == "M" then
         local head_mode, work_mode =
             rev.parse_raw_modes(raw_line(ctx.root, { "HEAD" }, entry) or "")
-        local why = index_ops.discard_refusal(entry, head_mode, work_mode)
+        local why = index_ops.discard_refusal(ctx.keys, entry, head_mode, work_mode)
         if why then
             staging.no_revert = why
             staging.no_revert_lines = "a submodule has no lines to revert"
         else
             staging.revert, staging.revert_label = whole_file_revert(ctx, entry, "M", false)
-            staging.no_revert_lines = "a mode change has no lines to revert; X resets it whole"
+            staging.no_revert_lines = no_lines(ctx, "a mode change", "resets")
             if diff.binary then
-                staging.no_revert_lines = "a binary file has no lines to revert; X resets it whole"
+                staging.no_revert_lines = no_lines(ctx, "a binary file", "resets")
             end
         end
     end
     if entry.status == "M" or entry.status == "R" or entry.status == "C" then
         if entry.status == "R" or entry.status == "C" then
-            staging.no_revert = "X on the panel row undoes the move"
+            staging.no_revert = "the move reverts from the panel row, where discard is disabled"
+            local discard = help.key(help.keys("panel"), "discard")
+            if discard then
+                staging.no_revert = ("%s on the panel row undoes the move"):format(discard)
+            end
         end
         return staging
     end
@@ -114,9 +134,9 @@ local function for_union(ctx, entry, diff)
         staging.revert, staging.revert_label, staging.no_revert =
             whole_file_revert(ctx, entry, entry.status, false)
         if entry.status == "D" then
-            staging.no_revert_lines = "a deleted file has no lines to revert; X restores it whole"
+            staging.no_revert_lines = no_lines(ctx, "a deleted file", "restores")
         elseif diff.binary then
-            staging.no_revert_lines = "a binary file has no lines to revert; X resets it whole"
+            staging.no_revert_lines = no_lines(ctx, "a binary file", "resets")
         elseif entry.status == "?" and #diff.hunks > 0 then
             -- an untracked file goes back to nothing, so its selected lines just leave it
             file_lines(ctx, entry, staging, function()

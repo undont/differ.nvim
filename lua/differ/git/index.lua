@@ -9,20 +9,29 @@ local M = {}
 -- git's mode for a submodule entry (a commit pointer)
 M.GITLINK = "160000"
 
--- why X refuses an entry, or nil: a staged deletion's copy on disk would be overwritten,
--- and a submodule's checkout can't be moved. the modes are HEAD's and the worktree's
+-- why discard refuses an entry, or nil: a staged deletion's copy on disk would be
+-- overwritten, and a submodule's checkout can't be moved. the modes are HEAD's and the
+-- worktree's; `keys` is the set of the surface the refusal shows on
+---@param keys differ.KeymapSet
 ---@param entry differ.FileEntry
 ---@param old_mode? string
 ---@param new_mode? string
 ---@return string|nil
-function M.discard_refusal(entry, old_mode, new_mode)
+function M.discard_refusal(keys, entry, old_mode, new_mode)
+    local submodule = old_mode == M.GITLINK or new_mode == M.GITLINK
+    if not (entry.kept or submodule) then
+        return nil
+    end
+    local help = require("differ.ui.help")
+    local discard = help.key(keys, "discard")
+    if not discard then
+        return "discard is disabled"
+    end
     if entry.kept then
-        return ("X would overwrite %s on disk; u unstages the deletion instead"):format(entry.path)
+        local msg = "%s would overwrite %s on disk; %s unstages the deletion instead"
+        return msg:format(discard, entry.path, help.key(keys, "unstage"))
     end
-    if old_mode == M.GITLINK or new_mode == M.GITLINK then
-        return ("X can't move the checkout inside the submodule %s"):format(entry.path)
-    end
-    return nil
+    return ("%s can't move the checkout inside the submodule %s"):format(discard, entry.path)
 end
 
 ---@param root string
@@ -150,11 +159,12 @@ end
 -- bring a deleted file back: from HEAD for a staged deletion, which only HEAD still
 -- has, else from the index, which holds any edits staged before the delete. a staged
 -- deletion whose file is on disk would lose that copy, so it refuses
+---@param keys differ.KeymapSet  -- the surface the refusal shows on
 ---@param root string
 ---@param entry differ.FileEntry
 ---@return boolean
-function M.restore_deleted(root, entry)
-    local why = M.discard_refusal(entry)
+function M.restore_deleted(keys, root, entry)
+    local why = M.discard_refusal(keys, entry)
     if why then
         notify(why, vim.log.levels.WARN)
         return false

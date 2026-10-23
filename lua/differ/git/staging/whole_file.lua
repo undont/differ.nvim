@@ -32,17 +32,17 @@ local DROP_PROMPTS = {
 ---@return (fun(): boolean)|nil revert, string|nil label, string|nil no_revert
 local function whole_file_revert(ctx, entry, letter, preview)
     if letter == "D" then
-        local why = index_ops.discard_refusal(entry)
+        local why = index_ops.discard_refusal(ctx.keys, entry)
         if why then
             return nil, nil, why
         end
         return function()
-            return index_ops.restore_deleted(ctx.root, entry)
+            return index_ops.restore_deleted(ctx.keys, ctx.root, entry)
         end,
             "restores the file"
     end
     local discard = function()
-        return gitmod().discard(ctx.root, entry, preview)
+        return gitmod().discard(ctx.keys, ctx.root, entry, preview)
     end
     if letter == "A" or letter == "?" then
         return discard, "deletes the file"
