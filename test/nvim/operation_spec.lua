@@ -1003,7 +1003,7 @@ describe(":Differ continue", function()
         resolve_all(root)
         in_repo(root)
         run_choice("continue")
-        local n = assert(noted("%x+ feature h is empty now: continue to drop it$"))
+        local n = assert(noted("^differ: %x+ is empty now: continue to drop it$"))
         assert.are.equal(vim.log.levels.WARN, n.level)
         assert.is_nil(noted("failed"))
         run_choice("continue")
@@ -1016,7 +1016,7 @@ describe(":Differ continue", function()
         resolve_all(root)
         in_repo(root)
         run_choice("continue")
-        local n = assert(noted("%x+ feature h is empty now: skip to drop it$"))
+        local n = assert(noted("^differ: %x+ is empty now: skip to drop it$"))
         assert.are.equal(vim.log.levels.WARN, n.level)
         run_choice("continue") -- git refuses it again
         assert.are.equal(2, count("is empty now"))
@@ -1052,6 +1052,43 @@ describe(":Differ continue", function()
             assert.are.equal(vim.log.levels.INFO, assert(noted(case[2])).level)
         end)
     end
+
+    -- open the merge tool on f.txt and resolve it in the result, unsaved
+    local function resolve_in_merge_tool(root)
+        in_repo(root)
+        merge.open({})
+        local s = assert(merge.current())
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "resolved" })
+        return s
+    end
+
+    for _, case in ipairs({
+        { "an empty pick", "rebase", true },
+        { "an empty cherry-pick", "cherry-pick", true },
+        { "an edit", "rebase", false, { "pick {f}", "edit {h}" } },
+        { "a break", "rebase", false, { "pick {f}", "break", "pick {h}" } },
+    }) do
+        it("closes the merge tool once a " .. case[2] .. " stops at " .. case[1], function()
+            local root = with_h(case[2], case[3], case[4])
+            resolve_in_merge_tool(root)
+            run_choice("continue")
+            assert.are.equal(case[2], git_src.operation(root))
+            assert.are.same({}, git_src.conflicted(root))
+            assert.is_nil(merge.current())
+        end)
+    end
+
+    it("keeps the merge tool open when a commit hook refuses the resolution", function()
+        local root = diverged_repo()
+        git(root, "merge", "feature")
+        local hook = root .. "/.git/hooks/pre-commit"
+        write(hook, "#!/bin/sh\nexit 1\n")
+        vim.fn.setfperm(hook, "rwx------")
+        local s = resolve_in_merge_tool(root)
+        run_choice("continue")
+        assert.are.equal("merge", git_src.operation(root))
+        assert.are.equal(s, merge.current())
+    end)
 
     for _, case in ipairs({
         {

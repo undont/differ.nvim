@@ -1360,14 +1360,18 @@ function M.settle()
 end
 
 -- once differ's own continue, skip or abort ends: open the first conflict it stopped on,
--- else close the session when the operation is over, else keep it with git's new HEAD
+-- else close the session when the operation is over or HEAD moved past its file, else
+-- keep it, e.g. after a commit hook refused the resolution
 ---@param root string
 function M.after_operation(root)
     local git = require("differ.git")
     local s = session
     local operation = git.operation(root)
+    local moved = false
     if s then
-        s.head, s.operation = git.head_sha(root), operation
+        local head = git.head_sha(root)
+        moved = head ~= s.head
+        s.head, s.operation = head, operation
         reload_result(s)
     end
     if not operation then
@@ -1375,6 +1379,9 @@ function M.after_operation(root)
     end
     local conflicted = git.conflicted(root)
     if #conflicted == 0 then
+        if moved then
+            M.close()
+        end
         return
     end
     local relpath, model = merge_files.first_openable(root, conflicted)
