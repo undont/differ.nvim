@@ -1360,8 +1360,9 @@ function M.settle()
 end
 
 -- once differ's own continue, skip or abort ends: open the first conflict it stopped on,
--- else close the session when the operation is over or HEAD moved past its file, else
--- keep it, e.g. after a commit hook refused the resolution
+-- else close the session when the operation is over or HEAD moved past its file (the
+-- worktree panel takes its place mid-operation), else keep it, e.g. after a commit hook
+-- refused the resolution
 ---@param root string
 function M.after_operation(root)
     local git = require("differ.git")
@@ -1381,6 +1382,7 @@ function M.after_operation(root)
     if #conflicted == 0 then
         if moved then
             M.close()
+            git.panel({ root = root, open_first = true, supersede = true })
         end
         return
     end

@@ -490,6 +490,22 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: no changes left", _G.notifs[1].msg)
     end)
 
+    it("ends the session on a listing that fails, saying only that", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+
+        local p = open_panel()
+        write(root .. "/.git/index", "garbage")
+        _G.notifs = {}
+        p.on_external_change()
+
+        assert.is_false(p:is_alive())
+        assert.are.equal(1, #_G.notifs)
+        assert.are.equal(vim.log.levels.ERROR, _G.notifs[1].level)
+        assert.is_truthy(_G.notifs[1].msg:find("couldn't list changes", 1, true))
+    end)
+
     it("keeps the session when other changes survive the revert", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")

@@ -97,6 +97,7 @@ local LINE_HL = {
 ---@field winid integer|nil
 ---@field origin_win integer|nil
 ---@field return_tab integer|nil
+---@field git_root string|nil -- the repo's absolute path, worktree panels only
 ---@field progress boolean  -- file-position meter in the panel winbar
 ---@field sections differ.panel.Section[]
 ---@field listing "tree"|"name"

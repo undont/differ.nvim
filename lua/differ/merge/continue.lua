@@ -8,14 +8,27 @@ local M = {}
 
 local notify = exec.notify
 
--- the repo the command acts on: a merge session's, else the current file's or cwd's
+-- the repo the command acts on: a merge session's, else the current file's, else a
+-- worktree panel's, else cwd's
 ---@return string|nil
 local function target_root()
     local s = require("differ.merge").current()
     if s then
         return s.root
     end
-    return require("differ.git").repo_root()
+    local git = require("differ.git")
+    local file = git.current_file()
+    if file then
+        local root = git.root(file)
+        if root then
+            return root
+        end
+    end
+    local panel = require("differ.panel").current()
+    if panel and panel.git_root then
+        return panel.git_root
+    end
+    return git.root(vim.fn.getcwd())
 end
 
 -- say how the run left the repo
