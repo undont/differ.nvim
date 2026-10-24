@@ -41,8 +41,21 @@ local function report(root, op, action, ok, output, cancelled)
         end
         return notify(op .. " finished")
     end
-    if now and (ok or #git.conflicted(root) > 0) then
+    if ok and now then
+        local paused = git_op.paused_at(root)
+        if paused then
+            notify(("%s stopped at %s"):format(op, paused))
+        end
         return
+    end
+    if now and #git.conflicted(root) > 0 then
+        return
+    end
+    local empty = now and git_op.empty_pick(root)
+    if empty then
+        -- a cherry-pick's continue refuses an empty pick; a rebase's drops it
+        local how = op == "rebase" and "continue to drop it" or "skip to drop it"
+        return notify(("%s is empty now: %s"):format(empty, how), vim.log.levels.WARN)
     end
     notify(
         exec.with_stderr(("git %s --%s failed"):format(op, action), output),

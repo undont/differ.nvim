@@ -243,6 +243,48 @@ function M.reword_kept(root)
     return exec.git({ "diff", "--cached", "--quiet" }, root) ~= nil
 end
 
+---@param root string
+---@param sha string
+---@return string
+local function short_subject(root, sha)
+    local out = exec.git({ "log", "-1", "--format=%h %s", sha }, root)
+    return out and exec.chomp(out) or sha:sub(1, 7)
+end
+
+-- the pick a rebase or cherry-pick stopped on because it has nothing left to apply, as its
+-- short sha and subject. git writes CHERRY_PICK_HEAD for it in both; a pick that stopped
+-- before applying (an untracked file in the way) has none
+---@param root string
+---@return string|nil
+function M.empty_pick(root)
+    local dir = git_dir(root)
+    local sha = dir and state_line(dir, "CHERRY_PICK_HEAD")
+    if not sha or exec.git({ "diff", "--cached", "--quiet" }, root) == nil then
+        return nil
+    end
+    return short_subject(root, sha)
+end
+
+-- the edit or break a rebase is stopped at (`edit 1a2b3c4 subject`, `break`), nil for
+-- any other stop
+---@param root string
+---@return string|nil
+function M.paused_at(root)
+    local dir = git_dir(root)
+    local line = dir and last_done(dir)
+    if not line then
+        return nil
+    end
+    if line:match("^break") or line:match("^b$") then
+        return "break"
+    end
+    local sha = line:match("^edit (%x+)") or line:match("^e (%x+)")
+    if not sha then
+        return nil
+    end
+    return "edit " .. short_subject(root, sha)
+end
+
 -- the terminal buffers git runs in, and their float titles
 ---@type table<integer, string>
 local floats = {}

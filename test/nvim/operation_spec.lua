@@ -92,6 +92,48 @@ local function stopped(op, single)
     return root
 end
 
+-- `feature` gains a third commit adding h.txt, which `main` also has when `squash`, in a
+-- commit with another change so git can't drop it up front. stopped on f.txt: a
+-- cherry-pick of feature's f and h commits, or a rebase -i running `todo`, whose lines
+-- name feature's commits as `{f}` and `{h}`
+---@param op "rebase"|"cherry-pick"
+---@param squash boolean
+---@param todo string[]|nil
+local function with_h(op, squash, todo)
+    local root = diverged_repo()
+    git_ok(root, "checkout", "-q", "feature")
+    write(root .. "/h.txt", "h\n")
+    git_ok(root, "add", "h.txt")
+    git_ok(root, "commit", "-q", "-m", "feature h")
+    git_ok(root, "checkout", "-q", "main")
+    if squash then
+        write(root .. "/h.txt", "h\n")
+        write(root .. "/i.txt", "i\n")
+        git_ok(root, "add", "h.txt", "i.txt")
+        git_ok(root, "commit", "-q", "-m", "squash of feature h")
+    end
+    if op == "cherry-pick" then
+        git(root, "cherry-pick", "feature~2", "feature")
+    else
+        local shas = {
+            f = vim.trim(git_ok(root, "rev-parse", "feature~2")),
+            h = vim.trim(git_ok(root, "rev-parse", "feature")),
+        }
+        local file = vim.fn.tempname()
+        write(
+            file,
+            (table.concat(todo or { "pick {f}", "pick {h}" }, "\n"):gsub("{(%a)}", shas)) .. "\n"
+        )
+        local editor = vim.fn.tempname()
+        write(editor, ('#!/bin/sh\ncp %s "$1"\n'):format(vim.fn.shellescape(file)))
+        vim.fn.setfperm(editor, "rwx------")
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "-c", "sequence.editor=" .. editor, "rebase", "-i", "main")
+    end
+    assert.are.same({ "f.txt" }, git_src.conflicted(root))
+    return root
+end
+
 local function resolve_all(root)
     for _, path in ipairs(git_src.conflicted(root)) do
         write(root .. "/" .. path, "resolved\n")
@@ -937,6 +979,79 @@ describe(":Differ continue", function()
         end))
         assert.is_nil(noted("rebase"))
     end)
+
+    -- choose `choice` in the picker and wait for its run to end
+    local function run_choice(choice)
+        chosen = choice
+        continue_cmd()
+        assert(
+            vim.wait(10000, function()
+                return not continue.running()
+            end),
+            "the run never finished"
+        )
+    end
+
+    local function count(pattern)
+        return #vim.tbl_filter(function(n)
+            return n.msg:find(pattern) ~= nil
+        end, _G.notifs)
+    end
+
+    it("warns, not fails, when a rebase stops on a pick that's empty now", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        local n = assert(noted("%x+ feature h is empty now: continue to drop it$"))
+        assert.are.equal(vim.log.levels.WARN, n.level)
+        assert.is_nil(noted("failed"))
+        run_choice("continue")
+        assert.is_nil(git_src.operation(root))
+        assert.is_not_nil(noted("rebase finished"))
+    end)
+
+    it("warns on an empty cherry-pick until it's skipped", function()
+        local root = with_h("cherry-pick", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        local n = assert(noted("%x+ feature h is empty now: skip to drop it$"))
+        assert.are.equal(vim.log.levels.WARN, n.level)
+        run_choice("continue") -- git refuses it again
+        assert.are.equal(2, count("is empty now"))
+        vim.fn.confirm = function()
+            return 1
+        end
+        run_choice("skip")
+        assert.is_nil(git_src.operation(root))
+        assert.is_nil(noted("failed"))
+    end)
+
+    it("fails a rebase that stops on an untracked file in the way", function()
+        local root = with_h("rebase", false)
+        resolve_all(root)
+        write(root .. "/h.txt", "untracked\n")
+        in_repo(root)
+        run_choice("continue")
+        assert.are.equal("rebase", git_src.operation(root))
+        assert.are.equal(vim.log.levels.ERROR, assert(noted("rebase %-%-continue failed")).level)
+        assert.is_nil(noted("empty now"))
+    end)
+
+    for _, case in ipairs({
+        { { "pick {f}", "edit {h}" }, "rebase stopped at edit %x+ feature h$" },
+        { { "pick {f}", "break", "pick {h}" }, "rebase stopped at break$" },
+    }) do
+        it("says where a rebase stopped at " .. case[1][2]:match("^%a+"), function()
+            local root = with_h("rebase", false, case[1])
+            resolve_all(root)
+            in_repo(root)
+            run_choice("continue")
+            assert.are.equal("rebase", git_src.operation(root))
+            assert.are.equal(vim.log.levels.INFO, assert(noted(case[2])).level)
+        end)
+    end
 
     for _, case in ipairs({
         {
