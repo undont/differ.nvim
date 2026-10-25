@@ -338,16 +338,20 @@ local function in_float(root, cmd, accept, on_exit)
     floats[buf] = "git " .. cmd[#exec.GIT + 1]
     local win = open_float(buf, floats[buf])
     local argv = vim.list_extend({ "sh", "-c", 'GPG_TTY=$(tty) exec "$@"', "sh" }, cmd)
+    -- git's output as written; the buffer holds it wrapped at the float's width
+    local stream = {}
     local job = vim.fn.jobstart(argv, {
         term = true,
         cwd = root,
         env = require("differ.git.editor").env(buf),
+        on_stdout = function(_, data)
+            stream[#stream + 1] = table.concat(data, "\n")
+        end,
         on_exit = function(_, code)
             vim.schedule(function()
                 floats[buf] = nil
-                local lines, cancelled = {}, false
+                local cancelled = false
                 if vim.api.nvim_buf_is_valid(buf) then
-                    lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
                     -- a cleanup that keeps comments commits a comment-only message
                     cancelled = code ~= 0 and vim.b[buf].differ_cancelled == true
                 end
@@ -355,9 +359,8 @@ local function in_float(root, cmd, accept, on_exit)
                     vim.api.nvim_win_close(shown, true)
                 end
                 pcall(vim.api.nvim_buf_delete, buf, { force = true })
-                -- drop the terminal's "[Process exited n]" line
-                local text = vim.trim(table.concat(lines, "\n"))
-                local output = text:gsub("%s*%[Process exited %d+%]$", "")
+                local printed = require("differ.util.text").printed(table.concat(stream))
+                local output = vim.trim(table.concat(printed, "\n"))
                 if output == "" and code ~= 0 then
                     output = "the terminal was closed"
                 end

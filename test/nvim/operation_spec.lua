@@ -281,6 +281,18 @@ describe("git operation runner", function()
         end)
     end
 
+    it("reports git's lines unwrapped by a float narrower than them", function()
+        local columns = vim.o.columns
+        vim.o.columns = 40
+        local root = stopped("rebase")
+        resolve_all(root)
+        local ok, res = pcall(run, root, "continue")
+        vim.o.columns = columns
+        assert(ok, res)
+        local lines = vim.split(res.output, "\n")
+        assert.is_true(vim.tbl_contains(lines, "CONFLICT (content): Merge conflict in g.txt"))
+    end)
+
     -- an interactive rebase stopped on feature's first commit (`first`, default pick), with
     -- `second` (default pick) then `verb` on later commits that apply cleanly
     local function todo_rebase(verb, first, second)

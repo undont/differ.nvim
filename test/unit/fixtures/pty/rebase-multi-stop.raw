@@ -1,0 +1,15 @@
+hint: Waiting for your editor to close the file... [K[detached HEAD d94f9fe] [hook] topic edits
+ 3 files changed, 4 insertions(+), 4 deletions(-)
+Rebasing (2/3)hint: Waiting for your editor to close the file... [K[detached HEAD 64f21a6] [hook] topic: the commit to reword
+ Date: Sun Oct 25 15:59:44 2026 +0000
+ 1 file changed, 10 insertions(+)
+ create mode 100644 reworded.lua
+Rebasing (3/3)Auto-merging auto_merged.lua
+CONFLICT (content): Merge conflict in auto_merged.lua
+error: could not apply f038ddc... topic: conflicts again
+[33mhint: Resolve all conflicts manually, mark them as resolved with[m
+[33mhint: "git add/rm <conflicted_files>", then run "git rebase --continue".[m
+[33mhint: You can instead skip this commit: run "git rebase --skip".[m
+[33mhint: To abort and get back to the state before "git rebase", run "git rebase --abort".[m
+[33mhint: Disable this message with "git config set advice.mergeConflict false"[m
+Could not apply f038ddc... # topic: conflicts again

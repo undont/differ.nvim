@@ -102,4 +102,24 @@ function M.ended_text(lines)
     return text .. "\n"
 end
 
+-- the lines a pty stream leaves printed: escapes stripped, each line cut to what follows
+-- its last carriage return, and anything drawn on the alternate screen (pinentry) dropped
+---@param stream string
+---@return string[]
+function M.printed(stream)
+    local plain = stream
+        :gsub("\27%[%?1049h.-\27%[%?1049l", "")
+        :gsub("\27%[%?1049h.*", "")
+        :gsub("\27%].-\7", "")
+        :gsub("\27%].-\27\\", "")
+        :gsub("\27%[[\48-\63]*[\32-\47]*[\64-\126]", "")
+        :gsub("\27[()][%w]", "")
+        :gsub("\27.", "")
+    local lines = M.to_lines(plain)
+    for i, line in ipairs(lines) do
+        lines[i] = line:gsub("\r+$", ""):match("[^\r]*$")
+    end
+    return lines
+end
+
 return M
