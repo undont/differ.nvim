@@ -1109,6 +1109,57 @@ describe(":Differ continue", function()
         end)
     end
 
+    -- gC in the current window, then wait for the picker
+    local function press_commit_key()
+        shown = nil
+        vim.cmd.normal("gC")
+        vim.wait(1000, function()
+            return shown ~= nil
+        end)
+        return shown
+    end
+
+    for _, case in ipairs({
+        {
+            "the merge tool closing",
+            function(root)
+                resolve_in_merge_tool(root)
+                run_choice("continue")
+            end,
+        },
+        {
+            "a bare :Differ",
+            function(root)
+                resolve_all(root)
+                in_repo(root)
+                run_choice("continue")
+                command.dispatch({})
+            end,
+        },
+    }) do
+        it("lands in the panel once " .. case[1] .. " opens it empty", function()
+            local root = with_h("rebase", true)
+            case[2](root)
+            assert.are.equal(2, #empty_panel_lines())
+            local p = assert(require("differ.panel").current())
+            assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+            chosen = nil
+            assert.are.equal("rebase options", assert(press_commit_key()).prompt)
+        end)
+    end
+
+    it("continues from the blank pane beside an empty panel", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        command.dispatch({})
+        local p = assert(require("differ.panel").current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        chosen = nil
+        assert.are.equal("rebase options", assert(press_commit_key()).prompt)
+    end)
+
     it("opens the panel from a bare :Differ at a stop with a clean tree", function()
         local root = with_h("rebase", true)
         resolve_all(root)
@@ -1166,6 +1217,17 @@ describe(":Differ continue", function()
         assert.are.equal(2, #empty_panel_lines())
         assert.is_nil(shown_view(p))
         assert.is_nil(noted("no changes"))
+    end)
+
+    it("continues from the blank pane left once a stop's last change goes", function()
+        local root, p = edit_stop(true)
+        vim.api.nvim_set_current_win(p.origin_win)
+        git_ok(root, "checkout", "--", "h.txt")
+        p:reload()
+        assert.is_nil(shown_view(p))
+        vim.api.nvim_set_current_win(p.origin_win)
+        chosen = nil
+        assert.are.equal("rebase options", assert(press_commit_key()).prompt)
     end)
 
     for _, case in ipairs({

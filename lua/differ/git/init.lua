@@ -18,6 +18,7 @@ local tab_util = require("differ.util.tab")
 local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
 local content_ops = require("differ.git.content")
 local help = require("differ.ui.help")
+local keymap = require("differ.util.keymap")
 local HEAD, INDEX, WORKTREE = content_ops.HEAD, content_ops.INDEX, content_ops.WORKTREE
 local read_file, raw_line = content_ops.read_file, content_ops.raw_line
 
@@ -931,11 +932,14 @@ local function keeps_empty(root)
     return M.operation(root) ~= nil
 end
 
--- show an empty scratch buffer in `win`, wiped once something else takes the window
+-- show an empty scratch buffer in `win`, wiped once something else takes the window,
+-- with `map` bound on it
 ---@param win integer
-local function blank_window(win)
+---@param map differ.panel.ExtraMap
+local function blank_window(win, map)
     local buf = vim.api.nvim_create_buf(false, true)
     vim.bo[buf].bufhidden = "wipe"
+    keymap.bind(buf, map.spec, map.fn, map.desc)
     vim.api.nvim_win_set_buf(win, buf)
 end
 
@@ -1747,6 +1751,9 @@ function M.panel(opts)
                     end
                     view:close(win)
                     view, active_entry = nil, nil
+                    if win then
+                        blank_window(win, commit_map(root, diff_keys.commit))
+                    end
                 end
                 return
             end
@@ -1777,7 +1784,7 @@ function M.panel(opts)
         panel.git_root = root
     end
     if kept_empty then
-        blank_window(panel.origin_win)
+        blank_window(panel.origin_win, commit_map(root, diff_keys.commit))
     elseif opts.open_first then
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first file with unstaged work (skipping the Staged section);
