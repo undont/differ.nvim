@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- A continue that committed the resolution and then stopped on a pick that came out empty reported `git rebase --continue failed`; it now names the empty commit and how to drop it, and a stop at an `edit` or `break` says so
+- After such a stop the merge tool stayed on the committed file and `:Differ` said "no changes to show"; the panel now opens at any stop with nothing to diff, so `gC` can continue
+- git's output in a failed continue's notice was hard-wrapped at the float's width; it now shows git's own lines
+- A change listing that failed mid-session read as "no changes left"; it now reports git's error
+
+## [0.2.14] — 2026-10-23
+
 ### Changed
 
 - `scroll_down` and `scroll_up` are unbound by default, so `f` and `b` keep their native motions; set them to get quarter-page scrolling back

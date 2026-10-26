@@ -92,6 +92,48 @@ local function stopped(op, single)
     return root
 end
 
+-- `feature` gains a third commit adding h.txt, which `main` also has when `squash`, in a
+-- commit with another change so git can't drop it up front. stopped on f.txt: a
+-- cherry-pick of feature's f and h commits, or a rebase -i running `todo`, whose lines
+-- name feature's commits as `{f}` and `{h}`
+---@param op "rebase"|"cherry-pick"
+---@param squash boolean
+---@param todo string[]|nil
+local function with_h(op, squash, todo)
+    local root = diverged_repo()
+    git_ok(root, "checkout", "-q", "feature")
+    write(root .. "/h.txt", "h\n")
+    git_ok(root, "add", "h.txt")
+    git_ok(root, "commit", "-q", "-m", "feature h")
+    git_ok(root, "checkout", "-q", "main")
+    if squash then
+        write(root .. "/h.txt", "h\n")
+        write(root .. "/i.txt", "i\n")
+        git_ok(root, "add", "h.txt", "i.txt")
+        git_ok(root, "commit", "-q", "-m", "squash of feature h")
+    end
+    if op == "cherry-pick" then
+        git(root, "cherry-pick", "feature~2", "feature")
+    else
+        local shas = {
+            f = vim.trim(git_ok(root, "rev-parse", "feature~2")),
+            h = vim.trim(git_ok(root, "rev-parse", "feature")),
+        }
+        local file = vim.fn.tempname()
+        write(
+            file,
+            (table.concat(todo or { "pick {f}", "pick {h}" }, "\n"):gsub("{(%a)}", shas)) .. "\n"
+        )
+        local editor = vim.fn.tempname()
+        write(editor, ('#!/bin/sh\ncp %s "$1"\n'):format(vim.fn.shellescape(file)))
+        vim.fn.setfperm(editor, "rwx------")
+        git_ok(root, "checkout", "-q", "feature")
+        git(root, "-c", "sequence.editor=" .. editor, "rebase", "-i", "main")
+    end
+    assert.are.same({ "f.txt" }, git_src.conflicted(root))
+    return root
+end
+
 local function resolve_all(root)
     for _, path in ipairs(git_src.conflicted(root)) do
         write(root .. "/" .. path, "resolved\n")
@@ -238,6 +280,18 @@ describe("git operation runner", function()
             assert.is_nil(git_src.operation(root))
         end)
     end
+
+    it("reports git's lines unwrapped by a float narrower than them", function()
+        local columns = vim.o.columns
+        vim.o.columns = 40
+        local root = stopped("rebase")
+        resolve_all(root)
+        local ok, res = pcall(run, root, "continue")
+        vim.o.columns = columns
+        assert(ok, res)
+        local lines = vim.split(res.output, "\n")
+        assert.is_true(vim.tbl_contains(lines, "CONFLICT (content): Merge conflict in g.txt"))
+    end)
 
     -- an interactive rebase stopped on feature's first commit (`first`, default pick), with
     -- `second` (default pick) then `verb` on later commits that apply cleanly
@@ -810,6 +864,10 @@ describe(":Differ continue", function()
         if merge.current() then
             merge.close()
         end
+        local p = require("differ.panel").current()
+        if p then
+            p:close()
+        end
         vim.cmd("silent! %bwipeout!")
     end)
 
@@ -936,6 +994,331 @@ describe(":Differ continue", function()
             return stopped_again(root)
         end))
         assert.is_nil(noted("rebase"))
+    end)
+
+    -- choose `choice` in the picker and wait for its run to end
+    local function run_choice(choice)
+        chosen = choice
+        continue_cmd()
+        assert(
+            vim.wait(10000, function()
+                return not continue.running()
+            end),
+            "the run never finished"
+        )
+    end
+
+    local function count(pattern)
+        return #vim.tbl_filter(function(n)
+            return n.msg:find(pattern) ~= nil
+        end, _G.notifs)
+    end
+
+    it("warns, not fails, when a rebase stops on a pick that's empty now", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        local n = assert(noted("^differ: %x+ is empty now: continue to drop it$"))
+        assert.are.equal(vim.log.levels.WARN, n.level)
+        assert.is_nil(noted("failed"))
+        run_choice("continue")
+        assert.is_nil(git_src.operation(root))
+        assert.is_not_nil(noted("rebase finished"))
+    end)
+
+    it("warns on an empty cherry-pick until it's skipped", function()
+        local root = with_h("cherry-pick", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        local n = assert(noted("^differ: %x+ is empty now: skip to drop it$"))
+        assert.are.equal(vim.log.levels.WARN, n.level)
+        run_choice("continue") -- git refuses it again
+        assert.are.equal(2, count("is empty now"))
+        vim.fn.confirm = function()
+            return 1
+        end
+        run_choice("skip")
+        assert.is_nil(git_src.operation(root))
+        assert.is_nil(noted("failed"))
+    end)
+
+    it("fails a rebase that stops on an untracked file in the way", function()
+        local root = with_h("rebase", false)
+        resolve_all(root)
+        write(root .. "/h.txt", "untracked\n")
+        in_repo(root)
+        run_choice("continue")
+        assert.are.equal("rebase", git_src.operation(root))
+        assert.are.equal(vim.log.levels.ERROR, assert(noted("rebase %-%-continue failed")).level)
+        assert.is_nil(noted("empty now"))
+    end)
+
+    for _, case in ipairs({
+        { { "pick {f}", "edit {h}" }, "rebase stopped at edit %x+ feature h$" },
+        { { "pick {f}", "break", "pick {h}" }, "rebase stopped at break$" },
+    }) do
+        it("says where a rebase stopped at " .. case[1][2]:match("^%a+"), function()
+            local root = with_h("rebase", false, case[1])
+            resolve_all(root)
+            in_repo(root)
+            run_choice("continue")
+            assert.are.equal("rebase", git_src.operation(root))
+            assert.are.equal(vim.log.levels.INFO, assert(noted(case[2])).level)
+        end)
+    end
+
+    -- open the merge tool on f.txt and resolve it in the result, unsaved
+    local function resolve_in_merge_tool(root)
+        in_repo(root)
+        merge.open({})
+        local s = assert(merge.current())
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, { "resolved" })
+        return s
+    end
+
+    -- the live panel's operation lines, asserting it lists no files
+    local function empty_panel_lines()
+        local p = assert(require("differ.panel").current())
+        assert.is_true(p:is_alive())
+        assert.are.equal(0, p.file_total)
+        local lines = {}
+        for i, m in ipairs(p.meta) do
+            if m.kind == "operation" or m.kind == "continue" then
+                lines[#lines + 1] = p.lines[i]
+            end
+        end
+        return lines
+    end
+
+    for _, case in ipairs({
+        { "an empty pick", "rebase", true },
+        { "an empty cherry-pick", "cherry-pick", true },
+        { "an edit", "rebase", false, { "pick {f}", "edit {h}" } },
+        { "a break", "rebase", false, { "pick {f}", "break", "pick {h}" } },
+    }) do
+        it("closes the merge tool once a " .. case[2] .. " stops at " .. case[1], function()
+            local root = with_h(case[2], case[3], case[4])
+            resolve_in_merge_tool(root)
+            run_choice("continue")
+            assert.are.equal(case[2], git_src.operation(root))
+            assert.are.same({}, git_src.conflicted(root))
+            assert.is_nil(merge.current())
+            assert.are.equal(2, #empty_panel_lines())
+        end)
+    end
+
+    -- gC in the current window, then wait for the picker
+    local function press_commit_key()
+        shown = nil
+        vim.cmd.normal("gC")
+        vim.wait(1000, function()
+            return shown ~= nil
+        end)
+        return shown
+    end
+
+    for _, case in ipairs({
+        {
+            "the merge tool closing",
+            function(root)
+                resolve_in_merge_tool(root)
+                run_choice("continue")
+            end,
+        },
+        {
+            "a bare :Differ",
+            function(root)
+                resolve_all(root)
+                in_repo(root)
+                run_choice("continue")
+                command.dispatch({})
+            end,
+        },
+    }) do
+        it("lands in the panel once " .. case[1] .. " opens it empty", function()
+            local root = with_h("rebase", true)
+            case[2](root)
+            assert.are.equal(2, #empty_panel_lines())
+            local p = assert(require("differ.panel").current())
+            assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+            chosen = nil
+            assert.are.equal("rebase options", assert(press_commit_key()).prompt)
+        end)
+    end
+
+    it("continues from the blank pane beside an empty panel", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        command.dispatch({})
+        local p = assert(require("differ.panel").current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        chosen = nil
+        assert.are.equal("rebase options", assert(press_commit_key()).prompt)
+    end)
+
+    it("opens the panel from a bare :Differ at a stop with a clean tree", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        _G.notifs = {}
+        command.dispatch({})
+        assert.are.equal("gC to continue", empty_panel_lines()[2])
+        assert.is_nil(noted("no changes"))
+    end)
+
+    -- an edit stop, with h.txt edited when `edited`, and bare :Differ over it
+    local function edit_stop(edited)
+        local root = with_h("rebase", false, { "pick {f}", "edit {h}" })
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        if edited then
+            write(root .. "/h.txt", "edited\n")
+        end
+        command.dispatch({})
+        return root, assert(require("differ.panel").current())
+    end
+
+    -- the diff view in the panel's diff window, if any
+    local function shown_view(p)
+        local buf = vim.api.nvim_win_get_buf(p.origin_win)
+        return require("differ.view").for_buf(buf), buf
+    end
+
+    it("blanks the diff window beside an empty panel", function()
+        local _, p = edit_stop(false)
+        local view, buf = shown_view(p)
+        assert.is_nil(view)
+        assert.are.equal("", vim.api.nvim_buf_get_name(buf))
+        assert.are.same({ "" }, vim.api.nvim_buf_get_lines(buf, 0, -1, false))
+    end)
+
+    it("opens the first change to arrive at a stop", function()
+        local root, p = edit_stop(false)
+        vim.api.nvim_set_current_win(p.winid)
+        write(root .. "/h.txt", "edited\n")
+        p:reload()
+        assert.are.equal(1, p.file_total)
+        assert.is_truthy(shown_view(p))
+        assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+    end)
+
+    it("keeps the panel at a stop once its last change goes", function()
+        local root, p = edit_stop(true)
+        assert.is_truthy(shown_view(p))
+        git_ok(root, "checkout", "--", "h.txt")
+        _G.notifs = {}
+        p:reload()
+        assert.are.equal(2, #empty_panel_lines())
+        assert.is_nil(shown_view(p))
+        assert.is_nil(noted("no changes"))
+    end)
+
+    it("continues from the blank pane left once a stop's last change goes", function()
+        local root, p = edit_stop(true)
+        vim.api.nvim_set_current_win(p.origin_win)
+        git_ok(root, "checkout", "--", "h.txt")
+        p:reload()
+        assert.is_nil(shown_view(p))
+        vim.api.nvim_set_current_win(p.origin_win)
+        chosen = nil
+        assert.are.equal("rebase options", assert(press_commit_key()).prompt)
+    end)
+
+    for _, case in ipairs({
+        { "an empty pick", true },
+        { "an edit", false, { "pick {f}", "edit {h}" } },
+    }) do
+        it("closes the panel kept at " .. case[1] .. " with one notice", function()
+            local root = with_h("rebase", case[2], case[3])
+            resolve_all(root)
+            in_repo(root)
+            run_choice("continue")
+            command.dispatch({})
+            local p = assert(require("differ.panel").current())
+            _G.notifs = {}
+            vim.api.nvim_set_current_win(p.winid)
+            chosen = "continue"
+            vim.cmd.normal("gC")
+            assert(
+                vim.wait(10000, function()
+                    return git_src.operation(root) == nil and not continue.running()
+                end),
+                "the rebase never finished"
+            )
+            assert(
+                vim.wait(5000, function()
+                    return not p:is_alive()
+                end),
+                "the panel outlived the rebase"
+            )
+            vim.wait(200)
+            assert.are.same(
+                { "differ: rebase finished" },
+                vim.tbl_map(function(n)
+                    return n.msg
+                end, _G.notifs)
+            )
+        end)
+    end
+
+    it("continues the panel's repo from its blank pane with cwd elsewhere", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        command.dispatch({})
+        local p = assert(require("differ.panel").current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        local cwd, elsewhere = vim.fn.getcwd(), vim.fn.tempname()
+        vim.fn.mkdir(elsewhere, "p")
+        vim.cmd.cd(elsewhere)
+        _G.notifs = {}
+        local ok, err = pcall(continue_cmd)
+        vim.cmd.cd(cwd)
+        assert(ok, err)
+        assert.are.equal("rebase options", assert(shown).prompt)
+        assert.is_nil(noted("in progress"))
+    end)
+
+    it("continues a real file's repo over the panel's", function()
+        local root = with_h("rebase", true)
+        resolve_all(root)
+        in_repo(root)
+        run_choice("continue")
+        command.dispatch({})
+        local p = assert(require("differ.panel").current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        local other = stopped("merge")
+        resolve_all(other)
+        in_repo(other)
+        continue_cmd()
+        assert.are.equal("merge options", assert(shown).prompt)
+    end)
+
+    it("reports a listing that fails under a panel kept open at a stop", function()
+        local root, p = edit_stop(true)
+        write(root .. "/.git/index", "garbage")
+        p:reload()
+        assert.is_true(p:is_alive())
+        assert.are.equal(vim.log.levels.ERROR, assert(noted("couldn't list changes")).level)
+    end)
+
+    it("keeps the merge tool open when a commit hook refuses the resolution", function()
+        local root = diverged_repo()
+        git(root, "merge", "feature")
+        local hook = root .. "/.git/hooks/pre-commit"
+        write(hook, "#!/bin/sh\nexit 1\n")
+        vim.fn.setfperm(hook, "rwx------")
+        local s = resolve_in_merge_tool(root)
+        run_choice("continue")
+        assert.are.equal("merge", git_src.operation(root))
+        assert.are.equal(s, merge.current())
     end)
 
     for _, case in ipairs({

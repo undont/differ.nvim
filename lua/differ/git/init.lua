@@ -18,6 +18,7 @@ local tab_util = require("differ.util.tab")
 local open_session_tab, close_session_tab = tab_util.open_session, tab_util.close_session
 local content_ops = require("differ.git.content")
 local help = require("differ.ui.help")
+local keymap = require("differ.util.keymap")
 local HEAD, INDEX, WORKTREE = content_ops.HEAD, content_ops.INDEX, content_ops.WORKTREE
 local read_file, raw_line = content_ops.read_file, content_ops.raw_line
 
@@ -923,12 +924,39 @@ local function nonempty_sections(sections)
     return out, total
 end
 
+-- whether a worktree panel stays open with no rows: mid-operation it holds the continue
+-- key
+---@param root string
+---@return boolean
+local function keeps_empty(root)
+    return M.operation(root) ~= nil
+end
+
+-- show an empty scratch buffer in `win`, wiped once something else takes the window,
+-- with `map` bound on it
+---@param win integer
+---@param map differ.panel.ExtraMap
+local function blank_window(win, map)
+    local buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[buf].bufhidden = "wipe"
+    keymap.bind(buf, map.spec, map.fn, map.desc)
+    vim.api.nvim_win_set_buf(win, buf)
+end
+
+-- the current buffer's file when it's a real one on disk
+---@return string|nil
+function M.current_file()
+    local file = vim.api.nvim_buf_get_name(0)
+    if file ~= "" and vim.fn.filereadable(file) == 1 then
+        return file
+    end
+    return nil
+end
+
 -- the repo to operate on: the current file's repo if it's a real file, else cwd
 ---@return string|nil
 function M.repo_root()
-    local file = vim.api.nvim_buf_get_name(0)
-    local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
-    return M.root(anchor)
+    return M.root(M.current_file() or vim.fn.getcwd())
 end
 
 -- true when `source` is the default HEAD-vs-worktree view: the only source git
@@ -1005,6 +1033,7 @@ end
 ---@field open_first? boolean
 ---@field supersede? boolean  -- close a live session and reopen (`:Differ <rev>` idempotency)
 ---@field toggle? boolean  -- `:Differ panel`: hide/show the live sidebar in place
+---@field root? string  -- the repo to open, else the current file's or cwd's
 ---@param opts differ.git.PanelOpts
 ---@return differ.Panel|nil
 function M.panel(opts)
@@ -1050,7 +1079,7 @@ function M.panel(opts)
     local origin_file = vim.api.nvim_buf_get_name(0)
     local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
 
-    local root = M.repo_root()
+    local root = opts.root or M.repo_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -1085,6 +1114,7 @@ function M.panel(opts)
     -- worktree copy is a row of its own. `actions` (file-level staging) is only
     -- meaningful for the worktree-status source
     local preview = false -- ds: the panel lists only what a commit would take
+    local list_failed = false -- the last reload's listing failed, and said so
     local panel_keys = help.keys("panel")
     local preview_unstages = ("the commit preview only unstages: %s goes back"):format(
         help.key(panel_keys, "commit_preview")
@@ -1159,7 +1189,11 @@ function M.panel(opts)
                 end
             end,
             reload = function()
-                local live = preview and M.staged_sections(root) or M.status_sections(root)
+                local live, err = (preview and M.staged_sections or M.status_sections)(root)
+                list_failed = err ~= nil
+                if err then
+                    notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
+                end
                 return (nonempty_sections(live))
             end,
         }
@@ -1182,7 +1216,9 @@ function M.panel(opts)
         if list_err then
             return notify(exec.with_stderr("couldn't list changes", list_err), vim.log.levels.ERROR)
         end
-        return notify("no changes to show")
+        if not (is_worktree_status(source) and keeps_empty(root)) then
+            return notify("no changes to show")
+        end
     end
 
     local view ---@type differ.View|nil -- the single diff view the panel drives
@@ -1196,6 +1232,7 @@ function M.panel(opts)
     local stageable = is_worktree_status(source)
     local diff_keys = help.keys("diff")
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
+    local kept_empty = total == 0 -- an empty panel with no diff: the next change opens one
 
     -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status + the shown
     -- file's index blobs (the index side) + its mtime/size (the worktree side). external
@@ -1447,7 +1484,7 @@ function M.panel(opts)
                 extra_keymaps = stageable and { commit_map(root, diff_keys.commit) } or nil,
             })
         end
-        active_entry = entry
+        active_entry, kept_empty = entry, false
         if watcher then
             watcher:watch_file(root .. "/" .. entry.path)
         end
@@ -1579,6 +1616,15 @@ function M.panel(opts)
         if retarget_view(true) then
             return
         end
+        if kept_empty then
+            local focused = vim.api.nvim_get_current_win()
+            if panel:open_nearest(true) then
+                if vim.api.nvim_win_is_valid(focused) then
+                    vim.api.nvim_set_current_win(focused)
+                end
+                return
+            end
+        end
         -- no view, and nothing to hand over to: just record the state
         record_state()
     end
@@ -1688,14 +1734,33 @@ function M.panel(opts)
         end,
         -- the change set emptied under the session (a commit, or the last change
         -- reverted): there's nothing left to review, so end it rather than leave an
-        -- empty sidebar next to a diff of a file that's now clean. only the worktree
-        -- source can reach this; a rev-pair list never reloads
+        -- empty sidebar next to a diff of a file that's now clean. mid-operation it stays
+        -- for the continue key. only the worktree source can reach this; a rev-pair list
+        -- never reloads
         on_empty = function()
-            if preview then
+            if preview and not list_failed then
                 notify("nothing staged: back to every change")
                 return set_preview(false)
             end
-            notify("no changes left")
+            if keeps_empty(root) then
+                kept_empty = true
+                if view then
+                    local win ---@type integer|nil
+                    if view:is_open() then
+                        win = view.columns[1].winid
+                    end
+                    view:close(win)
+                    view, active_entry = nil, nil
+                    if win then
+                        blank_window(win, commit_map(root, diff_keys.commit))
+                    end
+                end
+                return
+            end
+            -- kept open for an operation that has now ended, which reports itself
+            if not (kept_empty or list_failed) then
+                notify("no changes left")
+            end
             local back = panel and panel.return_tab
             if panel then
                 panel:close() -- cascades to the diff view + the session tab
@@ -1715,7 +1780,12 @@ function M.panel(opts)
         end,
     }):open()
     panel.return_tab = return_tab
-    if opts.open_first then
+    if stageable then
+        panel.git_root = root
+    end
+    if kept_empty then
+        blank_window(panel.origin_win, commit_map(root, diff_keys.commit))
+    elseif opts.open_first then
         -- land on the file (and line) :Differ was run from when it's in the change
         -- set, else the first file with unstaged work (skipping the Staged section);
         -- leave the cursor in the diff, not the panel

@@ -8,14 +8,27 @@ local M = {}
 
 local notify = exec.notify
 
--- the repo the command acts on: a merge session's, else the current file's or cwd's
+-- the repo the command acts on: a merge session's, else the current file's, else a
+-- worktree panel's, else cwd's
 ---@return string|nil
 local function target_root()
     local s = require("differ.merge").current()
     if s then
         return s.root
     end
-    return require("differ.git").repo_root()
+    local git = require("differ.git")
+    local file = git.current_file()
+    if file then
+        local root = git.root(file)
+        if root then
+            return root
+        end
+    end
+    local panel = require("differ.panel").current()
+    if panel and panel.git_root then
+        return panel.git_root
+    end
+    return git.root(vim.fn.getcwd())
 end
 
 -- say how the run left the repo
@@ -41,8 +54,21 @@ local function report(root, op, action, ok, output, cancelled)
         end
         return notify(op .. " finished")
     end
-    if now and (ok or #git.conflicted(root) > 0) then
+    if ok and now then
+        local paused = git_op.paused_at(root)
+        if paused then
+            notify(("%s stopped at %s"):format(op, paused))
+        end
         return
+    end
+    if now and #git.conflicted(root) > 0 then
+        return
+    end
+    local empty = now and git_op.empty_pick(root)
+    if empty then
+        -- a cherry-pick's continue refuses an empty pick; a rebase's drops it
+        local how = op == "rebase" and "continue to drop it" or "skip to drop it"
+        return notify(("%s is empty now: %s"):format(empty, how), vim.log.levels.WARN)
     end
     notify(
         exec.with_stderr(("git %s --%s failed"):format(op, action), output),
