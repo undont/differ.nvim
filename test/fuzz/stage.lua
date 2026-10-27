@@ -450,9 +450,9 @@ local function revert_op(t, union, cached, unstaged, selection)
 end
 
 ---@param t differ.fuzz.Triple
----@param outcome differ.fuzz.Outcome
+---@param outcome differ.fuzz.Outcome  -- a written one
 ---@return boolean
-local function matches(t, outcome)
+function M.matches(t, outcome)
     local mv = outcome.moves
     if outcome.placed == false then
         return false
@@ -504,15 +504,11 @@ end
 ---@field selections? integer -- the most selections tried per triple
 ---@field keep? integer       -- mismatches kept in the report
 
+-- each seeded triple and the selections tried on it, the same for a seed and opts
 ---@param opts differ.fuzz.Opts
----@return differ.fuzz.Report
-function M.run(opts)
-    local size, most, keep = opts.size or 40, opts.selections or 60, opts.keep or 5
-    local report = { ops = {}, mismatches = {} }
-    for _, op in ipairs(M.OPS) do
-        report.ops[op] =
-            { tried = 0, unchanged = 0, refused = {}, written = 0, unplaced = 0, mismatched = 0 }
-    end
+---@param each fun(t: differ.fuzz.Triple, rows: differ.fuzz.Row[], selection: differ.model.Selection)
+function M.cases(opts, each)
+    local size, most = opts.size or 40, opts.selections or 60
     math.randomseed(opts.seed)
     for _ = 1, opts.count do
         local t = M.triple(size, opts.staged or 0.1, opts.edited or 0.1)
@@ -525,42 +521,51 @@ function M.run(opts)
         end
         for _ = 1, math.min(most, #ranges) do
             local range = table.remove(ranges, math.random(#ranges))
-            local selection = selection_of(rows, range[1], range[2])
-            for _, op in ipairs(M.OPS) do
-                local counts = report.ops[op]
-                local outcome = M.run_op(t, op, selection)
-                counts.tried = counts.tried + 1
-                if outcome.kind == "unchanged" then
-                    counts.unchanged = counts.unchanged + 1
-                elseif outcome.kind == "refused" then
-                    counts.refused[outcome.reason] = (counts.refused[outcome.reason] or 0) + 1
-                else
-                    counts.written = counts.written + 1
-                    if outcome.placed == nil then
-                        counts.unplaced = counts.unplaced + 1
-                    end
-                    if not matches(t, outcome) then
-                        counts.mismatched = counts.mismatched + 1
-                        if #report.mismatches < keep then
-                            report.mismatches[#report.mismatches + 1] = {
-                                triple = t,
-                                op = op,
-                                rows = { unpack(rows, range[1], range[2]) },
-                                outcome = outcome,
-                            }
-                        end
+            each(t, { unpack(rows, range[1], range[2]) }, selection_of(rows, range[1], range[2]))
+        end
+    end
+end
+
+---@param opts differ.fuzz.Opts
+---@return differ.fuzz.Report
+function M.run(opts)
+    local keep = opts.keep or 5
+    local report = { ops = {}, mismatches = {} }
+    for _, op in ipairs(M.OPS) do
+        report.ops[op] =
+            { tried = 0, unchanged = 0, refused = {}, written = 0, unplaced = 0, mismatched = 0 }
+    end
+    M.cases(opts, function(t, rows, selection)
+        for _, op in ipairs(M.OPS) do
+            local counts = report.ops[op]
+            local outcome = M.run_op(t, op, selection)
+            counts.tried = counts.tried + 1
+            if outcome.kind == "unchanged" then
+                counts.unchanged = counts.unchanged + 1
+            elseif outcome.kind == "refused" then
+                counts.refused[outcome.reason] = (counts.refused[outcome.reason] or 0) + 1
+            else
+                counts.written = counts.written + 1
+                if outcome.placed == nil then
+                    counts.unplaced = counts.unplaced + 1
+                end
+                if not M.matches(t, outcome) then
+                    counts.mismatched = counts.mismatched + 1
+                    if #report.mismatches < keep then
+                        report.mismatches[#report.mismatches + 1] =
+                            { triple = t, op = op, rows = rows, outcome = outcome }
                     end
                 end
             end
         end
-    end
+    end)
     return report
 end
 
 -- a text's lines on one line, `$` on a last line with no newline
 ---@param text string
 ---@return string
-local function shown(text)
+function M.shown(text)
     local lines = text_util.ended_lines(text)
     for i, line in ipairs(lines) do
         if line:sub(-1) == text_util.NO_EOL then
@@ -606,12 +611,12 @@ function M.format(report)
             rows[#rows + 1] = r.side .. " " .. r.line
         end
         out[#out + 1] = ("\nmismatch: %s on %s"):format(mm.op, table.concat(rows, ", "))
-        out[#out + 1] = "  head  " .. shown(mm.triple.head)
-        out[#out + 1] = "  index " .. shown(mm.triple.index)
-        out[#out + 1] = "  work  " .. shown(mm.triple.work)
-        out[#out + 1] = "  wrote index " .. shown(mm.outcome.index)
+        out[#out + 1] = "  head  " .. M.shown(mm.triple.head)
+        out[#out + 1] = "  index " .. M.shown(mm.triple.index)
+        out[#out + 1] = "  work  " .. M.shown(mm.triple.work)
+        out[#out + 1] = "  wrote index " .. M.shown(mm.outcome.index)
         if mm.outcome.work then
-            out[#out + 1] = "  wrote work  " .. shown(mm.outcome.work)
+            out[#out + 1] = "  wrote work  " .. M.shown(mm.outcome.work)
         end
     end
     return table.concat(out, "\n")

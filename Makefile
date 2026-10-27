@@ -72,10 +72,11 @@ lua-test-nvim: go-build ## Run headless-nvim tests (needs nlua on PATH)
 
 SEED  ?= 1
 COUNT ?= 2000
+CMP   ?=
 
-lua-fuzz: ## Fuzz visual s/u/X over random triples (SEED=, COUNT=)
-	@$(INFO) "Fuzzing staging (seed $(SEED), $(COUNT) triples)"
-	@nvim --clean -l test/fuzz/run.lua $(SEED) $(COUNT)
+lua-fuzz: ## Fuzz visual s/u/X over random triples (SEED=, COUNT=, CMP=<rev> to compare against lua/ there)
+	@$(INFO) "Fuzzing staging (seed $(SEED), $(COUNT) triples$(if $(CMP), against $(CMP)))"
+	@nvim --clean -l test/fuzz/run.lua $(if $(CMP),--cmp=$(CMP)) $(SEED) $(COUNT)
 
 lua-lint: lua-luacheck lua-fmt-check ## Luacheck + stylua --check on Lua sources
 
