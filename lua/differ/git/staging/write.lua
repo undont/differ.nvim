@@ -154,7 +154,7 @@ local function file_lines(ctx, entry, staging, base, reread, written)
         if ok and written then
             written()
         end
-        return ok
+        return ok, nil, reverted
     end
 end
 

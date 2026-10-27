@@ -433,7 +433,7 @@ end
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param selection differ.model.Selection
----@return boolean, boolean?
+---@return boolean, boolean?, differ.DiffModel?
 local function revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
     local union, cached, unstaged = union_models(ctx.root, entry)
@@ -466,7 +466,7 @@ local function revert_lines(source, model, selection)
         return false
     end
     remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text))
-    return true
+    return true, nil, reverted
 end
 
 -- S and U: the index takes the worktree's or HEAD's side of the file whole,

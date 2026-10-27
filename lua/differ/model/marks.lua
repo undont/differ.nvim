@@ -299,72 +299,134 @@ local function common(a, b)
     return in_a, in_b
 end
 
--- mark one hunk's lines from its index block. a block line is HEAD's where it pairs
--- with an old line, else the worktree's where it pairs with a new one
+---@class differ.model.Origin
+---@field side "old"|"new"
+---@field k integer  -- the line's place in that side of the hunk
+
+---@param side "old"|"new"
+---@param count integer
+---@return differ.model.Origin[]
+function M.whole_side(side, count)
+    local out = {}
+    for k = 1, count do
+        out[k] = { side = side, k = k }
+    end
+    return out
+end
+
+-- in `origins`, the lines of `lines` that `in_lines` pairs with the `in_block` lines of
+-- `block`, where `at` maps each of those to its place in the whole block
+---@param origins (differ.model.Origin|false)[]
+---@param side "old"|"new"
+---@param in_lines table<integer, boolean>
+---@param lines string[]
+---@param in_block table<integer, boolean>
+---@param at integer[]
+local function pair_up(origins, side, in_lines, lines, in_block, at)
+    local k = 0
+    for j = 1, #at do
+        if in_block[j] then
+            repeat
+                k = k + 1
+            until in_lines[k] or k > #lines
+            origins[at[j]] = { side = side, k = k }
+        end
+    end
+end
+
+-- where each line of a hunk's index block comes from: HEAD's line where it pairs with
+-- an old line, else the worktree's where it pairs with a new one, false for neither.
+-- nil for a hunk too big to compare
+---@param h differ.Hunk
+---@param block string[]
+---@return (differ.model.Origin|false)[]|nil
+function M.origins(h, block)
+    -- a block that is one whole side is that side, even where the two sides share a line
+    if #block == h.new_count and holds(block, 1, h.new_lines) then
+        return M.whole_side("new", h.new_count)
+    end
+    if #block == h.old_count and holds(block, 1, h.old_lines) then
+        return M.whole_side("old", h.old_count)
+    end
+    local kept, used = common(h.old_lines, block)
+    if not (kept and used) then
+        return nil
+    end
+    local origins, rest, all, rest_at = {}, {}, {}, {}
+    for k, line in ipairs(block) do
+        origins[k] = false
+        all[k] = k
+        if not used[k] then
+            rest[#rest + 1] = line
+            rest_at[#rest_at + 1] = k
+        end
+    end
+    local held, placed = common(h.new_lines, rest)
+    if not (held and placed) then
+        return nil
+    end
+    pair_up(origins, "old", kept, h.old_lines, used, all)
+    pair_up(origins, "new", held, h.new_lines, placed, rest_at)
+    return origins
+end
+
+-- mark one hunk's lines from where its index block's lines come from
+---@param h differ.Hunk
+---@param origins (differ.model.Origin|false)[]
+---@param marks differ.model.Marks
+---@return boolean hidden  -- a block line neither side has
+local function mark_origins(h, origins, marks)
+    for l = h.old_start, h.old_start + h.old_count - 1 do
+        marks.old[l] = true
+    end
+    for l = h.new_start, h.new_start + h.new_count - 1 do
+        marks.new[l] = false
+    end
+    local hidden = false
+    for _, o in ipairs(origins) do
+        if not o then
+            hidden = true
+        else
+            marks[o.side][h[o.side .. "_start"] + o.k - 1] = o.side == "new"
+        end
+    end
+    return hidden
+end
+
+-- mark one hunk's lines from its index block
 ---@param h differ.Hunk
 ---@param block string[]
 ---@param marks differ.model.Marks
 ---@return boolean compared  -- false for a hunk too big to compare
 ---@return boolean hidden    -- a block line neither side has
 local function mark_block(h, block, marks)
-    -- a block that is one whole side is that side, even where the two sides share a line
-    for _, staged in ipairs({ true, false }) do
-        local side = staged and h.new_lines or h.old_lines
-        if #block == #side and holds(block, 1, side) then
-            for l = h.old_start, h.old_start + h.old_count - 1 do
-                marks.old[l] = staged
-            end
-            for l = h.new_start, h.new_start + h.new_count - 1 do
-                marks.new[l] = staged
-            end
-            return true, false
-        end
-    end
-    local kept, used = common(h.old_lines, block)
-    if not (kept and used) then
+    local origins = M.origins(h, block)
+    if not origins then
         return false, false
     end
-    local rest = {}
-    for k, line in ipairs(block) do
-        if not used[k] then
-            rest[#rest + 1] = line
-        end
-    end
-    local held, placed = common(h.new_lines, rest)
-    if not (held and placed) then
-        return false, false
-    end
-    for k = 1, h.old_count do
-        marks.old[h.old_start + k - 1] = not kept[k]
-    end
-    local paired = 0
-    for k = 1, h.new_count do
-        marks.new[h.new_start + k - 1] = held[k] == true
-        if held[k] then
-            paired = paired + 1
-        end
-    end
-    return true, paired < #rest
+    return true, mark_origins(h, origins, marks)
 end
 
--- marks for the union hunks from the index's block at each, and the hunks whose block
--- holds a line neither side has. nil when a hunk is too big to compare
+-- marks for the union hunks from the index's block at each, the hunks whose block
+-- holds a line neither side has, and where each block's lines come from. nil when a
+-- hunk is too big to compare
 ---@param union differ.Hunk[]
 ---@param blocks string[][]
----@return differ.model.Marks|nil marks, integer[] hidden
+---@return differ.model.Marks|nil marks, integer[] hidden, (differ.model.Origin|false)[][] origins
 function M.of_blocks(union, blocks)
     local marks = { old = {}, new = {} }
-    local hidden = {}
+    local hidden, all = {}, {}
     for i, h in ipairs(union) do
-        local compared, extra = mark_block(h, blocks[i], marks)
-        if not compared then
-            return nil, {}
+        local origins = M.origins(h, blocks[i])
+        if not origins then
+            return nil, {}, {}
         end
-        if extra then
+        all[i] = origins
+        if mark_origins(h, origins, marks) then
             hidden[#hidden + 1] = i
         end
     end
-    return marks, hidden
+    return marks, hidden, all
 end
 
 ---@class differ.model.Segment

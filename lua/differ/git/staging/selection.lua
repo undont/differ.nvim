@@ -74,13 +74,14 @@ function M.revert(root, path, union, cached, unstaged, selection)
     if refused then
         return nil, nil, refused
     end
-    local reverted = stage.select_worktree(union, selection)
+    local origins = stage.index_origins(union, cached)
+    local reverted = stage.select_worktree(union, selection, origins)
     if not reverted then
         return nil
     end
     local index_text = text or cached.new_text
     local m, hidden = stage.marks_of(union, cached, unstaged)
-    local want = stage.reverted(union, m, selection)
+    local want = stage.reverted(union, m, selection, origins)
     local after = { content.union_pairs(root, path, union.old_text, index_text, reverted.old_text) }
     local before = { union = union, cached = cached, hidden = hidden, edits = edits }
     if not stage.reads_as(want, before, selection, unpack(after)) then

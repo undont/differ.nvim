@@ -193,51 +193,137 @@ local function touches(h, selection)
     return false
 end
 
--- one hunk's index block with the selected lines staged (`take`) or not. sides of the
--- same length go row by row, each kept old line then its held new line; otherwise the
--- old lines the index keeps, then the new lines it holds
+-- the hunk's lines in the order a block lays out the lines it has no place for yet:
+-- sides of the same length row by row, each old line then its new line; otherwise the
+-- old lines, then the new
+---@param h differ.Hunk
+---@return differ.model.Origin[]
+local function default_order(h)
+    if h.old_count ~= h.new_count then
+        local order = marks.whole_side("old", h.old_count)
+        for _, o in ipairs(marks.whole_side("new", h.new_count)) do
+            order[#order + 1] = o
+        end
+        return order
+    end
+    local order = {}
+    for k = 1, h.old_count do
+        order[#order + 1] = { side = "old", k = k }
+        order[#order + 1] = { side = "new", k = k }
+    end
+    return order
+end
+
+-- where `o` goes in `block`: after the last line of it that comes before `o` in
+-- `order`, but ahead of any later line of `o`'s own side
+---@param block differ.model.Origin[]
+---@param o differ.model.Origin
+---@param rank table<string, integer>  -- "side:k" -> place in the default order
+---@return integer
+local function slot(block, o, rank)
+    local after, before = 0, #block + 1
+    local own = rank[o.side .. ":" .. o.k]
+    for i, b in ipairs(block) do
+        if rank[b.side .. ":" .. b.k] < own then
+            after = i
+        elseif b.side == o.side and before > #block then
+            before = i
+        end
+    end
+    return math.min(after, before - 1) + 1
+end
+
+-- one hunk's block laid out from `base`: the lines of it `state` doesn't drop stay in
+-- its order, and each line `state` brings in goes by slot, in default_order
+---@param h differ.Hunk
+---@param base differ.model.Origin[]
+---@param state fun(o: differ.model.Origin): boolean|nil  -- in or out, nil for as `base` has it
+---@return differ.model.Origin[]
+local function arrange(h, base, state)
+    local out, has = {}, {}
+    for _, o in ipairs(base) do
+        has[o.side .. ":" .. o.k] = true
+        if state(o) ~= false then
+            out[#out + 1] = o
+        end
+    end
+    local order, rank = default_order(h), {}
+    for i, o in ipairs(order) do
+        rank[o.side .. ":" .. o.k] = i
+    end
+    for _, o in ipairs(order) do
+        if not has[o.side .. ":" .. o.k] and state(o) then
+            table.insert(out, slot(out, o, rank), o)
+        end
+    end
+    return out
+end
+
+---@param h differ.Hunk
+---@param origins differ.model.Origin[]
+---@return string[]
+local function lines_of(h, origins)
+    local lines = {}
+    for i, o in ipairs(origins) do
+        lines[i] = h[o.side .. "_lines"][o.k]
+    end
+    return lines
+end
+
+-- one hunk's index block with the selected lines staged (`take`) or not, laid out
+-- from the block the index has
 ---@param h differ.Hunk  -- an ended hunk
----@param held differ.model.Marks
+---@param origins differ.model.Origin[]  -- the block the index has, line by line
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return string[]
-local function select_block(h, held, selection, take)
-    ---@param side "old"|"new"
-    ---@param k integer
-    ---@return boolean  -- the index has this line once the op is done
-    local function in_index(side, k)
-        local l = h[side .. "_start"] + k - 1
-        local staged = held[side][l]
-        if selection[side][l] then
-            staged = take
+local function select_block(h, origins, selection, take)
+    return lines_of(
+        h,
+        arrange(h, origins, function(o)
+            if not selection[o.side][h[o.side .. "_start"] + o.k - 1] then
+                return nil
+            end
+            if o.side == "old" then
+                return not take
+            end
+            return take
+        end)
+    )
+end
+
+-- one hunk's worktree block once X on the selection reverts it: the selected old lines
+-- and the unselected new ones, laid out from the index's block where it has one, else
+-- from the worktree's
+---@param h differ.Hunk
+---@param selection differ.model.Selection
+---@param index? differ.model.Origin[]  -- the index's block at `h`
+---@return differ.model.Origin[]
+local function reverted_block(h, selection, index)
+    return arrange(h, index or marks.whole_side("new", h.new_count), function(o)
+        local selected = selection[o.side][h[o.side .. "_start"] + o.k - 1] == true
+        if o.side == "old" then
+            return selected
         end
-        if side == "old" then
-            return not staged
-        end
-        return staged == true
+        return not selected
+    end)
+end
+
+-- the index's block at each union hunk, line by line, where the index cuts into
+-- blocks; none for a hunk whose block holds a line neither side has
+---@param union differ.DiffModel   -- HEAD↔worktree
+---@param cached differ.DiffModel  -- HEAD↔index
+---@return table<integer, differ.model.Origin[]>|nil
+function M.index_origins(union, cached)
+    local blocks, ended = M.index_blocks(union, cached.new_text)
+    if not blocks then
+        return nil
     end
-    local block = {}
-    ---@param side "old"|"new"
-    ---@param k integer
-    local function push(side, k)
-        if in_index(side, k) then
-            block[#block + 1] = h[side .. "_lines"][k]
-        end
+    local _, hidden, origins = marks.of_blocks(ended.hunks, blocks)
+    for _, i in ipairs(hidden) do
+        origins[i] = nil
     end
-    if h.old_count == h.new_count then
-        for k = 1, h.old_count do
-            push("old", k)
-            push("new", k)
-        end
-        return block
-    end
-    for k = 1, h.old_count do
-        push("old", k)
-    end
-    for k = 1, h.new_count do
-        push("new", k)
-    end
-    return block
+    return origins --[[@as table<integer, differ.model.Origin[]>]]
 end
 
 -- whether a HEAD↔index hunk meets a union hunk the selection touches
@@ -267,7 +353,6 @@ end
 ---@return string|nil
 local function place_selection(ended, cached, selection)
     local index = text_util.ended_lines(cached.new_text)
-    local none = { old = {}, new = {} }
     for i = #ended.hunks, 1, -1 do
         local h = ended.hunks[i]
         if touches(h, selection) then
@@ -289,7 +374,8 @@ local function place_selection(ended, cached, selection)
             for l = 1, first - 1 do
                 out[#out + 1] = index[l]
             end
-            for _, line in ipairs(select_block(h, none, selection, true)) do
+            local block = select_block(h, marks.whole_side("old", h.old_count), selection, true)
+            for _, line in ipairs(block) do
                 out[#out + 1] = line
             end
             for l = first + h.old_count, #index do
@@ -328,7 +414,7 @@ function M.select_index(union, cached, selection, take)
         end
         return text
     end
-    local held, hidden = marks.of_blocks(ended.hunks, blocks)
+    local held, hidden, origins = marks.of_blocks(ended.hunks, blocks)
     if not held then
         return nil, "large"
     end
@@ -341,7 +427,9 @@ function M.select_index(union, cached, selection, take)
             if hides[i] then
                 return nil, "hidden"
             end
-            blocks[i] = select_block(h, held, selection, take)
+            -- a hunk with nothing hidden has an origin for every block line
+            blocks[i] =
+                select_block(h, origins[i] --[[@as differ.model.Origin[] ]], selection, take)
         end
     end
     local text = apply.join(ended, blocks)
@@ -349,21 +437,6 @@ function M.select_index(union, cached, selection, take)
         return nil
     end
     return text
-end
-
--- `h`'s lines read as staged, so select_block with `take` false keeps the selected old
--- lines and the new lines left unselected
----@param h differ.Hunk
----@return differ.model.Marks
-local function all_held(h)
-    local held = { old = {}, new = {} }
-    for l = h.old_start, h.old_start + h.old_count - 1 do
-        held.old[l] = true
-    end
-    for l = h.new_start, h.new_start + h.new_count - 1 do
-        held.new[l] = true
-    end
-    return held
 end
 
 ---@param lines string[]  -- ended lines
@@ -384,14 +457,15 @@ end
 -- there and its new side the worktree's own. nil is a selection that touches no hunk
 ---@param union differ.DiffModel  -- HEAD↔worktree
 ---@param selection differ.model.Selection
+---@param origins? table<integer, differ.model.Origin[]>  -- index_origins
 ---@return differ.DiffModel|nil
-function M.select_worktree(union, selection)
+function M.select_worktree(union, selection, origins)
     local ended = apply.ended(union)
     local blocks, hunks, shift = {}, {}, 0
     for i, h in ipairs(ended.hunks) do
         blocks[i] = h.new_lines
         if touches(h, selection) then
-            blocks[i] = select_block(h, all_held(h), selection, false)
+            blocks[i] = lines_of(h, reverted_block(h, selection, origins and origins[i]))
             -- the line the block starts on, where a side with no lines names the one before
             local old_start = h.new_start + shift
             if h.new_count == 0 then
@@ -591,11 +665,12 @@ end
 ---@param union differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
+---@param origins? table<integer, differ.model.Origin[]>  -- as select_worktree takes them
 ---@return differ.model.LineStates
-function M.reverted(union, m, selection)
+function M.reverted(union, m, selection, origins)
     local want = { old = {}, new = {}, enter = 0, leave = 0, work_enter = 0, work_leave = 0 }
     local shift = 0
-    for _, h in ipairs(union.hunks) do
+    for i, h in ipairs(union.hunks) do
         -- the index takes back a selected old line it had staged away, and drops a
         -- selected new line it had staged
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -621,39 +696,17 @@ function M.reverted(union, m, selection)
                 want.new[l + shift] = m.new[l] == true
             end
         else
-            -- select_block's order with every line held: a selected old line comes
-            -- back, an unselected new line stays
             local at = h.new_start + shift
             if h.new_count == 0 then
                 at = at + 1
             end
-            local kept = 0
-            local function old_line(k)
-                if selection.old[h.old_start + k - 1] then
-                    kept = kept + 1
+            local block = reverted_block(h, selection, origins and origins[i])
+            for p, o in ipairs(block) do
+                if o.side == "new" then
+                    want.new[at + p - 1] = m.new[h.new_start + o.k - 1] == true
                 end
             end
-            local function new_line(k)
-                local l = h.new_start + k - 1
-                if not selection.new[l] then
-                    want.new[at + kept] = m.new[l] == true
-                    kept = kept + 1
-                end
-            end
-            if h.old_count == h.new_count then
-                for k = 1, h.old_count do
-                    old_line(k)
-                    new_line(k)
-                end
-            else
-                for k = 1, h.old_count do
-                    old_line(k)
-                end
-                for k = 1, h.new_count do
-                    new_line(k)
-                end
-            end
-            shift = shift + kept - h.new_count
+            shift = shift + #block - h.new_count
         end
     end
     return want
