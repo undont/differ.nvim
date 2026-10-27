@@ -12,6 +12,7 @@ local write = require("differ.git.staging.write")
 local edits, MOVES_OTHERS = write.edits, write.MOVES_OTHERS
 local put_index, index_unreadable = write.put_index, write.index_unreadable
 local revert_worktree = write.revert_worktree
+local selected = require("differ.git.staging.selection")
 
 -- the mode of the side S (the worktree) or U (HEAD) takes, or nil when the index is
 -- already there. a `diff --raw` line reads `:<src mode> <dst mode> ...`
@@ -183,24 +184,14 @@ end
 ---@param selection differ.model.Selection
 ---@return string|nil index_text, differ.DiffModel|nil reverted, string|nil why
 local function revert_texts(ctx, entry, union, cached, unstaged, selection)
-    local stage = require("differ.model.stage")
-    local text, refused = stage.select_index(union, cached, selection, false)
-    if refused then
-        return nil, nil, revert_refusal(ctx.keys, refused, union, cached, unstaged)
-    end
-    local reverted = stage.select_worktree(union, selection)
-    if not reverted then
-        return nil
-    end
-    local index_text = text or cached.new_text
-    local m, hidden = stage.marks_of(union, cached, unstaged)
-    local want = stage.reverted(union, m, selection)
-    local after = {
-        union_pairs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text),
-    }
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
+    local index_text, reverted, refused =
+        selected.revert(ctx.root, entry.path, union, cached, unstaged, selection)
+    if refused == "moves_others" then
         return nil, nil, MOVES_OTHERS
+    end
+    if refused then
+        ---@cast refused differ.model.SelectRefusal
+        return nil, nil, revert_refusal(ctx.keys, refused, union, cached, unstaged)
     end
     return index_text, reverted
 end
@@ -236,32 +227,6 @@ local function remark(source, union, cached, unstaged)
     end
 end
 
--- the pairs `text` as the index makes, or nil where they read back as other marks
--- than s (`take`) or u on `selection` leaves, or the file is too big to read
----@param ctx differ.git.StagingCtx
----@param entry differ.FileEntry
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
----@param selection differ.model.Selection
----@param take boolean
----@param text string
----@return differ.DiffModel[]|nil
-local function checked(ctx, entry, union, cached, unstaged, selection, take, text)
-    local stage = require("differ.model.stage")
-    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
-    if unread then
-        return nil
-    end
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text) }
-    local want = stage.flipped(union, m, selection, take)
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
-        return nil
-    end
-    return after
-end
-
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param hunk differ.Hunk|nil
@@ -285,7 +250,8 @@ local function apply(source, model, hunk, reverse)
     local after
     if text then
         local selection = stage.hunk_selection(hunk)
-        after = checked(ctx, entry, union, cached, unstaged, selection, take, text)
+        after =
+            selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, take, text)
     end
     if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
@@ -308,7 +274,6 @@ end
 ---@param reverse boolean
 ---@return boolean, boolean?
 local function apply_lines(source, model, selection, reverse)
-    local stage = require("differ.model.stage")
     local ctx, entry = source.ctx, source.entry
     local union, cached, unstaged = union_models(ctx.root, entry)
     if not (union and cached and unstaged) then
@@ -318,8 +283,14 @@ local function apply_lines(source, model, selection, reverse)
         return false
     end
     local take = not reverse
-    local text, refused = stage.select_index(union, cached, selection, take)
+    local text, after, refused =
+        selected.stage(ctx.root, entry.path, union, cached, unstaged, selection, take)
+    if refused == "unread" or refused == "moves_others" then
+        notify(MOVES_OTHERS, vim.log.levels.WARN)
+        return false, true
+    end
     if refused then
+        ---@cast refused differ.model.SelectRefusal
         local op = "unstage"
         if take then
             op = "stage"
@@ -327,18 +298,13 @@ local function apply_lines(source, model, selection, reverse)
         notify(select_refusal(ctx.keys, refused, op), vim.log.levels.WARN)
         return false, true
     end
-    if not text then
+    if not (text and after) then
         local state = "unstaged"
         if take then
             state = "staged"
         end
         notify("these lines are already " .. state, vim.log.levels.INFO)
         return false
-    end
-    local after = checked(ctx, entry, union, cached, unstaged, selection, take, text)
-    if not after then
-        notify(MOVES_OTHERS, vim.log.levels.WARN)
-        return false, true
     end
     if not put_index(ctx, entry, text) then
         return false
@@ -467,7 +433,7 @@ end
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param selection differ.model.Selection
----@return boolean, boolean?
+---@return boolean, boolean?, differ.DiffModel?
 local function revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
     local union, cached, unstaged = union_models(ctx.root, entry)
@@ -500,7 +466,7 @@ local function revert_lines(source, model, selection)
         return false
     end
     remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text))
-    return true
+    return true, nil, reverted
 end
 
 -- S and U: the index takes the worktree's or HEAD's side of the file whole,

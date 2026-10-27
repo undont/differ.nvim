@@ -49,7 +49,7 @@ LUACHECK_DIR     := .tools/luacheck-$(LUACHECK_VERSION)
 LUACHECK_BIN     := $(LUACHECK_DIR)/bin/luacheck
 
 .PHONY: help \
-	lua-test lua-test-unit lua-test-nvim lua-lint lua-luacheck lua-typecheck lua-fmt lua-fmt-check \
+	lua-test lua-test-unit lua-test-nvim lua-fuzz lua-lint lua-luacheck lua-typecheck lua-fmt lua-fmt-check \
 	go-build demo-build go-test go-vet go-lint go-fmt go-fmt-check gql-validate \
 	test lint fmt fmt-check check clean \
 	vimdoc \
@@ -69,6 +69,14 @@ lua-test-unit: ## Run pure-Lua unit tests only (fast, no Neovim runtime)
 lua-test-nvim: go-build ## Run headless-nvim tests (needs nlua on PATH)
 	@$(INFO) "Running headless-nvim tests"
 	@eval $$(luarocks --lua-version=5.1 path) && busted --lua=nlua --run nvim
+
+SEED  ?= 1
+COUNT ?= 2000
+CMP   ?=
+
+lua-fuzz: ## Fuzz visual s/u/X over random triples (SEED=, COUNT=, CMP=<rev> to compare against lua/ there)
+	@$(INFO) "Fuzzing staging (seed $(SEED), $(COUNT) triples$(if $(CMP), against $(CMP)))"
+	@nvim --clean -l test/fuzz/run.lua $(if $(CMP),--cmp=$(CMP)) $(SEED) $(COUNT)
 
 lua-lint: lua-luacheck lua-fmt-check ## Luacheck + stylua --check on Lua sources
 

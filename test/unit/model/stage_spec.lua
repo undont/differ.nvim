@@ -250,6 +250,44 @@ describe("model.stage.select_index", function()
         assert.are.equal("1\na\nb\nc\nx\n2\n", text)
     end)
 
+    -- HEAD a d d, index a x3 d, worktree a x3 c x5
+    local function reorder_pair()
+        local head, index = "a\nd\nd\n", "a\nx3\nd\n"
+        local union = model(head, "a\nx3\nc\nx5\n", { h(2, { "d", "d" }, 2, { "x3", "c", "x5" }) })
+        return union, model(head, index, {})
+    end
+
+    it("stages new lines after the index's own lines, keeping their order", function()
+        local union, cached = reorder_pair()
+        local text = stage.select_index(union, cached, sel({}, { 3, 4 }), true)
+        assert.are.equal("a\nx3\nd\nc\nx5\n", text)
+    end)
+
+    it("gives nothing for an unstage of lines the index doesn't hold", function()
+        local union, cached = reorder_pair()
+        local text, refusal = stage.select_index(union, cached, sel({}, { 3, 4 }), false)
+        assert.is_nil(text)
+        assert.is_nil(refusal)
+    end)
+
+    it("leaves a held new line above a kept old line where the index has it", function()
+        local head = "l14\nl12\nl9\nl29\n"
+        local union =
+            model(head, "l14\nl33\nx7\nl9\nl29\n", { h(2, { "l12" }, 2, { "l33", "x7" }) })
+        local cached = model(head, "l14\nl33\nl12\nl9\nl29\n", {})
+        local text, refusal = stage.select_index(union, cached, sel({}, { 3 }), false)
+        assert.is_nil(text)
+        assert.is_nil(refusal)
+    end)
+
+    it("keeps a staged line in the middle of a hunk whose sides differ in length", function()
+        local head = "1\na\nb\nc\n2\n"
+        local union = model(head, "1\nx\ny\n2\n", { h(2, { "a", "b", "c" }, 2, { "x", "y" }) })
+        local cached = model(head, "1\na\nx\nb\nc\n2\n", {})
+        local text = stage.select_index(union, cached, sel({ 3 }, { 3 }), true)
+        assert.are.equal("1\na\nx\nc\ny\n2\n", text)
+    end)
+
     it("ends an unterminated HEAD line once a line follows it", function()
         local union = model("1\na", "1\nx\ny\n", { h(2, { "a" }, 2, { "x", "y" }) })
         local cached = model("1\na", "1\na", {})
@@ -398,5 +436,27 @@ describe("model.stage.select_worktree", function()
     it("gives nothing for a selection that touches no hunk", function()
         local union = model("1\na\n2\n", "1\nx\n2\n", { h(2, { "a" }, 2, { "x" }) })
         assert.is_nil(stage.select_worktree(union, sel({ 1 }, { 3 })))
+    end)
+
+    -- HEAD 1 c c 2, index 1 e c 2, worktree 1 e 2: the index's c is HEAD's second
+    local function index_order_pair(index)
+        local head = "1\nc\nc\n2\n"
+        local union = model(head, "1\ne\n2\n", { h(2, { "c", "c" }, 2, { "e" }) })
+        return union, model(head, index, {})
+    end
+
+    it("restores lines in the index's order, as the index takes them back", function()
+        local union, cached = index_order_pair("1\ne\nc\n2\n")
+        local selection = sel({ 2, 3 }, {})
+        local out = stage.select_worktree(union, selection, stage.index_origins(union, cached))
+        assert.are.equal("1\nc\ne\nc\n2\n", out.old_text)
+        assert.are.equal("1\nc\ne\nc\n2\n", stage.select_index(union, cached, selection, false))
+    end)
+
+    it("restores old lines first where the index holds none of the hunk", function()
+        local union, cached = index_order_pair("1\nc\nc\n2\n")
+        local origins = stage.index_origins(union, cached)
+        local out = stage.select_worktree(union, sel({ 2, 3 }, {}), origins)
+        assert.are.equal("1\nc\nc\ne\n2\n", out.old_text)
     end)
 end)

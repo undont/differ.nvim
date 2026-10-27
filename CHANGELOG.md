@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Visual `s`, `u` and `X` on a hunk whose sides differ in length refused when the index already held part of it; they now keep the index's order and stage, unstage or revert the selected lines
+
+## [0.2.15] — 2026-10-26
+
+### Fixed
+
 - A continue that committed the resolution and then stopped on a pick that came out empty reported `git rebase --continue failed`; it now names the empty commit and how to drop it, and a stop at an `edit` or `break` says so
 - After such a stop the merge tool stayed on the committed file and `:Differ` said "no changes to show"; the panel now opens at any stop with nothing to diff, so `gC` can continue
 - git's output in a failed continue's notice was hard-wrapped at the float's width; it now shows git's own lines

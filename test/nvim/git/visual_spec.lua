@@ -345,30 +345,54 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- the unequal hunk's block rebuilt old lines first would move the index's x3 after
-    -- its d: the texts read back as other marks, so nothing is written
-    for _, key in ipairs({ "s", "u", "X" }) do
-        it(("visual %s refuses lines that would read back as others"):format(key), function()
-            local root = fresh_repo()
-            write(root .. "/a.lua", "a\nd\nd\n")
-            git(root, "commit", "-q", "-am", "repeats")
-            write(root .. "/a.lua", "a\nx3\nd\n")
-            git(root, "add", "a.lua")
-            write(root .. "/a.lua", "a\nx3\nc\nx5\n")
-            vim.cmd.edit(root .. "/a.lua")
-            local p, v = open_panel()
-
-            local col = v.columns[1]
-            local prompt = confirming(1, function()
-                visual(col, col.map.from_new[3], col.map.from_new[4], key)
-            end)
-            assert.is_nil(prompt)
-            assert.is_truthy(last_said():find("without changing others", 1, true))
-            assert.are.equal("a\nx3\nd\n", indexed(root, "a.lua"))
-            assert.are.equal("a\nx3\nc\nx5\n", worktree(root, "a.lua"))
-            p:close()
-        end)
+    -- HEAD a d d, index a x3 d, worktree a x3 c x5: the unequal hunk's block keeps the
+    -- index's x3 above its d
+    local function reorder_repo()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "a\nd\nd\n")
+        git(root, "commit", "-q", "-am", "repeats")
+        write(root .. "/a.lua", "a\nx3\nd\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "a\nx3\nc\nx5\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
     end
+
+    it("visual s stages lines after the index's own, in its order", function()
+        local root = reorder_repo()
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[3], col.map.from_new[4], "s")
+        assert.are.equal("a\nx3\nd\nc\nx5\n", indexed(root, "a.lua"))
+        assert.are.equal("a\nx3\nc\nx5\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual u leaves the index's order on lines it doesn't hold", function()
+        local root = reorder_repo()
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[3], col.map.from_new[4], "u")
+        assert.is_truthy(last_said():find("already unstaged", 1, true))
+        assert.are.equal("a\nx3\nd\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X reverts lines the index doesn't hold, leaving its order", function()
+        local root = reorder_repo()
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_new[3], col.map.from_new[4], "X")
+        end)
+        assert.are.equal("Revert 2 lines in a.lua?", prompt)
+        assert.are.equal("a\nx3\nd\n", indexed(root, "a.lua"))
+        assert.are.equal("a\nx3\n", worktree(root, "a.lua"))
+        p:close()
+    end)
 
     -- the restored file has two l18 lines in a row: the diff may mark either as added
     it("visual X reverts among identical lines the diff can pair either way", function()
@@ -391,9 +415,8 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- x7 is unstaged already, and the block rebuilt old lines first would move the
-    -- index's l33 after l12
-    it("visual u refuses rather than reorder the index", function()
+    -- x7 is unstaged already, and the index holds l33 above l12
+    it("visual u leaves a held line above a kept one where the index has it", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "l14\nl12\nl9\nl29\n")
         git(root, "commit", "-q", "-am", "base")
@@ -405,7 +428,7 @@ describe(":Differ diff hunk staging", function()
 
         local col = v.columns[1]
         visual(col, col.map.from_new[3], col.map.from_new[3], "u")
-        assert.is_truthy(last_said():find("without changing others", 1, true))
+        assert.is_truthy(last_said():find("already unstaged", 1, true))
         assert.are.equal("l14\nl33\nl12\nl9\nl29\n", indexed(root, "a.lua"))
         p:close()
     end)

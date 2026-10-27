@@ -65,6 +65,10 @@ local armed_view = nil
 ---@field side differ.ColumnSide
 ---@field folds? differ.FoldRange[]
 
+-- X on lines, and the revert it wrote, as select_worktree gives it
+---@alias differ.view.RevertLines
+---| fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?, differ.DiffModel?
+
 -- the hunk-staging capability the git frontend supplies per source. the view keeps its
 -- diff frozen and reads staged state from `marks`, which the source keeps current;
 -- `apply` stages one hunk (`reverse` unstages it) and returns ok, and `refresh`
@@ -85,7 +89,7 @@ local armed_view = nil
 ---@field apply? fun(model: differ.DiffModel, hunk: differ.Hunk|nil, reverse: boolean): boolean, boolean|nil
 ---@field apply_lines? fun(model: differ.DiffModel, lines: differ.model.Selection, reverse: boolean): boolean, boolean?
 ---@field revert? fun(model: differ.DiffModel, idx: integer): boolean
----@field revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?
+---@field revert_lines? differ.view.RevertLines
 ---@field refuses_revert? fun(model: differ.DiffModel, idx: integer): boolean  -- said why, before X's prompt
 ---@field refuses_revert_lines? fun(model: differ.DiffModel, lines: differ.model.Selection): boolean  -- said why
 ---@field revert_label? string  -- e.g. "deletes the file"
@@ -1887,9 +1891,9 @@ function View:revert_lines()
         return
     end
 
-    local reverted = require("differ.model.stage").select_worktree(self.model, selection)
     local focus = self:cursor_new_line()
-    if not (reverted and revert(self.model, selection)) then
+    local ok, _, reverted = revert(self.model, selection)
+    if not (ok and reverted) then
         return
     end
 
