@@ -1049,7 +1049,6 @@ local function lay_out(root, relpath, model, layout, files)
     local result = require("differ.render.merge").render(model, { layout = layout })
 
     local return_tab, session_tab = tab_util.open_session()
-    vim.cmd("silent! only")
 
     -- result spans the bottom; inputs share the top row left-to-right
     local top = vim.api.nvim_get_current_win()
