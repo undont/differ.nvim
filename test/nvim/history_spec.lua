@@ -430,3 +430,75 @@ describe("history runtime position", function()
         assert.is_false(h:is_open()) -- no window opened, no throw
     end)
 end)
+
+describe("history origin window", function()
+    after_each(function()
+        vim.cmd("silent! tabonly")
+        vim.cmd("silent! only")
+    end)
+
+    -- an opened history panel over `origin`, without loading any commit
+    local function history()
+        vim.cmd("silent! only")
+        local h = History.new({ commits = {}, path = "x", on_select = function() end })
+        h.origin_win = vim.api.nvim_get_current_win()
+        h:_open_window()
+        return h
+    end
+
+    local function lone_history()
+        local h = history()
+        vim.api.nvim_win_close(h.origin_win, true)
+        return h
+    end
+
+    local function assert_split_beside(h, win)
+        assert.are.equal("", vim.fn.win_gettype(win))
+        assert.are.equal(vim.api.nvim_win_get_tabpage(h.winid), vim.api.nvim_win_get_tabpage(win))
+        assert.are_not.equal(h.winid, win)
+    end
+
+    it("doesn't adopt a window in another tabpage", function()
+        local h = lone_history()
+        vim.cmd("tabnew")
+        local other = vim.api.nvim_get_current_win()
+        local win = h:_ensure_origin()
+        assert.are_not.equal(other, win)
+        assert_split_beside(h, win)
+        h:close()
+    end)
+
+    it("doesn't adopt a float", function()
+        local h = lone_history()
+        local float =
+            require("differ.util.win").open_centred(vim.api.nvim_create_buf(false, true), 10, 3)
+        local win = h:_ensure_origin()
+        assert.are_not.equal(float, win)
+        assert_split_beside(h, win)
+        h:close()
+    end)
+
+    it("replaces a stored origin that became a float", function()
+        local h = history()
+        local origin = h.origin_win
+        vim.api.nvim_win_set_config(
+            origin,
+            { relative = "editor", row = 1, col = 1, width = 10, height = 3 }
+        )
+        local win = h:_ensure_origin()
+        assert.are_not.equal(origin, win)
+        assert_split_beside(h, win)
+        h:close()
+    end)
+
+    it("replaces a stored origin that moved to another tabpage", function()
+        local h = history()
+        local origin = h.origin_win
+        vim.api.nvim_set_current_win(origin)
+        vim.cmd("wincmd T")
+        local win = h:_ensure_origin()
+        assert.are_not.equal(origin, win)
+        assert_split_beside(h, win)
+        h:close()
+    end)
+end)

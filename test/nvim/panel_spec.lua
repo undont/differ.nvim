@@ -726,3 +726,84 @@ describe("panel selection identity", function()
         p:close()
     end)
 end)
+
+describe("panel origin window", function()
+    after_each(function()
+        vim.cmd("silent! tabonly")
+        vim.cmd("silent! only")
+    end)
+
+    -- a panel left as the only window in its tab, its origin closed
+    local function lone_panel()
+        local p = panel({ fe("a.lua") })
+        p:open()
+        vim.api.nvim_win_close(p.origin_win, true)
+        return p
+    end
+
+    local function assert_split_beside(p, win)
+        assert.are.equal("", vim.fn.win_gettype(win))
+        assert.are.equal(vim.api.nvim_win_get_tabpage(p.winid), vim.api.nvim_win_get_tabpage(win))
+        assert.are_not.equal(p.winid, win)
+    end
+
+    it("doesn't adopt a window in another tabpage", function()
+        local p = lone_panel()
+        vim.cmd("tabnew")
+        local other = vim.api.nvim_get_current_win()
+        local win = p:content_win()
+        assert.are_not.equal(other, win)
+        assert_split_beside(p, win)
+        p:close()
+    end)
+
+    it("doesn't adopt a float", function()
+        local p = lone_panel()
+        local float =
+            require("differ.util.win").open_centred(vim.api.nvim_create_buf(false, true), 10, 3)
+        local win = p:content_win()
+        assert.are_not.equal(float, win)
+        assert_split_beside(p, win)
+        p:close()
+    end)
+
+    it("splits a normal window while hidden in a tab holding only a quickfix window", function()
+        local p = panel({ fe("a.lua") })
+        p:open()
+        p:hide()
+        vim.fn.setqflist({ { filename = "a.lua", lnum = 1, text = "x" } })
+        vim.cmd("copen")
+        vim.cmd("only")
+        local win = p:content_win()
+        assert.are.equal("", vim.fn.win_gettype(win))
+        assert.are.equal(vim.api.nvim_get_current_tabpage(), vim.api.nvim_win_get_tabpage(win))
+        vim.cmd("cclose")
+        p:close()
+    end)
+
+    it("replaces a stored origin that became a float", function()
+        local p = panel({ fe("a.lua") })
+        p:open()
+        local origin = p.origin_win
+        vim.api.nvim_win_set_config(
+            origin,
+            { relative = "editor", row = 1, col = 1, width = 10, height = 3 }
+        )
+        local win = p:content_win()
+        assert.are_not.equal(origin, win)
+        assert_split_beside(p, win)
+        p:close()
+    end)
+
+    it("replaces a stored origin that moved to another tabpage", function()
+        local p = panel({ fe("a.lua") })
+        p:open()
+        local origin = p.origin_win
+        vim.api.nvim_set_current_win(origin)
+        vim.cmd("wincmd T")
+        local win = p:content_win()
+        assert.are_not.equal(origin, win)
+        assert_split_beside(p, win)
+        p:close()
+    end)
+end)
