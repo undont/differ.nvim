@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Opening a diff from the panel or file history while a window was open in another tab could move focus to that tab; it now stays in the session's tab
+- Opening the merge tool with ui2 enabled closed ui2's windows and raised `Invalid window id`; floats now stay open
+
+## [0.2.16] — 2026-10-27
+
+### Fixed
+
 - Visual `s`, `u` and `X` on a hunk whose sides differ in length refused when the index already held part of it; they now keep the index's order and stage, unstage or revert the selected lines
 
 ## [0.2.15] — 2026-10-26
