@@ -38,25 +38,6 @@ or skip `command_alias` and use a cmdline abbrev, which expands before the plugi
 vim.cmd [[cnoreabbrev <expr> D (getcmdtype() == ':' && getcmdline() ==# 'D') ? 'Differ' : 'D']]
 ```
 
-## which-key popups over differ buffers
-
-differ's surfaces are scratch buffers (`buftype=nofile`) with their own filetypes (`differdiff` for the diff buffers, `differpanel`, `differhistory`), so no foreign `FileType <lang>` autocmds attach to them. Some which-key setups gate their trigger (re)registration on `buftype == ""`, or rebuild triggers in a way that briefly clears them globally (each `wk.add` calls `Buf.clear()`). In those setups the `<leader>` / `]` / `[` popups can fail to open over a scratch buffer during which-key's trigger suspension windows, even though the same keys work in a normal file.
-
-This is a property of the which-key integration, not of differ. If you hit it, pin permanent buffer-local maps on differ buffers (a plain keymap isn't managed by the trigger system, so it can't be cleared). differ's buffers carry stable filetypes, so key off those:
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  group = vim.api.nvim_create_augroup("differ-whichkey", { clear = true }),
-  pattern = { "differdiff", "differpanel", "differhistory" },
-  callback = function(ev)
-    local wk = require("which-key")
-    for _, key in ipairs({ " ", "]", "[" }) do
-      vim.keymap.set("n", key, function() wk.show(key) end, { buffer = ev.buf })
-    end
-  end,
-})
-```
-
 ## Statusline requires under lazy-loading
 
 Requiring any `differ.*` module from your statusline config makes lazy load the whole plugin at startup, which defeats a `cmd` lazy-load. That includes `require("differ.lualine")`. Read `vim.b.differ_filetype` directly instead: it never triggers a load, works whether or not differ is loaded, and is simply absent on every other buffer.

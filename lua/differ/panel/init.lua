@@ -9,6 +9,7 @@
 local tree = require("differ.panel.tree")
 local render = require("differ.panel.render")
 local set_wo = require("differ.util.win").set_local
+local ensure_origin = require("differ.util.win").ensure_origin
 local bind = require("differ.util.keymap").bind
 
 local ns = vim.api.nvim_create_namespace("differ.panel")
@@ -659,26 +660,9 @@ function Panel:content_win()
     return self:_ensure_origin()
 end
 
--- a non-panel window to open diffs in: the origin window if still valid, else any
--- other window, else a fresh split carved off the panel
 ---@return integer
 function Panel:_ensure_origin()
-    if
-        self.origin_win
-        and self.origin_win ~= self.winid
-        and vim.api.nvim_win_is_valid(self.origin_win)
-    then
-        return self.origin_win
-    end
-    for _, w in ipairs(vim.api.nvim_list_wins()) do
-        if w ~= self.winid then
-            self.origin_win = w
-            return w
-        end
-    end
-    vim.api.nvim_set_current_win(self.winid)
-    vim.cmd("aboveleft split")
-    self.origin_win = vim.api.nvim_get_current_win()
+    self.origin_win = ensure_origin(self.winid, self.origin_win)
     return self.origin_win
 end
 

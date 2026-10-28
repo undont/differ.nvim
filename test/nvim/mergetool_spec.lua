@@ -417,6 +417,32 @@ describe(":Differ mergetool", function()
         assert.are.equal(4, #vim.api.nvim_tabpage_list_wins(0))
     end)
 
+    it("keeps a float moved into the session tab on TabEnter", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        local buf = vim.api.nvim_create_buf(false, true)
+        local float = vim.api.nvim_open_win(
+            buf,
+            false,
+            { relative = "editor", row = 1, col = 1, width = 5, height = 1 }
+        )
+        -- how ui2 carries its cmdline and message floats along to a newly entered tab
+        vim.api.nvim_create_autocmd("TabEnter", {
+            once = true,
+            callback = function()
+                vim.api.nvim_win_set_config(float, { win = vim.api.nvim_tabpage_get_win(0) })
+            end,
+        })
+        merge.open({})
+
+        assert.is_true(vim.api.nvim_win_is_valid(float))
+        assert.are.equal(vim.api.nvim_get_current_tabpage(), vim.api.nvim_win_get_tabpage(float))
+        local normal = vim.tbl_filter(function(w)
+            return vim.api.nvim_win_get_config(w).relative == ""
+        end, vim.api.nvim_tabpage_list_wins(0))
+        assert.are.equal(3, #normal)
+    end)
+
     it("closes cleanly", function()
         local root = conflict_repo()
         vim.cmd.edit(root .. "/f.txt")
