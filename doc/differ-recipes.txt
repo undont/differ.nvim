@@ -30,17 +30,8 @@ in case you want to override.
         { '<leader>do', '<cmd>Differ<CR>',                        desc = "Diff: open (vs index)" },
         { "<leader>dt", "<cmd>Differ base<CR>",                   desc = "Diff: branch total (vs base)" },
         { "<leader>dh", "<cmd>Differ log<CR>",                    desc = "Diff: file history" },
-        { "<leader>dp", "<cmd>Differ log origin/HEAD...HEAD<CR>", desc = "Diff: PR range (local, no API)" },
+        { "<leader>dp", "<cmd>Differ log HEAD<CR>",               desc = "Diff: file history (commits vs HEAD)" },
         { "<leader>pl", "<cmd>Differ pr list<CR>",                desc = "PR: list" },
-        {
-          "<leader>po",
-          function()
-            vim.ui.input({ prompt = "PR number: " }, function(input)
-              if input and input ~= "" then vim.cmd("Differ pr " .. input) end
-            end)
-          end,
-          desc = "PR: open by number",
-        },
       },
       config = function()
         require("differ").setup({ command_alias = "D" })
@@ -52,11 +43,6 @@ Once a session is open, `dc` / `dd` / `dl` close it and toggle the panel and
 layout, and `gS` / `gD` submit or discard a review without leaving the files.
 The rest of the PR verbs (`checks`, `checkout`, `ready`, `draft`, `close`,
 `reopen`, `merge`, `browser`, `url`) stay as `:Differ pr <verb>`.
-
-If which-key’s `<leader>` popup doesn’t open over differ’s buffers,
-that’s a trigger-registration quirk on scratch buffers; check in
-troubleshooting <TROUBLESHOOTING.md#which-key-popups-over-differ-buffers>
-(|differ-troubleshooting-which-key-popups-over-differ-buffers|) for a solution.
 
 
 ==============================================================================

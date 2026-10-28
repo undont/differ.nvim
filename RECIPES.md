@@ -24,8 +24,6 @@ Snippets to copy and paste: launchers for the entry points (these are what I use
 
 Once a session is open, `dc` / `dd` / `dl` close it and toggle the panel and layout, and `gS` / `gD` submit or discard a review without leaving the files. The rest of the PR verbs (`checks`, `checkout`, `ready`, `draft`, `close`, `reopen`, `merge`, `browser`, `url`) stay as `:Differ pr <verb>`.
 
-If which-key's `<leader>` popup doesn't open over differ's buffers, that's a trigger-registration quirk on scratch buffers; check in [troubleshooting](TROUBLESHOOTING.md#which-key-popups-over-differ-buffers) (`:h differ-troubleshooting-which-key-popups-over-differ-buffers`) for a solution.
-
 ## Statusline
 
 The diff buffers use a private `differdiff` filetype rather than the source file's, so any other `FileType <lang>` autocmds (LSP, linters, semantic tokens) in your setup don't attach to a throwaway `differ://` buffer. The source filetype is still read and stored in `b:differ_filetype`, so a statusline can still show the language.
