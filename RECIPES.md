@@ -13,17 +13,8 @@ Snippets to copy and paste: launchers for the entry points (these are what I use
     { '<leader>do', '<cmd>Differ<CR>',                        desc = "Diff: open (vs index)" },
     { "<leader>dt", "<cmd>Differ base<CR>",                   desc = "Diff: branch total (vs base)" },
     { "<leader>dh", "<cmd>Differ log<CR>",                    desc = "Diff: file history" },
-    { "<leader>dp", "<cmd>Differ log origin/HEAD...HEAD<CR>", desc = "Diff: PR range (local, no API)" },
+    { "<leader>dp", "<cmd>Differ log HEAD<CR>",               desc = "Diff: file history (commits vs HEAD)" },
     { "<leader>pl", "<cmd>Differ pr list<CR>",                desc = "PR: list" },
-    {
-      "<leader>po",
-      function()
-        vim.ui.input({ prompt = "PR number: " }, function(input)
-          if input and input ~= "" then vim.cmd("Differ pr " .. input) end
-        end)
-      end,
-      desc = "PR: open by number",
-    },
   },
   config = function()
     require("differ").setup({ command_alias = "D" })
