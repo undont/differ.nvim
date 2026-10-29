@@ -1,5 +1,5 @@
 -- runs under headless nvim: drives the View through real windows/buffers and
--- asserts content, the diff highlight extmarks, and split scroll-binding
+-- asserts content, the diff highlight extmarks, and the split lockstep
 local diff = require("differ.model.diff")
 local View = require("differ.view")
 
@@ -123,7 +123,7 @@ describe("view window options", function()
 end)
 
 describe("view split", function()
-    it("opens a scroll-bound pair with per-side highlights", function()
+    it("opens a cursor-bound pair with per-side highlights", function()
         local v = View.new(model("a\nM\nb\n", "a\nX\nb\n"), {
             layout = "split",
             context = math.huge,
@@ -136,14 +136,170 @@ describe("view split", function()
         assert.are.same({ "a", "M", "b" }, vim.api.nvim_buf_get_lines(left.bufnr, 0, -1, false))
         assert.are.same({ "a", "X", "b" }, vim.api.nvim_buf_get_lines(right.bufnr, 0, -1, false))
 
-        assert.is_true(vim.wo[left.winid].scrollbind)
-        assert.is_true(vim.wo[right.winid].scrollbind)
+        assert.is_false(vim.wo[left.winid].scrollbind) -- the view syncs scroll itself
+        assert.is_false(vim.wo[right.winid].scrollbind)
+        assert.is_true(vim.wo[left.winid].cursorbind)
+        assert.is_true(vim.wo[right.winid].cursorbind)
 
         local left_hl = extmarks(left.bufnr)
         local right_hl = extmarks(right.bufnr)
         assert.are.equal("differLineDelete", left_hl[1]) -- old "M" on the left
         assert.are.equal("differLineAdd", right_hl[1]) -- new "X" on the right
         v:close()
+    end)
+
+    it("moves the cursor in both columns together", function()
+        local v = View.new(model("1\n2\n3\n4\n5\n", "1\nX\n3\n4\n5\n"), {
+            layout = "split",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local left, right = v.columns[1].winid, v.columns[2].winid
+        vim.api.nvim_set_current_win(left)
+        vim.api.nvim_feedkeys("4G", "xn", false)
+        assert.are.equal(4, vim.api.nvim_win_get_cursor(right)[1])
+        vim.api.nvim_set_current_win(right)
+        vim.api.nvim_feedkeys("gg", "xn", false)
+        assert.are.equal(1, vim.api.nvim_win_get_cursor(left)[1])
+        v:close()
+    end)
+
+    it("lands both columns on the first hunk when the right one holds focus", function()
+        local v = View.new(model("1\n2\n3\n4\n5\n", "1\n2\n3\n4\nV\n"), {
+            layout = "split",
+            context = math.huge,
+            deep_diff = { enabled = true },
+        })
+        v:open()
+        local left, right = v.columns[1].winid, v.columns[2].winid
+        vim.api.nvim_set_current_win(right)
+        v:set_source(model("a\nB\nc\nd\ne\n", "a\nb\nc\nd\ne\n"), nil)
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(left)[1])
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(right)[1])
+        v:close()
+    end)
+
+    describe("lockstep", function()
+        -- 100 lines, changed at 2 and 99, so context 2 leaves one fold over 5..96.
+        -- `long` lengthens every third new line, for wrapped rows taller on the right;
+        -- `wide` lengthens every line on both sides
+        local function long_view(opts)
+            opts = opts or {}
+            local old, new = {}, {}
+            for i = 1, 100 do
+                old[i], new[i] = tostring(i), tostring(i)
+                if opts.wide then
+                    old[i], new[i] = ("wide " .. i .. " "):rep(20), ("wide " .. i .. " "):rep(20)
+                end
+                if opts.long and i % 3 == 0 then
+                    new[i] = ("long " .. i .. " "):rep(40)
+                end
+            end
+            new[2], new[99] = "X", "Y"
+            local v =
+                View.new(model(table.concat(old, "\n") .. "\n", table.concat(new, "\n") .. "\n"), {
+                    layout = "split",
+                    context = opts.context or 2,
+                    deep_diff = { enabled = true },
+                    wrap = opts.wrap,
+                })
+            v:open()
+            return v, v.columns[1].winid, v.columns[2].winid
+        end
+
+        local function closed(win)
+            return vim.api.nvim_win_call(win, function()
+                return vim.fn.foldclosed(50) ~= -1
+            end)
+        end
+
+        local function view_of(win)
+            return vim.api.nvim_win_call(win, vim.fn.winsaveview)
+        end
+
+        -- typed keys, so `foldopen` applies, then the events the main loop would fire
+        local function type_in(win, keys)
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_feedkeys(vim.keycode(keys), "xt", false)
+            vim.api.nvim_exec_autocmds("WinScrolled", {})
+            vim.api.nvim_exec_autocmds("SafeState", {})
+        end
+
+        -- scroll `win` without focusing it, as the mouse wheel does: its cursor moves
+        -- into view rather than holding the top line back
+        local function scroll(win, topline, leftcol)
+            vim.api.nvim_win_call(win, function()
+                local lnum = math.max(vim.fn.line("."), topline)
+                vim.fn.winrestview({ topline = topline, leftcol = leftcol, lnum = lnum })
+            end)
+            vim.api.nvim_exec_autocmds("WinScrolled", {})
+        end
+
+        it("mirrors a fold command in either column onto the other", function()
+            vim.cmd("silent! only")
+            local v, left, right = long_view()
+            assert.is_true(closed(left) and closed(right))
+            type_in(left, "5Gzo")
+            assert.is_false(closed(right))
+            type_in(right, "zc")
+            assert.is_true(closed(left))
+            v:close()
+        end)
+
+        it("mirrors a fold foldopen opens, keeping the rows and scroll aligned", function()
+            vim.cmd("silent! only")
+            local v, left, right = long_view()
+            type_in(left, "/^50$<CR>zt")
+            assert.is_false(closed(right))
+            assert.are.equal(50, vim.api.nvim_win_get_cursor(right)[1])
+            assert.are.equal(view_of(left).topline, view_of(right).topline)
+            v:close()
+        end)
+
+        it("follows a scroll of either column, focused or not", function()
+            vim.cmd("silent! only")
+            local v, left, right = long_view({ context = math.huge })
+            type_in(left, "35G") -- a cursor both scroll positions show
+            scroll(left, 30)
+            assert.are.equal(30, view_of(right).topline)
+            scroll(right, 40) -- the unfocused column
+            assert.are.equal(40, view_of(left).topline)
+            v:close()
+        end)
+
+        it("follows a sideways scroll without wrap", function()
+            vim.cmd("silent! only")
+            local v, left, right = long_view({ context = math.huge, wide = true, wrap = false })
+            type_in(right, "3G30|") -- a cursor column both sideways scrolls show
+            scroll(right, 1, 10)
+            assert.are.equal(10, view_of(left).leftcol)
+            v:close()
+        end)
+
+        it("leaves a column short when its wrapped rows can't keep its cursor on screen", function()
+            vim.cmd("silent! only")
+            local v, left, right = long_view({ context = math.huge, long = true })
+            type_in(left, "60Gzb")
+            local top = view_of(left).topline
+            -- the right column stops where its cursor still shows, and its own scroll
+            -- event doesn't pull the focused column after it
+            assert.is_true(view_of(right).topline > top)
+            assert.are.equal(60, vim.api.nvim_win_get_cursor(right)[1])
+            vim.api.nvim_exec_autocmds("WinScrolled", {})
+            assert.are.equal(top, view_of(left).topline)
+            v:close()
+        end)
+
+        it("drops in stacked", function()
+            vim.cmd("silent! only")
+            local v = long_view()
+            local group = "differ.view.lockstep." .. v.id
+            assert.are.equal(2, #vim.api.nvim_get_autocmds({ group = group }))
+            v:toggle_layout()
+            assert.are.equal(0, #vim.api.nvim_get_autocmds({ group = group }))
+            v:close()
+        end)
     end)
 end)
 
@@ -326,12 +482,12 @@ describe("view layout toggle", function()
         assert.are.equal("old", v.columns[1].side)
         assert.are.equal("new", v.columns[2].side)
         assert.is_true(vim.api.nvim_win_is_valid(v.columns[2].winid))
-        assert.is_true(vim.wo[v.columns[1].winid].scrollbind)
+        assert.is_true(vim.wo[v.columns[1].winid].cursorbind)
 
         v:toggle_layout() -- -> stacked
         assert.are.equal(1, #v.columns)
         assert.are.equal("unified", v.columns[1].side)
-        assert.is_false(vim.wo[v.columns[1].winid].scrollbind)
+        assert.is_false(vim.wo[v.columns[1].winid].cursorbind)
         v:close()
     end)
 end)

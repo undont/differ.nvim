@@ -142,6 +142,8 @@ local armed_view = nil
 ---@field _close_group integer|nil  -- augroup id for the WinClosed close guard
 ---@field _zoom_group integer|nil  -- augroup id for the zoom-tab return hook
 ---@field _edit_group integer|nil  -- augroup id for the edit window's WinClosed sync
+---@field _lockstep_group integer|nil  -- augroup id for the split fold + scroll sync
+---@field _synced table<integer, differ.view.Scroll>  -- where the last scroll sync left each column
 ---@field _edit_map { buf: integer, spec: string|string[]|false }|nil  -- g? bound on a real file buffer
 local View = {}
 View.__index = View
@@ -199,6 +201,7 @@ function View.new(model, opts)
         id = next_id(),
         _suppress_close = false,
         _closing = false,
+        _synced = {},
     }, View)
     self:_init_staged()
     self:rerender(opts)
@@ -557,6 +560,156 @@ function View:_apply_folds(opened)
     end
 end
 
+-- whether each fold of `col` is closed in its window
+---@param col differ.ViewColumn
+---@return boolean[]
+local function closed_folds(col)
+    return vim.api.nvim_win_call(col.winid, function()
+        return vim.tbl_map(function(f)
+            return vim.fn.foldclosed(f.first) ~= -1
+        end, col.folds or {})
+    end)
+end
+
+-- set `col`'s folds to the states in `closed`, and its foldenable to `enabled`.
+-- whether anything changed
+---@param col differ.ViewColumn
+---@param enabled boolean
+---@param closed boolean[]
+---@return boolean
+local function set_folds(col, enabled, closed)
+    local changed = vim.wo[col.winid].foldenable ~= enabled
+    if changed then
+        set_wo(col.winid, "foldenable", enabled) -- zn / zN / zi
+    end
+    if not enabled then
+        return changed
+    end
+    local here = closed_folds(col)
+    vim.api.nvim_win_call(col.winid, function()
+        for i, f in ipairs(col.folds or {}) do
+            if f.last > f.first and here[i] ~= closed[i] then
+                local cmd = closed[i] and "foldclose" or "foldopen"
+                vim.cmd(("silent! %d%s"):format(f.first, cmd))
+                changed = true
+            end
+        end
+    end)
+    return changed
+end
+
+-- copy the focused split column's fold state onto the other column, so their rows stay
+-- aligned. the split columns share one fold list, so fold i is the same rows in both.
+-- cursorbind synced before the folds matched, so redo the row and the scroll on a change
+function View:_mirror_folds()
+    local from = self:_focused_column()
+    if from.winid ~= vim.api.nvim_get_current_win() then
+        return
+    end
+    local enabled = vim.wo[from.winid].foldenable
+    local closed = closed_folds(from)
+    local row = vim.api.nvim_win_get_cursor(from.winid)[1]
+    local changed = false
+    for _, col in ipairs(self.columns) do
+        if col ~= from and col.winid and vim.api.nvim_win_is_valid(col.winid) then
+            if set_folds(col, enabled, closed) then
+                pcall(vim.api.nvim_win_set_cursor, col.winid, { row, 0 })
+                changed = true
+            end
+        end
+    end
+    if changed then
+        self:_sync_scroll(from)
+    end
+end
+
+---@class differ.view.Scroll
+---@field topline integer
+---@field leftcol integer
+
+---@param win integer
+---@return differ.view.Scroll
+local function scroll_of(win)
+    local view = vim.api.nvim_win_call(win, vim.fn.winsaveview)
+    return { topline = view.topline, leftcol = view.leftcol }
+end
+
+-- copy `from`'s top line, left column and cursor row onto the other split columns. the
+-- row is the one cursorbind set, unless a wheel scroll moved `from`'s cursor into view.
+-- a column whose rows wrap taller stops short where its cursor would leave the screen.
+-- where every column lands is kept in `_synced`, so the WinScrolled this fires changes
+-- nothing
+---@param from differ.ViewColumn
+function View:_sync_scroll(from)
+    local scroll = scroll_of(from.winid)
+    local target = vim.tbl_extend("force", scroll, {
+        lnum = vim.api.nvim_win_get_cursor(from.winid)[1],
+    })
+    for _, col in ipairs(self.columns) do
+        if col ~= from and col.winid and vim.api.nvim_win_is_valid(col.winid) then
+            vim.api.nvim_win_call(col.winid, function()
+                vim.fn.winrestview(target)
+                vim.fn.winline() -- settle the top line now, not at the next redraw
+            end)
+        end
+    end
+    self._synced = {}
+    for _, col in ipairs(self.columns) do
+        if col.winid and vim.api.nvim_win_is_valid(col.winid) then
+            self._synced[col.winid] = scroll_of(col.winid)
+        end
+    end
+end
+
+-- the column the others follow after a WinScrolled: the current window if it moved
+-- since the last sync, else one moved without focus (the mouse wheel)
+---@return differ.ViewColumn|nil
+function View:_scroll_source()
+    local current = vim.api.nvim_get_current_win()
+    local source
+    for _, col in ipairs(self.columns) do
+        local win = col.winid
+        local moved = win ~= nil
+            and vim.api.nvim_win_is_valid(win)
+            and not vim.deep_equal(self._synced[win], scroll_of(win))
+        if moved and win == current then
+            return col
+        end
+        if moved and not source then
+            source = col
+        end
+    end
+    return source
+end
+
+-- keep the split columns in lockstep beyond cursorbind: the same folds and the same
+-- scroll. fold commands and `foldopen` act on the current window only and fire neither
+-- CursorMoved nor WinScrolled, so the fold mirror runs on SafeState, after every command.
+-- scroll is copied as an absolute top line on WinScrolled. stacked clears both
+function View:_arm_lockstep()
+    self._lockstep_group =
+        vim.api.nvim_create_augroup("differ.view.lockstep." .. self.id, { clear = true })
+    if #self.columns < 2 then
+        return
+    end
+    vim.api.nvim_create_autocmd("SafeState", {
+        group = self._lockstep_group,
+        callback = function()
+            self:_mirror_folds()
+        end,
+    })
+    vim.api.nvim_create_autocmd("WinScrolled", {
+        group = self._lockstep_group,
+        callback = function()
+            local source = self:_scroll_source()
+            if source then
+                self:_sync_scroll(source)
+            end
+        end,
+    })
+    self:_sync_scroll(self.columns[1])
+end
+
 -- the open folds of every column, against the current model's texts
 ---@return differ.view.OpenedFolds
 function View:_opened_folds()
@@ -744,7 +897,8 @@ function View:_setup_window(winid, bufnr)
         -- a `%!` expression so the hunk count tracks the cursor on every redraw
         set_wo(winid, "winbar", '%!v:lua.require("differ.ui.winbar").diff()')
     end
-    set_wo(winid, "scrollbind", false) -- cleared default; split re-enables it in :open
+    set_wo(winid, "scrollbind", false) -- split syncs scroll itself (_arm_lockstep)
+    set_wo(winid, "cursorbind", false)
     set_wo(winid, "statuscolumn", STATUSCOLUMN_EXPR)
     -- own the cursor line: a no-fg CursorLine is low-priority and lost under the diff
     -- backgrounds, so repaint it as an extmark on cursor move / window focus
@@ -1003,6 +1157,18 @@ function View:_focused_column()
     return self.columns[1]
 end
 
+-- put the cursor on `row` in every column. vim syncs cursor-bound windows only from
+-- the current one after a normal command, so a move through the api leaves the
+-- other split column on its old row
+---@param row integer
+function View:_set_row(row)
+    for _, c in ipairs(self.columns) do
+        if c.winid and vim.api.nvim_win_is_valid(c.winid) then
+            pcall(vim.api.nvim_win_set_cursor, c.winid, { row, 0 })
+        end
+    end
+end
+
 -- every column's hunks on one map, so a split row resolves to its hunk from either
 -- column, filler rows included. stacked has one column and passes it through
 ---@return differ.LineMap
@@ -1102,7 +1268,7 @@ function View:_focus_first_hunk()
     end
     local lnum = self:_first_review_line()
     if lnum then
-        pcall(vim.api.nvim_win_set_cursor, col.winid, { lnum, 0 })
+        self:_set_row(lnum)
     end
 end
 
@@ -1151,6 +1317,7 @@ function View:focus_new_line(new_lnum, exact, new_col)
         -- rendered text so a column past EOL doesn't fail the set. the fallback below
         -- lands on a *different* line, where the old column would be meaningless
         local text = vim.api.nvim_buf_get_lines(col.bufnr, at - 1, at, false)[1] or ""
+        self:_set_row(at)
         pcall(vim.api.nvim_win_set_cursor, col.winid, { at, math.min(new_col or 0, #text) })
         pcall(vim.api.nvim_win_call, col.winid, function()
             vim.cmd("normal! zz")
@@ -1176,7 +1343,7 @@ function View:focus_new_line(new_lnum, exact, new_col)
     end
     for i, line in ipairs(col.map.lines) do
         if line.hunk == best then
-            pcall(vim.api.nvim_win_set_cursor, col.winid, { i, 0 })
+            self:_set_row(i)
             return
         end
     end
@@ -1199,7 +1366,7 @@ function View:_focus_last_hunk()
     end
     local lnum = self:_last_review_line()
     if lnum then
-        pcall(vim.api.nvim_win_set_cursor, col.winid, { lnum, 0 })
+        self:_set_row(lnum)
     end
 end
 
@@ -1768,7 +1935,7 @@ function View:_hold_new_line(new_lnum)
         d = d + 1
     end
     if at then
-        pcall(vim.api.nvim_win_set_cursor, col.winid, { at, 0 })
+        self:_set_row(at)
     end
 end
 
@@ -2302,7 +2469,8 @@ end
 
 -- lay the columns into windows. the first column anchors on its existing window
 -- (or the current one on first open); extra columns reuse their window or vsplit
--- a fresh one; >1 column scroll-binds. single authority for open + layout toggle
+-- a fresh one; >1 column cursor-binds and syncs scroll. single authority for open +
+-- layout toggle
 ---@param opened differ.view.OpenedFolds
 function View:_relayout(opened)
     local anchor = self.columns[1].winid
@@ -2324,17 +2492,17 @@ function View:_relayout(opened)
 
     if #self.columns > 1 then
         for _, col in ipairs(self.columns) do
-            set_wo(col.winid, "scrollbind", true)
+            set_wo(col.winid, "cursorbind", true)
         end
         vim.api.nvim_set_current_win(self.columns[1].winid)
-        vim.cmd("syncbind")
     end
     self:_apply_folds(opened) -- windows now exist; build the folds over unchanged regions
+    self:_arm_lockstep()
     self:_paint_cursorline() -- windows now exist; show the cursor line over the bg
     self:_arm_close_guard() -- re-arm now the winids are current
 end
 
--- open the view: stacked takes the current window, split adds a scroll-bound pane
+-- open the view: stacked takes the current window, split adds a pane in lockstep
 ---@return differ.View
 function View:open()
     self:_relayout(NONE_OPENED)
@@ -2397,7 +2565,7 @@ function View:close(keep_win)
     if armed_view == self then
         armed_view = nil
     end
-    for _, field in ipairs({ "_close_group", "_zoom_group", "_edit_group" }) do
+    for _, field in ipairs({ "_close_group", "_zoom_group", "_edit_group", "_lockstep_group" }) do
         if self[field] then
             pcall(vim.api.nvim_del_augroup_by_id, self[field])
             self[field] = nil
