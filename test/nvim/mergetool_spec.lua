@@ -1242,6 +1242,7 @@ describe(":Differ mergetool navigation", function()
         merge.open({})
         for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
             assert.is_true(vim.wo[win].scrollbind)
+            assert.is_false(vim.wo[win].cursorbind) -- the panes aren't row-aligned
         end
     end)
 
