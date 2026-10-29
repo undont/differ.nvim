@@ -3,6 +3,7 @@
 -- nav). identity is pinned inline so commits work without a global gitconfig
 
 local merge = require("differ.merge")
+local fixture = require("test.nvim.fixture")
 
 local function git(cwd, ...)
     local args =
@@ -27,7 +28,7 @@ local function write(path, content)
 end
 
 -- a repo on `main` where `main` and `feature` both changed line 2 of f.txt
-local function diverged_repo()
+local diverged_repo = fixture.cached(function()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -41,13 +42,13 @@ local function diverged_repo()
     write(root .. "/f.txt", "a\nOURS\nc\n")
     git_ok(root, "commit", "-q", "-am", "ours")
     return root
-end
+end)
 
 -- a repo where merging `feature` into `main` conflicts on f.txt (both changed line 2).
 -- `style` picks the merge.conflictStyle: nil for git's default, "diff3" to get the
 -- ||||||| base marker as well
 ---@param style string|nil
-local function conflict_repo(style)
+local conflict_repo = fixture.cached(function(style)
     local root = diverged_repo()
     if style then
         git(root, "-c", "merge.conflictStyle=" .. style, "merge", "feature")
@@ -55,12 +56,12 @@ local function conflict_repo(style)
         git(root, "merge", "feature") -- conflicts: exit non-zero, expected
     end
     return root
-end
+end)
 
 -- a diverged repo stopped on f.txt's conflict by `op`, each its own way of replaying one
 -- side onto the other; "stash" pops a stash over a conflicting commit, which has no --continue
 ---@param op "merge"|"rebase"|"rebase-apply"|"am"|"cherry-pick"|"revert"|"stash"
-local function operation_repo(op)
+local operation_repo = fixture.cached(function(op)
     local root = diverged_repo()
     if op == "merge" then
         git(root, "merge", "feature")
@@ -87,11 +88,11 @@ local function operation_repo(op)
         git(root, "stash", "pop")
     end
     return root
-end
+end)
 
 -- a repo with a single conflict buried in a long file, so the unchanged spans either side
 -- are large enough to fold (the small repo's block fills the file and folds nothing)
-local function conflict_repo_big()
+local conflict_repo_big = fixture.cached(function()
     local function body(mid)
         local out = {}
         for i = 1, 14 do
@@ -117,12 +118,12 @@ local function conflict_repo_big()
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo with three separate conflicts down one long file, so ]x has to walk and wrap and
 -- the last conflict sits near EOF (where a scroll-bound input pane used to drag the result
 -- cursor off-target and stall ]x)
-local function conflict_repo_multi()
+local conflict_repo_multi = fixture.cached(function()
     local function body(a, b, c)
         local out = {}
         for i = 1, 30 do
@@ -152,12 +153,12 @@ local function conflict_repo_multi()
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where both sides change two spots two unchanged lines apart. ort coalesces them
 -- into one conflict block while git merge-file keeps them separate, which is the grouping
 -- disagreement base recovery has to map across (a gap of four or more stops coalescing)
-local function conflict_repo_coalesced()
+local conflict_repo_coalesced = fixture.cached(function()
     local function body(a, b)
         return table.concat({ a, "pad1", "pad2", b }, "\n") .. "\n"
     end
@@ -175,11 +176,11 @@ local function conflict_repo_coalesced()
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where both branches independently add the same path, so the merge carries no `:1:`
 -- stage: there is no ancestor for the base pane to show or for take-base to restore
-local function conflict_repo_add_add()
+local conflict_repo_add_add = fixture.cached(function()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -196,11 +197,11 @@ local function conflict_repo_add_add()
     git_ok(root, "commit", "-q", "-m", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where merging `feature` conflicts on TWO files (f.txt then g.txt), to exercise
 -- ]f/[f stepping through the conflict set
-local function conflict_repo_two()
+local conflict_repo_two = fixture.cached(function()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -218,13 +219,13 @@ local function conflict_repo_two()
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where merging `feature` leaves a.txt modify/delete, sorted before a content
 -- conflict in each of `files`. `deleter` is the side that deletes it, theirs by default
 ---@param files string[]
 ---@param deleter "ours"|"theirs"|nil
-local function conflict_repo_modify_delete(files, deleter)
+local conflict_repo_modify_delete = fixture.cached(function(files, deleter)
     local root = vim.fn.tempname()
     local function change_a(side)
         if side == (deleter or "theirs") then
@@ -255,12 +256,12 @@ local function conflict_repo_modify_delete(files, deleter)
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where merging `feature` conflicts on a.lnk, a symlink the merge tool can't open
 -- (its targets don't exist), sorted before a content conflict in each of `files`
 ---@param files string[]
-local function conflict_repo_symlink(files)
+local conflict_repo_symlink = fixture.cached(function(files)
     local root = vim.fn.tempname()
     local function link(target)
         vim.fn.delete(root .. "/a.lnk")
@@ -288,13 +289,13 @@ local function conflict_repo_symlink(files)
     git_ok(root, "commit", "-q", "-am", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- a repo where merging `feature` conflicts on a.bin, a binary file git writes no markers
 -- into, sorted before a content conflict in f.txt. `kind` "add" adds a.bin on both sides
 -- (no base), "delete" deletes it on theirs
 ---@param kind "add"|"delete"|nil
-local function conflict_repo_binary(kind)
+local conflict_repo_binary = fixture.cached(function(kind)
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -320,7 +321,7 @@ local function conflict_repo_binary(kind)
     git_ok(root, "commit", "-q", "-m", "ours")
     git(root, "merge", "feature")
     return root
-end
+end)
 
 -- winbar text without its %#Group# / %* highlight items
 ---@param bar string
@@ -1604,7 +1605,7 @@ describe(":Differ mergetool take-base anchoring", function()
     -- three conflicts in one file, ancestors base5 / base15 / base25, far enough apart that
     -- a mis-mapped slab is unmistakable. default conflictStyle: the markers carry no base,
     -- so take-base goes through the recovered slabs
-    local function three_conflict_repo()
+    local three_conflict_repo = fixture.cached(function()
         local function body(a, b, c)
             local out = {}
             for i = 1, 4 do
@@ -1636,7 +1637,7 @@ describe(":Differ mergetool take-base anchoring", function()
         git_ok(root, "commit", "-q", "-am", "ours")
         git(root, "merge", "feature")
         return root
-    end
+    end)
 
     -- the line the cursor must sit on for `region_at` to pick conflict `n` (1-based)
     local function nth_marker_row(buf, n)
@@ -1732,7 +1733,7 @@ describe(":Differ mergetool take-base on CRLF", function()
         end
     end)
 
-    local function crlf_conflict_repo()
+    local crlf_conflict_repo = fixture.cached(function()
         local function body(mid)
             local out = {}
             for i = 1, 5 do
@@ -1756,7 +1757,7 @@ describe(":Differ mergetool take-base on CRLF", function()
         git_ok(root, "commit", "-q", "-am", "ours")
         git(root, "merge", "feature")
         return root
-    end
+    end)
 
     local function bytes_of(path)
         local fd = assert(io.open(path, "rb"))

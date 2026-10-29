@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.20] — 2026-10-29
+
 ### Fixed
 
 - A file whose only changes are ones its clean filter strips listed as modified but opened on `no changes for <path>`; it now opens on a `No change after the clean filter` notice
