@@ -74,7 +74,7 @@ function M.revert(root, path, union, cached, unstaged, selection)
     if refused then
         return nil, nil, refused
     end
-    local origins = stage.index_origins(union, cached)
+    local origins = stage.index_origins(union, cached, selection)
     local reverted = stage.select_worktree(union, selection, origins)
     if not reverted then
         return nil

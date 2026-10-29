@@ -313,13 +313,46 @@ describe("model.stage.select_index", function()
         assert.is_nil(refusal)
     end)
 
-    it("leaves an uncut index alone when it changes nothing at the hunks unstaged", function()
+    it("refuses an uncut index that changes the line next to the selected hunk", function()
         local union = (pairs_of(HEAD))
         local index = "1\n2\n3x\n4\n5\n"
         local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
-        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
+        for _, take in ipairs({ true, false }) do
+            local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), take)
+            assert.is_nil(text)
+            assert.are.equal("between", refusal)
+        end
+    end)
+
+    describe("with a staged line away from the selection", function()
+        local head = "1\n2\n3\n4\n5\n6\n7\n"
+        local union = model(head, "1\n2\n3\n4\n5\n6x\n7\n", { h(6, { "6" }, 6, { "6x" }) })
+
+        it("stages the selected hunk", function()
+            local cached = model(head, "1\n1q\n2\n3\n4\n5\n6\n7\n", { h(1, {}, 2, { "1q" }) })
+            local text, refusal = stage.select_index(union, cached, sel({ 6 }, { 6 }), true)
+            assert.is_nil(refusal)
+            assert.are.equal("1\n1q\n2\n3\n4\n5\n6x\n7\n", text)
+        end)
+
+        it("unstages the selected hunk", function()
+            local cached = model(head, "1\n1q\n2\n3\n4\n5\n6x\n7\n", {
+                h(1, {}, 2, { "1q" }),
+                h(6, { "6" }, 7, { "6x" }),
+            })
+            local text, refusal = stage.select_index(union, cached, sel({ 6 }, { 6 }), false)
+            assert.is_nil(refusal)
+            assert.are.equal("1\n1q\n2\n3\n4\n5\n6\n7\n", text)
+        end)
+    end)
+
+    it("refuses where the lines around the selected hunk repeat", function()
+        local head = "1\nx\n2\n1\nx\n2\n9\n"
+        local union = model(head, "1\nX\n2\n1\nx\n2\n9\n", { h(2, { "x" }, 2, { "X" }) })
+        local cached = model(head, "1\nx\n2\n1\nx\n2\n9z\n", { h(7, { "9" }, 7, { "9z" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
         assert.is_nil(text)
-        assert.is_nil(refusal)
+        assert.are.equal("between", refusal)
     end)
 
     it("stages into an uncut index below a change that adds lines", function()
@@ -448,15 +481,31 @@ describe("model.stage.select_worktree", function()
     it("restores lines in the index's order, as the index takes them back", function()
         local union, cached = index_order_pair("1\ne\nc\n2\n")
         local selection = sel({ 2, 3 }, {})
-        local out = stage.select_worktree(union, selection, stage.index_origins(union, cached))
+        local out =
+            stage.select_worktree(union, selection, stage.index_origins(union, cached, selection))
         assert.are.equal("1\nc\ne\nc\n2\n", out.old_text)
         assert.are.equal("1\nc\ne\nc\n2\n", stage.select_index(union, cached, selection, false))
     end)
 
     it("restores old lines first where the index holds none of the hunk", function()
         local union, cached = index_order_pair("1\nc\nc\n2\n")
-        local origins = stage.index_origins(union, cached)
-        local out = stage.select_worktree(union, sel({ 2, 3 }, {}), origins)
+        local selection = sel({ 2, 3 }, {})
+        local origins = stage.index_origins(union, cached, selection)
+        local out = stage.select_worktree(union, selection, origins)
         assert.are.equal("1\nc\nc\ne\n2\n", out.old_text)
+    end)
+
+    it("restores lines in the index's order with a staged line away from them", function()
+        local head = "1\nc\nc\n2\n9\n"
+        local union = model(head, "1\ne\n2\n9\n", { h(2, { "c", "c" }, 2, { "e" }) })
+        local cached = model(head, "1\ne\nc\n2\n9z\n", {
+            h(2, { "c" }, 2, { "e" }),
+            h(5, { "9" }, 5, { "9z" }),
+        })
+        local selection = sel({ 2, 3 }, {})
+        local origins = stage.index_origins(union, cached, selection)
+        local out = stage.select_worktree(union, selection, origins)
+        assert.are.equal("1\nc\ne\nc\n2\n9\n", out.old_text)
+        assert.are.equal("1\nc\ne\nc\n2\n9z\n", stage.select_index(union, cached, selection, false))
     end)
 end)
