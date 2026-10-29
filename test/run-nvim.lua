@@ -3,6 +3,10 @@
 -- a failing file's output prints whole once every file has finished
 
 local specs = vim.fn.glob("test/nvim/**/*_spec.lua", false, true)
+-- largest first, so the slow files don't start late
+table.sort(specs, function(a, b)
+    return vim.uv.fs_stat(a).size > vim.uv.fs_stat(b).size
+end)
 local jobs = vim.uv.available_parallelism()
 local outputs = {} ---@type table<string, string>
 local failed = {} ---@type string[]
