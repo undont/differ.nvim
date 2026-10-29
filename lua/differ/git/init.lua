@@ -746,6 +746,10 @@ local function empty_notice(root, entry, model, args)
         if entry.x ~= " " and entry.y ~= " " and raw_line(root, { "--cached" }, entry) then
             return "Staged changes the worktree has put back"
         end
+        -- status lists a clean-filtered file whose cleaned content matches the index
+        if content_ops.has_clean_attr(root, entry.path) and live_status(root, entry) then
+            return "No change after the clean filter"
+        end
         return nil
     end
     if (entry.status == "R" or entry.status == "C") and entry.previous_path then
@@ -1793,7 +1797,24 @@ function M.panel(opts)
         if not on_origin then
             panel:focus_first_unstaged()
         end
-        panel:select(true)
+        -- a stale row refreshes out of the list on its failed open: step on to the next
+        -- one, stopping on a path that already failed
+        local tried = {} ---@type table<string, true>
+        while panel:is_alive() do
+            local entry = panel:current_entry()
+            if not entry or tried[entry.path] then
+                break
+            end
+            tried[entry.path] = true
+            if panel:select(true) or not panel:is_alive() then
+                break
+            end
+            on_origin = false
+            panel:focus_first_unstaged()
+        end
+        if not view and panel:is_alive() then
+            blank_window(panel:content_win(), commit_map(root, diff_keys.commit))
+        end
         if on_origin and view then
             -- hold the exact origin position when it's a changed line, so opening deep in
             -- a hunk stays put (column included) rather than snapping to the hunk's top;

@@ -42,7 +42,7 @@ end
 ---@param root string
 ---@param relpath string
 ---@return boolean
-local function has_clean_attr(root, relpath)
+function M.has_clean_attr(root, relpath)
     local attrs = { "filter", "ident", "working-tree-encoding" }
     local out =
         git(vim.list_extend({ "check-attr" }, vim.list_extend(attrs, { "--", relpath })), root)
@@ -75,7 +75,7 @@ local function as_staged(root, relpath, data)
     if text_util.is_binary(data) then
         return data
     end
-    if not data:find("\r", 1, true) and not has_clean_attr(root, relpath) then
+    if not data:find("\r", 1, true) and not M.has_clean_attr(root, relpath) then
         return data
     end
     local index = git({ "rev-parse", "--git-path", "index" }, root)

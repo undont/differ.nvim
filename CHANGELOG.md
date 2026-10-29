@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A file whose only changes are ones its clean filter strips listed as modified but opened on `no changes for <path>`; it now opens on a `No change after the clean filter` notice
+- When the first file `:Differ` tried to open had already changed outside differ, the session window kept the buffer `:Differ` was run from; it now moves on to the next file, or shows a blank diff window
+
+## [0.2.19] — 2026-10-29
+
+### Fixed
+
 - In the merge tool, `gC` did nothing from the OURS or THEIRS pane, or after deleting a modify/delete file; it now opens the continue picker from every pane
 
 ## [0.2.18] — 2026-10-29

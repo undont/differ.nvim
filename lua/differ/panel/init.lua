@@ -695,18 +695,20 @@ end
 -- <CR>/o: open a file, or toggle a directory's fold. `keep_focus` leaves the cursor
 -- in the diff window (used by the open-and-show entry so :Differ lands you in the diff)
 ---@param keep_focus boolean|nil
+---@return boolean opened -- false unless a file row opened
 function Panel:select(keep_focus)
     local lnum = vim.api.nvim_win_get_cursor(self.winid)[1]
     local m = self.meta[lnum]
     if not m then
-        return
+        return false
     end
     if m.kind == "dir" then
         self:toggle_fold(m.section, m.path)
     elseif m.kind == "file" then
         self.selected_row = lnum
-        self:_open(m.entry, keep_focus)
+        return self:_open(m.entry, keep_focus)
     end
+    return false
 end
 
 -- every FileEntry under a directory row, scoped to that row's own section (the same
