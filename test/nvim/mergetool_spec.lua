@@ -2211,6 +2211,38 @@ describe(":Differ mergetool modify/delete", function()
         assert.are.equal("", vim.trim(git_ok(root, "ls-files", "--stage", "--", "a.txt")))
     end)
 
+    it("opens the continue picker from the deleted file's buffer", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        local select = vim.ui.select
+        local prompt
+        vim.ui.select = function(_, opts)
+            prompt = opts.prompt
+        end
+        fire(s.result_buf, "differ: continue, skip or abort the operation")
+        vim.ui.select = select
+        assert.are.equal("1 conflicted file left", prompt)
+    end)
+
+    it("opens the continue picker from an input pane", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        local ours = vim.api.nvim_win_get_buf(input(s, "ours").win)
+        local select = vim.ui.select
+        local prompt
+        vim.ui.select = function(_, opts)
+            prompt = opts.prompt
+        end
+        fire(ours, "differ: continue, skip or abort the operation")
+        vim.ui.select = select
+        assert.are.equal("2 conflicted files left", prompt)
+    end)
+
     it("says there's nothing to write on a :w after the delete", function()
         local root = conflict_repo_modify_delete({ "f.txt" })
         vim.cmd.edit(root .. "/f.txt")

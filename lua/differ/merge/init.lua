@@ -1029,6 +1029,9 @@ local function bind_pane(buf)
     bind(buf, km.prev_file, function()
         merge_files.step("prev")
     end, "differ: previous conflicted file")
+    bind(buf, km.commit, function()
+        require("differ.merge.continue").pick_resolved()
+    end, "differ: continue, skip or abort the operation")
     bind(buf, km.help, show_help, "differ: keymap help")
 end
 
