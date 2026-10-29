@@ -4,6 +4,7 @@
 local git_src = require("differ.git")
 local operation = require("differ.git.operation")
 local merge = require("differ.merge")
+local fixture = require("test.nvim.fixture")
 
 local function git(cwd, ...)
     local args = { "git", "-c", "init.defaultBranch=main" }
@@ -29,7 +30,7 @@ end
 -- a repo where `feature` changes f.txt then g.txt and `main` changes both the other way,
 -- so replaying feature's two commits stops twice. identity is repo config, since the
 -- runner's own commits can't take `-c` flags
-local function diverged_repo()
+local diverged_repo = fixture.cached(function()
     local root = vim.fn.tempname()
     vim.fn.mkdir(root, "p")
     git_ok(root, "init", "-q")
@@ -50,14 +51,14 @@ local function diverged_repo()
     write(root .. "/g.txt", "main\n")
     git_ok(root, "commit", "-q", "-am", "main")
     return root
-end
+end)
 
 -- stopped on the first conflict of `op`; revert undoes feature's two commits on top of a
 -- third that rewrites both files. `single` picks or reverts only the first commit, which
 -- git runs without a sequencer
 ---@param op "merge"|"rebase"|"rebase-apply"|"am"|"cherry-pick"|"revert"
 ---@param single boolean|nil
-local function stopped(op, single)
+local stopped = fixture.cached(function(op, single)
     local root = diverged_repo()
     if op == "merge" then
         git(root, "merge", "--no-edit", "feature") -- --no-edit isn't saved for the continue
@@ -90,7 +91,7 @@ local function stopped(op, single)
     end
     assert(#git_src.conflicted(root) > 0, op .. " didn't stop on a conflict")
     return root
-end
+end)
 
 -- `feature` gains a third commit adding h.txt, which `main` also has when `squash`, in a
 -- commit with another change so git can't drop it up front. stopped on f.txt: a
@@ -99,7 +100,7 @@ end
 ---@param op "rebase"|"cherry-pick"
 ---@param squash boolean
 ---@param todo string[]|nil
-local function with_h(op, squash, todo)
+local with_h = fixture.cached(function(op, squash, todo)
     local root = diverged_repo()
     git_ok(root, "checkout", "-q", "feature")
     write(root .. "/h.txt", "h\n")
@@ -132,7 +133,7 @@ local function with_h(op, squash, todo)
     end
     assert.are.same({ "f.txt" }, git_src.conflicted(root))
     return root
-end
+end)
 
 local function resolve_all(root)
     for _, path in ipairs(git_src.conflicted(root)) do
