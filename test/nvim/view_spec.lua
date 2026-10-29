@@ -1424,7 +1424,8 @@ describe("view cursor-line overlay", function()
         v:close()
     end)
 
-    it("keeps the overlay only in the focused column in split", function()
+    -- a split view on the "b" -> "B" change with the cursor moved onto the change row
+    local function split_on_change()
         vim.cmd("silent! only")
         local v = View.new(model("a\nb\nc\n", "a\nB\nc\n"), {
             layout = "split",
@@ -1433,9 +1434,46 @@ describe("view cursor-line overlay", function()
         })
         v:open()
         local left, right = v.columns[1], v.columns[2]
-        -- focus opens on the first column; the off-side column carries no overlay
-        assert.are.equal(1, #overlay_rows(left.bufnr))
-        assert.are.equal(0, #overlay_rows(right.bufnr))
+        local row
+        for i, line in ipairs(left.map.lines) do
+            if line.kind == "old" then
+                row = i - 1
+                break
+            end
+        end
+        assert.is_not_nil(row)
+        vim.api.nvim_set_current_win(left.winid)
+        vim.api.nvim_win_set_cursor(left.winid, { 1, 0 })
+        vim.cmd("normal! " .. row .. "j") -- a normal command, so cursorbind moves the right column
+        vim.api.nvim_exec_autocmds("CursorMoved", { buffer = left.bufnr })
+        return v, left, right, row
+    end
+
+    it("paints both split columns on the shared row, each by its own kind", function()
+        local v, left, right, row = split_on_change()
+        assert.are.same({ row }, overlay_rows(left.bufnr))
+        assert.are.same({ row }, overlay_rows(right.bufnr))
+        assert.are.equal("differCursorLineDelete", overlay_hl(left.bufnr, row))
+        assert.are.equal("differCursorLineAdd", overlay_hl(right.bufnr, row))
+        v:close()
+    end)
+
+    it("keeps both split overlays while another window is focused", function()
+        local v, left, right, row = split_on_change()
+        vim.cmd("noautocmd botright new")
+        vim.api.nvim_exec_autocmds("WinEnter", { buffer = left.bufnr }) -- leaving fires none of ours
+        assert.are.same({ row }, overlay_rows(left.bufnr))
+        assert.are.same({ row }, overlay_rows(right.bufnr))
+        vim.cmd("noautocmd close")
+        v:close()
+    end)
+
+    it("leaves a split column bare when its own window has cursorline off", function()
+        local v, left, right, row = split_on_change()
+        vim.wo[right.winid].cursorline = false
+        vim.api.nvim_exec_autocmds("CursorMoved", { buffer = left.bufnr })
+        assert.are.same({ row }, overlay_rows(left.bufnr))
+        assert.are.same({}, overlay_rows(right.bufnr))
         v:close()
     end)
 

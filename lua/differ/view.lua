@@ -451,17 +451,21 @@ end
 -- (a char-level fill with hl_eol so it spans the whole row past EOL) but at a higher
 -- priority so it wins; bg-only, so syntax foreground and word spans still show
 -- through. with cursorline_tint on, the fill takes the row's add/delete shade so the
--- change kind reads under the cursor instead of a neutral wash. cleared from every
--- column and painted only in the focused one (the cursor lives in one column), so the
--- off-side column shows none. driven by CursorMoved / WinEnter and after each render
+-- change kind reads under the cursor instead of a neutral wash. every column paints
+-- its own window's cursor row by its own line, as native cursorline draws in an
+-- unfocused window. driven by CursorMoved / WinEnter and after each render
 function View:_paint_cursorline()
     for _, col in ipairs(self.columns) do
         if col.bufnr and vim.api.nvim_buf_is_valid(col.bufnr) then
             vim.api.nvim_buf_clear_namespace(col.bufnr, cursor_ns, 0, -1)
+            self:_paint_cursorline_in(col)
         end
     end
-    local col = self:_focused_column()
-    local win = col and col.winid
+end
+
+---@param col differ.ViewColumn
+function View:_paint_cursorline_in(col)
+    local win = col.winid
     if not (win and vim.api.nvim_win_is_valid(win)) then
         return
     end
@@ -482,7 +486,7 @@ function View:_paint_cursorline()
         end
     end
     -- a staged line is recoloured above the live word spans (210/215); lift the cursor
-    -- tint over that so the focused line still lights up in its kind. on a normal line
+    -- tint over that so the cursor line still lights up in its kind. on a normal line
     -- stay under the word spans (200) so changed words show through under the cursor
     local staged = self.can_stage and line ~= nil and self:_line_staged(line)
     vim.api.nvim_buf_set_extmark(col.bufnr, cursor_ns, row, 0, {
