@@ -1775,4 +1775,71 @@ describe(":Differ panel (zero-hunk entries)", function()
             p:close() -- the refresh may have emptied the list and ended the session
         end
     end)
+
+    -- run `after` once the panel has listed its rows, before :Differ's first select
+    local function after_listing(after)
+        local real = Panel.open
+        Panel.open = function(self)
+            Panel.open = real
+            real(self)
+            after(self)
+            return self
+        end
+    end
+
+    -- a.lua changed throughout, z.lua changed on lines 1 and 18
+    local function two_changed_files()
+        local root = fresh_repo()
+        local z = {}
+        for i = 1, 30 do
+            z[i] = "z" .. i
+        end
+        write(root .. "/z.lua", table.concat(z, "\n") .. "\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-m", "z")
+        z[1], z[18] = "changed", "changed"
+        write(root .. "/z.lua", table.concat(z, "\n") .. "\n")
+        local a = {}
+        for i = 1, 20 do
+            a[i] = "a" .. i
+        end
+        write(root .. "/a.lua", table.concat(a, "\n") .. "\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+
+    it("steps on to the next file when :Differ's first open is stale", function()
+        local root = two_changed_files()
+        vim.api.nvim_win_set_cursor(0, { 18, 0 }) -- a changed line in z.lua too
+        local origin_buf = vim.api.nvim_get_current_buf()
+        after_listing(function()
+            git(root, "commit", "-q", "-m", "outside", "a.lua")
+        end)
+        git_src.panel({ rev = {}, open_first = true })
+        local p = assert(Panel.current())
+        local shown = vim.api.nvim_win_get_buf(p.origin_win)
+        local v = require("differ.view").for_buf(shown)
+        local row = vim.api.nvim_win_get_cursor(p.origin_win)[1]
+        p:close()
+        assert.are_not.equal(origin_buf, shown)
+        assert.are.equal("z.lua", v.model.path)
+        assert.is_true(row < 5) -- z.lua's first hunk, not the origin's line 18
+    end)
+
+    it("blanks the session window when no file opens on :Differ", function()
+        two_changed_files()
+        local origin_buf = vim.api.nvim_get_current_buf()
+        after_listing(function(p)
+            p.on_select = function()
+                return false
+            end
+        end)
+        git_src.panel({ rev = {}, open_first = true })
+        local p = assert(Panel.current())
+        local shown = vim.api.nvim_win_get_buf(p.origin_win)
+        local name = vim.api.nvim_buf_get_name(shown)
+        p:close()
+        assert.are_not.equal(origin_buf, shown)
+        assert.are.equal("", name)
+    end)
 end)
