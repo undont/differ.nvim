@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the merge tool, `gC` did nothing from the OURS or THEIRS pane, or after deleting a modify/delete file; it now opens the continue picker from every pane
+
+## [0.2.18] — 2026-10-29
+
 ### Added
 
 - In split layout, the two columns keep the cursor row, folds and scroll position in step, and both show the cursor line
