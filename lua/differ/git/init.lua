@@ -746,6 +746,10 @@ local function empty_notice(root, entry, model, args)
         if entry.x ~= " " and entry.y ~= " " and raw_line(root, { "--cached" }, entry) then
             return "Staged changes the worktree has put back"
         end
+        -- status lists a clean-filtered file whose cleaned content matches the index
+        if content_ops.has_clean_attr(root, entry.path) and live_status(root, entry) then
+            return "No change after the clean filter"
+        end
         return nil
     end
     if (entry.status == "R" or entry.status == "C") and entry.previous_path then

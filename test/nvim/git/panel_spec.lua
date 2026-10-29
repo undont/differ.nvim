@@ -1711,6 +1711,55 @@ describe(":Differ panel (zero-hunk entries)", function()
         p:close()
     end)
 
+    -- a clean filter that drops SECRET lines: an edit to one leaves status listing the
+    -- file with no diff behind it
+    local function clean_filtered_repo()
+        local root = fresh_repo()
+        git(root, "config", "filter.drop.clean", "grep -v SECRET")
+        git(root, "config", "filter.drop.smudge", "cat")
+        write(root .. "/.gitattributes", "*.txt filter=drop\n")
+        write(root .. "/f.txt", "a\nb\n")
+        git(root, "add", ".")
+        git(root, "commit", "-q", "-m", "filtered")
+        write(root .. "/f.txt", "a\nSECRET\nb\n")
+        vim.cmd.edit(root .. "/f.txt")
+        return root
+    end
+
+    it("opens a clean-filtered edit with no content change on a notice", function()
+        local root = clean_filtered_repo()
+        local p, v = open_only_entry(root)
+        local row = file_line(p, "f.txt")
+        p:close()
+        assert.is_not_nil(row)
+        assert.are.equal("No change after the clean filter", v.model.notice)
+    end)
+
+    it("s on a clean-filtered no-op row clears it", function()
+        local root = clean_filtered_repo()
+        local p, v = open_only_entry(root)
+        v:stage_hunk()
+        local status = git(root, "status", "--porcelain=v1")
+        local row = file_line(p, "f.txt")
+        if Panel.current() then
+            p:close()
+        end
+        assert.are.equal("", status)
+        assert.is_nil(row)
+    end)
+
+    it("still refuses a clean-filtered entry committed outside differ", function()
+        local root = clean_filtered_repo()
+        git_src.panel({})
+        local p = assert(Panel.current())
+        write(root .. "/f.txt", "a\nSECRET\nc\n")
+        git(root, "commit", "-qam", "outside")
+        assert.is_false(p.on_select({ path = "f.txt", status = "M", staged = false }))
+        if Panel.current() then
+            p:close()
+        end
+    end)
+
     it("still refuses a stale entry, so the list re-sources instead", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
