@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- In split layout, the two columns keep the cursor row, folds and scroll position in step, and both show the cursor line
+
+### Fixed
+
+- In split layout, scrolling the mouse wheel over the unfocused column could leave the columns out of line; they now scroll together
+
+## [0.2.17] — 2026-10-28
+
 ### Fixed
 
 - Opening a diff from the panel or file history while a window was open in another tab could move focus to that tab; it now stays in the session's tab
