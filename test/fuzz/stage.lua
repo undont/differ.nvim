@@ -11,30 +11,34 @@ local selected = require("differ.git.staging.selection")
 
 local M = {}
 
-local ALPHABET = { "a", "b", "c", "d", "e" }
-
 ---@param n integer
+---@param alphabet integer  -- the shared words a line is drawn from
 ---@return string
-local function token(n)
+local function token(n, alphabet)
     if math.random() < 0.15 then
         return "x" .. math.random(n)
     end
-    return ALPHABET[math.random(#ALPHABET)]
+    local i = math.random(alphabet)
+    if i <= 26 then
+        return string.char(96 + i)
+    end
+    return "w" .. i
 end
 
 -- `lines` with each line kept, dropped, replaced or followed by a new one
 ---@param lines string[]
 ---@param rate number
+---@param alphabet integer
 ---@return string[]
-local function mutate(lines, rate)
+local function mutate(lines, rate, alphabet)
     local out = {}
     for _, line in ipairs(lines) do
         local r = math.random()
         if r < rate / 3 then
-            out[#out + 1] = token(#lines)
+            out[#out + 1] = token(#lines, alphabet)
         elseif r < rate * 2 / 3 then
             out[#out + 1] = line
-            out[#out + 1] = token(#lines)
+            out[#out + 1] = token(#lines, alphabet)
         elseif r >= rate then
             out[#out + 1] = line
         end
@@ -63,14 +67,15 @@ end
 ---@param size integer   -- HEAD's lines
 ---@param staged number  -- the share of HEAD's lines the index edits
 ---@param edited number  -- the share of the index's lines the worktree edits
+---@param alphabet integer
 ---@return differ.fuzz.Triple
-function M.triple(size, staged, edited)
+function M.triple(size, staged, edited, alphabet)
     local head = {}
     for i = 1, size do
-        head[i] = token(size)
+        head[i] = token(size, alphabet)
     end
-    local index = mutate(head, staged)
-    local work = mutate(index, edited)
+    local index = mutate(head, staged, alphabet)
+    local work = mutate(index, edited, alphabet)
     return { head = text_of(head), index = text_of(index), work = text_of(work) }
 end
 
@@ -477,6 +482,103 @@ function M.run_op(t, op, selection)
     return stage_op(t, union, cached, unstaged, selection, op == "s")
 end
 
+-- whether a HEAD↔index hunk changes one of `h`'s old lines or the line either side
+---@param cached differ.DiffModel
+---@param h differ.Hunk
+---@return boolean
+local function staged_beside(cached, h)
+    local first, last = h.old_start - 1, h.old_start + h.old_count
+    if h.old_count == 0 then
+        first, last = h.old_start, h.old_start + 1
+    end
+    for _, c in ipairs(cached.hunks) do
+        local c_first, c_last = c.old_start, c.old_start + c.old_count - 1
+        if c.old_count == 0 then
+            c_first, c_last = c.old_start, c.old_start + 1
+        end
+        if c_first <= last and c_last >= first then
+            return true
+        end
+    end
+    return false
+end
+
+-- s (`take`) or u on `hunk` as the hunk op runs it: next_index, then the result check
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@return differ.fuzz.Outcome
+local function hunk_op(union, cached, unstaged, hunk, take)
+    local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+    if reaches then
+        return { kind = "refused", reason = "reaches" }
+    end
+    if not text then
+        return { kind = "unchanged" }
+    end
+    local selection = stage.hunk_selection(hunk)
+    local after, refused =
+        selected.checked("/", "f", union, cached, unstaged, selection, take, text)
+    if not after then
+        return { kind = "refused", reason = refused }
+    end
+    return { kind = "written", index = text }
+end
+
+-- visual s (`take`) or u over every line of `hunk`
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param unstaged differ.DiffModel
+---@param hunk differ.Hunk
+---@param take boolean
+---@return differ.fuzz.Outcome
+local function visual_op(union, cached, unstaged, hunk, take)
+    local selection = stage.hunk_selection(hunk)
+    local text, _, refused = selected.stage("/", "f", union, cached, unstaged, selection, take)
+    if refused then
+        return { kind = "refused", reason = refused }
+    end
+    if not text or text == cached.new_text then
+        return { kind = "unchanged" }
+    end
+    return { kind = "written", index = text }
+end
+
+-- how visual s or u over a whole hunk compares with the hunk op on it
+---@param visual differ.fuzz.Outcome
+---@param by_hunk differ.fuzz.Outcome
+---@param beside boolean  -- staged_beside
+---@return string
+local function agreement(visual, by_hunk, beside)
+    if visual.kind == "refused" and by_hunk.kind == "refused" then
+        return "both refuse"
+    end
+    if visual.kind == "refused" and visual.reason == "between" and beside then
+        return "visual refuses: between, staged beside"
+    end
+    if visual.kind == "refused" then
+        return "visual refuses: " .. visual.reason
+    end
+    if by_hunk.kind == "refused" then
+        return "hunk refuses: " .. by_hunk.reason
+    end
+    if visual.kind == by_hunk.kind and visual.index == by_hunk.index then
+        return "agree"
+    end
+    return "mismatch"
+end
+
+M.HUNK_OPS = { "s", "u" }
+
+---@class differ.fuzz.HunkMismatch
+---@field triple differ.fuzz.Triple
+---@field op string
+---@field hunk integer
+---@field visual differ.fuzz.Outcome
+---@field by_hunk differ.fuzz.Outcome
+
 ---@class differ.fuzz.Mismatch
 ---@field triple differ.fuzz.Triple
 ---@field op string
@@ -494,6 +596,8 @@ end
 ---@class differ.fuzz.Report
 ---@field ops table<string, differ.fuzz.Counts>
 ---@field mismatches differ.fuzz.Mismatch[]  -- the first few
+---@field hunks table<string, table<string, integer>>  -- op -> agreement -> count
+---@field hunk_mismatches differ.fuzz.HunkMismatch[]  -- the first few
 
 ---@class differ.fuzz.Opts
 ---@field seed integer
@@ -501,17 +605,23 @@ end
 ---@field size? integer       -- HEAD's lines
 ---@field staged? number      -- M.triple's rates
 ---@field edited? number
+---@field alphabet? integer   -- shared words, 5 by default
 ---@field selections? integer -- the most selections tried per triple
 ---@field keep? integer       -- mismatches kept in the report
 
--- each seeded triple and the selections tried on it, the same for a seed and opts
+-- each seeded triple and the selections tried on it, the same for a seed and opts.
+-- `whole` sees each triple once, before its selections
 ---@param opts differ.fuzz.Opts
 ---@param each fun(t: differ.fuzz.Triple, rows: differ.fuzz.Row[], selection: differ.model.Selection)
-function M.cases(opts, each)
+---@param whole? fun(t: differ.fuzz.Triple)
+function M.cases(opts, each, whole)
     local size, most = opts.size or 40, opts.selections or 60
     math.randomseed(opts.seed)
     for _ = 1, opts.count do
-        local t = M.triple(size, opts.staged or 0.1, opts.edited or 0.1)
+        local t = M.triple(size, opts.staged or 0.1, opts.edited or 0.1, opts.alphabet or 5)
+        if whole then
+            whole(t)
+        end
         local rows = M.rows((content.union_pairs("/", "f", t.head, t.index, t.work)))
         local ranges = {}
         for first = 1, #rows do
@@ -530,10 +640,30 @@ end
 ---@return differ.fuzz.Report
 function M.run(opts)
     local keep = opts.keep or 5
-    local report = { ops = {}, mismatches = {} }
+    local report = { ops = {}, mismatches = {}, hunks = {}, hunk_mismatches = {} }
     for _, op in ipairs(M.OPS) do
         report.ops[op] =
             { tried = 0, unchanged = 0, refused = {}, written = 0, unplaced = 0, mismatched = 0 }
+    end
+    for _, op in ipairs(M.HUNK_OPS) do
+        report.hunks[op] = { mismatch = 0 }
+    end
+    ---@param t differ.fuzz.Triple
+    local function whole(t)
+        local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+        for i, h in ipairs(union.hunks) do
+            for _, op in ipairs(M.HUNK_OPS) do
+                local visual = visual_op(union, cached, unstaged, h, op == "s")
+                local by_hunk = hunk_op(union, cached, unstaged, h, op == "s")
+                local what = agreement(visual, by_hunk, staged_beside(cached, h))
+                local counts = report.hunks[op]
+                counts[what] = (counts[what] or 0) + 1
+                if what == "mismatch" and #report.hunk_mismatches < keep then
+                    report.hunk_mismatches[#report.hunk_mismatches + 1] =
+                        { triple = t, op = op, hunk = i, visual = visual, by_hunk = by_hunk }
+                end
+            end
+        end
     end
     M.cases(opts, function(t, rows, selection)
         for _, op in ipairs(M.OPS) do
@@ -558,7 +688,7 @@ function M.run(opts)
                 end
             end
         end
-    end)
+    end, whole)
     return report
 end
 
@@ -573,6 +703,15 @@ function M.shown(text)
         end
     end
     return table.concat(lines, " ")
+end
+
+---@param o differ.fuzz.Outcome
+---@return string
+local function said(o)
+    if o.kind == "written" then
+        return "wrote " .. M.shown(o.index)
+    end
+    return o.reason or o.kind
 end
 
 ---@param report differ.fuzz.Report
@@ -605,6 +744,14 @@ function M.format(report)
             c.mismatched
         )
     end
+    for _, op in ipairs(M.HUNK_OPS) do
+        local counts, whats = report.hunks[op], {}
+        for what, n in pairs(counts) do
+            whats[#whats + 1] = ("%s %d"):format(what, n)
+        end
+        table.sort(whats)
+        out[#out + 1] = ("%s whole hunk vs hunk op: %s"):format(op, table.concat(whats, ", "))
+    end
     for _, mm in ipairs(report.mismatches) do
         local rows = {}
         for _, r in ipairs(mm.rows) do
@@ -618,6 +765,14 @@ function M.format(report)
         if mm.outcome.work then
             out[#out + 1] = "  wrote work  " .. M.shown(mm.outcome.work)
         end
+    end
+    for _, mm in ipairs(report.hunk_mismatches) do
+        out[#out + 1] = ("\nwhole hunk mismatch: %s on hunk %d"):format(mm.op, mm.hunk)
+        out[#out + 1] = "  head  " .. M.shown(mm.triple.head)
+        out[#out + 1] = "  index " .. M.shown(mm.triple.index)
+        out[#out + 1] = "  work  " .. M.shown(mm.triple.work)
+        out[#out + 1] = "  visual " .. said(mm.visual)
+        out[#out + 1] = "  hunk   " .. said(mm.by_hunk)
     end
     return table.concat(out, "\n")
 end
