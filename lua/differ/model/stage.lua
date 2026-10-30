@@ -171,7 +171,7 @@ end
 ---@field new table<integer, boolean>  -- union new lnums
 
 ---@alias differ.model.SelectRefusal
----| "between"  -- the index changes a line next to the selected hunks, so they can't be placed
+---| "between"  -- a file too big to read, or a selection the drawn marks need moved that the cut has in place
 ---| "large"    -- a hunk too big to compare against its block
 ---| "hidden"   -- a selected hunk's block holds a line neither side has
 
@@ -309,71 +309,49 @@ local function reverted_block(h, selection, index)
     end)
 end
 
--- the first and last union hunk the selection touches, or nil for none
+-- whether the selection touches any of `hunks`
 ---@param hunks differ.Hunk[]
 ---@param selection differ.model.Selection
----@return integer|nil first, integer|nil last
-local function touched_run(hunks, selection)
-    local first, last
-    for i, h in ipairs(hunks) do
+---@return boolean
+local function touches_any(hunks, selection)
+    for _, h in ipairs(hunks) do
         if touches(h, selection) then
-            first = first or i
-            last = i
+            return true
         end
     end
-    return first, last
+    return false
 end
 
 ---@class differ.model.IndexCut
 ---@field ended differ.DiffModel  -- the union, apply.ended
----@field blocks table<integer, string[]>  -- the index's lines at hunks `first`..`last`
----@field first integer
----@field last integer
----@field slices? table<integer, integer[]>  -- each block's {index line, length}, for a local cut
+---@field blocks string[][]  -- the index's lines at each union hunk
+---@field slices? integer[][]  -- each block's {index line, length}, nil for a whole-file cut
 
--- the index's block at every union hunk where the index cuts into blocks, else at the
--- run of hunks the selection touches, placed by the unchanged lines between them and
--- the one either side (marks.local_blocks). nil where neither places
+-- the index's block at every union hunk where the index cuts into blocks, else its
+-- slice in the drawn reading (marks.reading). nil for a file too big to read
 ---@param union differ.DiffModel   -- HEAD↔worktree
 ---@param cached differ.DiffModel  -- HEAD↔index
----@param selection differ.model.Selection
 ---@return differ.model.IndexCut|nil
-local function index_cut(union, cached, selection)
+local function index_cut(union, cached)
     local blocks, ended = M.index_blocks(union, cached.new_text)
     if blocks then
-        return { ended = ended, blocks = blocks, first = 1, last = #ended.hunks }
+        return { ended = ended, blocks = blocks }
     end
-    local first, last = touched_run(ended.hunks, selection)
-    if not first or not last then
+    local read = M.reading(union, cached.new_text)
+    if not read then
         return nil
     end
-    local head, index =
-        text_util.ended_lines(union.old_text), text_util.ended_lines(cached.new_text)
-    local run, slices = marks.local_blocks(ended.hunks, head, index, first, last)
-    if not run then
-        return nil
+    local index = text_util.ended_lines(cached.new_text)
+    local slices = {}
+    blocks = {}
+    for i, slice in ipairs(read.slices) do
+        local block = {}
+        for l = slice[1], slice[2] - 1 do
+            block[#block + 1] = index[l]
+        end
+        blocks[i], slices[i] = block, { slice[1], slice[2] - slice[1] }
     end
-    return { ended = ended, blocks = run, first = first, last = last, slices = slices }
-end
-
--- marks.of_blocks over the cut's hunks, numbered as the union's
----@param cut differ.model.IndexCut
----@return differ.model.Marks|nil marks, integer[] hidden, table<integer, (differ.model.Origin|false)[]> origins
-local function cut_origins(cut)
-    local hunks, blocks = {}, {}
-    for i = cut.first, cut.last do
-        hunks[#hunks + 1], blocks[#blocks + 1] = cut.ended.hunks[i], cut.blocks[i]
-    end
-    local held, hidden, all = marks.of_blocks(hunks, blocks)
-    local shift = cut.first - 1
-    local origins = {}
-    for k, o in ipairs(all) do
-        origins[k + shift] = o
-    end
-    for k, i in ipairs(hidden) do
-        hidden[k] = i + shift
-    end
-    return held, hidden, origins
+    return { ended = ended, blocks = blocks, slices = slices }
 end
 
 -- the index's text with the cut's blocks in place
@@ -385,12 +363,12 @@ local function cut_text(cut, index)
         return apply.join(cut.ended, cut.blocks)
     end
     local lines, out, l = text_util.ended_lines(index), {}, 1
-    for i = cut.first, cut.last do
+    for i, block in ipairs(cut.blocks) do
         local at, n = cut.slices[i][1], cut.slices[i][2]
         for k = l, at - 1 do
             out[#out + 1] = lines[k]
         end
-        for _, line in ipairs(cut.blocks[i]) do
+        for _, line in ipairs(block) do
             out[#out + 1] = line
         end
         l = at + n
@@ -405,14 +383,13 @@ end
 -- whose block holds a line neither side has
 ---@param union differ.DiffModel   -- HEAD↔worktree
 ---@param cached differ.DiffModel  -- HEAD↔index
----@param selection differ.model.Selection
 ---@return table<integer, differ.model.Origin[]>|nil
-function M.index_origins(union, cached, selection)
-    local cut = index_cut(union, cached, selection)
+function M.index_origins(union, cached)
+    local cut = index_cut(union, cached)
     if not cut then
         return nil
     end
-    local _, hidden, origins = cut_origins(cut)
+    local _, hidden, origins = marks.of_blocks(cut.ended.hunks, cut.blocks)
     for _, i in ipairs(hidden) do
         origins[i] = nil
     end
@@ -428,14 +405,14 @@ end
 ---@param take boolean
 ---@return string|nil text, differ.model.SelectRefusal|nil refusal
 function M.select_index(union, cached, selection, take)
-    local cut = index_cut(union, cached, selection)
+    local cut = index_cut(union, cached)
     if not cut then
-        if touched_run(union.hunks, selection) then
+        if touches_any(union.hunks, selection) then
             return nil, "between"
         end
         return nil
     end
-    local held, hidden, origins = cut_origins(cut)
+    local held, hidden, origins = marks.of_blocks(cut.ended.hunks, cut.blocks)
     if not held then
         return nil, "large"
     end
@@ -443,8 +420,7 @@ function M.select_index(union, cached, selection, take)
     for _, i in ipairs(hidden) do
         hides[i] = true
     end
-    for i = cut.first, cut.last do
-        local h = cut.ended.hunks[i]
+    for i, h in ipairs(cut.ended.hunks) do
         if touches(h, selection) then
             if hides[i] then
                 return nil, "hidden"

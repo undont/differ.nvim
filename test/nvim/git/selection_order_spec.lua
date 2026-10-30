@@ -1,10 +1,22 @@
--- s, u and X through the selection core on hunks of identical lines, where the
--- read-back may mark another line of a run than the op moved
+-- s, u and X through the selection core: hunks of identical lines, where the
+-- read-back may mark another line of a run than the op moved, and selections the
+-- drawn marks still need moved
 local content = require("differ.git.content")
 local fuzz = require("test.fuzz.stage")
 local selected = require("differ.git.staging.selection")
 
 describe("git.staging.selection", function()
+    it("refuses rather than gives nothing where the drawn marks still need a move", function()
+        -- HEAD's unterminated b and the worktree's terminated b are one token
+        local union, cached, unstaged = content.union_pairs("/", "f", "b", "b\ne\n", "b\ne\n")
+        local selection = { old = { [1] = true }, new = { [1] = true } }
+        local text, after, refusal =
+            selected.stage("/", "f", union, cached, unstaged, selection, false)
+        assert.is_nil(text)
+        assert.is_nil(after)
+        assert.are.equal("between", refusal)
+    end)
+
     it("unstages a deletion the read-back marks on another line of its run", function()
         local union, cached, unstaged =
             content.union_pairs("/", "f", "a\na\na\n", "a\nx9\na\n", "x9\na")

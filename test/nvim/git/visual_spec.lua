@@ -340,8 +340,53 @@ describe(":Differ diff hunk staging", function()
 
         local col = v.columns[1]
         visual(col, col.map.from_old[4], col.map.from_new[4], "s")
-        assert.is_truthy(last_said():find("can't be staged on their own", 1, true))
+        assert.is_truthy(last_said():find("holds staged content it can't show", 1, true))
         assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- a 100-line rewrite makes the file too big to read, and a staged 5q the worktree
+    -- has undone keeps the index from cutting into blocks
+    local function unread_repo()
+        local root = fresh_repo()
+        local olds, news = {}, {}
+        for k = 1, 100 do
+            olds[k], news[k] = "o" .. k, "n" .. k
+        end
+        local old, new = table.concat(olds, "\n"), table.concat(news, "\n")
+        write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5\n6\n")
+        git(root, "commit", "-q", "-am", "long")
+        write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5q\n6\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2x\n3\n" .. new .. "\n4\n5\n6\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+
+    it("visual s refuses lines in a file too big to read", function()
+        local root = unread_repo()
+        local p, v = open_panel()
+        local before = indexed(root, "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "s")
+        assert.is_truthy(last_said():find("can't be staged on their own here", 1, true))
+        assert.are.equal(before, indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X refuses before the prompt in a file too big to read", function()
+        local root = unread_repo()
+        local p, v = open_panel()
+        local before = worktree(root, "a.lua")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[2], col.map.from_new[2], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.are.equal(before, worktree(root, "a.lua"))
         p:close()
     end)
 
@@ -442,15 +487,15 @@ describe(":Differ diff hunk staging", function()
             visual(col, col.map.from_old[4], col.map.from_new[4], "X")
         end)
         assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.is_truthy(last_said():find("holds staged content it can't show", 1, true))
         assert.are.equal("1\n2\n3\n4y\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
         assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
         p:close()
     end)
 
     -- repeated lines let the index cut against the hunks more than one way, with
-    -- nothing hidden
-    it("visual X on repeated lines refuses without naming a hidden change", function()
+    -- nothing hidden: X takes the cut the view draws
+    it("visual X on repeated lines reverts where the view reads them", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "a\nb\na\nc\n")
         git(root, "commit", "-q", "-am", "repeats")
@@ -465,9 +510,9 @@ describe(":Differ diff hunk staging", function()
         local prompt = confirming(1, function()
             visual(col, 1, #col.map.lines, "X")
         end)
-        assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("can't be reverted on their own", 1, true))
-        assert.are.equal("a\nb\nc\nc\nb\n", worktree(root, "a.lua"))
+        assert.are.equal("Revert 3 lines in a.lua?", prompt)
+        assert.are.equal("a\nb\na\nc\n", worktree(root, "a.lua"))
+        assert.are.equal("a\nb\na\nc\n", indexed(root, "a.lua"))
         p:close()
     end)
 

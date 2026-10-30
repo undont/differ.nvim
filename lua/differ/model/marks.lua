@@ -149,31 +149,22 @@ end
 -- mostly repeated lines leaves any_lengths a length to try at nearly every line
 local MAX_STEPS = 1e6
 
--- where a cut runs: union hunks `first`..`last`, the walk starting at HEAD line `from`
--- from any of the index lines `starts`, and ending after HEAD line `tail`, at the
--- index's end when `eof`
----@class differ.model.CutSpan
----@field first integer
----@field last integer
----@field from integer
----@field starts integer[]
----@field tail integer
----@field eof boolean
-
--- the ways to cut the index into a block per union hunk of `span`, with HEAD's
--- unchanged lines between them: each block's {index line, length} when there is only
--- one cut, and how many there are (0, 1, or 2 for two or more, or for a search past
--- MAX_STEPS)
+-- the ways to cut the index into a block per union hunk, with HEAD's unchanged lines
+-- between them: the cut when there is only one, and how many there are (0, 1, or 2 for
+-- two or more, or for a search past MAX_STEPS)
 ---@param union differ.Hunk[]
 ---@param head string[]
 ---@param index string[]
 ---@param lengths differ.model.BlockLengths
----@param where table<string, integer[]>  -- each index line to the lines it sits at
----@param span differ.model.CutSpan
----@return table<integer, integer[]> slices, integer ways
-local function cut(union, head, index, lengths, where, span)
+---@return string[][] cut, integer ways
+local function cut(union, head, index, lengths)
     local ways = {} ---@type table<string, integer>  -- "hunk:index line" -> ways through
     local picks = {} ---@type table<string, integer[]>  -- "hunk:index line" -> first block's {at, n}
+    local where = {} ---@type table<string, integer[]>
+    for l, line in ipairs(index) do
+        where[line] = where[line] or {}
+        table.insert(where[line], l)
+    end
     local steps = 0
     ---@param i integer     -- the next union hunk
     ---@param from integer  -- the next HEAD line
@@ -184,9 +175,10 @@ local function cut(union, head, index, lengths, where, span)
         if ways[key] then
             return ways[key]
         end
-        local first, after = span.tail + 1, span.tail + 1
-        if i <= span.last then
-            first, after = old_bounds(union[i])
+        local h = union[i]
+        local first, after = #head + 1, #head + 1
+        if h then
+            first, after = old_bounds(h)
         end
         for l = from, first - 1 do
             steps = steps + 1
@@ -196,15 +188,15 @@ local function cut(union, head, index, lengths, where, span)
             end
             at = at + 1
         end
-        if i > span.last then
-            ways[key] = 1
-            if span.eof and at ~= #index + 1 then
-                ways[key] = 0
+        if not h then
+            ways[key] = 0
+            if at == #index + 1 then
+                ways[key] = 1
             end
             return ways[key]
         end
         local total = 0
-        local tried = lengths(union[i], index, at, head[after], where)
+        local tried = lengths(h, index, at, head[after], where)
         steps = steps + #tried
         if steps > MAX_STEPS then
             return 2
@@ -227,118 +219,41 @@ local function cut(union, head, index, lengths, where, span)
         ways[key] = math.min(total, 2)
         return ways[key]
     end
-    local total, at = 0, nil
-    for _, s in ipairs(span.starts) do
-        local through = count(span.first, span.from, s)
-        if through > 0 and total == 0 then
-            at = s
-        end
-        total = total + through
-        if total >= 2 then
-            break
-        end
-    end
-    local slices = {}
+    local total = count(1, 1, 1)
+    local out, at = {}, 1
     if total ~= 1 then
-        return slices, math.min(total, 2) -- a cut that isn't the only one is never read
+        return out, total -- a cut that isn't the only one is never read
     end
-    for i = span.first, span.last do
+    for i in ipairs(union) do
         local pick = picks[i .. ":" .. at]
-        slices[i] = pick
+        local block = {}
+        for l = pick[1], pick[1] + pick[2] - 1 do
+            block[#block + 1] = index[l]
+        end
+        out[i] = block
         at = pick[1] + pick[2]
     end
-    return slices, total
+    return out, total
 end
 
----@param index string[]
----@return table<string, integer[]>
-local function where_of(index)
-    local where = {}
-    for l, line in ipairs(index) do
-        where[line] = where[line] or {}
-        table.insert(where[line], l)
-    end
-    return where
-end
-
--- the only cut of `span`, as each block's {index line, length}: a cut where every
--- block is one of its hunk's sides wins. nil when there is none, or more than one
----@param union differ.Hunk[]
----@param head string[]
----@param index string[]
----@param span differ.model.CutSpan
----@return table<integer, integer[]>|nil
-local function only_cut(union, head, index, span)
-    local where = where_of(index)
+-- the index's lines at each union hunk, when the index holds every unchanged line
+-- between them. a cut where every block is one of its hunk's sides wins; nil when the
+-- index can't be cut, or can be cut more than one way
+---@param union differ.Hunk[]  -- HEAD↔worktree
+---@param head string[]        -- HEAD's lines
+---@param index string[]       -- the index's lines
+---@return string[][]|nil
+function M.blocks(union, head, index)
     for _, lengths in ipairs({ whole_lengths, any_lengths }) do
-        local slices, ways = cut(union, head, index, lengths, where, span)
+        local found, ways = cut(union, head, index, lengths)
         if ways == 1 then
-            return slices
+            return found
         end
         if ways > 1 then
             return nil
         end
     end
     return nil
-end
-
----@param index string[]
----@param slices table<integer, integer[]>
----@param first integer
----@param last integer
----@return string[][]
-local function sliced(index, slices, first, last)
-    local blocks = {}
-    for i = first, last do
-        local block = {}
-        for l = slices[i][1], slices[i][1] + slices[i][2] - 1 do
-            block[#block + 1] = index[l]
-        end
-        blocks[i] = block
-    end
-    return blocks
-end
-
--- the index's lines at each union hunk, when the index holds every unchanged line
--- between them. nil when the index can't be cut, or can be cut more than one way
----@param union differ.Hunk[]  -- HEAD↔worktree
----@param head string[]        -- HEAD's lines
----@param index string[]       -- the index's lines
----@return string[][]|nil
-function M.blocks(union, head, index)
-    local span = { first = 1, last = #union, from = 1, starts = { 1 }, tail = #head, eof = true }
-    local slices = only_cut(union, head, index, span)
-    if not slices then
-        return nil
-    end
-    return sliced(index, slices, 1, #union)
-end
-
--- the index's lines at union hunks `first`..`last` alone, where the index holds the
--- unchanged lines between them and the one either side, each block's {index line,
--- length} with them. nil when that placement is missing or not the only one
----@param union differ.Hunk[]
----@param head string[]
----@param index string[]
----@param first integer
----@param last integer
----@return table<integer, string[]>|nil blocks, table<integer, integer[]>|nil slices
-function M.local_blocks(union, head, index, first, last)
-    local before = old_bounds(union[first])
-    local _, after = old_bounds(union[last])
-    local span = { first = first, last = last, from = before - 1, tail = after, eof = false }
-    span.starts = where_of(index)[head[before - 1]] or {}
-    if before == 1 then
-        span.from, span.starts = 1, { 1 }
-    end
-    if after > #head then
-        span.tail, span.eof = #head, true
-    end
-    local slices = only_cut(union, head, index, span)
-    if not slices then
-        return nil, nil
-    end
-    return sliced(index, slices, first, last), slices
 end
 
 -- LCS grid size past which a hunk's block isn't compared line by line

@@ -9,6 +9,26 @@ local M = {}
 ---@alias differ.git.SelectionRefusal differ.model.SelectRefusal|"unread"|"moves_others"
 
 -- the pairs `text` as the index makes, or nil where they read back as other marks than
+-- `want`
+---@param root string
+---@param path string
+---@param union differ.DiffModel
+---@param cached differ.DiffModel
+---@param hidden boolean  -- stage.marks_of's
+---@param selection differ.model.Selection
+---@param want differ.model.LineStates
+---@param text string
+---@return differ.DiffModel[]|nil
+local function read_back(root, path, union, cached, hidden, selection, want, text)
+    local after = { content.union_pairs(root, path, union.old_text, text, union.new_text) }
+    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    if not require("differ.model.stage").reads_as(want, before, selection, unpack(after)) then
+        return nil
+    end
+    return after
+end
+
+-- the pairs `text` as the index makes, or nil where they read back as other marks than
 -- s (`take`) or u on `selection` leaves, or the file is too big to read
 ---@param root string
 ---@param path string
@@ -25,17 +45,17 @@ function M.checked(root, path, union, cached, unstaged, selection, take, text)
     if unread then
         return nil, "unread"
     end
-    local after = { content.union_pairs(root, path, union.old_text, text, union.new_text) }
     local want = stage.flipped(union, m, selection, take)
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
+    local after = read_back(root, path, union, cached, hidden, selection, want, text)
+    if not after then
         return nil, "moves_others"
     end
     return after
 end
 
 -- the index s (`take`) or u on `selection` writes and the pairs it makes. nil and why
--- where it refuses; nil alone where nothing moves
+-- where it refuses; nil alone where the drawn marks have every selected line where the
+-- op puts it. a selected hunk holding a line neither side has refuses first
 ---@param root string
 ---@param path string
 ---@param union differ.DiffModel
@@ -45,16 +65,26 @@ end
 ---@param take boolean
 ---@return string|nil text, differ.DiffModel[]|nil after, differ.git.SelectionRefusal|nil refusal
 function M.stage(root, path, union, cached, unstaged, selection, take)
-    local text, refused = require("differ.model.stage").select_index(union, cached, selection, take)
+    local stage = require("differ.model.stage")
+    local text, refused = stage.select_index(union, cached, selection, take)
     if refused then
         return nil, nil, refused
     end
-    if not text then
+    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
+    local want = stage.flipped(union, m, selection, take)
+    if want.enter == 0 and want.leave == 0 then
         return nil
     end
-    local after, why = M.checked(root, path, union, cached, unstaged, selection, take, text)
+    if not text then
+        -- the cut has the selection in place where the drawn marks don't
+        return nil, nil, "between"
+    end
+    if unread then
+        return nil, nil, "unread"
+    end
+    local after = read_back(root, path, union, cached, hidden, selection, want, text)
     if not after then
-        return nil, nil, why
+        return nil, nil, "moves_others"
     end
     return text, after
 end
@@ -74,7 +104,7 @@ function M.revert(root, path, union, cached, unstaged, selection)
     if refused then
         return nil, nil, refused
     end
-    local origins = stage.index_origins(union, cached, selection)
+    local origins = stage.index_origins(union, cached)
     local reverted = stage.select_worktree(union, selection, origins)
     if not reverted then
         return nil
