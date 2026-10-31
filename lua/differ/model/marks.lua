@@ -632,6 +632,8 @@ local function walk(hunks, segs, index)
             local after = cost[s + 1]
             if here == seg.line and after[i + 1] == left then
                 step(s + 1, true, true)
+            elseif i <= n and big + cost[s][i + 1] == left then
+                hide()
             elseif big + after[i] == left then
                 left = left - big
                 step(s + 1, false, false)

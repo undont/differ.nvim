@@ -180,6 +180,15 @@ describe("next_index", function()
         -- both hunks are unstaged, so unstaging one has nothing to write
         assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
     end)
+
+    -- HEAD a b c, index a q b c, worktree a b q b c: the union inserts q b after b, and
+    -- the index's only b is HEAD's, with q hidden before it
+    it("keeps HEAD's unchanged line the index holds beside an inserted hunk", function()
+        local union = model("a\nb\nc\n", "a\nb\nq\nb\nc\n", { h(2, {}, 3, { "q", "b" }) })
+        local cached = model("a\nb\nc\n", "a\nq\nb\nc\n", { h(1, {}, 2, { "q" }) })
+        local unstaged = model("a\nq\nb\nc\n", "a\nb\nq\nb\nc\n", { h(1, {}, 2, { "b" }) })
+        assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
+    end)
 end)
 
 describe("model.stage.drop_lines", function()
