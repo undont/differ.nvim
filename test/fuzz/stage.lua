@@ -383,6 +383,26 @@ local function placed_op(t, union, m, selection, take, index, work)
     })
 end
 
+-- the text s (`take`), u or X moves the index towards, where a reading places the
+-- index: nil where it cuts into blocks with nothing hidden
+---@param union differ.DiffModel
+---@param index string
+---@param take boolean
+---@return string|nil
+local function towards_of(union, index, take)
+    local blocks, ended = stage.index_blocks(union, index)
+    if blocks then
+        local held, hidden_in = require("differ.model.marks").of_blocks(ended.hunks, blocks)
+        if held and #hidden_in == 0 then
+            return nil
+        end
+    end
+    if take then
+        return union.new_text
+    end
+    return union.old_text
+end
+
 ---@class differ.fuzz.Outcome
 ---@field kind "unchanged"|"refused"|"written"
 ---@field reason? string  -- refused: why
@@ -390,6 +410,7 @@ end
 ---@field work? string    -- written by X: the file text
 ---@field moves? differ.fuzz.Moves
 ---@field placed? boolean|nil  -- written: placed_op
+---@field towards? string     -- written where a reading places the index: the text it moves towards
 
 -- the op's refusal, with the result check's split by moves_others
 ---@param union differ.DiffModel
@@ -426,6 +447,7 @@ local function stage_op(t, union, cached, unstaged, selection, take)
         index = text,
         moves = moves(union, m, selection, take),
         placed = placed_op(t, union, m, selection, take, text, nil),
+        towards = towards_of(union, t.index, take),
     }
 end
 
@@ -451,7 +473,23 @@ local function revert_op(t, union, cached, unstaged, selection)
         work = reverted.old_text,
         moves = moves(union, m, selection, nil),
         placed = placed_op(t, union, m, selection, false, index, reverted.old_text),
+        towards = towards_of(union, t.index, false),
     }
+end
+
+-- whether `to` lies on a shortest edit path from `from` to `towards`: an oracle that
+-- reads no marks
+---@param towards string
+---@param from string
+---@param to string
+---@return boolean
+function M.straight(towards, from, to)
+    local edits = require("differ.git.staging.write").edits
+    local function distance(a, b)
+        local dropped, added = edits(a, b)
+        return dropped + added
+    end
+    return distance(towards, to) + distance(to, from) == distance(towards, from)
 end
 
 ---@param t differ.fuzz.Triple
@@ -460,6 +498,9 @@ end
 function M.matches(t, outcome)
     local mv = outcome.moves
     if outcome.placed == false then
+        return false
+    end
+    if outcome.towards and not M.straight(outcome.towards, t.index, outcome.index) then
         return false
     end
     if not M.moved(t.index, outcome.index, mv.index_leave, mv.index_enter) then
@@ -524,7 +565,7 @@ local function hunk_op(union, cached, unstaged, hunk, take)
     if not after then
         return { kind = "refused", reason = refused }
     end
-    return { kind = "written", index = text }
+    return { kind = "written", index = text, towards = towards_of(union, cached.new_text, take) }
 end
 
 -- visual s (`take`) or u over every line of `hunk`
@@ -642,11 +683,17 @@ function M.run(opts)
     local keep = opts.keep or 5
     local report = { ops = {}, mismatches = {}, hunks = {}, hunk_mismatches = {} }
     for _, op in ipairs(M.OPS) do
-        report.ops[op] =
-            { tried = 0, unchanged = 0, refused = {}, written = 0, unplaced = 0, mismatched = 0 }
+        report.ops[op] = {
+            tried = 0,
+            unchanged = 0,
+            refused = {},
+            written = 0,
+            unplaced = 0,
+            mismatched = 0,
+        }
     end
     for _, op in ipairs(M.HUNK_OPS) do
-        report.hunks[op] = { mismatch = 0 }
+        report.hunks[op] = { mismatch = 0, off_path = 0 }
     end
     ---@param t differ.fuzz.Triple
     local function whole(t)
@@ -658,6 +705,12 @@ function M.run(opts)
                 local what = agreement(visual, by_hunk, staged_beside(cached, h))
                 local counts = report.hunks[op]
                 counts[what] = (counts[what] or 0) + 1
+                if
+                    by_hunk.towards
+                    and not M.straight(by_hunk.towards, cached.new_text, by_hunk.index)
+                then
+                    counts.off_path = counts.off_path + 1
+                end
                 if what == "mismatch" and #report.hunk_mismatches < keep then
                     report.hunk_mismatches[#report.hunk_mismatches + 1] =
                         { triple = t, op = op, hunk = i, visual = visual, by_hunk = by_hunk }

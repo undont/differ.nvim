@@ -17,11 +17,17 @@ local M = {}
 ---@param hidden boolean  -- stage.marks_of's
 ---@param selection differ.model.Selection
 ---@param want differ.model.LineStates
+---@param take boolean
 ---@param text string
 ---@return differ.DiffModel[]|nil
-local function read_back(root, path, union, cached, hidden, selection, want, text)
+local function read_back(root, path, union, cached, hidden, selection, want, take, text)
     local after = { content.union_pairs(root, path, union.old_text, text, union.new_text) }
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    local towards = union.old_text
+    if take then
+        towards = union.new_text
+    end
+    local before =
+        { union = union, cached = cached, hidden = hidden, edits = edits, towards = towards }
     if not require("differ.model.stage").reads_as(want, before, selection, unpack(after)) then
         return nil
     end
@@ -46,7 +52,7 @@ function M.checked(root, path, union, cached, unstaged, selection, take, text)
         return nil, "unread"
     end
     local want = stage.flipped(union, m, selection, take)
-    local after = read_back(root, path, union, cached, hidden, selection, want, text)
+    local after = read_back(root, path, union, cached, hidden, selection, want, take, text)
     if not after then
         return nil, "moves_others"
     end
@@ -82,7 +88,7 @@ function M.stage(root, path, union, cached, unstaged, selection, take)
     if unread then
         return nil, nil, "unread"
     end
-    local after = read_back(root, path, union, cached, hidden, selection, want, text)
+    local after = read_back(root, path, union, cached, hidden, selection, want, take, text)
     if not after then
         return nil, nil, "moves_others"
     end
@@ -113,7 +119,13 @@ function M.revert(root, path, union, cached, unstaged, selection)
     local m, hidden = stage.marks_of(union, cached, unstaged)
     local want = stage.reverted(union, m, selection, origins)
     local after = { content.union_pairs(root, path, union.old_text, index_text, reverted.old_text) }
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    local before = {
+        union = union,
+        cached = cached,
+        hidden = hidden,
+        edits = edits,
+        towards = union.old_text,
+    }
     if not stage.reads_as(want, before, selection, unpack(after)) then
         return nil, nil, "moves_others"
     end

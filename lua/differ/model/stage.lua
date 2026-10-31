@@ -871,16 +871,49 @@ local function moves_only(edits, from, to, leave, enter)
     return dropped <= leave and added <= enter and added - dropped == enter - leave
 end
 
+-- whether the index cuts into blocks with nothing hidden, so its marks come from the
+-- blocks rather than a reading (marks_of)
+---@param union differ.DiffModel
+---@param index string
+---@return boolean
+local function cuts_clean(union, index)
+    local blocks, ended = M.index_blocks(union, index)
+    if not blocks then
+        return false
+    end
+    local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
+    return held ~= nil and #hidden_in == 0
+end
+
+-- whether `to` lies on a shortest edit path from `from` to `towards`, by minimal diffs.
+-- the union pairs by histogram, so a write the drawn rows place exactly can still fall
+-- off this path
+---@param edits fun(a: string, b: string): integer, integer
+---@param towards string
+---@param from string
+---@param to string
+---@return boolean
+local function straight(edits, towards, from, to)
+    local function distance(a, b)
+        local dropped, added = edits(a, b)
+        return dropped + added
+    end
+    return distance(towards, to) + distance(to, from) == distance(towards, from)
+end
+
 ---@class differ.model.Before
 ---@field union differ.DiffModel
 ---@field cached differ.DiffModel
 ---@field hidden boolean
 ---@field edits fun(a: string, b: string): integer, integer  -- lines a minimal diff drops, adds
+---@field towards string  -- what the op moves the index towards: the worktree for s, HEAD for u and X
 
 -- whether the pairs an op's texts make read back as `want`. a minimal diff from each old
 -- text to its new one stays within the lines the op moves (moves_only), so nothing else
--- changes place. where the index holds content no hunk shows, the op also drops the
--- hidden lines in the drawn slices it touches, and nothing else of it (hidden_dropped)
+-- changes place. where a reading places the index, it also moves straight towards the
+-- side the op takes (straight). where the index holds content no hunk shows, the op
+-- also drops the hidden lines in the drawn slices it touches, and nothing else of it
+-- (hidden_dropped)
 ---@param want differ.model.LineStates
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
@@ -912,6 +945,11 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
     local index_from, index_to = before.cached.new_text, cached.new_text
     if not moves_only(before.edits, index_from, index_to, want.leave + dropped, want.enter) then
         return false
+    end
+    if not cuts_clean(before.union, index_from) then
+        if not straight(before.edits, before.towards, index_from, index_to) then
+            return false
+        end
     end
     local work_from, work_to = before.union.new_text, union.new_text
     if

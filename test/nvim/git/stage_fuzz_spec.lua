@@ -1,5 +1,6 @@
 -- the stage fuzz at a fixed seed: every op it writes leaves the index and file the
--- drawn marks say it should. `make lua-fuzz` runs it large
+-- drawn marks say it should, and where a reading places the index, on a shortest path
+-- to the side it takes. `make lua-fuzz` runs it large
 local fuzz = require("test.fuzz.stage")
 
 local function text(tokens)
@@ -46,6 +47,12 @@ describe("stage fuzz", function()
         for _, op in ipairs(fuzz.HUNK_OPS) do
             assert.is_true(report.hunks[op].agree > 0, op)
             assert.are.equal(0, report.hunks[op].mismatch, fuzz.format(report))
+        end
+    end)
+
+    it("moves a read index straight towards the side the hunk op takes", function()
+        for _, op in ipairs(fuzz.HUNK_OPS) do
+            assert.are.equal(0, report.hunks[op].off_path, fuzz.format(report))
         end
     end)
 end)

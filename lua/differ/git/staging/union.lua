@@ -337,7 +337,13 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
     local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
     local selection = stage.hunk_selection(hunk)
     local want = stage.reverted(union, m, selection)
-    local before = { union = union, cached = cached, hidden = hidden, edits = edits }
+    local before = {
+        union = union,
+        cached = cached,
+        hidden = hidden,
+        edits = edits,
+        towards = union.old_text,
+    }
     local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
     if unread or not stage.reads_as(want, before, selection, unpack(after)) then
         return nil, nil, "this hunk can't be reverted on its own here"
