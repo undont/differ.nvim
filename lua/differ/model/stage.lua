@@ -176,6 +176,7 @@ end
 ---| "hidden"   -- a selected hunk's block holds a line neither side has
 ---| "ending"   -- the op would leave a line with no newline above others
 ---| "split_ending"  -- the op would move one line of a line and its newline change without the other
+---| "unshown"  -- a line the index holds again where no row shows it: HEAD's moved, or staged with HEAD's deleted
 
 -- whether the selection has `o`, a line of `h`
 ---@param h differ.Hunk
@@ -1037,26 +1038,84 @@ local function straight(edits, towards, from, to)
     return distance(towards, to) + distance(to, from) == distance(towards, from)
 end
 
+---@param text string
+---@return table<string, integer>
+local function counts(text)
+    local n = {}
+    for _, line in ipairs(text_util.to_lines(text)) do
+        n[line] = (n[line] or 0) + 1
+    end
+    return n
+end
+
+-- the union's old and new lines outside `selection`, counted per line
+---@param union differ.DiffModel
+---@param selection differ.model.Selection
+---@return table<string, integer> old, table<string, integer> new
+local function unselected(union, selection)
+    local old_lines, new_lines =
+        text_util.to_lines(union.old_text), text_util.to_lines(union.new_text)
+    local old, new = {}, {}
+    for _, h in ipairs(union.hunks) do
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            if not selection.old[l] then
+                old[old_lines[l]] = (old[old_lines[l]] or 0) + 1
+            end
+        end
+        for l = h.new_start, h.new_start + h.new_count - 1 do
+            if not selection.new[l] then
+                new[new_lines[l]] = (new[new_lines[l]] or 0) + 1
+            end
+        end
+    end
+    return old, new
+end
+
+-- whether every line's count in `to` stays where `from` has it or within `towards`'s
+-- count less its `below` rows and plus its `above` rows. a line and its ending count as
+-- one
+---@param towards string
+---@param from string
+---@param to string
+---@param below table<string, integer>
+---@param above table<string, integer>
+---@return boolean
+local function counts_within(towards, from, to, below, above)
+    local target, old, new = counts(towards), counts(from), counts(to)
+    for _, side in ipairs({ target, old, new }) do
+        for line in pairs(side) do
+            local t, o, n = target[line] or 0, old[line] or 0, new[line] or 0
+            local low = math.min(o, t - (below[line] or 0))
+            local high = math.max(o, t + (above[line] or 0))
+            if n < low or n > high then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 ---@class differ.model.Before
 ---@field union differ.DiffModel
 ---@field cached differ.DiffModel
 ---@field hidden boolean
 ---@field edits fun(a: string, b: string): integer, integer  -- lines a minimal diff drops, adds
----@field towards string  -- what the op moves the index towards: the worktree for s, HEAD for u and X
+---@field take boolean  -- s, which moves the index towards the worktree; u and X move it towards HEAD
 
 -- whether the pairs an op's texts make read back as `want`. a minimal diff from each old
 -- text to its new one stays within the lines the op moves (moves_only), so nothing else
--- changes place. where a reading places the index, it also moves straight towards the
--- side the op takes (straight). where the index holds content no hunk shows, the op
--- also drops the hidden lines in the drawn slices it touches, and nothing else of it
--- (hidden_dropped)
+-- changes place. each line's count ends off the side the op takes by no more than the
+-- unselected rows of that line, or stays put (counts_within). where a reading places
+-- the index, it also moves straight towards the side the op takes (straight). where the
+-- index holds content no hunk shows, the op also drops the hidden lines in the drawn
+-- slices it touches, and nothing else of it (hidden_dropped)
 ---@param want differ.model.LineStates
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
 ---@param union differ.DiffModel     -- read from the op's texts
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
----@return boolean
+---@return boolean, "unshown"|nil
 function M.reads_as(want, before, selection, union, cached, unstaged)
     local m, hidden = M.marks_of(union, cached, unstaged)
     local dropped = 0 ---@type integer|nil
@@ -1082,8 +1141,16 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
     if not moves_only(before.edits, index_from, index_to, want.leave + dropped, want.enter) then
         return false
     end
+    local old_out, new_out = unselected(before.union, selection)
+    local towards, below, above = before.union.old_text, old_out, new_out
+    if before.take then
+        towards, below, above = before.union.new_text, new_out, old_out
+    end
+    if not counts_within(towards, index_from, index_to, below, above) then
+        return false, "unshown"
+    end
     if not cuts_clean(before.union, index_from) then
-        if not straight(before.edits, before.towards, index_from, index_to) then
+        if not straight(before.edits, towards, index_from, index_to) then
             return false
         end
     end
@@ -1093,6 +1160,12 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
         and not moves_only(before.edits, work_from, work_to, want.work_leave, want.work_enter)
     then
         return false
+    end
+    if
+        want.work_enter
+        and not counts_within(before.union.old_text, work_from, work_to, old_out, new_out)
+    then
+        return false, "unshown"
     end
     return true
 end

@@ -51,6 +51,46 @@ describe("git.staging.selection", function()
         assert.is_true(written > 0)
     end)
 
+    -- the index holds HEAD's b where the union shows it deleted
+    describe("on HEAD a b, index b a, worktree a", function()
+        local t = { head = "a\nb\n", index = "b\na\n", work = "a\n" }
+        local selection = { old = { [2] = true }, new = {} }
+
+        for _, op in ipairs({ "u", "X" }) do
+            it(op .. " on - b refuses rather than guess where b went", function()
+                local outcome = fuzz.run_op(t, op, selection)
+                assert.are.equal("refused", outcome.kind)
+                assert.are.equal("unshown", outcome.reason)
+            end)
+        end
+
+        it("hunk u refuses rather than guess where b went", function()
+            local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+            local text = require("differ.model.stage").next_index(
+                union,
+                cached,
+                unstaged,
+                union.hunks[1],
+                false
+            )
+            local after, refusal =
+                selected.checked("/", "f", union, cached, unstaged, selection, false, text)
+            assert.is_nil(after)
+            assert.are.equal("unshown", refusal)
+        end)
+    end)
+
+    describe("on HEAD blank and unterminated b, index b, worktree a and blank", function()
+        local t = { head = "\nb", index = "b\n", work = "a\n\n" }
+        for _, op in ipairs({ "u", "X" }) do
+            it(op .. " on - b refuses rather than guess where b went", function()
+                local outcome = fuzz.run_op(t, op, { old = { [2] = true }, new = {} })
+                assert.are.equal("refused", outcome.kind)
+                assert.are.equal("unshown", outcome.reason)
+            end)
+        end
+    end)
+
     describe("on HEAD c c c, index c d c c, worktree c d x4 x4", function()
         local function c_pairs()
             return content.union_pairs("/", "f", "c\nc\nc\n", "c\nd\nc\nc\n", "c\nd\nx4\nx4\n")

@@ -49,6 +49,15 @@ describe("stage fuzz", function()
         end
     end)
 
+    it("ends each line's count off the side the op takes by its unselected rows", function()
+        for _, op in ipairs(fuzz.OPS) do
+            assert.are.equal(0, report.ops[op].count_bad, fuzz.format(report))
+        end
+        for _, op in ipairs(fuzz.HUNK_OPS) do
+            assert.are.equal(0, report.hunks[op].count_bad, fuzz.format(report))
+        end
+    end)
+
     it("gives what the hunk op gives for visual s and u over a whole hunk", function()
         for _, op in ipairs(fuzz.HUNK_OPS) do
             assert.is_true(report.hunks[op].agree > 0, op)

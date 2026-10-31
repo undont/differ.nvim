@@ -76,6 +76,8 @@ local function refusal(keys, take, reaches)
     return msg:format(reaches, whole)
 end
 
+local UNSHOWN = { "blocked by a staged change this view can't show", "%s shows it", "toggle_local" }
+
 -- why a selection can't move, staged (`take`), unstaged or reverted: the refusal,
 -- then a hint naming the action's key
 ---@type table<differ.model.SelectRefusal, table<"stage"|"unstage"|"revert", string[]>>
@@ -136,6 +138,11 @@ local SELECT_REFUSALS = {
         stage = { write.REVERT_ENDING.split_ending },
         unstage = { write.REVERT_ENDING.split_ending },
         revert = { write.REVERT_ENDING.split_ending },
+    },
+    unshown = {
+        stage = UNSHOWN,
+        unstage = UNSHOWN,
+        revert = UNSHOWN,
     },
 }
 
@@ -261,11 +268,19 @@ local function apply(source, model, hunk, reverse)
     end
     local take = not reverse
     local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
-    local after
+    local after, refused
     if text then
         local selection = stage.hunk_selection(hunk)
-        after =
+        after, refused =
             selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, take, text)
+    end
+    if refused == "unshown" then
+        local op = "unstage"
+        if take then
+            op = "stage"
+        end
+        notify(select_refusal(ctx.keys, "unshown", op), vim.log.levels.WARN)
+        return false, true
     end
     if not (text and after) then
         -- neither refusal is a failure: the key moves on, and the message says
@@ -356,10 +371,17 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
         cached = cached,
         hidden = hidden,
         edits = edits,
-        towards = union.old_text,
+        take = false,
     }
     local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
-    if unread or not stage.reads_as(want, before, selection, unpack(after)) then
+    if unread then
+        return nil, nil, "this hunk can't be reverted on its own here"
+    end
+    local ok, unshown = stage.reads_as(want, before, selection, unpack(after))
+    if unshown then
+        return nil, nil, select_refusal(ctx.keys, unshown, "revert")
+    end
+    if not ok then
         return nil, nil, "this hunk can't be reverted on its own here"
     end
     return index_text, work_text
@@ -518,7 +540,7 @@ local function set_all(source, model, staged)
 end
 
 -- the `!` hunks hold staged content neither side shows, and U takes all of it. a
--- hunk u can't move on its own drops nothing: its refusal needs no prompt first
+-- hunk u that refuses drops nothing: its refusal needs no prompt first
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param idx integer|nil
@@ -536,7 +558,14 @@ local function unheld(source, model, idx)
     if not (union and cached and unstaged) then
         return true
     end
-    return stage.next_index(union, cached, unstaged, model.hunks[idx], false) ~= nil
+    local hunk = model.hunks[idx]
+    local text = stage.next_index(union, cached, unstaged, hunk, false)
+    if not text then
+        return false
+    end
+    local selection = stage.hunk_selection(hunk)
+    return selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, false, text)
+        ~= nil
 end
 
 -- staging for a row shown as HEAD↔worktree. staging a hunk gives the index the

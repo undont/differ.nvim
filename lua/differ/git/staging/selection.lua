@@ -8,8 +8,8 @@ local M = {}
 
 ---@alias differ.git.SelectionRefusal differ.model.SelectRefusal|"unread"|"moves_others"
 
--- the pairs `text` as the index makes, or nil where they read back as other marks than
--- `want`
+-- the pairs `text` as the index makes, or nil and why where they read back as other
+-- marks than `want`
 ---@param root string
 ---@param path string
 ---@param union differ.DiffModel
@@ -19,17 +19,14 @@ local M = {}
 ---@param want differ.model.LineStates
 ---@param take boolean
 ---@param text string
----@return differ.DiffModel[]|nil
+---@return differ.DiffModel[]|nil after, "moves_others"|"unshown"|nil refusal
 local function read_back(root, path, union, cached, hidden, selection, want, take, text)
     local after = { content.union_pairs(root, path, union.old_text, text, union.new_text) }
-    local towards = union.old_text
-    if take then
-        towards = union.new_text
-    end
-    local before =
-        { union = union, cached = cached, hidden = hidden, edits = edits, towards = towards }
-    if not require("differ.model.stage").reads_as(want, before, selection, unpack(after)) then
-        return nil
+    local before = { union = union, cached = cached, hidden = hidden, edits = edits, take = take }
+    local ok, unshown =
+        require("differ.model.stage").reads_as(want, before, selection, unpack(after))
+    if not ok then
+        return nil, unshown or "moves_others"
     end
     return after
 end
@@ -44,7 +41,7 @@ end
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param text string
----@return differ.DiffModel[]|nil after, "unread"|"moves_others"|nil refusal
+---@return differ.DiffModel[]|nil after, "unread"|"moves_others"|"unshown"|nil refusal
 function M.checked(root, path, union, cached, unstaged, selection, take, text)
     local stage = require("differ.model.stage")
     local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
@@ -52,11 +49,7 @@ function M.checked(root, path, union, cached, unstaged, selection, take, text)
         return nil, "unread"
     end
     local want = stage.flipped(union, m, selection, take)
-    local after = read_back(root, path, union, cached, hidden, selection, want, take, text)
-    if not after then
-        return nil, "moves_others"
-    end
-    return after
+    return read_back(root, path, union, cached, hidden, selection, want, take, text)
 end
 
 -- the index s (`take`) or u on `selection` writes and the pairs it makes. nil and why
@@ -88,9 +81,9 @@ function M.stage(root, path, union, cached, unstaged, selection, take)
     if unread then
         return nil, nil, "unread"
     end
-    local after = read_back(root, path, union, cached, hidden, selection, want, take, text)
+    local after, refusal = read_back(root, path, union, cached, hidden, selection, want, take, text)
     if not after then
-        return nil, nil, "moves_others"
+        return nil, nil, refusal
     end
     return text, after
 end
@@ -127,10 +120,11 @@ function M.revert(root, path, union, cached, unstaged, selection)
         cached = cached,
         hidden = hidden,
         edits = edits,
-        towards = union.old_text,
+        take = false,
     }
-    if not stage.reads_as(want, before, selection, unpack(after)) then
-        return nil, nil, "moves_others"
+    local ok, unshown = stage.reads_as(want, before, selection, unpack(after))
+    if not ok then
+        return nil, nil, unshown or "moves_others"
     end
     return index_text, reverted
 end

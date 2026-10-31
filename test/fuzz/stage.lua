@@ -549,6 +549,69 @@ function M.ending_kept(t, outcome)
     return outcome.work == nil or copies(outcome.work, line) == 1
 end
 
+---@param text string
+---@return table<string, integer>
+local function line_counts(text)
+    local n = {}
+    for _, line in ipairs(text_util.ended_lines(text)) do
+        n[bare(line)] = (n[bare(line)] or 0) + 1
+    end
+    return n
+end
+
+-- whether every line's count in `to` stays where `from` has it or within `towards`'s,
+-- less at most its `below` rows and plus at most its `above` rows
+---@param towards string
+---@param from string
+---@param to string
+---@param below table<string, integer>
+---@param above table<string, integer>
+---@return boolean
+local function within(towards, from, to, below, above)
+    local target, was, got = line_counts(towards), line_counts(from), line_counts(to)
+    for _, side in ipairs({ target, was, got }) do
+        for line in pairs(side) do
+            local n, aim, o = got[line] or 0, target[line] or 0, was[line] or 0
+            local low, high =
+                math.min(o, aim - (below[line] or 0)), math.max(o, aim + (above[line] or 0))
+            if n < low or n > high then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+-- whether a write leaves each line's count where it was, or where the side the op takes
+-- has it off by at most the union rows of that line the selection leaves out: the index
+-- towards the worktree for s, HEAD for u and X, and X's file towards HEAD. an oracle
+-- that reads no diff of the written text and no marks
+---@param t differ.fuzz.Triple
+---@param op "s"|"u"|"X"
+---@param selection differ.model.Selection
+---@param outcome differ.fuzz.Outcome  -- a written one
+---@return boolean
+function M.counts_kept(t, op, selection, outcome)
+    local union = content.union_pairs("/", "f", t.head, t.index, t.work)
+    local sides =
+        { old = text_util.ended_lines(union.old_text), new = text_util.ended_lines(union.new_text) }
+    local out = { old = {}, new = {} }
+    for _, r in ipairs(M.rows(union)) do
+        if not selection[r.side][r.line] then
+            local line = bare(sides[r.side][r.line])
+            out[r.side][line] = (out[r.side][line] or 0) + 1
+        end
+    end
+    if op == "s" then
+        if not within(t.work, t.index, outcome.index, out.new, out.old) then
+            return false
+        end
+    elseif not within(t.head, t.index, outcome.index, out.old, out.new) then
+        return false
+    end
+    return outcome.work == nil or within(t.head, t.work, outcome.work, out.old, out.new)
+end
+
 ---@param t differ.fuzz.Triple
 ---@param outcome differ.fuzz.Outcome  -- a written one
 ---@return boolean
@@ -740,8 +803,14 @@ end
 ---@return differ.fuzz.Report
 function M.run(opts)
     local keep = opts.keep or 5
-    local report =
-        { ops = {}, mismatches = {}, ending_splits = {}, hunks = {}, hunk_mismatches = {} }
+    local report = {
+        ops = {},
+        mismatches = {},
+        ending_splits = {},
+        count_bads = {},
+        hunks = {},
+        hunk_mismatches = {},
+    }
     for _, op in ipairs(M.OPS) do
         report.ops[op] = {
             tried = 0,
@@ -751,10 +820,11 @@ function M.run(opts)
             unplaced = 0,
             mismatched = 0,
             ending_split = 0,
+            count_bad = 0,
         }
     end
     for _, op in ipairs(M.HUNK_OPS) do
-        report.hunks[op] = { mismatch = 0, off_path = 0 }
+        report.hunks[op] = { mismatch = 0, off_path = 0, count_bad = 0 }
     end
     ---@param t differ.fuzz.Triple
     local function whole(t)
@@ -771,6 +841,12 @@ function M.run(opts)
                     and not M.straight(by_hunk.towards, cached.new_text, by_hunk.index)
                 then
                     counts.off_path = counts.off_path + 1
+                end
+                if
+                    by_hunk.kind == "written"
+                    and not M.counts_kept(t, op, stage.hunk_selection(h), by_hunk)
+                then
+                    counts.count_bad = counts.count_bad + 1
                 end
                 if what == "mismatch" and #report.hunk_mismatches < keep then
                     report.hunk_mismatches[#report.hunk_mismatches + 1] =
@@ -804,6 +880,12 @@ function M.run(opts)
                     counts.ending_split = counts.ending_split + 1
                     if #report.ending_splits < keep then
                         report.ending_splits[#report.ending_splits + 1] = case
+                    end
+                end
+                if not M.counts_kept(t, op, selection, outcome) then
+                    counts.count_bad = counts.count_bad + 1
+                    if #report.count_bads < keep then
+                        report.count_bads[#report.count_bads + 1] = case
                     end
                 end
             end
@@ -851,7 +933,7 @@ function M.format(report)
             why = " [" .. table.concat(reasons, ", ") .. "]"
         end
         local line = "%s: tried %d, unchanged %d, refused %d (%.2f%%)%s, "
-            .. "written %d (unplaced %d), mismatched %d, ending split %d"
+            .. "written %d (unplaced %d), mismatched %d, ending split %d, count bad %d"
         out[#out + 1] = line:format(
             op,
             c.tried,
@@ -862,7 +944,8 @@ function M.format(report)
             c.written,
             c.unplaced,
             c.mismatched,
-            c.ending_split
+            c.ending_split,
+            c.count_bad
         )
     end
     for _, op in ipairs(M.HUNK_OPS) do
@@ -879,6 +962,9 @@ function M.format(report)
     end
     for _, mm in ipairs(report.ending_splits) do
         cases[#cases + 1] = { what = "ending split", case = mm }
+    end
+    for _, mm in ipairs(report.count_bads) do
+        cases[#cases + 1] = { what = "count bad", case = mm }
     end
     for _, c in ipairs(cases) do
         local mm, rows = c.case, {}
