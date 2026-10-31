@@ -1236,8 +1236,8 @@ func getDownloadSpeed() {
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
         _G.notifs = {}
         v:unstage_hunk()
-        -- the refusal moves the key on, so the walk's own message follows it
-        local said = (_G.notifs[1] or {}).msg or ""
+        -- the walk finds nothing left, so the refusal stays the last thing said
+        local said = (_G.notifs[#_G.notifs] or {}).msg or ""
         local written = indexed(root, "a.lua")
         p:close()
         assert.are.equal("b\na\n", written)
