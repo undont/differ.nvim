@@ -123,6 +123,20 @@ local SELECT_REFUSALS = {
             "discard",
         },
     },
+    ending = {
+        stage = {
+            "staging these lines would leave a line with no newline above others; select its newline change too",
+        },
+        unstage = {
+            "unstaging these lines would leave a line with no newline above others; select its newline change too",
+        },
+        revert = { write.REVERT_ENDING.ending },
+    },
+    split_ending = {
+        stage = { write.REVERT_ENDING.split_ending },
+        unstage = { write.REVERT_ENDING.split_ending },
+        revert = { write.REVERT_ENDING.split_ending },
+    },
 }
 
 -- a selection's refusal for `op`, its hint dropped when the hint's action is disabled

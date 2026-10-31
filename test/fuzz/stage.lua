@@ -492,6 +492,63 @@ function M.straight(towards, from, to)
     return distance(towards, to) + distance(to, from) == distance(towards, from)
 end
 
+---@param line string  -- an ended line
+---@return string
+local function bare(line)
+    if line:sub(-1) == text_util.NO_EOL then
+        return line:sub(1, -2)
+    end
+    return line
+end
+
+---@param text string
+---@param line string  -- bare
+---@return integer
+local function copies(text, line)
+    local n = 0
+    for _, l in ipairs(text_util.ended_lines(text)) do
+        if bare(l) == line then
+            n = n + 1
+        end
+    end
+    return n
+end
+
+-- the line HEAD and the worktree both end on with different endings, where every side
+-- holds it once: a line and its newline change. nil for any other triple
+---@param t differ.fuzz.Triple
+---@return string|nil
+local function ending_line(t)
+    local head, work = text_util.ended_lines(t.head), text_util.ended_lines(t.work)
+    local h, w = head[#head], work[#work]
+    if not h or not w or h == w or bare(h) ~= bare(w) then
+        return nil
+    end
+    local line = bare(h)
+    for _, text in ipairs({ t.head, t.index, t.work }) do
+        if copies(text, line) ~= 1 then
+            return nil
+        end
+    end
+    return line
+end
+
+-- whether a write keeps a line and its newline change as one line: every text it
+-- writes holds that line once. an oracle that reads no diff and no marks
+---@param t differ.fuzz.Triple
+---@param outcome differ.fuzz.Outcome  -- a written one
+---@return boolean
+function M.ending_kept(t, outcome)
+    local line = ending_line(t)
+    if not line then
+        return true
+    end
+    if copies(outcome.index, line) ~= 1 then
+        return false
+    end
+    return outcome.work == nil or copies(outcome.work, line) == 1
+end
+
 ---@param t differ.fuzz.Triple
 ---@param outcome differ.fuzz.Outcome  -- a written one
 ---@return boolean
@@ -633,10 +690,12 @@ M.HUNK_OPS = { "s", "u" }
 ---@field written integer
 ---@field unplaced integer  -- written where placement can't be judged
 ---@field mismatched integer
+---@field ending_split integer  -- written with a line and its newline change apart
 
 ---@class differ.fuzz.Report
 ---@field ops table<string, differ.fuzz.Counts>
 ---@field mismatches differ.fuzz.Mismatch[]  -- the first few
+---@field ending_splits differ.fuzz.Mismatch[]  -- the first few
 ---@field hunks table<string, table<string, integer>>  -- op -> agreement -> count
 ---@field hunk_mismatches differ.fuzz.HunkMismatch[]  -- the first few
 
@@ -681,7 +740,8 @@ end
 ---@return differ.fuzz.Report
 function M.run(opts)
     local keep = opts.keep or 5
-    local report = { ops = {}, mismatches = {}, hunks = {}, hunk_mismatches = {} }
+    local report =
+        { ops = {}, mismatches = {}, ending_splits = {}, hunks = {}, hunk_mismatches = {} }
     for _, op in ipairs(M.OPS) do
         report.ops[op] = {
             tried = 0,
@@ -690,6 +750,7 @@ function M.run(opts)
             written = 0,
             unplaced = 0,
             mismatched = 0,
+            ending_split = 0,
         }
     end
     for _, op in ipairs(M.HUNK_OPS) do
@@ -732,11 +793,17 @@ function M.run(opts)
                 if outcome.placed == nil then
                     counts.unplaced = counts.unplaced + 1
                 end
+                local case = { triple = t, op = op, rows = rows, outcome = outcome }
                 if not M.matches(t, outcome) then
                     counts.mismatched = counts.mismatched + 1
                     if #report.mismatches < keep then
-                        report.mismatches[#report.mismatches + 1] =
-                            { triple = t, op = op, rows = rows, outcome = outcome }
+                        report.mismatches[#report.mismatches + 1] = case
+                    end
+                end
+                if not M.ending_kept(t, outcome) then
+                    counts.ending_split = counts.ending_split + 1
+                    if #report.ending_splits < keep then
+                        report.ending_splits[#report.ending_splits + 1] = case
                     end
                 end
             end
@@ -784,7 +851,7 @@ function M.format(report)
             why = " [" .. table.concat(reasons, ", ") .. "]"
         end
         local line = "%s: tried %d, unchanged %d, refused %d (%.2f%%)%s, "
-            .. "written %d (unplaced %d), mismatched %d"
+            .. "written %d (unplaced %d), mismatched %d, ending split %d"
         out[#out + 1] = line:format(
             op,
             c.tried,
@@ -794,7 +861,8 @@ function M.format(report)
             why,
             c.written,
             c.unplaced,
-            c.mismatched
+            c.mismatched,
+            c.ending_split
         )
     end
     for _, op in ipairs(M.HUNK_OPS) do
@@ -805,12 +873,19 @@ function M.format(report)
         table.sort(whats)
         out[#out + 1] = ("%s whole hunk vs hunk op: %s"):format(op, table.concat(whats, ", "))
     end
+    local cases = {}
     for _, mm in ipairs(report.mismatches) do
-        local rows = {}
+        cases[#cases + 1] = { what = "mismatch", case = mm }
+    end
+    for _, mm in ipairs(report.ending_splits) do
+        cases[#cases + 1] = { what = "ending split", case = mm }
+    end
+    for _, c in ipairs(cases) do
+        local mm, rows = c.case, {}
         for _, r in ipairs(mm.rows) do
             rows[#rows + 1] = r.side .. " " .. r.line
         end
-        out[#out + 1] = ("\nmismatch: %s on %s"):format(mm.op, table.concat(rows, ", "))
+        out[#out + 1] = ("\n%s: %s on %s"):format(c.what, mm.op, table.concat(rows, ", "))
         out[#out + 1] = "  head  " .. M.shown(mm.triple.head)
         out[#out + 1] = "  index " .. M.shown(mm.triple.index)
         out[#out + 1] = "  work  " .. M.shown(mm.triple.work)

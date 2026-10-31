@@ -6,7 +6,7 @@ local fuzz = require("test.fuzz.stage")
 local selected = require("differ.git.staging.selection")
 
 describe("git.staging.selection", function()
-    it("refuses rather than gives nothing where the drawn marks still need a move", function()
+    it("refuses to bring back an unterminated line with a staged line after it", function()
         -- HEAD's unterminated b and the worktree's terminated b are one token
         local union, cached, unstaged = content.union_pairs("/", "f", "b", "b\ne\n", "b\ne\n")
         local selection = { old = { [1] = true }, new = { [1] = true } }
@@ -14,7 +14,7 @@ describe("git.staging.selection", function()
             selected.stage("/", "f", union, cached, unstaged, selection, false)
         assert.is_nil(text)
         assert.is_nil(after)
-        assert.are.equal("between", refusal)
+        assert.are.equal("ending", refusal)
     end)
 
     it("unstages a deletion the read-back marks on another line of its run", function()

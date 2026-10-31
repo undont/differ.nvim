@@ -675,4 +675,107 @@ describe(":Differ diff hunk staging", function()
         assert.is_truthy(last_said():find("nothing was changed", 1, true))
         p:close()
     end)
+
+    describe("on a last line and its ending", function()
+        local function on_disk(root)
+            local f = assert(io.open(root .. "/a.lua", "rb"))
+            local text = f:read("*a")
+            f:close()
+            return text
+        end
+
+        it("visual u on one row of a newline change says why and unstages nothing", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nb")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "a\nb\n")
+            git(root, "add", "a.lua")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            visual(col, row, row, "u")
+            assert.is_truthy(last_said():find("are one change; select both rows", 1, true))
+            assert.are.equal("a\nb\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD b, index and worktree b e: b's missing newline can't come back above e
+        it("visual u on b's newline change alone says why and unstages nothing", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "b")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "b\ne\n")
+            git(root, "add", "a.lua")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            visual(col, col.map.from_old[1], col.map.from_new[1], "u")
+            assert.is_truthy(
+                last_said():find(
+                    "unstaging these lines would leave a line with no newline",
+                    1,
+                    true
+                )
+            )
+            assert.are.equal("b\ne\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD a b c, worktree a b unterminated: c can't come back after b
+        it(
+            "visual X on a line after the unterminated last line refuses before the prompt",
+            function()
+                local root = fresh_repo()
+                write(root .. "/a.lua", "a\nb\nc\n")
+                git(root, "add", "a.lua")
+                git(root, "commit", "-q", "-m", "three lines")
+                write(root .. "/a.lua", "a\nb")
+                vim.cmd.edit(root .. "/a.lua")
+                local p, v = open_panel()
+
+                local col = v.columns[1]
+                local row = col.map.from_old[3]
+                local prompt = confirming(1, function()
+                    visual(col, row, row, "X")
+                end)
+                assert.is_nil(prompt)
+                assert.is_truthy(
+                    last_said():find(
+                        "reverting these lines would leave a line with no newline",
+                        1,
+                        true
+                    )
+                )
+                assert.are.equal("a\nb", on_disk(root))
+                p:close()
+            end
+        )
+
+        it("visual X in dw on one row of a newline change refuses before the prompt", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nb")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "a\nb\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+            v:toggle_local()
+            v = view_in_origin(p)
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            local prompt = confirming(1, function()
+                visual(col, row, row, "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find("are one change; select both rows", 1, true))
+            assert.are.equal("a\nb\n", on_disk(root))
+            p:close()
+        end)
+    end)
 end)
