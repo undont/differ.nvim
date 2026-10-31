@@ -174,7 +174,8 @@ end
 ---| "between"  -- a file too big to read, or a selection the drawn marks need moved that the cut has in place
 ---| "large"    -- a hunk too big to compare against its block
 ---| "hidden"   -- a selected hunk's block holds a line neither side has
----| "ending"   -- the op would leave a line with no newline above others
+---| "ending"   -- the op would leave a line with no newline above others, its newline change unselected
+---| "ending_after"  -- the op would leave a line with no newline above others it didn't select
 ---| "split_ending"  -- the op would move one line of a line and its newline change without the other
 ---| "unshown"  -- a line the index holds again where no row shows it: HEAD's moved, or staged with HEAD's deleted
 
@@ -254,17 +255,22 @@ local function splits_ending(h, base, block)
     return false
 end
 
--- whether `block` has a line after the NO_EOL line of a line and its newline change
+-- the refusal for `block` holding a line after the NO_EOL line of a line and its
+-- newline change: "ending_after" where going from `base` moves that pair
 ---@param h differ.Hunk  -- an ended hunk
+---@param base differ.model.Origin[]
 ---@param block differ.model.Origin[]
----@return boolean
-local function ending_inside(h, block)
+---@return "ending"|"ending_after"|nil
+local function ending_inside(h, base, block)
     for _, pair in ipairs(ending_pairs(h)) do
         if holds(block, pair.ending) and not same(block[#block], pair.ending) then
-            return true
+            if holds(base, pair.ending) then
+                return "ending"
+            end
+            return "ending_after"
         end
     end
-    return false
+    return nil
 end
 
 -- whether the selection has a line on either side of `h`
@@ -539,7 +545,8 @@ function M.select_index(union, cached, selection, take)
     for _, i in ipairs(hidden) do
         hides[i] = true
     end
-    local split, inside = false, false
+    local split = false
+    local inside ---@type "ending"|"ending_after"|nil
     for i, h in ipairs(cut.ended.hunks) do
         if touches(h, selection) then
             if hides[i] then
@@ -549,7 +556,7 @@ function M.select_index(union, cached, selection, take)
             local base = origins[i] --[[@as differ.model.Origin[] ]]
             local block = select_block(h, base, selection, take)
             split = split or splits_ending(h, base, block)
-            inside = inside or ending_inside(h, block)
+            inside = inside or ending_inside(h, base, block)
             cut.blocks[i] = lines_of(h, block)
         end
     end
@@ -557,7 +564,7 @@ function M.select_index(union, cached, selection, take)
         return nil, "split_ending"
     end
     if inside then
-        return nil, "ending"
+        return nil, inside
     end
     local text = cut_text(cut, cached.new_text)
     if text == cached.new_text then
@@ -586,7 +593,7 @@ end
 ---@param union differ.DiffModel  -- HEAD↔worktree
 ---@param selection differ.model.Selection
 ---@param origins? table<integer, differ.model.Origin[]>  -- index_origins
----@return differ.DiffModel|nil reverted, "ending"|"split_ending"|nil refusal
+---@return differ.DiffModel|nil reverted, "ending"|"ending_after"|"split_ending"|nil refusal
 function M.select_worktree(union, selection, origins)
     local ended = apply.ended(union)
     local blocks, hunks, shift = {}, {}, 0
@@ -594,11 +601,13 @@ function M.select_worktree(union, selection, origins)
         blocks[i] = h.new_lines
         if touches(h, selection) then
             local block = reverted_block(h, selection, origins and origins[i])
-            if splits_ending(h, marks.whole_side("new", h.new_count), block) then
+            local base = marks.whole_side("new", h.new_count)
+            if splits_ending(h, base, block) then
                 return nil, "split_ending"
             end
-            if ending_inside(h, block) then
-                return nil, "ending"
+            local inside = ending_inside(h, base, block)
+            if inside then
+                return nil, inside
             end
             blocks[i] = lines_of(h, block)
             -- the line the block starts on, where a side with no lines names the one before

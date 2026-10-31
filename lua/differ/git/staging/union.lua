@@ -134,6 +134,15 @@ local SELECT_REFUSALS = {
         },
         revert = { write.REVERT_ENDING.ending },
     },
+    ending_after = {
+        stage = {
+            "staging these lines would leave a line with no newline above others; select the lines after it too",
+        },
+        unstage = {
+            "unstaging these lines would leave a line with no newline above others; select the lines after it too",
+        },
+        revert = { write.REVERT_ENDING.ending_after },
+    },
     split_ending = {
         stage = { write.REVERT_ENDING.split_ending },
         unstage = { write.REVERT_ENDING.split_ending },

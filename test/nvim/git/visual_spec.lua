@@ -717,12 +717,36 @@ describe(":Differ diff hunk staging", function()
             visual(col, col.map.from_old[1], col.map.from_new[1], "u")
             assert.is_truthy(
                 last_said():find(
-                    "unstaging these lines would leave a line with no newline",
+                    "unstaging these lines would leave a line with no newline above others; select the lines after it too",
                     1,
                     true
                 )
             )
             assert.are.equal("b\ne\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD and index b, worktree b e: e can't be staged after b's missing newline
+        it("visual s on a line after the unterminated last line says why", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "b")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "b\ne\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            visual(col, row, row, "s")
+            assert.is_truthy(
+                last_said():find(
+                    "staging these lines would leave a line with no newline above others; select its newline change too",
+                    1,
+                    true
+                )
+            )
+            assert.are.equal("b", indexed(root, "a.lua"))
             p:close()
         end)
 
@@ -746,7 +770,7 @@ describe(":Differ diff hunk staging", function()
                 assert.is_nil(prompt)
                 assert.is_truthy(
                     last_said():find(
-                        "reverting these lines would leave a line with no newline",
+                        "reverting these lines would leave a line with no newline above others; select its newline change too",
                         1,
                         true
                     )

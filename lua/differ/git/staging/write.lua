@@ -30,10 +30,13 @@ end
 -- why a selection whose texts read back as other marks writes nothing
 local MOVES_OTHERS = "these lines can't be moved on their own without changing others"
 
+local LEAVES_ENDING = "reverting these lines would leave a line with no newline above others"
+
 -- why X refuses where a last line and its ending would come apart
----@type table<"ending"|"split_ending", string>
+---@type table<"ending"|"ending_after"|"split_ending", string>
 local REVERT_ENDING = {
-    ending = "reverting these lines would leave a line with no newline above others; select its newline change too",
+    ending = LEAVES_ENDING .. "; select its newline change too",
+    ending_after = LEAVES_ENDING .. "; select the lines after it too",
     split_ending = "a line and its newline change are one change; select both rows",
 }
 

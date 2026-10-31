@@ -14,7 +14,7 @@ describe("git.staging.selection", function()
             selected.stage("/", "f", union, cached, unstaged, selection, false)
         assert.is_nil(text)
         assert.is_nil(after)
-        assert.are.equal("ending", refusal)
+        assert.are.equal("ending_after", refusal)
     end)
 
     it("unstages a deletion the read-back marks on another line of its run", function()
