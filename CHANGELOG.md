@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Visual `s`, `u` and `X` refused with "can't be staged on their own here" on many selections the hunk keys could act on; they now act wherever the hunk keys do
+- Hunk and visual `s`, `u` and `X` could write a line twice or drop one when the index held a staged copy of a line the view can't show; they now refuse and point to `dw`
+- Visual `s`, `u` and `X` on part of a last line and its newline change could drop, duplicate or reorder lines; they now refuse and say which rows to add
+- After a hunk `s` or `u` refused, the walk's "nothing left to stage" replaced the refusal; the refusal now stays on screen
+
 ## [0.2.20] — 2026-10-29
 
 ### Fixed

@@ -1228,17 +1228,43 @@ func getDownloadSpeed() {
         assert.are.equal("b\nx\nx\na\n", index)
     end)
 
-    -- the index's extra x and a sit away from hunk 1, and git pairs them differently
-    -- once its a is staged: s still writes, and they stay where they were
-    it("stages a ! hunk where the write re-pairs the staged lines elsewhere", function()
-        local root, p, v = staged_as("x\nx\na\nx\n", "x\nx\nx\na\na\nx\n", "a\nx\nx\na\nb\nx\n")
+    -- the index's b could be HEAD's moved or a staged b with HEAD's deleted
+    it("refuses to unstage a deletion whose line the index holds elsewhere", function()
+        local root, p, v = staged_as("a\nb\n", "b\na\n", "a\n")
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
-        v:stage_hunk()
-        local index = indexed(root, "a.lua")
+        _G.notifs = {}
+        v:unstage_hunk()
+        -- the walk finds nothing left, so the refusal stays the last thing said
+        local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+        local written = indexed(root, "a.lua")
         p:close()
-        assert.are.equal("a\nx\nx\nx\na\na\nx\n", index)
+        assert.are.equal("b\na\n", written)
+        assert.are.equal(
+            "differ: blocked by a staged change this view can't show; dw shows it",
+            said
+        )
+    end)
+
+    -- the index's extra a sits away from hunk 1: staging hunk 1's a would leave the index
+    -- one a more than the worktree, as either a staged a or HEAD's moved
+    it("refuses a hunk whose line the index holds again where the view can't show it", function()
+        local index = "x\nx\nx\na\na\nx\n"
+        local root, p, v = staged_as("x\nx\na\nx\n", index, "a\nx\nx\na\nb\nx\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+        local written = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(index, written)
+        assert.are.equal(
+            "differ: blocked by a staged change this view can't show; dw shows it",
+            said
+        )
     end)
 
     -- 2x staged and then edited again to 2y: the marks don't place 2x, and s still

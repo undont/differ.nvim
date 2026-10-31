@@ -294,6 +294,33 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(head, work_now)
     end)
 
+    -- the index's b could be HEAD's moved or a staged b with HEAD's deleted: giving
+    -- HEAD's b back would guess which, so X refuses before its prompt
+    it("refuses a hunk whose line the index holds where the view can't show it", function()
+        local root, p, v = staged_as("a\nb\n", "b\na\n", "a\n")
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        local orig, prompted = vim.fn.confirm, false
+        vim.fn.confirm = function()
+            prompted = true
+            return 1
+        end
+        _G.notifs = {}
+        v:revert_hunk()
+        vim.fn.confirm = orig
+        local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+        local indexed_now, work_now = indexed(root, "a.lua"), worktree(root, "a.lua")
+        p:close()
+        assert.is_false(prompted)
+        assert.are.equal("b\na\n", indexed_now)
+        assert.are.equal("a\n", work_now)
+        assert.are.equal(
+            "differ: blocked by a staged change this view can't show; dw shows it",
+            said
+        )
+    end)
+
     -- a new file's content is its only hunk, so reverting it deletes the file; the
     -- confirm has to say that rather than counting hunks at the user
     it("reverts a new file by deleting it, warning that it will", function()

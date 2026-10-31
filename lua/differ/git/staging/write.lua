@@ -30,6 +30,16 @@ end
 -- why a selection whose texts read back as other marks writes nothing
 local MOVES_OTHERS = "these lines can't be moved on their own without changing others"
 
+local LEAVES_ENDING = "reverting these lines would leave a line with no newline above others"
+
+-- why X refuses where a last line and its ending would come apart
+---@type table<"ending"|"ending_after"|"split_ending", string>
+local REVERT_ENDING = {
+    ending = LEAVES_ENDING .. "; select its newline change too",
+    ending_after = LEAVES_ENDING .. "; select the lines after it too",
+    split_ending = "a line and its newline change are one change; select both rows",
+}
+
 -- write `text` as `entry`'s staged content. an add left with nothing staged leaves
 -- the index, and a worktree rename stages with its content; both move the row
 ---@param ctx differ.git.StagingCtx
@@ -114,7 +124,11 @@ local function file_lines(ctx, entry, staging, base, reread, written)
             vim.schedule(reread)
             return nil, true
         end
-        local reverted = stage.select_worktree(model, selection)
+        local reverted, refusal = stage.select_worktree(model, selection)
+        if refusal then
+            notify(REVERT_ENDING[refusal], vim.log.levels.WARN)
+            return nil, true
+        end
         if not reverted then
             return nil
         end
@@ -162,6 +176,7 @@ return {
     gitmod = gitmod,
     edits = edits,
     MOVES_OTHERS = MOVES_OTHERS,
+    REVERT_ENDING = REVERT_ENDING,
     put_index = put_index,
     index_unreadable = index_unreadable,
     revert_worktree = revert_worktree,

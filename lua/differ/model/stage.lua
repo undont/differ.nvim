@@ -171,9 +171,107 @@ end
 ---@field new table<integer, boolean>  -- union new lnums
 
 ---@alias differ.model.SelectRefusal
----| "between"  -- the index changes a line between hunks, so it can't be cut into blocks
+---| "between"  -- a file too big to read, or a selection the drawn marks need moved that the cut has in place
 ---| "large"    -- a hunk too big to compare against its block
 ---| "hidden"   -- a selected hunk's block holds a line neither side has
+---| "ending"   -- the op would leave a line with no newline above others, its newline change unselected
+---| "ending_after"  -- the op would leave a line with no newline above others it didn't select
+---| "split_ending"  -- the op would move one line of a line and its newline change without the other
+---| "unshown"  -- a line the index holds again where no row shows it: HEAD's moved, or staged with HEAD's deleted
+
+-- whether the selection has `o`, a line of `h`
+---@param h differ.Hunk
+---@param selection differ.model.Selection
+---@param o differ.model.Origin
+---@return boolean
+local function picked(h, selection, o)
+    return selection[o.side][h[o.side .. "_start"] + o.k - 1] == true
+end
+
+---@class differ.model.EndingPair
+---@field line differ.model.Origin    -- the other side's line with the same text
+---@field ending differ.model.Origin  -- the line carrying NO_EOL
+
+-- each line of `h` carrying NO_EOL with the last line of the other side with its
+-- text: one line and its newline change
+---@param h differ.Hunk  -- an ended hunk
+---@return differ.model.EndingPair[]
+local function ending_pairs(h)
+    local pairs_of = {}
+    for _, side in ipairs({ "old", "new" }) do
+        local other = "new"
+        if side == "new" then
+            other = "old"
+        end
+        local lines = h[side .. "_lines"]
+        local last = lines[#lines]
+        if last and last:sub(-1) == text_util.NO_EOL then
+            local others = h[other .. "_lines"]
+            for k = #others, 1, -1 do
+                if others[k] == last:sub(1, -2) then
+                    pairs_of[#pairs_of + 1] =
+                        { line = { side = other, k = k }, ending = { side = side, k = #lines } }
+                    break
+                end
+            end
+        end
+    end
+    return pairs_of
+end
+
+---@param a differ.model.Origin
+---@param b differ.model.Origin
+---@return boolean
+local function same(a, b)
+    return a.side == b.side and a.k == b.k
+end
+
+---@param block differ.model.Origin[]
+---@param o differ.model.Origin
+---@return boolean
+local function holds(block, o)
+    for _, b in ipairs(block) do
+        if same(b, o) then
+            return true
+        end
+    end
+    return false
+end
+
+-- whether going from `base` to `block` moves one line of a line and its newline change
+-- in or out without the other
+---@param h differ.Hunk  -- an ended hunk
+---@param base differ.model.Origin[]
+---@param block differ.model.Origin[]
+---@return boolean
+local function splits_ending(h, base, block)
+    for _, pair in ipairs(ending_pairs(h)) do
+        local line = holds(base, pair.line) ~= holds(block, pair.line)
+        local ending = holds(base, pair.ending) ~= holds(block, pair.ending)
+        if line ~= ending then
+            return true
+        end
+    end
+    return false
+end
+
+-- the refusal for `block` holding a line after the NO_EOL line of a line and its
+-- newline change: "ending_after" where going from `base` moves that pair
+---@param h differ.Hunk  -- an ended hunk
+---@param base differ.model.Origin[]
+---@param block differ.model.Origin[]
+---@return "ending"|"ending_after"|nil
+local function ending_inside(h, base, block)
+    for _, pair in ipairs(ending_pairs(h)) do
+        if holds(block, pair.ending) and not same(block[#block], pair.ending) then
+            if holds(base, pair.ending) then
+                return "ending"
+            end
+            return "ending_after"
+        end
+    end
+    return nil
+end
 
 -- whether the selection has a line on either side of `h`
 ---@param h differ.Hunk
@@ -193,12 +291,11 @@ local function touches(h, selection)
     return false
 end
 
--- the hunk's lines in the order a block lays out the lines it has no place for yet:
--- sides of the same length row by row, each old line then its new line; otherwise the
--- old lines, then the new
+-- the hunk's lines side by side: sides of the same length row by row, each old line
+-- then its new line; otherwise the old lines, then the new
 ---@param h differ.Hunk
 ---@return differ.model.Origin[]
-local function default_order(h)
+local function side_order(h)
     if h.old_count ~= h.new_count then
         local order = marks.whole_side("old", h.old_count)
         for _, o in ipairs(marks.whole_side("new", h.new_count)) do
@@ -210,6 +307,37 @@ local function default_order(h)
     for k = 1, h.old_count do
         order[#order + 1] = { side = "old", k = k }
         order[#order + 1] = { side = "new", k = k }
+    end
+    return order
+end
+
+---@param order differ.model.Origin[]
+---@param o differ.model.Origin
+---@return integer
+local function place_of(order, o)
+    for i, p in ipairs(order) do
+        if same(p, o) then
+            return i
+        end
+    end
+    error("origin not in order")
+end
+
+-- the hunk's lines in the order a block lays out the lines it has no place for yet:
+-- side_order's, with a line carrying NO_EOL moved to follow its pair's line and its
+-- own side's line before it, whichever comes later
+---@param h differ.Hunk  -- an ended hunk
+---@return differ.model.Origin[]
+local function default_order(h)
+    local order = side_order(h)
+    for _, pair in ipairs(ending_pairs(h)) do
+        local ending = pair.ending
+        table.remove(order, place_of(order, ending))
+        local after = place_of(order, pair.line)
+        if ending.k > 1 then
+            after = math.max(after, place_of(order, { side = ending.side, k = ending.k - 1 }))
+        end
+        table.insert(order, after + 1, ending)
     end
     return order
 end
@@ -276,20 +404,17 @@ end
 ---@param origins differ.model.Origin[]  -- the block the index has, line by line
 ---@param selection differ.model.Selection
 ---@param take boolean
----@return string[]
+---@return differ.model.Origin[]
 local function select_block(h, origins, selection, take)
-    return lines_of(
-        h,
-        arrange(h, origins, function(o)
-            if not selection[o.side][h[o.side .. "_start"] + o.k - 1] then
-                return nil
-            end
-            if o.side == "old" then
-                return not take
-            end
-            return take
-        end)
-    )
+    return arrange(h, origins, function(o)
+        if not picked(h, selection, o) then
+            return nil
+        end
+        if o.side == "old" then
+            return not take
+        end
+        return take
+    end)
 end
 
 -- one hunk's worktree block once X on the selection reverts it: the selected old lines
@@ -301,7 +426,7 @@ end
 ---@return differ.model.Origin[]
 local function reverted_block(h, selection, index)
     return arrange(h, index or marks.whole_side("new", h.new_count), function(o)
-        local selected = selection[o.side][h[o.side .. "_start"] + o.k - 1] == true
+        local selected = picked(h, selection, o)
         if o.side == "old" then
             return selected
         end
@@ -309,86 +434,95 @@ local function reverted_block(h, selection, index)
     end)
 end
 
--- the index's block at each union hunk, line by line, where the index cuts into
--- blocks; none for a hunk whose block holds a line neither side has
+-- whether the selection touches any of `hunks`
+---@param hunks differ.Hunk[]
+---@param selection differ.model.Selection
+---@return boolean
+local function touches_any(hunks, selection)
+    for _, h in ipairs(hunks) do
+        if touches(h, selection) then
+            return true
+        end
+    end
+    return false
+end
+
+---@class differ.model.IndexCut
+---@field ended differ.DiffModel  -- the union, apply.ended
+---@field blocks string[][]  -- the index's lines at each union hunk
+---@field slices? integer[][]  -- each block's {index line, length}, nil for a whole-file cut
+
+-- the index's block at every union hunk where the index cuts into blocks, else its
+-- slice in the drawn reading (marks.reading). nil for a file too big to read
+---@param union differ.DiffModel   -- HEAD↔worktree
+---@param cached differ.DiffModel  -- HEAD↔index
+---@return differ.model.IndexCut|nil
+local function index_cut(union, cached)
+    local blocks, ended = M.index_blocks(union, cached.new_text)
+    if blocks then
+        return { ended = ended, blocks = blocks }
+    end
+    local read = M.reading(union, cached.new_text)
+    if not read then
+        return nil
+    end
+    local index = text_util.ended_lines(cached.new_text)
+    local slices = {}
+    blocks = {}
+    for i, slice in ipairs(read.slices) do
+        local block = {}
+        for l = slice[1], slice[2] - 1 do
+            block[#block + 1] = index[l]
+        end
+        blocks[i], slices[i] = block, { slice[1], slice[2] - slice[1] }
+    end
+    return { ended = ended, blocks = blocks, slices = slices }
+end
+
+-- the index's text with the cut's blocks in place
+---@param cut differ.model.IndexCut
+---@param index string  -- the index's text
+---@return string
+local function cut_text(cut, index)
+    if not cut.slices then
+        return apply.join(cut.ended, cut.blocks)
+    end
+    local lines, out, l = text_util.ended_lines(index), {}, 1
+    for i, block in ipairs(cut.blocks) do
+        local at, n = cut.slices[i][1], cut.slices[i][2]
+        for k = l, at - 1 do
+            out[#out + 1] = lines[k]
+        end
+        for _, line in ipairs(block) do
+            out[#out + 1] = line
+        end
+        l = at + n
+    end
+    for k = l, #lines do
+        out[#out + 1] = lines[k]
+    end
+    return text_util.ended_text(out)
+end
+
+-- the index's block at each union hunk index_cut places, line by line; none for a hunk
+-- whose block holds a line neither side has
 ---@param union differ.DiffModel   -- HEAD↔worktree
 ---@param cached differ.DiffModel  -- HEAD↔index
 ---@return table<integer, differ.model.Origin[]>|nil
 function M.index_origins(union, cached)
-    local blocks, ended = M.index_blocks(union, cached.new_text)
-    if not blocks then
+    local cut = index_cut(union, cached)
+    if not cut then
         return nil
     end
-    local _, hidden, origins = marks.of_blocks(ended.hunks, blocks)
+    local _, hidden, origins = marks.of_blocks(cut.ended.hunks, cut.blocks)
     for _, i in ipairs(hidden) do
         origins[i] = nil
     end
     return origins --[[@as table<integer, differ.model.Origin[]>]]
 end
 
--- whether a HEAD↔index hunk meets a union hunk the selection touches
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param selection differ.model.Selection
----@return boolean
-local function index_meets(union, cached, selection)
-    for _, h in ipairs(union.hunks) do
-        if touches(h, selection) then
-            for _, c in ipairs(cached.hunks) do
-                if marks.meets(c, "old", h, "old") then
-                    return true
-                end
-            end
-        end
-    end
-    return false
-end
-
--- the index with the selection staged at each touched hunk, where the index still holds
--- the hunk's HEAD lines: HEAD's position shifted by the HEAD↔index hunks above it. nil
--- when the index doesn't hold those lines there
----@param ended differ.DiffModel  -- the union, apply.ended
----@param cached differ.DiffModel
----@param selection differ.model.Selection
----@return string|nil
-local function place_selection(ended, cached, selection)
-    local index = text_util.ended_lines(cached.new_text)
-    for i = #ended.hunks, 1, -1 do
-        local h = ended.hunks[i]
-        if touches(h, selection) then
-            local first = h.old_start
-            if h.old_count == 0 then
-                first = first + 1
-            end
-            for _, c in ipairs(cached.hunks) do
-                if c.old_start < h.old_start then
-                    first = first + c.new_count - c.old_count
-                end
-            end
-            for k, line in ipairs(h.old_lines) do
-                if index[first + k - 1] ~= line then
-                    return nil
-                end
-            end
-            local out = {}
-            for l = 1, first - 1 do
-                out[#out + 1] = index[l]
-            end
-            local block = select_block(h, marks.whole_side("old", h.old_count), selection, true)
-            for _, line in ipairs(block) do
-                out[#out + 1] = line
-            end
-            for l = first + h.old_count, #index do
-                out[#out + 1] = index[l]
-            end
-            index = out
-        end
-    end
-    return text_util.ended_text(index)
-end
-
 -- the text the index takes when the selected union lines are staged (`take`) or
--- unstaged. only the hunks the selection touches are rebuilt; every other block stays
+-- unstaged. only the hunks the selection touches are rebuilt; every other line stays
 -- as the index has it. nil text with no refusal is a selection with nothing to move
 ---@param union differ.DiffModel   -- HEAD↔worktree
 ---@param cached differ.DiffModel  -- HEAD↔index
@@ -396,25 +530,14 @@ end
 ---@param take boolean
 ---@return string|nil text, differ.model.SelectRefusal|nil refusal
 function M.select_index(union, cached, selection, take)
-    local blocks, ended = M.index_blocks(union, cached.new_text)
-    if not blocks then
-        if index_meets(ended, cached, selection) then
+    local cut = index_cut(union, cached)
+    if not cut then
+        if touches_any(union.hunks, selection) then
             return nil, "between"
         end
-        -- the index has HEAD's lines at every selected hunk, so nothing to unstage
-        if not take then
-            return nil
-        end
-        local text = place_selection(ended, cached, selection)
-        if not text then
-            return nil, "between"
-        end
-        if text == cached.new_text then
-            return nil
-        end
-        return text
+        return nil
     end
-    local held, hidden, origins = marks.of_blocks(ended.hunks, blocks)
+    local held, hidden, origins = marks.of_blocks(cut.ended.hunks, cut.blocks)
     if not held then
         return nil, "large"
     end
@@ -422,17 +545,28 @@ function M.select_index(union, cached, selection, take)
     for _, i in ipairs(hidden) do
         hides[i] = true
     end
-    for i, h in ipairs(ended.hunks) do
+    local split = false
+    local inside ---@type "ending"|"ending_after"|nil
+    for i, h in ipairs(cut.ended.hunks) do
         if touches(h, selection) then
             if hides[i] then
                 return nil, "hidden"
             end
             -- a hunk with nothing hidden has an origin for every block line
-            blocks[i] =
-                select_block(h, origins[i] --[[@as differ.model.Origin[] ]], selection, take)
+            local base = origins[i] --[[@as differ.model.Origin[] ]]
+            local block = select_block(h, base, selection, take)
+            split = split or splits_ending(h, base, block)
+            inside = inside or ending_inside(h, base, block)
+            cut.blocks[i] = lines_of(h, block)
         end
     end
-    local text = apply.join(ended, blocks)
+    if split then
+        return nil, "split_ending"
+    end
+    if inside then
+        return nil, inside
+    end
+    local text = cut_text(cut, cached.new_text)
     if text == cached.new_text then
         return nil
     end
@@ -454,18 +588,28 @@ end
 
 -- the worktree with the selected union lines reverted, as a diff from that text to the
 -- worktree: one hunk per touched union hunk, its old side the lines the revert leaves
--- there and its new side the worktree's own. nil is a selection that touches no hunk
+-- there and its new side the worktree's own. nil and why where it refuses; nil alone
+-- is a selection that touches no hunk
 ---@param union differ.DiffModel  -- HEAD↔worktree
 ---@param selection differ.model.Selection
 ---@param origins? table<integer, differ.model.Origin[]>  -- index_origins
----@return differ.DiffModel|nil
+---@return differ.DiffModel|nil reverted, "ending"|"ending_after"|"split_ending"|nil refusal
 function M.select_worktree(union, selection, origins)
     local ended = apply.ended(union)
     local blocks, hunks, shift = {}, {}, 0
     for i, h in ipairs(ended.hunks) do
         blocks[i] = h.new_lines
         if touches(h, selection) then
-            blocks[i] = lines_of(h, reverted_block(h, selection, origins and origins[i]))
+            local block = reverted_block(h, selection, origins and origins[i])
+            local base = marks.whole_side("new", h.new_count)
+            if splits_ending(h, base, block) then
+                return nil, "split_ending"
+            end
+            local inside = ending_inside(h, base, block)
+            if inside then
+                return nil, inside
+            end
+            blocks[i] = lines_of(h, block)
             -- the line the block starts on, where a side with no lines names the one before
             local old_start = h.new_start + shift
             if h.new_count == 0 then
@@ -670,7 +814,7 @@ end
 function M.reverted(union, m, selection, origins)
     local want = { old = {}, new = {}, enter = 0, leave = 0, work_enter = 0, work_leave = 0 }
     local shift = 0
-    for i, h in ipairs(union.hunks) do
+    for i, h in ipairs(apply.ended(union).hunks) do
         -- the index takes back a selected old line it had staged away, and drops a
         -- selected new line it had staged
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -873,23 +1017,114 @@ local function moves_only(edits, from, to, leave, enter)
     return dropped <= leave and added <= enter and added - dropped == enter - leave
 end
 
+-- whether the index cuts into blocks with nothing hidden, so its marks come from the
+-- blocks rather than a reading (marks_of)
+---@param union differ.DiffModel
+---@param index string
+---@return boolean
+local function cuts_clean(union, index)
+    local blocks, ended = M.index_blocks(union, index)
+    if not blocks then
+        return false
+    end
+    local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
+    return held ~= nil and #hidden_in == 0
+end
+
+-- whether `to` lies on a shortest edit path from `from` to `towards`, by minimal diffs.
+-- the union pairs by histogram, so a write the drawn rows place exactly can still fall
+-- off this path
+---@param edits fun(a: string, b: string): integer, integer
+---@param towards string
+---@param from string
+---@param to string
+---@return boolean
+local function straight(edits, towards, from, to)
+    local function distance(a, b)
+        local dropped, added = edits(a, b)
+        return dropped + added
+    end
+    return distance(towards, to) + distance(to, from) == distance(towards, from)
+end
+
+---@param text string
+---@return table<string, integer>
+local function counts(text)
+    local n = {}
+    for _, line in ipairs(text_util.to_lines(text)) do
+        n[line] = (n[line] or 0) + 1
+    end
+    return n
+end
+
+-- the union's old and new lines outside `selection`, counted per line
+---@param union differ.DiffModel
+---@param selection differ.model.Selection
+---@return table<string, integer> old, table<string, integer> new
+local function unselected(union, selection)
+    local old_lines, new_lines =
+        text_util.to_lines(union.old_text), text_util.to_lines(union.new_text)
+    local old, new = {}, {}
+    for _, h in ipairs(union.hunks) do
+        for l = h.old_start, h.old_start + h.old_count - 1 do
+            if not selection.old[l] then
+                old[old_lines[l]] = (old[old_lines[l]] or 0) + 1
+            end
+        end
+        for l = h.new_start, h.new_start + h.new_count - 1 do
+            if not selection.new[l] then
+                new[new_lines[l]] = (new[new_lines[l]] or 0) + 1
+            end
+        end
+    end
+    return old, new
+end
+
+-- whether every line's count in `to` stays where `from` has it or within `towards`'s
+-- count less its `below` rows and plus its `above` rows. a line and its ending count as
+-- one
+---@param towards string
+---@param from string
+---@param to string
+---@param below table<string, integer>
+---@param above table<string, integer>
+---@return boolean
+local function counts_within(towards, from, to, below, above)
+    local target, old, new = counts(towards), counts(from), counts(to)
+    for _, side in ipairs({ target, old, new }) do
+        for line in pairs(side) do
+            local t, o, n = target[line] or 0, old[line] or 0, new[line] or 0
+            local low = math.min(o, t - (below[line] or 0))
+            local high = math.max(o, t + (above[line] or 0))
+            if n < low or n > high then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 ---@class differ.model.Before
 ---@field union differ.DiffModel
 ---@field cached differ.DiffModel
 ---@field hidden boolean
 ---@field edits fun(a: string, b: string): integer, integer  -- lines a minimal diff drops, adds
+---@field take boolean  -- s, which moves the index towards the worktree; u and X move it towards HEAD
 
 -- whether the pairs an op's texts make read back as `want`. a minimal diff from each old
 -- text to its new one stays within the lines the op moves (moves_only), so nothing else
--- changes place. where the index holds content no hunk shows, the op also drops the
--- hidden lines in the drawn slices it touches, and nothing else of it (hidden_dropped)
+-- changes place. each line's count ends off the side the op takes by no more than the
+-- unselected rows of that line, or stays put (counts_within). where a reading places
+-- the index, it also moves straight towards the side the op takes (straight). where the
+-- index holds content no hunk shows, the op also drops the hidden lines in the drawn
+-- slices it touches, and nothing else of it (hidden_dropped)
 ---@param want differ.model.LineStates
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
 ---@param union differ.DiffModel     -- read from the op's texts
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
----@return boolean
+---@return boolean, "unshown"|nil
 function M.reads_as(want, before, selection, union, cached, unstaged)
     local m, hidden = M.marks_of(union, cached, unstaged)
     local dropped = 0 ---@type integer|nil
@@ -915,12 +1150,31 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
     if not moves_only(before.edits, index_from, index_to, want.leave + dropped, want.enter) then
         return false
     end
+    local old_out, new_out = unselected(before.union, selection)
+    local towards, below, above = before.union.old_text, old_out, new_out
+    if before.take then
+        towards, below, above = before.union.new_text, new_out, old_out
+    end
+    if not counts_within(towards, index_from, index_to, below, above) then
+        return false, "unshown"
+    end
+    if not cuts_clean(before.union, index_from) then
+        if not straight(before.edits, towards, index_from, index_to) then
+            return false
+        end
+    end
     local work_from, work_to = before.union.new_text, union.new_text
     if
         want.work_enter
         and not moves_only(before.edits, work_from, work_to, want.work_leave, want.work_enter)
     then
         return false
+    end
+    if
+        want.work_enter
+        and not counts_within(before.union.old_text, work_from, work_to, old_out, new_out)
+    then
+        return false, "unshown"
     end
     return true
 end

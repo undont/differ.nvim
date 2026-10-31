@@ -1,5 +1,6 @@
 -- the stage fuzz at a fixed seed: every op it writes leaves the index and file the
--- drawn marks say it should. `make lua-fuzz` runs it large
+-- drawn marks say it should, and where a reading places the index, on a shortest path
+-- to the side it takes. `make lua-fuzz` runs it large
 local fuzz = require("test.fuzz.stage")
 
 local function text(tokens)
@@ -30,11 +31,43 @@ describe("stage fuzz", function()
         assert.is_false(fuzz.placed(union, text("c a x3 d x5"), keep))
     end)
 
+    local report
+    before_each(function()
+        report = report or fuzz.run({ seed = 1, count = 30 })
+    end)
+
     it("writes no op that moves lines it shouldn't", function()
-        local report = fuzz.run({ seed = 1, count = 30 })
         for _, op in ipairs(fuzz.OPS) do
             assert.is_true(report.ops[op].written > 0, op)
             assert.are.equal(0, report.ops[op].mismatched, fuzz.format(report))
+        end
+    end)
+
+    it("keeps a line and its newline change together", function()
+        for _, op in ipairs(fuzz.OPS) do
+            assert.are.equal(0, report.ops[op].ending_split, fuzz.format(report))
+        end
+    end)
+
+    it("ends each line's count off the side the op takes by its unselected rows", function()
+        for _, op in ipairs(fuzz.OPS) do
+            assert.are.equal(0, report.ops[op].count_bad, fuzz.format(report))
+        end
+        for _, op in ipairs(fuzz.HUNK_OPS) do
+            assert.are.equal(0, report.hunks[op].count_bad, fuzz.format(report))
+        end
+    end)
+
+    it("gives what the hunk op gives for visual s and u over a whole hunk", function()
+        for _, op in ipairs(fuzz.HUNK_OPS) do
+            assert.is_true(report.hunks[op].agree > 0, op)
+            assert.are.equal(0, report.hunks[op].mismatch, fuzz.format(report))
+        end
+    end)
+
+    it("moves a read index straight towards the side the hunk op takes", function()
+        for _, op in ipairs(fuzz.HUNK_OPS) do
+            assert.are.equal(0, report.hunks[op].off_path, fuzz.format(report))
         end
     end)
 end)

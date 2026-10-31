@@ -180,6 +180,15 @@ describe("next_index", function()
         -- both hunks are unstaged, so unstaging one has nothing to write
         assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
     end)
+
+    -- HEAD a b c, index a q b c, worktree a b q b c: the union inserts q b after b, and
+    -- the index's only b is HEAD's, with q hidden before it
+    it("keeps HEAD's unchanged line the index holds beside an inserted hunk", function()
+        local union = model("a\nb\nc\n", "a\nb\nq\nb\nc\n", { h(2, {}, 3, { "q", "b" }) })
+        local cached = model("a\nb\nc\n", "a\nq\nb\nc\n", { h(1, {}, 2, { "q" }) })
+        local unstaged = model("a\nq\nb\nc\n", "a\nb\nq\nb\nc\n", { h(1, {}, 2, { "b" }) })
+        assert.is_nil(stage.next_index(union, cached, unstaged, union.hunks[1], false))
+    end)
 end)
 
 describe("model.stage.drop_lines", function()
@@ -313,13 +322,90 @@ describe("model.stage.select_index", function()
         assert.is_nil(refusal)
     end)
 
-    it("leaves an uncut index alone when it changes nothing at the hunks unstaged", function()
+    it("refuses where the view reads a staged line next to the hunk into it", function()
         local union = (pairs_of(HEAD))
         local index = "1\n2\n3x\n4\n5\n"
         local cached = model(HEAD, index, { h(3, { "3" }, 3, { "3x" }) })
-        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
-        assert.is_nil(text)
+        for _, take in ipairs({ true, false }) do
+            local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), take)
+            assert.is_nil(text)
+            assert.are.equal("hidden", refusal)
+        end
+    end)
+
+    describe("with a staged line away from the selection", function()
+        local head = "1\n2\n3\n4\n5\n6\n7\n"
+        local union = model(head, "1\n2\n3\n4\n5\n6x\n7\n", { h(6, { "6" }, 6, { "6x" }) })
+
+        it("stages the selected hunk", function()
+            local cached = model(head, "1\n1q\n2\n3\n4\n5\n6\n7\n", { h(1, {}, 2, { "1q" }) })
+            local text, refusal = stage.select_index(union, cached, sel({ 6 }, { 6 }), true)
+            assert.is_nil(refusal)
+            assert.are.equal("1\n1q\n2\n3\n4\n5\n6x\n7\n", text)
+        end)
+
+        it("unstages the selected hunk", function()
+            local cached = model(head, "1\n1q\n2\n3\n4\n5\n6x\n7\n", {
+                h(1, {}, 2, { "1q" }),
+                h(6, { "6" }, 7, { "6x" }),
+            })
+            local text, refusal = stage.select_index(union, cached, sel({ 6 }, { 6 }), false)
+            assert.is_nil(refusal)
+            assert.are.equal("1\n1q\n2\n3\n4\n5\n6\n7\n", text)
+        end)
+    end)
+
+    it("stages where the view reads the hunk when the lines around it repeat", function()
+        local head = "1\nx\n2\n1\nx\n2\n9\n"
+        local union = model(head, "1\nX\n2\n1\nx\n2\n9\n", { h(2, { "x" }, 2, { "X" }) })
+        local cached = model(head, "1\nx\n2\n1\nx\n2\n9z\n", { h(7, { "9" }, 7, { "9z" }) })
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
         assert.is_nil(refusal)
+        assert.are.equal("1\nX\n2\n1\nx\n2\n9z\n", text)
+    end)
+
+    it("unstages a staged line the view reads into the selected hunk", function()
+        local union = model("c\n", "b\nc\nc\nd\n", {
+            h(0, {}, 1, { "b" }),
+            h(1, {}, 3, { "c", "d" }),
+        })
+        local cached = model("c\n", "c\nc\n", { h(1, {}, 2, { "c" }) })
+        local text, refusal = stage.select_index(union, cached, sel({}, { 3, 4 }), false)
+        assert.is_nil(refusal)
+        assert.are.equal("c\n", text)
+    end)
+
+    it(
+        "refuses rather than gives nothing where the view reads a hidden line into the hunk",
+        function()
+            local union = model("b\nx\n", "e\nb\n", {
+                h(0, {}, 1, { "e" }),
+                h(2, { "x" }, 2, {}),
+            })
+            local cached = model("b\nx\n", "b\nb\n", { h(2, { "x" }, 2, { "b" }) })
+            local text, refusal = stage.select_index(union, cached, sel({ 2 }, {}), true)
+            assert.is_nil(text)
+            assert.are.equal("hidden", refusal)
+        end
+    )
+
+    it("refuses a selection in an uncut file too big to read", function()
+        local olds, news = {}, {}
+        for k = 1, 100 do
+            olds[k], news[k] = "o" .. k, "n" .. k
+        end
+        local old, new = table.concat(olds, "\n"), table.concat(news, "\n")
+        local head = "1\n2\n3\n" .. old .. "\n4\n5\n6\n"
+        local union = model(head, "1\n2x\n3\n" .. new .. "\n4\n5\n6\n", {
+            h(2, { "2" }, 2, { "2x" }),
+            h(4, olds, 4, news),
+        })
+        local index = "1\n2\n3\n" .. old .. "\n4\n5q\n6\n"
+        local cached = model(head, index, { h(105, { "5" }, 105, { "5q" }) })
+        assert.is_nil(stage.reading(union, index))
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
+        assert.is_nil(text)
+        assert.are.equal("between", refusal)
     end)
 
     it("stages into an uncut index below a change that adds lines", function()
@@ -343,16 +429,15 @@ describe("model.stage.select_index", function()
         assert.are.equal("1\n2\n3x\n4\nB\n5\n", text)
     end)
 
-    it("refuses to unstage from an uncut index that changes a selected hunk", function()
+    it("refuses an uncut index that changes a selected hunk to neither side", function()
         local union = (pairs_of(HEAD))
         local index = "1\n2z\n3x\n4\n5\n"
         local cached = model(HEAD, index, { h(2, { "2", "3" }, 2, { "2z", "3x" }) })
-        local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), false)
-        assert.is_nil(text)
-        assert.are.equal("between", refusal)
-        text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), true)
-        assert.is_nil(text)
-        assert.are.equal("between", refusal)
+        for _, take in ipairs({ true, false }) do
+            local text, refusal = stage.select_index(union, cached, sel({ 2 }, { 2 }), take)
+            assert.is_nil(text)
+            assert.are.equal("hidden", refusal)
+        end
     end)
 
     it("refuses a hunk whose index block holds a line neither side has", function()
@@ -361,6 +446,59 @@ describe("model.stage.select_index", function()
         local text, refusal = stage.select_index(union, cached, sel({}, { 2 }), true)
         assert.is_nil(text)
         assert.are.equal("hidden", refusal)
+    end)
+
+    -- HEAD 1 b, index and worktree 1 b with a newline: -b / +b differ by the ending alone
+    local function newline_pair()
+        local union = model("1\nb", "1\nb\n", { h(2, { "b" }, 2, { "b" }) })
+        return union, model("1\nb", "1\nb\n", {})
+    end
+
+    it("refuses one row of a line and its newline change", function()
+        local union, cached = newline_pair()
+        for _, s in ipairs({ sel({ 2 }, {}), sel({}, { 2 }) }) do
+            local text, refusal = stage.select_index(union, cached, s, false)
+            assert.is_nil(text)
+            assert.are.equal("split_ending", refusal)
+        end
+    end)
+
+    it("unstages a line and its newline change together", function()
+        local union, cached = newline_pair()
+        assert.are.equal("1\nb", stage.select_index(union, cached, sel({ 2 }, { 2 }), false))
+    end)
+
+    it("gives nothing for one row of a newline change with nothing to move", function()
+        local union = model("1\nb", "1\nb\n", { h(2, { "b" }, 2, { "b" }) })
+        local cached = model("1\nb", "1\nb", {})
+        local text, refusal = stage.select_index(union, cached, sel({ 2 }, {}), false)
+        assert.is_nil(text)
+        assert.is_nil(refusal)
+    end)
+
+    it("refuses to bring back an unterminated line with a staged line after it", function()
+        local union = model("b", "b\ne\n", { h(1, { "b" }, 1, { "b", "e" }) })
+        local cached = model("b", "b\ne\n", {})
+        local text, refusal = stage.select_index(union, cached, sel({ 1 }, { 1 }), false)
+        assert.is_nil(text)
+        assert.are.equal("ending_after", refusal)
+    end)
+
+    it("stages a new line above the worktree's unterminated line", function()
+        local union = model("1\na\nb\n", "1\nc\nb", { h(2, { "a", "b" }, 2, { "c", "b" }) })
+        local cached = model("1\na\nb\n", "1\na\nb\n", {})
+        assert.are.equal(
+            "1\nc\nb",
+            stage.select_index(union, cached, sel({ 2, 3 }, { 2, 3 }), true)
+        )
+    end)
+
+    it("refuses to stage a line after an unterminated line it keeps", function()
+        local union = model("1\nb", "1\nb\nc\n", { h(2, { "b" }, 2, { "b", "c" }) })
+        local cached = model("1\nb", "1\nb", {})
+        local text, refusal = stage.select_index(union, cached, sel({}, { 3 }), true)
+        assert.is_nil(text)
+        assert.are.equal("ending", refusal)
     end)
 end)
 
@@ -438,6 +576,35 @@ describe("model.stage.select_worktree", function()
         assert.is_nil(stage.select_worktree(union, sel({ 1 }, { 3 })))
     end)
 
+    -- HEAD 1 b c, worktree 1 b unterminated: -b -c / +b, where -b / +b is b's newline
+    local function dropped_newline()
+        return model("1\nb\nc\n", "1\nb", { h(2, { "b", "c" }, 2, { "b" }) })
+    end
+
+    it("refuses one row of a line and its newline change", function()
+        local out, refusal = stage.select_worktree(dropped_newline(), sel({}, { 2 }))
+        assert.is_nil(out)
+        assert.are.equal("split_ending", refusal)
+    end)
+
+    it("refuses to put a line back after the worktree's unterminated line", function()
+        local out, refusal = stage.select_worktree(dropped_newline(), sel({ 3 }, {}))
+        assert.is_nil(out)
+        assert.are.equal("ending", refusal)
+    end)
+
+    it("refuses to bring back an unterminated line above a line it keeps", function()
+        local union = model("b", "b\ne\n", { h(1, { "b" }, 1, { "b", "e" }) })
+        local out, refusal = stage.select_worktree(union, sel({ 1 }, { 1 }))
+        assert.is_nil(out)
+        assert.are.equal("ending_after", refusal)
+    end)
+
+    it("reverts a line and its newline change together", function()
+        local out = stage.select_worktree(dropped_newline(), sel({ 2 }, { 2 }))
+        assert.are.equal("1\nb\n", out.old_text)
+    end)
+
     -- HEAD 1 c c 2, index 1 e c 2, worktree 1 e 2: the index's c is HEAD's second
     local function index_order_pair(index)
         local head = "1\nc\nc\n2\n"
@@ -455,8 +622,23 @@ describe("model.stage.select_worktree", function()
 
     it("restores old lines first where the index holds none of the hunk", function()
         local union, cached = index_order_pair("1\nc\nc\n2\n")
+        local selection = sel({ 2, 3 }, {})
         local origins = stage.index_origins(union, cached)
-        local out = stage.select_worktree(union, sel({ 2, 3 }, {}), origins)
+        local out = stage.select_worktree(union, selection, origins)
         assert.are.equal("1\nc\nc\ne\n2\n", out.old_text)
+    end)
+
+    it("restores lines in the index's order with a staged line away from them", function()
+        local head = "1\nc\nc\n2\n9\n"
+        local union = model(head, "1\ne\n2\n9\n", { h(2, { "c", "c" }, 2, { "e" }) })
+        local cached = model(head, "1\ne\nc\n2\n9z\n", {
+            h(2, { "c" }, 2, { "e" }),
+            h(5, { "9" }, 5, { "9z" }),
+        })
+        local selection = sel({ 2, 3 }, {})
+        local origins = stage.index_origins(union, cached)
+        local out = stage.select_worktree(union, selection, origins)
+        assert.are.equal("1\nc\ne\nc\n2\n9\n", out.old_text)
+        assert.are.equal("1\nc\ne\nc\n2\n9z\n", stage.select_index(union, cached, selection, false))
     end)
 end)

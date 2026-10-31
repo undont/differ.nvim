@@ -1,10 +1,22 @@
--- s, u and X through the selection core on hunks of identical lines, where the
--- read-back may mark another line of a run than the op moved
+-- s, u and X through the selection core: hunks of identical lines, where the
+-- read-back may mark another line of a run than the op moved, and selections the
+-- drawn marks still need moved
 local content = require("differ.git.content")
 local fuzz = require("test.fuzz.stage")
 local selected = require("differ.git.staging.selection")
 
 describe("git.staging.selection", function()
+    it("refuses to bring back an unterminated line with a staged line after it", function()
+        -- HEAD's unterminated b and the worktree's terminated b are one token
+        local union, cached, unstaged = content.union_pairs("/", "f", "b", "b\ne\n", "b\ne\n")
+        local selection = { old = { [1] = true }, new = { [1] = true } }
+        local text, after, refusal =
+            selected.stage("/", "f", union, cached, unstaged, selection, false)
+        assert.is_nil(text)
+        assert.is_nil(after)
+        assert.are.equal("ending_after", refusal)
+    end)
+
     it("unstages a deletion the read-back marks on another line of its run", function()
         local union, cached, unstaged =
             content.union_pairs("/", "f", "a\na\na\n", "a\nx9\na\n", "x9\na")
@@ -37,6 +49,46 @@ describe("git.staging.selection", function()
             end
         end
         assert.is_true(written > 0)
+    end)
+
+    -- the index holds HEAD's b where the union shows it deleted
+    describe("on HEAD a b, index b a, worktree a", function()
+        local t = { head = "a\nb\n", index = "b\na\n", work = "a\n" }
+        local selection = { old = { [2] = true }, new = {} }
+
+        for _, op in ipairs({ "u", "X" }) do
+            it(op .. " on - b refuses rather than guess where b went", function()
+                local outcome = fuzz.run_op(t, op, selection)
+                assert.are.equal("refused", outcome.kind)
+                assert.are.equal("unshown", outcome.reason)
+            end)
+        end
+
+        it("hunk u refuses rather than guess where b went", function()
+            local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+            local text = require("differ.model.stage").next_index(
+                union,
+                cached,
+                unstaged,
+                union.hunks[1],
+                false
+            )
+            local after, refusal =
+                selected.checked("/", "f", union, cached, unstaged, selection, false, text)
+            assert.is_nil(after)
+            assert.are.equal("unshown", refusal)
+        end)
+    end)
+
+    describe("on HEAD blank and unterminated b, index b, worktree a and blank", function()
+        local t = { head = "\nb", index = "b\n", work = "a\n\n" }
+        for _, op in ipairs({ "u", "X" }) do
+            it(op .. " on - b refuses rather than guess where b went", function()
+                local outcome = fuzz.run_op(t, op, { old = { [2] = true }, new = {} })
+                assert.are.equal("refused", outcome.kind)
+                assert.are.equal("unshown", outcome.reason)
+            end)
+        end
     end)
 
     describe("on HEAD c c c, index c d c c, worktree c d x4 x4", function()

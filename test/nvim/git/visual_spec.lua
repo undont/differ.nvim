@@ -340,8 +340,53 @@ describe(":Differ diff hunk staging", function()
 
         local col = v.columns[1]
         visual(col, col.map.from_old[4], col.map.from_new[4], "s")
-        assert.is_truthy(last_said():find("can't be staged on their own", 1, true))
+        assert.is_truthy(last_said():find("holds staged content it can't show", 1, true))
         assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- a 100-line rewrite makes the file too big to read, and a staged 5q the worktree
+    -- has undone keeps the index from cutting into blocks
+    local function unread_repo()
+        local root = fresh_repo()
+        local olds, news = {}, {}
+        for k = 1, 100 do
+            olds[k], news[k] = "o" .. k, "n" .. k
+        end
+        local old, new = table.concat(olds, "\n"), table.concat(news, "\n")
+        write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5\n6\n")
+        git(root, "commit", "-q", "-am", "long")
+        write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5q\n6\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "1\n2x\n3\n" .. new .. "\n4\n5\n6\n")
+        vim.cmd.edit(root .. "/a.lua")
+        return root
+    end
+
+    it("visual s refuses lines in a file too big to read", function()
+        local root = unread_repo()
+        local p, v = open_panel()
+        local before = indexed(root, "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "s")
+        assert.is_truthy(last_said():find("can't be staged on their own here", 1, true))
+        assert.are.equal(before, indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X refuses before the prompt in a file too big to read", function()
+        local root = unread_repo()
+        local p, v = open_panel()
+        local before = worktree(root, "a.lua")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[2], col.map.from_new[2], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.are.equal(before, worktree(root, "a.lua"))
         p:close()
     end)
 
@@ -442,15 +487,15 @@ describe(":Differ diff hunk staging", function()
             visual(col, col.map.from_old[4], col.map.from_new[4], "X")
         end)
         assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.is_truthy(last_said():find("holds staged content it can't show", 1, true))
         assert.are.equal("1\n2\n3\n4y\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
         assert.are.equal("1\n2\n3x\n4x\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
         p:close()
     end)
 
     -- repeated lines let the index cut against the hunks more than one way, with
-    -- nothing hidden
-    it("visual X on repeated lines refuses without naming a hidden change", function()
+    -- nothing hidden: X takes the cut the view draws
+    it("visual X on repeated lines reverts where the view reads them", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "a\nb\na\nc\n")
         git(root, "commit", "-q", "-am", "repeats")
@@ -465,9 +510,9 @@ describe(":Differ diff hunk staging", function()
         local prompt = confirming(1, function()
             visual(col, 1, #col.map.lines, "X")
         end)
-        assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("can't be reverted on their own", 1, true))
-        assert.are.equal("a\nb\nc\nc\nb\n", worktree(root, "a.lua"))
+        assert.are.equal("Revert 3 lines in a.lua?", prompt)
+        assert.are.equal("a\nb\na\nc\n", worktree(root, "a.lua"))
+        assert.are.equal("a\nb\na\nc\n", indexed(root, "a.lua"))
         p:close()
     end)
 
@@ -629,5 +674,132 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(edited, worktree(root, "a.lua"))
         assert.is_truthy(last_said():find("nothing was changed", 1, true))
         p:close()
+    end)
+
+    describe("on a last line and its ending", function()
+        local function on_disk(root)
+            local f = assert(io.open(root .. "/a.lua", "rb"))
+            local text = f:read("*a")
+            f:close()
+            return text
+        end
+
+        it("visual u on one row of a newline change says why and unstages nothing", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nb")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "a\nb\n")
+            git(root, "add", "a.lua")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            visual(col, row, row, "u")
+            assert.is_truthy(last_said():find("are one change; select both rows", 1, true))
+            assert.are.equal("a\nb\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD b, index and worktree b e: b's missing newline can't come back above e
+        it("visual u on b's newline change alone says why and unstages nothing", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "b")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "b\ne\n")
+            git(root, "add", "a.lua")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            visual(col, col.map.from_old[1], col.map.from_new[1], "u")
+            assert.is_truthy(
+                last_said():find(
+                    "unstaging these lines would leave a line with no newline above others; select the lines after it too",
+                    1,
+                    true
+                )
+            )
+            assert.are.equal("b\ne\n", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD and index b, worktree b e: e can't be staged after b's missing newline
+        it("visual s on a line after the unterminated last line says why", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "b")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "b\ne\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            visual(col, row, row, "s")
+            assert.is_truthy(
+                last_said():find(
+                    "staging these lines would leave a line with no newline above others; select its newline change too",
+                    1,
+                    true
+                )
+            )
+            assert.are.equal("b", indexed(root, "a.lua"))
+            p:close()
+        end)
+
+        -- HEAD a b c, worktree a b unterminated: c can't come back after b
+        it(
+            "visual X on a line after the unterminated last line refuses before the prompt",
+            function()
+                local root = fresh_repo()
+                write(root .. "/a.lua", "a\nb\nc\n")
+                git(root, "add", "a.lua")
+                git(root, "commit", "-q", "-m", "three lines")
+                write(root .. "/a.lua", "a\nb")
+                vim.cmd.edit(root .. "/a.lua")
+                local p, v = open_panel()
+
+                local col = v.columns[1]
+                local row = col.map.from_old[3]
+                local prompt = confirming(1, function()
+                    visual(col, row, row, "X")
+                end)
+                assert.is_nil(prompt)
+                assert.is_truthy(
+                    last_said():find(
+                        "reverting these lines would leave a line with no newline above others; select its newline change too",
+                        1,
+                        true
+                    )
+                )
+                assert.are.equal("a\nb", on_disk(root))
+                p:close()
+            end
+        )
+
+        it("visual X in dw on one row of a newline change refuses before the prompt", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "a\nb")
+            git(root, "add", "a.lua")
+            git(root, "commit", "-q", "-m", "unterminated")
+            write(root .. "/a.lua", "a\nb\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p, v = open_panel()
+            v:toggle_local()
+            v = view_in_origin(p)
+
+            local col = v.columns[1]
+            local row = col.map.from_new[2]
+            local prompt = confirming(1, function()
+                visual(col, row, row, "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find("are one change; select both rows", 1, true))
+            assert.are.equal("a\nb\n", on_disk(root))
+            p:close()
+        end)
     end)
 end)

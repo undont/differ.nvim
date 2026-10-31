@@ -1755,7 +1755,8 @@ end
 -- wrap lands on a hunk skipped on purpose too, which is what ]f is for. the
 -- announcement only claims there's nothing left once all three have come up empty
 ---@param direction "next"|"prev"
-function View:_step_review(direction)
+---@param refused boolean|nil  -- the hunk under the cursor just refused, and its message stays the last one
+function View:_step_review(direction, refused)
     local forward = direction == "next"
     local staged = not forward -- s hunts what's unstaged, u what's staged
     local col = self:_focused_column()
@@ -1788,6 +1789,9 @@ function View:_step_review(direction)
         return
     end
 
+    if refused then
+        return
+    end
     self:_walk_done(staged)
 end
 
@@ -1820,7 +1824,7 @@ function View:_toggle_hunk(want_staged)
     -- walk on rather than parking on a hunk this key can never move
     if stuck then
         self.stuck[want_staged and "staged" or "unstaged"][idx] = true
-        self:_step_review(want_staged and "next" or "prev")
+        self:_step_review(want_staged and "next" or "prev", true)
     end
 end
 

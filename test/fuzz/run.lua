@@ -1,4 +1,4 @@
--- nvim --clean -l test/fuzz/run.lua [--cmp=<rev>] [seed] [count] [selections] [staged] [edited]
+-- nvim --clean -l test/fuzz/run.lua [--cmp=<rev>] [seed] [count] [selections] [staged] [edited] [alphabet]
 package.path = "./lua/?.lua;./lua/?/init.lua;./?.lua;" .. package.path
 
 local args, rev = {}, nil
@@ -17,6 +17,7 @@ local opts = {
     selections = tonumber(args[3]),
     staged = tonumber(args[4]),
     edited = tonumber(args[5]),
+    alphabet = tonumber(args[6]),
 }
 local started = vim.uv.hrtime()
 print(("seed %d, %d triples"):format(opts.seed, opts.count))
