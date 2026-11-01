@@ -90,6 +90,28 @@ local operation_repo = fixture.cached(function(op)
     return root
 end)
 
+-- a stash pop that conflicts on both f.txt and g.txt, with no operation in progress
+local stash_repo_two = fixture.cached(function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/f.txt", "a\nb\nc\n")
+    write(root .. "/g.txt", "a\nb\nc\n")
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/f.txt", "a\nTHEIRS\nc\n")
+    write(root .. "/g.txt", "a\nTHEIRS\nc\n")
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "-")
+    write(root .. "/f.txt", "a\nSTASHED\nc\n")
+    write(root .. "/g.txt", "a\nSTASHED\nc\n")
+    git_ok(root, "stash", "-q")
+    git_ok(root, "checkout", "-q", "feature")
+    git(root, "stash", "pop")
+    return root
+end)
+
 -- a repo with a single conflict buried in a long file, so the unchanged spans either side
 -- are large enough to fold (the small repo's block fills the file and folds nothing)
 local conflict_repo_big = fixture.cached(function()
@@ -1262,6 +1284,71 @@ describe(":Differ mergetool in-progress operation", function()
             assert.are.same({}, _G.notifs)
         end)
     end
+
+    describe("gC with no operation", function()
+        local continue_desc = "differ: continue, skip or abort the operation"
+        local select, picked
+
+        before_each(function()
+            select, picked = vim.ui.select, false
+            vim.ui.select = function()
+                picked = true
+            end
+        end)
+
+        after_each(function()
+            vim.ui.select = select
+        end)
+
+        ---@param root string
+        local function unmerged(root)
+            return vim.trim(git_ok(root, "ls-files", "-u"))
+        end
+
+        it("stages the resolved file, closes the merge tool and opens the panel", function()
+            local root = operation_repo("stash")
+            vim.cmd.edit(root .. "/f.txt")
+            merge.open({})
+            local s = assert(merge.current())
+            fire(s.result_buf, "differ: take theirs")
+            _G.notifs = {}
+            fire(s.result_buf, continue_desc)
+            assert.are.equal("", unmerged(root))
+            assert.are.equal("differ: conflicts resolved and staged", _G.notifs[1].msg)
+            assert.is_nil(merge.current())
+            local p = assert(require("differ.panel").current())
+            assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(p.git_root))
+            assert.is_false(picked)
+        end)
+
+        it("warns the count and keeps the session with a region left", function()
+            local root = operation_repo("stash")
+            vim.cmd.edit(root .. "/f.txt")
+            merge.open({})
+            local s = assert(merge.current())
+            _G.notifs = {}
+            fire(s.result_buf, continue_desc)
+            assert.are.equal("differ: 1 conflicted file left", _G.notifs[1].msg)
+            assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+            assert.are_not.equal("", unmerged(root))
+            assert.are.equal(s, merge.current())
+            assert.is_false(picked)
+        end)
+
+        it("counts the conflicted files left once the open one is staged", function()
+            local root = stash_repo_two()
+            vim.cmd.edit(root .. "/f.txt")
+            merge.open({})
+            local s = assert(merge.current())
+            fire(s.result_buf, "differ: take ours")
+            _G.notifs = {}
+            fire(s.result_buf, continue_desc)
+            assert.are.equal("differ: 1 conflicted file left", _G.notifs[1].msg)
+            assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
+            assert.are.equal(s, merge.current())
+            assert.is_false(picked)
+        end)
+    end)
 end)
 
 describe(":Differ mergetool file stepping", function()

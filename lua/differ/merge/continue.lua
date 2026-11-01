@@ -252,6 +252,25 @@ local function show(root, op, left)
     end)
 end
 
+-- conflicts with no operation (stash pop, checkout -m) have nothing to continue, skip or
+-- abort: stage the open result and say what's left
+---@param root string
+---@param session differ.MergeSession|nil  -- the merge tool's, when it's on this repo
+local function settle_without_operation(root, session)
+    local merge = require("differ.merge")
+    if session and not merge.settle() then
+        return
+    end
+    local git = require("differ.git")
+    local left = #git.conflicted(root)
+    if left > 0 then
+        return notify(("%s left"):format(plural(left, "conflicted file")), vim.log.levels.WARN)
+    end
+    notify("conflicts resolved and staged")
+    merge.close()
+    git.panel({ root = root, open_first = true, supersede = true })
+end
+
 -- the commit key: mid-operation, the picker once every conflict is resolved, skip and
 -- abort before then
 ---@param root string|nil  -- the surface's repo, else the command's
@@ -260,11 +279,22 @@ function M.pick_resolved(root)
         return
     end
     root = root or target_root()
-    local op = root and require("differ.git").operation(root)
-    if not root or not op then
+    if not root then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")
     end
-    show(root, op, conflicts_left(root))
+    local git = require("differ.git")
+    local op = git.operation(root)
+    if op then
+        return show(root, op, conflicts_left(root))
+    end
+    local s = require("differ.merge").current()
+    if s and s.root ~= root then
+        s = nil
+    end
+    if s or #git.conflicted(root) > 0 then
+        return settle_without_operation(root, s)
+    end
+    notify("no merge, rebase, cherry-pick, revert or am in progress")
 end
 
 -- the picker, continue first
