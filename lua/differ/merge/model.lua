@@ -17,6 +17,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field theirs_text string -- full :3: stage
 ---@field result_text string -- the worktree file as-is (markers intact)
 ---@field regions differ.merge.Region[]
+---@field orphans integer[]  -- marker lines no region uses (conflict.orphans)
 ---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
@@ -200,7 +201,7 @@ local function stage_blobs(root, relpath, texts)
 end
 
 -- build a MergeModel for a conflicted `relpath`. returns nil + a reason when the file
--- isn't on disk, or carries no conflict markers and is neither binary nor a
+-- isn't on disk, or carries no conflict marker lines and is neither binary nor a
 -- modify/delete conflict
 ---@param root string
 ---@param relpath string
@@ -227,6 +228,7 @@ function M.build(root, relpath, head)
             theirs_text = "",
             result_text = "",
             regions = {},
+            orphans = {},
             marker_size = 7, -- no markers in a binary result
             head = head,
             no_ancestor = no_ancestor,
@@ -235,9 +237,11 @@ function M.build(root, relpath, head)
         }
     end
     local marker_size = git.marker_size(root, relpath)
-    local regions = conflict.parse(to_lines(result_text), marker_size)
+    local result_lines = to_lines(result_text)
+    local regions = conflict.parse(result_lines, marker_size)
+    local orphans = conflict.orphans(result_lines, marker_size)
     local deleted = nil
-    if #regions == 0 then
+    if #regions == 0 and #orphans == 0 then
         deleted = deleted_side(root, relpath)
         if not deleted then
             return nil, relpath .. " has no conflicts to resolve"
@@ -256,6 +260,7 @@ function M.build(root, relpath, head)
         theirs_text = theirs_text,
         result_text = result_text,
         regions = regions,
+        orphans = orphans,
         marker_size = marker_size,
         head = head,
         no_ancestor = no_ancestor,

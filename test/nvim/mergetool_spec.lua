@@ -924,7 +924,7 @@ describe(":Differ mergetool resolution", function()
         vim.cmd("silent write")
         assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
         assert.are.equal(1, #_G.notifs)
-        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+        assert.matches("incomplete conflict at line 2; not staged", _G.notifs[1].msg)
         assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
         -- every refused write says so
         vim.cmd("silent write")
@@ -947,7 +947,7 @@ describe(":Differ mergetool resolution", function()
         assert.are.equal("f.txt", s.path)
         assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
         assert.are.equal(1, #_G.notifs)
-        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+        assert.matches("incomplete conflict at line 2; not staged", _G.notifs[1].msg)
     end)
 
     it("reads the path's conflict-marker-size", function()
@@ -963,7 +963,112 @@ describe(":Differ mergetool resolution", function()
         _G.notifs = {}
         vim.cmd("silent write")
         assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
-        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+        assert.matches("incomplete conflict at line 2; not staged", _G.notifs[1].msg)
+    end)
+
+    it("paints an unmatched marker and names it in nav and the winbar", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        drop_marker(s, "=======")
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        -- a, <<<<<<< HEAD, OURS, THEIRS, >>>>>>> feature, c
+        assert.are.same({ 2, 5 }, s.orphans)
+        for _, row in ipairs({ 2, 5 }) do
+            local marks = vim.api.nvim_buf_get_extmarks(
+                s.result_buf,
+                merge_ns,
+                { row - 1, 0 },
+                { row - 1, -1 },
+                { details = true }
+            )
+            assert.are.equal(1, #marks)
+            assert.are.equal("differMergeConflict", marks[1][4].hl_group)
+        end
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/1 · incomplete conflict at line 2 · not staged",
+            plain(merge.winbar())
+        )
+
+        -- ]x lands on the incomplete conflict once, and the winbar already names it
+        vim.api.nvim_win_set_cursor(s.result_win, { 1, 0 })
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflict")
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        fire(s.result_buf, "differ: next conflict")
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        assert.are.equal(0, #_G.notifs)
+
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal(1, #_G.notifs)
+        assert.matches("incomplete conflict at line 2", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(5, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        assert.are.equal(1, #_G.notifs) -- ]n moves without a message
+    end)
+
+    it("steps ]x through complete and incomplete conflicts in order", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        local seps = {}
+        for i, l in ipairs(lines) do
+            if l == "=======" then
+                seps[#seps + 1] = i
+            end
+        end
+        vim.api.nvim_buf_set_lines(s.result_buf, seps[3] - 1, seps[3], false, {})
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.equal(2, #s.regions)
+        assert.are.equal(2, #s.orphans) -- the third region's <<<<<<< and >>>>>>>, one stop
+        local first, second, broken =
+            s.regions[1].result_start, s.regions[2].result_start, s.orphans[1]
+
+        vim.api.nvim_win_set_cursor(s.result_win, { 1, 0 })
+        _G.notifs = {}
+        local visited = {}
+        for _ = 1, 4 do
+            fire(s.result_buf, "differ: next conflict")
+            visited[#visited + 1] = vim.api.nvim_win_get_cursor(s.result_win)[1]
+        end
+        assert.are.same({ first, second, broken, first }, visited)
+        assert.are.equal(1, #_G.notifs)
+        assert.matches(("incomplete conflict at line %d"):format(broken), _G.notifs[1].msg)
+
+        fire(s.result_buf, "differ: previous conflict")
+        assert.are.equal(broken, vim.api.nvim_win_get_cursor(s.result_win)[1])
+
+        -- a take-this on the incomplete conflict refuses rather than reaching past it
+        fire(s.result_buf, "differ: take ours")
+        assert.matches(("incomplete conflict at line %d"):format(broken), _G.notifs[3].msg)
+        assert.are.equal(2, #s.regions)
+    end)
+
+    it("steps ]n through an orphan between complete regions", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, 1, false, { ">>>>>>> stray" })
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.equal(1, #s.regions)
+        assert.are.same({ 1 }, s.orphans)
+        vim.api.nvim_win_set_cursor(s.result_win, { 7, 0 })
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(1, vim.api.nvim_win_get_cursor(s.result_win)[1])
+        fire(s.result_buf, "differ: next conflict marker")
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(s.result_win)[1])
     end)
 
     -- the rows each input pane tints, by side
@@ -1026,6 +1131,80 @@ describe(":Differ mergetool resolution", function()
             "RESULT · file 1/1 · conflict 1/3 · 3 unresolved",
             plain(merge.winbar())
         )
+    end)
+
+    it("tints the panes once an orphan-only file's region is restored", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        local sep = drop_sep(s, 1)
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        merge.close()
+
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        s = merge.current()
+        assert.are.same({ ours = {}, theirs = {} }, pane_rows(s))
+        vim.api.nvim_buf_set_lines(s.result_buf, sep - 1, sep - 1, false, { "=======" })
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.same({ ours = { 2 }, theirs = { 2 } }, pane_rows(s))
+        assert.are.equal(1, s.total)
+    end)
+
+    it("keeps the next conflict whole when a middle one loses its =======", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        drop_sep(s, 2)
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.equal(2, #s.regions)
+        local first, third = s.regions[1], s.regions[2]
+        local broken = s.orphans[1]
+        assert.are.same({ "OURS25" }, third.ours)
+        assert.are.same({ "THEIRS25" }, third.theirs)
+        -- the broken conflict keeps the slabs it was opened with
+        assert.are.same({ ours = { 5, 15, 25 }, theirs = { 5, 15, 25 } }, pane_rows(s))
+        local marks = vim.api.nvim_buf_get_extmarks(
+            s.result_buf,
+            merge_ns,
+            { third.mark_sep - 1, 0 },
+            { third.mark_sep - 1, -1 },
+            { details = true }
+        )
+        assert.matches("^differMergeTheirs", marks[1][4].hl_group)
+
+        vim.api.nvim_win_set_cursor(s.result_win, { 1, 0 })
+        local visited = {}
+        for _ = 1, 3 do
+            fire(s.result_buf, "differ: next conflict")
+            visited[#visited + 1] = vim.api.nvim_win_get_cursor(s.result_win)[1]
+        end
+        assert.are.same({ first.result_start, broken, third.result_start }, visited)
+    end)
+
+    it("reopens a file saved with only an unmatched marker left", function()
+        local root = conflict_repo_two()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        drop_marker(s, "=======")
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        merge.close()
+
+        merge.open({ path = "g.txt" })
+        assert.are.equal("g.txt", merge.current().path)
+        fire(merge.current().result_buf, "differ: next conflicted file")
+        local f = merge.current()
+        assert.are.equal("f.txt", f.path)
+        assert.are.same({}, f.regions)
+        assert.are.same({ 2, 5 }, f.orphans)
+        assert.are.equal(2, vim.api.nvim_win_get_cursor(f.result_win)[1])
     end)
 end)
 

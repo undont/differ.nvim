@@ -62,6 +62,7 @@ local INPUT_HL = {
 ---@field root string
 ---@field path string
 ---@field regions differ.merge.Region[]   -- re-derived from the live result buffer
+---@field orphans integer[]               -- marker lines no region uses, re-derived with regions
 ---@field marker_size integer             -- the path's conflict-marker-size
 ---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
@@ -305,8 +306,8 @@ end
 -- in their section's colour (the markers stay visible: this is the file the user edits).
 -- ours runs <<<<<<< .. the base/sep marker, base runs ||||||| .. the sep, theirs runs
 -- ======= .. >>>>>>> (so the closing marker reads as theirs). the block under the cursor
--- paints at full strength. driven by the live parse on the session, so a hand-edit or a
--- splice both recompute from one source
+-- paints at full strength, and an orphan marker line gets its own tint. driven by the live
+-- parse on the session, so a hand-edit or a splice both recompute from one source
 ---@param active integer|nil  -- the live index of the conflict under the cursor
 local function paint_result(active)
     local s = assert(session)
@@ -323,6 +324,15 @@ local function paint_result(active)
         end
         fill("theirs", r.mark_sep, r.result_end)
     end
+    for _, lnum in ipairs(s.orphans) do
+        paint_lines(s.result_buf, lnum, lnum, "differMergeConflict")
+    end
+end
+
+---@param lnum integer
+---@return string
+local function incomplete(lnum)
+    return ("incomplete conflict at line %d"):format(lnum)
 end
 
 -- briefly highlight the lines a take-this produced, cleared after ~250ms on its own
@@ -513,7 +523,9 @@ end
 -- the identity so the pane sync stays consistent (degrading to live-index = original-index)
 local function repaint_result()
     local s = assert(session)
-    s.regions = live_regions()
+    local lines
+    s.regions, lines = live_regions()
+    s.orphans = conflict.orphans(lines, s.marker_size)
     track_inputs(s)
     s.active_index = active_index()
     paint_result(s.active_index)
@@ -592,40 +604,90 @@ local function on_cursor_moved()
     sync_inputs(original_at(active))
 end
 
--- jump the result cursor to the next/prev conflict block (wrapping at the ends), repaint
--- the emphasis, and scroll the input panes to the same conflict
+---@param regions differ.merge.Region[]
+---@param first integer
+---@param last integer
+---@return boolean
+local function overlaps_region(regions, first, last)
+    for _, r in ipairs(regions) do
+        if r.result_start <= last and r.result_end >= first then
+            return true
+        end
+    end
+    return false
+end
+
+-- the first line of each incomplete conflict: orphans outside the complete regions, grouped
+-- in order. a `<<<<<<<`, an orphan after a `>>>>>>>`, or a complete region in between
+-- starts the next group
+---@param regions differ.merge.Region[]
+---@param orphans integer[]
+---@param lines string[]
+---@return integer[]
+local function incomplete_starts(regions, orphans, lines)
+    local starts = {}
+    local prev
+    for _, lnum in ipairs(orphans) do
+        if not overlaps_region(regions, lnum, lnum) then
+            local fresh = not prev
+                or lines[lnum]:sub(1, 1) == "<"
+                or lines[prev]:sub(1, 1) == ">"
+                or overlaps_region(regions, prev, lnum)
+            if fresh then
+                starts[#starts + 1] = lnum
+            end
+            prev = lnum
+        end
+    end
+    return starts
+end
+
+-- jump the result cursor to the next/prev conflict, complete or incomplete (wrapping at the
+-- ends), repaint the emphasis, and scroll the input panes to the same conflict
 ---@param dir "next"|"prev"
 local function goto_conflict(dir)
     if not live_session() then
         return
     end
-    local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
-    local target
+    local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
+    local starts = incomplete_starts(session.regions, session.orphans, lines)
+    local stops = vim.list_extend({}, starts)
     for _, r in ipairs(session.regions) do
-        if dir == "next" and r.result_start > cur then
-            target = target or r
-        elseif dir == "prev" and r.result_start < cur then
-            target = r -- keep the last one below the cursor
-        end
+        stops[#stops + 1] = r.result_start
     end
-    if #session.regions == 0 then
+    if #stops == 0 then
         return notify("no conflicts remain")
     end
-    if not target then -- wrap
-        target = dir == "next" and session.regions[1] or session.regions[#session.regions]
+    table.sort(stops)
+    local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
+    local target
+    for _, lnum in ipairs(stops) do
+        if dir == "next" and lnum > cur then
+            target = target or lnum
+        elseif dir == "prev" and lnum < cur then
+            target = lnum -- keep the last one below the cursor
+        end
     end
-    vim.api.nvim_win_set_cursor(session.result_win, { target.result_start, 0 })
+    if not target then -- wrap
+        target = dir == "next" and stops[1] or stops[#stops]
+    end
+    -- the winbar names the first orphan once no complete region is left
+    local named = #session.regions == 0 and target == session.orphans[1]
+    if vim.tbl_contains(starts, target) and not named then
+        notify(incomplete(target))
+    end
+    vim.api.nvim_win_set_cursor(session.result_win, { target, 0 })
     vim.api.nvim_win_call(session.result_win, function()
         vim.cmd("normal! zz")
     end)
     on_cursor_moved()
 end
 
--- every marker line in the file, in order. mark_base is nil under the default
--- conflictStyle, set under diff3/zdiff3
+-- every marker line in the file, orphans included, in order. mark_base is nil under the
+-- default conflictStyle, set under diff3/zdiff3
 ---@return integer[]
 local function marker_lines()
-    local lines = {}
+    local lines = vim.list_extend({}, session.orphans)
     for _, r in ipairs(session.regions) do
         lines[#lines + 1] = r.result_start
         if r.mark_base then
@@ -700,12 +762,25 @@ local function resolve_choice(choice)
     if s.binary then
         return require("differ.merge.binary").resolve(s, choice)
     end
-    local regions = live_regions()
+    local regions, lines = live_regions()
+    local orphans = conflict.orphans(lines, s.marker_size)
+    if #regions == 0 and orphans[1] then
+        return notify(incomplete(orphans[1]), vim.log.levels.WARN)
+    end
     if #regions == 0 then
         return notify("no conflicts remain")
     end
     local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
     local region = region_at(regions, cur)
+    -- an incomplete conflict between the cursor and the region below it is the one meant
+    if not (region and cur >= region.result_start) then
+        for _, lnum in ipairs(orphans) do
+            local before = not region or lnum < region.result_start
+            if lnum >= cur and before and not overlaps_region(regions, lnum, lnum) then
+                return notify(incomplete(lnum), vim.log.levels.WARN)
+            end
+        end
+    end
     if not region then
         return notify("no conflict under the cursor", vim.log.levels.WARN)
     end
@@ -811,6 +886,13 @@ local function result_winbar(s)
             return ("%s · %s · all conflicts resolved"):format(file, done)
         end
         return ("%s · %s · %s left"):format(file, done, plural(s.left, "file"))
+    end
+    if remaining == 0 and s.orphans[1] then
+        return ("%s · %s · %s"):format(
+            file,
+            incomplete(s.orphans[1]),
+            tint("not staged", "differMergeUnstaged")
+        )
     end
     if remaining == 0 then
         return ("%s · all resolved · %s"):format(file, tint("not staged", "differMergeUnstaged"))
@@ -1077,12 +1159,9 @@ local function on_write()
     if #session.regions > 0 then
         return
     end
-    local orphan = conflict.orphans(lines, session.marker_size)[1]
+    local orphan = session.orphans[1]
     if orphan then
-        notify(
-            ("unmatched conflict marker at line %d; not staged"):format(orphan),
-            vim.log.levels.WARN
-        )
+        notify(incomplete(orphan) .. "; not staged", vim.log.levels.WARN)
         return
     end
     stage_result()
@@ -1254,6 +1333,7 @@ local function lay_out(root, relpath, model, layout, files)
         root = root,
         path = relpath,
         regions = model.regions,
+        orphans = model.orphans,
         marker_size = model.marker_size,
         anchors = {},
         base_slabs = {},
@@ -1450,10 +1530,13 @@ local function lay_out(root, relpath, model, layout, files)
         end,
     })
 
-    -- land in the result on the first conflict; on_cursor_moved centres the inputs on it
+    -- land in the result on the first conflict, else the first orphan marker;
+    -- on_cursor_moved centres the inputs on it
     vim.api.nvim_set_current_win(result_win)
     if #model.regions > 0 then
         vim.api.nvim_win_set_cursor(result_win, { model.regions[1].result_start, 0 })
+    elseif model.orphans[1] then
+        vim.api.nvim_win_set_cursor(result_win, { model.orphans[1], 0 })
     end
     vim.cmd("normal! zz")
     on_cursor_moved()
