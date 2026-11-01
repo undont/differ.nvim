@@ -255,13 +255,19 @@ end
 -- conflicts with no operation (stash pop, checkout -m) have nothing to continue, skip or
 -- abort: stage the open result and say what's left
 ---@param root string
----@param session differ.MergeSession|nil  -- the merge tool's, when it's on this repo
-local function settle_without_operation(root, session)
+local function settle_without_operation(root)
     local merge = require("differ.merge")
-    if session and not merge.settle() then
+    local git = require("differ.git")
+    local s = merge.current()
+    if s and s.root ~= root then
+        s = nil
+    end
+    if not s and #git.conflicted(root) == 0 then
+        return notify("no merge, rebase, cherry-pick, revert or am in progress")
+    end
+    if s and not merge.settle() then
         return
     end
-    local git = require("differ.git")
     local left = #git.conflicted(root)
     if left > 0 then
         return notify(("%s left"):format(plural(left, "conflicted file")), vim.log.levels.WARN)
@@ -282,19 +288,11 @@ function M.pick_resolved(root)
     if not root then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")
     end
-    local git = require("differ.git")
-    local op = git.operation(root)
-    if op then
-        return show(root, op, conflicts_left(root))
+    local op = require("differ.git").operation(root)
+    if not op then
+        return settle_without_operation(root)
     end
-    local s = require("differ.merge").current()
-    if s and s.root ~= root then
-        s = nil
-    end
-    if s or #git.conflicted(root) > 0 then
-        return settle_without_operation(root, s)
-    end
-    notify("no merge, rebase, cherry-pick, revert or am in progress")
+    show(root, op, conflicts_left(root))
 end
 
 -- the picker, continue first
@@ -304,9 +302,12 @@ function M.pick(root)
         return
     end
     root = root or target_root()
-    local op = root and require("differ.git").operation(root)
-    if not root or not op then
+    if not root then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")
+    end
+    local op = require("differ.git").operation(root)
+    if not op then
+        return settle_without_operation(root)
     end
     show(root, op, 0)
 end
