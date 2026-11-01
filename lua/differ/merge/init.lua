@@ -1090,7 +1090,7 @@ local function show_help()
     end
     vim.list_extend(rows, {
         row(km.next_file, km.prev_file, "%s file", "next", "previous"),
-        { fmt(km.commit), "continue, skip or abort (once resolved)" },
+        { fmt(km.commit), "continue once resolved, else skip or abort" },
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
     })

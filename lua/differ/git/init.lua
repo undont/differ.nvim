@@ -1023,7 +1023,7 @@ local function commit_map(root, spec)
         fn = function()
             require("differ.merge.continue").pick_resolved(root)
         end,
-        desc = "continue, skip or abort the operation (once resolved)",
+        desc = "continue the operation once resolved, else skip or abort",
     }
 end
 
