@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the merge tool, `gC` and `:Differ continue` on conflicts left by `git stash pop` or `checkout -m` said "no merge, rebase, cherry-pick, revert or am in progress" and staged nothing; they now stage the result and say how many conflicted files are left, or close into the worktree panel once all are resolved
+
 ## [0.2.22] — 2026-11-01
 
 ### Fixed
