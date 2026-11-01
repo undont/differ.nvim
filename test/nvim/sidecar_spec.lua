@@ -35,18 +35,6 @@ local function running_sidecars()
     return n
 end
 
--- the pid of the sidecar this nvim spawned, scoped as running_sidecars is
-local function sidecar_pid()
-    local out = vim.fn.system({
-        "pgrep",
-        "-P",
-        tostring(vim.uv.os_getpid()),
-        "-x",
-        "differ-sidecar",
-    })
-    return tonumber(out:match("%d+"))
-end
-
 -- a vim.uv.new_timer stand-in whose timers fire after `ms` whatever duration they are
 -- started with. a table rather than the handle itself, since a uv handle is userdata and
 -- takes no field assignment; it forwards the four methods the client uses
@@ -185,14 +173,20 @@ describe("sidecar client", function()
     end)
 
     it("rejects a request the sidecar never answers", function()
+        local saved_config = require("differ").config
+        finally(function()
+            require("differ").config = saved_config
+        end)
+        -- answers the handshake (id 1) and the first request (id 2), then reads to EOF
+        -- without answering anything else
+        fake_sidecar({
+            "IFS= read -r line",
+            'printf \'{"id":1,"result":{"protocol":1,"binary":"fake"}}\\n\'',
+            "IFS= read -r line",
+            'printf \'{"id":2,"result":{}}\\n\'',
+            "cat >/dev/null",
+        })
         assert.is_nil(call("cache_clear", nil))
-        local pid = sidecar_pid()
-        assert.is_number(pid)
-
-        -- SIGSTOP leaves the process alive and connected but completing no read, which is
-        -- the handler-that-never-returns condition without a stub binary. the write still
-        -- lands: the pipe buffers it
-        assert.are.equal(0, vim.uv.kill(pid, "sigstop"))
 
         -- the real ceiling is 60s, so the timer is clamped where it is made. the client is
         -- ready by now, so the request arms its timer inside this call and the global is
@@ -208,9 +202,6 @@ describe("sidecar client", function()
         local fired = vim.wait(3000, function()
             return done
         end)
-        -- let it run again so the teardown can end it the way it always does
-        vim.uv.kill(pid, "sigcont")
-
         assert.is_true(fired, "the pending request was never rejected")
         assert.are.equal("network", gerr.code)
         assert.are.equal("the sidecar did not answer in time", gerr.message)
