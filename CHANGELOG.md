@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.2.22] — 2026-11-01
+
 ### Fixed
 
 - In the merge tool, deleting one marker of a conflict (e.g. its `=======`) dropped the conflict, and `:w` staged the file with its other markers still in it; it now shows as an incomplete conflict that `]x` stops on, and the file isn't staged until it's resolved
