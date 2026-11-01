@@ -110,6 +110,9 @@ local function fake_git(opts)
         merge_file_diff3 = function()
             return opts.diff3
         end,
+        marker_size = function()
+            return opts.marker_size or 7
+        end,
         -- stage presence: present by default, `false` for none, or a per-stage table
         has_stage = function(_, _, stage)
             if type(opts.has_stage) == "table" then

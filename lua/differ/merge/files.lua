@@ -124,7 +124,12 @@ local function stale_reason(s, conflicted)
         lines = {}
     end
     local conflict = require("differ.git.conflict")
-    if #conflict.parse(lines) > 0 or conflict.reformatted(lines) then
+    local size = s.marker_size
+    if
+        #conflict.parse(lines, size) > 0
+        or #conflict.orphans(lines, size) > 0
+        or conflict.reformatted(lines)
+    then
         return s.path .. " was staged with conflict markers outside the merge tool",
             vim.log.levels.WARN
     end

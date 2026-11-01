@@ -21,7 +21,7 @@ local keymap = require("differ.util.keymap")
 local tab_util = require("differ.util.tab")
 local plural = require("differ.util.text").plural
 local merge_files = require("differ.merge.files")
-local markers_reformatted = require("differ.git.conflict").reformatted
+local conflict = require("differ.git.conflict")
 local bind = keymap.bind
 
 local M = {}
@@ -61,6 +61,7 @@ local INPUT_HL = {
 ---@field root string
 ---@field path string
 ---@field regions differ.merge.Region[]   -- re-derived from the live result buffer
+---@field marker_size integer             -- the path's conflict-marker-size
 ---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
 ---@field total integer                   -- original conflict count (for the winbar N/M)
@@ -353,7 +354,7 @@ end
 local function live_regions()
     local s = assert(session)
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
-    return require("differ.git.conflict").parse(lines), lines
+    return conflict.parse(lines, s.marker_size), lines
 end
 
 -- the original conflict index a live region belongs to, by the surviving anchor sitting on
@@ -959,9 +960,10 @@ local function on_write()
         return
     end
     repaint_result()
+    local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
     -- a format-on-save that didn't honour disable_autoformat reflows the markers; the
     -- parser loses the region, so guard the stage on the raw buffer, not the count
-    if markers_reformatted(vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)) then
+    if conflict.reformatted(lines) then
         if not session.autoformat_warned then
             session.autoformat_warned = true
             notify(
@@ -972,9 +974,18 @@ local function on_write()
         end
         return
     end
-    if #session.regions == 0 then
-        stage_result()
+    if #session.regions > 0 then
+        return
     end
+    local orphan = conflict.orphans(lines, session.marker_size)[1]
+    if orphan then
+        notify(
+            ("unmatched conflict marker at line %d; not staged"):format(orphan),
+            vim.log.levels.WARN
+        )
+        return
+    end
+    stage_result()
 end
 
 -- save the result and stage it once marker-free, as a write does. false holds the session
@@ -1004,7 +1015,7 @@ local function settle_result()
         return true
     end
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
-    if warned and markers_reformatted(lines) then
+    if warned and conflict.reformatted(lines) then
         notify(
             ("%s isn't staged: a formatter changed its conflict markers"):format(s.path),
             vim.log.levels.WARN
@@ -1143,6 +1154,7 @@ local function lay_out(root, relpath, model, layout, files)
         root = root,
         path = relpath,
         regions = model.regions,
+        marker_size = model.marker_size,
         anchors = {},
         base_slabs = {},
         total = #model.regions,

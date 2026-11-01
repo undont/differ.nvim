@@ -58,6 +58,20 @@ function M.has_clean_attr(root, relpath)
     return false
 end
 
+-- the conflict marker length git writes for `relpath`: its `conflict-marker-size`
+-- attribute, or 7 when that's unset or not a positive number, as git reads it
+---@param root string
+---@param relpath string
+---@return integer
+function M.marker_size(root, relpath)
+    local out = git({ "check-attr", "conflict-marker-size", "--", relpath }, root)
+    local size = tonumber(out and out:match(": ([^:\n]*)\n?$") or "")
+    if not size or size < 1 then
+        return 7
+    end
+    return math.floor(size)
+end
+
 -- worktree bytes as `git add` would store them (the clean filter: eol
 -- conversion, text attrs, custom filters), so worktree-side diffs compare in
 -- the repo domain, like `git diff`, and the hunk patches built from the model

@@ -17,6 +17,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field theirs_text string -- full :3: stage
 ---@field result_text string -- the worktree file as-is (markers intact)
 ---@field regions differ.merge.Region[]
+---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
 ---@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
@@ -124,15 +125,17 @@ end
 ---@param ours_text string
 ---@param base_text string
 ---@param theirs_text string
-local function recover_base(regions, ours_text, base_text, theirs_text)
+---@param size integer  -- conflict marker length
+local function recover_base(regions, ours_text, base_text, theirs_text, size)
     if #regions == 0 or regions[1].base then
         return
     end
-    local synth_text = require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text)
+    local synth_text =
+        require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text, size)
     if not synth_text then
         return
     end
-    local synth = conflict.parse(to_lines(synth_text))
+    local synth = conflict.parse(to_lines(synth_text), size)
     local base_slabs = {}
     for i, s in ipairs(synth) do
         base_slabs[i] = s.base or {}
@@ -224,13 +227,15 @@ function M.build(root, relpath, head)
             theirs_text = "",
             result_text = "",
             regions = {},
+            marker_size = 7, -- no markers in a binary result
             head = head,
             no_ancestor = no_ancestor,
             deleted = deleted_side(root, relpath),
             binary = stage_blobs(root, relpath, texts),
         }
     end
-    local regions = conflict.parse(to_lines(result_text))
+    local marker_size = git.marker_size(root, relpath)
+    local regions = conflict.parse(to_lines(result_text), marker_size)
     local deleted = nil
     if #regions == 0 then
         deleted = deleted_side(root, relpath)
@@ -241,7 +246,7 @@ function M.build(root, relpath, head)
     -- with no ancestor the re-merge still yields empty base slabs, which recover would copy
     -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
     if not no_ancestor then
-        recover_base(regions, ours_text, base_text, theirs_text)
+        recover_base(regions, ours_text, base_text, theirs_text, marker_size)
     end
     return {
         path = relpath,
@@ -251,6 +256,7 @@ function M.build(root, relpath, head)
         theirs_text = theirs_text,
         result_text = result_text,
         regions = regions,
+        marker_size = marker_size,
         head = head,
         no_ancestor = no_ancestor,
         deleted = deleted,

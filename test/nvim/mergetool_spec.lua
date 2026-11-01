@@ -326,6 +326,26 @@ end)
 -- winbar text without its %#Group# / %* highlight items
 ---@param bar string
 ---@return string
+-- conflict_repo's f.txt conflict, written with 9-char markers by a `conflict-marker-size`
+-- attribute
+local conflict_repo_size9 = fixture.cached(function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/.gitattributes", "f.txt conflict-marker-size=9\n")
+    write(root .. "/f.txt", "a\nb\nc\n")
+    git_ok(root, "add", ".gitattributes", "f.txt")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/f.txt", "a\nTHEIRS\nc\n")
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/f.txt", "a\nOURS\nc\n")
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end)
+
 local function plain(bar)
     return (bar:gsub("%%#[^#]*#", ""):gsub("%%%*", ""))
 end
@@ -879,6 +899,72 @@ describe(":Differ mergetool resolution", function()
             _G.notifs[1].msg
         )
     end)
+
+    ---@param s table
+    ---@param marker string  -- the line to delete
+    local function drop_marker(s, marker)
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        for i, l in ipairs(lines) do
+            if l == marker then
+                vim.api.nvim_buf_set_lines(s.result_buf, i - 1, i, false, {})
+                return
+            end
+        end
+        error("no " .. marker .. " line")
+    end
+
+    it("refuses to stage with an unmatched marker left, then stages once it's gone", function()
+        local root = conflict_repo()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        drop_marker(s, "=======")
+        vim.api.nvim_set_current_win(s.result_win)
+        _G.notifs = {}
+        vim.cmd("silent write")
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+        assert.are.equal(1, #_G.notifs)
+        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
+        -- every refused write says so
+        vim.cmd("silent write")
+        assert.are.equal(2, #_G.notifs)
+        drop_marker(s, "<<<<<<< HEAD")
+        drop_marker(s, ">>>>>>> feature")
+        vim.cmd("silent write")
+        assert.are.same({}, require("differ.git").conflicted(root))
+    end)
+
+    it("holds ]f on a file with an unmatched marker", function()
+        local root = conflict_repo_two()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        drop_marker(s, ">>>>>>> feature")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal(s, merge.current())
+        assert.are.equal("f.txt", s.path)
+        assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+        assert.are.equal(1, #_G.notifs)
+        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+    end)
+
+    it("reads the path's conflict-marker-size", function()
+        local root = conflict_repo_size9()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        assert.are.equal(9, s.marker_size)
+        assert.are.equal(1, #s.regions)
+        assert.is_true(#vim.api.nvim_buf_get_extmarks(s.result_buf, merge_ns, 0, -1, {}) > 0)
+        drop_marker(s, "=========")
+        vim.api.nvim_set_current_win(s.result_win)
+        _G.notifs = {}
+        vim.cmd("silent write")
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+        assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
+    end)
 end)
 
 -- the located input slab line for a side (the row sync_inputs centres on)
@@ -1121,6 +1207,15 @@ describe(":Differ mergetool changes outside the session", function()
         open_two(root)
         _G.notifs = {}
         git_ok(root, "add", ".")
+        wait_closed_with("differ: f.txt was staged with conflict markers outside the merge tool")
+    end)
+
+    it("warns when an outside add stages an unmatched marker", function()
+        local root = conflict_repo_two()
+        open_two(root)
+        _G.notifs = {}
+        write(root .. "/f.txt", "a\n<<<<<<< HEAD\nOURS\nc\n")
+        git_ok(root, "add", "f.txt")
         wait_closed_with("differ: f.txt was staged with conflict markers outside the merge tool")
     end)
 

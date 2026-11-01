@@ -25,6 +25,7 @@ local read_file, raw_line = content_ops.read_file, content_ops.raw_line
 local M = {}
 
 M.read = content_ops.read
+M.marker_size = content_ops.marker_size
 
 -- git's canonical empty-tree object: the "old" side for a root commit (no parent),
 -- so its files list and read as pure adds (history)
@@ -210,8 +211,9 @@ end
 ---@param ours_text string
 ---@param base_text string
 ---@param theirs_text string
+---@param size integer  -- conflict marker length
 ---@return string|nil
-function M.merge_file_diff3(ours_text, base_text, theirs_text)
+function M.merge_file_diff3(ours_text, base_text, theirs_text, size)
     local paths = {}
     local function tmp(text)
         local p = vim.fn.tempname()
@@ -229,7 +231,9 @@ function M.merge_file_diff3(ours_text, base_text, theirs_text)
     if ours and base and theirs then
         -- no text=true: it would strip the CRs git keeps, so a CRLF base slab would no
         -- longer match the :1: stage the input column locates it against
-        local res = vim.system({ "git", "merge-file", "-p", "--diff3", ours, base, theirs }):wait()
+        local cmd =
+            { "git", "merge-file", "-p", "--diff3", "--marker-size=" .. size, ours, base, theirs }
+        local res = vim.system(cmd):wait()
         if res.code ~= 255 then
             out = res.stdout
         end
