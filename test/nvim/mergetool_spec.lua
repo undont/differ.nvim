@@ -965,6 +965,68 @@ describe(":Differ mergetool resolution", function()
         assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
         assert.matches("unmatched conflict marker at line 2; not staged", _G.notifs[1].msg)
     end)
+
+    -- the rows each input pane tints, by side
+    ---@param s table
+    ---@return table<string, integer[]>
+    local function pane_rows(s)
+        local out = {}
+        for _, inp in ipairs(s.inputs) do
+            local rows = {}
+            local buf = vim.api.nvim_win_get_buf(inp.win)
+            for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, merge_ns, 0, -1, {})) do
+                rows[#rows + 1] = m[2] + 1
+            end
+            out[inp.side] = rows
+        end
+        return out
+    end
+
+    ---@param s table
+    ---@param k integer
+    ---@return integer  -- the line the k-th ======= sat on
+    local function drop_sep(s, k)
+        local seen = 0
+        for i, l in ipairs(vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)) do
+            if l == "=======" then
+                seen = seen + 1
+                if seen == k then
+                    vim.api.nvim_buf_set_lines(s.result_buf, i - 1, i, false, {})
+                    return i
+                end
+            end
+        end
+        error("no ======= #" .. k)
+    end
+
+    it("tints the panes for regions a hand edit restores after a reopen", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        -- the first region drops out until its ======= is back
+        local sep = drop_sep(s, 1)
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        merge.close()
+
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        s = merge.current()
+        assert.are.equal(2, #s.regions)
+        vim.api.nvim_buf_set_lines(s.result_buf, sep - 1, sep - 1, false, { "=======" })
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.are.equal(3, #s.regions)
+        assert.are.same({ ours = { 5, 15, 25 }, theirs = { 5, 15, 25 } }, pane_rows(s))
+        vim.api.nvim_win_set_cursor(s.result_win, { s.regions[1].result_start, 0 })
+        vim.cmd("doautocmd CursorMoved")
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/1 · conflict 1/3 · 3 unresolved",
+            plain(merge.winbar())
+        )
+    end)
 end)
 
 -- the located input slab line for a side (the row sync_inputs centres on)

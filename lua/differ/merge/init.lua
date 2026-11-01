@@ -22,6 +22,7 @@ local tab_util = require("differ.util.tab")
 local plural = require("differ.util.text").plural
 local merge_files = require("differ.merge.files")
 local conflict = require("differ.git.conflict")
+local find_run = require("differ.util.lines").find_run
 local bind = keymap.bind
 
 local M = {}
@@ -64,7 +65,8 @@ local INPUT_HL = {
 ---@field marker_size integer             -- the path's conflict-marker-size
 ---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
----@field total integer                   -- original conflict count (for the winbar N/M)
+---@field total integer                   -- conflict count, original plus restored (for the winbar N/M)
+---@field restored table<integer, true>   -- indices of regions a hand edit restored after the build
 ---@field active_index integer|nil        -- live index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
@@ -357,16 +359,13 @@ local function live_regions()
     return conflict.parse(lines, s.marker_size), lines
 end
 
--- the original conflict index a live region belongs to, by the surviving anchor sitting on
--- its `<<<<<<<` line. nil when no anchor is there or more than one has collapsed onto it:
--- callers refuse rather than guess, since guessing here writes another conflict's ancestor
--- into the file
----@param result_start integer  -- 1-based line of the region's `<<<<<<<`
----@return integer|nil
-local function original_index(result_start)
+-- the ids of the valid anchors starting on result line `lnum`
+---@param lnum integer
+---@return integer[]
+local function anchors_on(lnum)
     local s = assert(session)
-    local row = result_start - 1
-    local found
+    local row = lnum - 1
+    local ids = {}
     for _, m in
         ipairs(vim.api.nvim_buf_get_extmarks(s.result_buf, anchor_ns, { row, 0 }, {
             row,
@@ -374,13 +373,36 @@ local function original_index(result_start)
         }, { details = true }))
     do
         if not m[4].invalid then
-            if found then
-                return nil -- ambiguous
-            end
-            found = s.anchors[m[1]]
+            ids[#ids + 1] = m[1]
         end
     end
-    return found
+    return ids
+end
+
+-- one anchor per conflict, spanning its block so a splice retires it
+---@param s differ.MergeSession
+---@param r differ.merge.Region
+---@param index integer
+local function place_anchor(s, r, index)
+    local id = vim.api.nvim_buf_set_extmark(s.result_buf, anchor_ns, r.result_start - 1, 0, {
+        end_row = r.result_end - 1,
+        invalidate = true,
+    })
+    s.anchors[id] = index
+end
+
+-- the original conflict index a live region belongs to, by the surviving anchor sitting on
+-- its `<<<<<<<` line. nil when no anchor is there or more than one has collapsed onto it:
+-- callers refuse rather than guess, since guessing here writes another conflict's ancestor
+-- into the file
+---@param result_start integer  -- 1-based line of the region's `<<<<<<<`
+---@return integer|nil
+local function original_index(result_start)
+    local ids = anchors_on(result_start)
+    if #ids ~= 1 then
+        return nil
+    end
+    return assert(session).anchors[ids[1]]
 end
 
 -- the original index of the conflict at live position `pos`, or nil
@@ -408,6 +430,83 @@ local function active_index()
     return nil
 end
 
+---@param lines string[]
+---@param span differ.merge.ColumnRegion
+---@param slab string[]
+---@return boolean
+local function holds(lines, span, slab)
+    if span.last - span.first + 1 ~= #slab then
+        return false
+    end
+    for k, line in ipairs(slab) do
+        if lines[span.first + k - 1] ~= line then
+            return false
+        end
+    end
+    return true
+end
+
+-- move an input pane's slabs onto the live regions' text, in order: a slab that no longer
+-- holds its region's text moves to where that text is found, else stays put
+---@param s differ.MergeSession
+---@param inp differ.MergeInput
+---@param indexed { region: differ.merge.Region, index: integer }[]
+---@return boolean changed
+local function relocate(s, inp, indexed)
+    local lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(inp.win), 0, -1, false)
+    local at = {}
+    for i, span in ipairs(inp.regions) do
+        at[span.index] = i
+    end
+    local changed, from = false, 1
+    for _, e in ipairs(indexed) do
+        local slab = e.region[inp.side]
+        if inp.side == "base" then
+            slab = e.region.base or s.base_slabs[e.index]
+        end
+        local span = at[e.index] and inp.regions[at[e.index]]
+        if slab and #slab > 0 and not (span and holds(lines, span, slab)) then
+            local first = find_run(lines, slab, from)
+            if first then
+                span = { index = e.index, first = first, last = first + #slab - 1 }
+                inp.regions[at[e.index] or #inp.regions + 1] = span
+                changed = true
+            end
+        end
+        if span then
+            from = math.max(from, span.last + 1)
+        end
+    end
+    return changed
+end
+
+-- keep the input panes' slabs on the live regions. a hand edit can restore a region the
+-- build never parsed (it gets an anchor and the next index) or split one that had
+-- swallowed its neighbour, so the build-time slabs no longer cover every live region
+---@param s differ.MergeSession
+local function track_inputs(s)
+    local indexed = {}
+    for _, r in ipairs(s.regions) do
+        local index = original_index(r.result_start)
+        if not index and #anchors_on(r.result_start) == 0 then
+            s.total = s.total + 1
+            index = s.total
+            s.restored[index] = true
+            place_anchor(s, r, index)
+        end
+        if index then
+            indexed[#indexed + 1] = { region = r, index = index }
+        end
+    end
+    for _, inp in ipairs(s.inputs) do
+        if vim.api.nvim_win_is_valid(inp.win) and relocate(s, inp, indexed) then
+            local buf = vim.api.nvim_win_get_buf(inp.win)
+            vim.api.nvim_buf_clear_namespace(buf, merge_ns, 0, -1)
+            paint_input(buf, inp.side, inp.regions)
+        end
+    end
+end
+
 -- re-parse the result buffer and repaint its per-side colour + emphasis, caching the
 -- regions on the session for navigation. keeps the order map aligned: a structured splice
 -- maintains it itself (so this no-ops), but an arbitrary hand-edit + write rebuilds it to
@@ -415,6 +514,7 @@ end
 local function repaint_result()
     local s = assert(session)
     s.regions = live_regions()
+    track_inputs(s)
     s.active_index = active_index()
     paint_result(s.active_index)
 end
@@ -613,7 +713,7 @@ local function resolve_choice(choice)
     -- reads the slab recovered at build time, mapped live index -> original via `order`
     if choice == "base" and not region.base then
         local original = original_index(region.result_start)
-        if not original then
+        if not original or session.restored[original] then
             return notify(
                 "this conflict's markers were edited; run :Differ mergetool again to use its base",
                 vim.log.levels.WARN
@@ -1158,6 +1258,7 @@ local function lay_out(root, relpath, model, layout, files)
         anchors = {},
         base_slabs = {},
         total = #model.regions,
+        restored = {},
         active_index = nil,
         labels = side_labels(model),
         no_ancestor = model.no_ancestor or false,
@@ -1183,13 +1284,8 @@ local function lay_out(root, relpath, model, layout, files)
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
         saved_diagnostics = vim.diagnostic.is_enabled({ bufnr = result_buf }),
     }
-    -- one anchor per original conflict, spanning its block so a splice retires it
     for _, r in ipairs(model.regions) do
-        local id = vim.api.nvim_buf_set_extmark(result_buf, anchor_ns, r.result_start - 1, 0, {
-            end_row = r.result_end - 1,
-            invalidate = true,
-        })
-        session.anchors[id] = r.index
+        place_anchor(session, r, r.index)
     end
     -- recovered base slabs by original conflict index: the default conflictStyle leaves no
     -- base in the live result parse, so take-base looks the slab up here (nil where the
