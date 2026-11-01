@@ -40,9 +40,10 @@ local function label(line, size)
     return (line:sub(size + 1):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
--- parse line-split file content into ordered conflict regions. an unterminated region
--- (EOF before `>>>>>>>`, which git never emits) is discarded rather than half-emitted,
--- and a stray `<<<<<<<` inside a region counts as content (markers don't nest)
+-- parse line-split file content into ordered conflict regions. a region that breaks off is
+-- discarded rather than half-emitted: EOF before `>>>>>>>`, a `>>>>>>>` before its
+-- `=======`, or a `<<<<<<<` while it is open (which starts the next region). a stray
+-- `=======` or `|||||||` in the theirs slab stays content
 ---@param lines string[]
 ---@param size integer|nil  -- marker length, 7 when nil
 ---@return differ.merge.Region[]
@@ -51,35 +52,38 @@ function M.parse(lines, size)
     local regions = {}
     local cur, slot
     for lnum, line in ipairs(lines) do
-        if not cur then
-            if marker(line, "<", size) then
-                cur =
-                    { result_start = lnum, label_ours = label(line, size), ours = {}, theirs = {} }
-                slot = "ours"
+        if marker(line, "<", size) then
+            cur = { result_start = lnum, label_ours = label(line, size), ours = {}, theirs = {} }
+            slot = "ours"
+        elseif cur then
+            if slot ~= "theirs" and marker(line, ">", size) then
+                cur, slot = nil, nil
+            elseif slot == "ours" and marker(line, "|", size) then
+                cur.base = {}
+                cur.mark_base = lnum
+                slot = "base"
+            elseif (slot == "ours" or slot == "base") and marker(line, "=", size) then
+                cur.mark_sep = lnum
+                slot = "theirs"
+            elseif slot == "theirs" and marker(line, ">", size) then
+                cur.result_end = lnum
+                cur.label_theirs = label(line, size)
+                cur.index = #regions + 1
+                regions[#regions + 1] = cur
+                cur, slot = nil, nil
+            else
+                local slab = slot == "ours" and cur.ours
+                    or slot == "base" and cur.base
+                    or cur.theirs
+                slab[#slab + 1] = line
             end
-        elseif slot == "ours" and marker(line, "|", size) then
-            cur.base = {}
-            cur.mark_base = lnum
-            slot = "base"
-        elseif (slot == "ours" or slot == "base") and marker(line, "=", size) then
-            cur.mark_sep = lnum
-            slot = "theirs"
-        elseif slot == "theirs" and marker(line, ">", size) then
-            cur.result_end = lnum
-            cur.label_theirs = label(line, size)
-            cur.index = #regions + 1
-            regions[#regions + 1] = cur
-            cur, slot = nil, nil
-        else
-            local slab = slot == "ours" and cur.ours or slot == "base" and cur.base or cur.theirs
-            slab[#slab + 1] = line
         end
     end
     return regions
 end
 
 -- line numbers of the marker lines no parsed region uses, ascending. covers a region
--- missing one of its markers and a stray marker inside a complete region
+-- missing one of its markers and a stray marker in a complete region's theirs slab
 ---@param lines string[]
 ---@param size integer|nil  -- marker length, 7 when nil
 ---@return integer[]

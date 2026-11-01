@@ -227,10 +227,37 @@ describe("git.conflict.orphans", function()
         assert.are.same({ 6 }, conflict.orphans(join(region("x"), { "=======" }, region("y"))))
     end)
 
-    it("reports a stray marker inside a complete region", function()
+    it("restarts at a <<<<<<< inside an open region", function()
         local lines = { "<<<<<<< HEAD", "a", "<<<<<<< HEAD", "=======", "b", ">>>>>>> x" }
-        assert.are.equal(1, #conflict.parse(lines))
-        assert.are.same({ 3 }, conflict.orphans(lines))
+        local r = conflict.parse(lines)
+        assert.are.equal(1, #r)
+        assert.are.equal(3, r[1].result_start)
+        assert.are.same({}, r[1].ours)
+        assert.are.same({ 1 }, conflict.orphans(lines))
+    end)
+
+    it("breaks a region at a >>>>>>> before its =======", function()
+        local lines = join(region("x"), { "<<<<<<< HEAD", "c", ">>>>>>> y" }, region("z"))
+        local r = conflict.parse(lines)
+        assert.are.equal(2, #r)
+        assert.are.equal(1, r[1].result_start)
+        assert.are.equal(9, r[2].result_start)
+        assert.are.same({ "a" }, r[2].ours)
+        assert.are.same({ 6, 8 }, conflict.orphans(lines))
+    end)
+
+    it("breaks a diff3 region at a >>>>>>> in its base slab", function()
+        local lines = { "<<<<<<< HEAD", "a", "||||||| base", "o", ">>>>>>> x" }
+        assert.are.same({}, conflict.parse(lines))
+        assert.are.same({ 1, 3, 5 }, conflict.orphans(lines))
+    end)
+
+    it("keeps a stray ======= or ||||||| in the theirs slab as content", function()
+        local lines = { "<<<<<<< HEAD", "a", "=======", "b", "=======", "||||||| c", ">>>>>>> x" }
+        local r = conflict.parse(lines)
+        assert.are.equal(1, #r)
+        assert.are.same({ "b", "=======", "||||||| c" }, r[1].theirs)
+        assert.are.same({ 5, 6 }, conflict.orphans(lines))
     end)
 
     it("uses the given marker size", function()
