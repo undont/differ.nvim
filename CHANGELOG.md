@@ -8,6 +8,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In the merge tool, deleting one marker of a conflict (e.g. its `=======`) dropped the conflict, and `:w` staged the file with its other markers still in it; it now shows as an incomplete conflict that `]x` stops on, and the file isn't staged until it's resolved
+- In the merge tool, a conflict retyped by hand after reopening its file had no tint in the OURS and THEIRS panes and a wrong count in the winbar; both now follow it
+
+## [0.2.21] — 2026-10-31
+
+### Fixed
+
 - Visual `s`, `u` and `X` refused with "can't be staged on their own here" on many selections the hunk keys could act on; they now act wherever the hunk keys do
 - Hunk and visual `s`, `u` and `X` could write a line twice or drop one when the index held a staged copy of a line the view can't show; they now refuse and point to `dw`
 - Visual `s`, `u` and `X` on part of a last line and its newline change could drop, duplicate or reorder lines; they now refuse and say which rows to add

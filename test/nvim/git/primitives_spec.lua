@@ -229,7 +229,7 @@ describe("git.merge_file_diff3", function()
     local to_lines = require("differ.util.text").to_lines
 
     it("re-merges the three stages into diff3 style with a base slab", function()
-        local out = git_src.merge_file_diff3("a\nOURS\nc\n", "a\nb\nc\n", "a\nTHEIRS\nc\n")
+        local out = git_src.merge_file_diff3("a\nOURS\nc\n", "a\nb\nc\n", "a\nTHEIRS\nc\n", 7)
         local regions = conflict.parse(to_lines(out))
         assert.are.equal(1, #regions)
         assert.are.same({ "OURS" }, regions[1].ours)
@@ -241,7 +241,8 @@ describe("git.merge_file_diff3", function()
         local out = git_src.merge_file_diff3(
             "a\r\nOURS\r\nc\r\n",
             "a\r\nb\r\nc\r\n",
-            "a\r\nTHEIRS\r\nc\r\n"
+            "a\r\nTHEIRS\r\nc\r\n",
+            7
         )
         local regions = conflict.parse(to_lines(out))
         assert.are.equal(1, #regions)
@@ -249,9 +250,36 @@ describe("git.merge_file_diff3", function()
     end)
 
     it("returns marker-free text when the stages merge cleanly", function()
-        local out = git_src.merge_file_diff3("a\nb\nc\n", "a\nb\nc\n", "a\nZZZ\nc\n")
+        local out = git_src.merge_file_diff3("a\nb\nc\n", "a\nb\nc\n", "a\nZZZ\nc\n", 7)
         assert.is_not_nil(out)
         assert.is_nil(out:find("<<<<<<<", 1, true))
+    end)
+
+    it("writes markers of the given size", function()
+        local out = git_src.merge_file_diff3("a\nOURS\nc\n", "a\nb\nc\n", "a\nTHEIRS\nc\n", 9)
+        assert.are.equal(0, #conflict.parse(to_lines(out)))
+        assert.are.equal(1, #conflict.parse(to_lines(out), 9))
+    end)
+end)
+
+describe("git.marker_size", function()
+    it("reads conflict-marker-size, falling back to 7 as git does", function()
+        local root = fresh_repo()
+        write(
+            root .. "/.gitattributes",
+            table.concat({
+                "nine conflict-marker-size=9",
+                "zero conflict-marker-size=0",
+                "word conflict-marker-size=big",
+                "set conflict-marker-size",
+                "unset -conflict-marker-size",
+                "",
+            }, "\n")
+        )
+        assert.are.equal(9, git_src.marker_size(root, "nine"))
+        for _, path in ipairs({ "zero", "word", "set", "unset", "unspecified" }) do
+            assert.are.equal(7, git_src.marker_size(root, path), path)
+        end
     end)
 end)
 

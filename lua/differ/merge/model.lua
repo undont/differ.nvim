@@ -17,6 +17,8 @@ local to_lines = require("differ.util.text").to_lines
 ---@field theirs_text string -- full :3: stage
 ---@field result_text string -- the worktree file as-is (markers intact)
 ---@field regions differ.merge.Region[]
+---@field orphans integer[]  -- marker lines no region uses (conflict.orphans)
+---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
 ---@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
@@ -124,15 +126,17 @@ end
 ---@param ours_text string
 ---@param base_text string
 ---@param theirs_text string
-local function recover_base(regions, ours_text, base_text, theirs_text)
+---@param size integer  -- conflict marker length
+local function recover_base(regions, ours_text, base_text, theirs_text, size)
     if #regions == 0 or regions[1].base then
         return
     end
-    local synth_text = require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text)
+    local synth_text =
+        require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text, size)
     if not synth_text then
         return
     end
-    local synth = conflict.parse(to_lines(synth_text))
+    local synth = conflict.parse(to_lines(synth_text), size)
     local base_slabs = {}
     for i, s in ipairs(synth) do
         base_slabs[i] = s.base or {}
@@ -197,7 +201,7 @@ local function stage_blobs(root, relpath, texts)
 end
 
 -- build a MergeModel for a conflicted `relpath`. returns nil + a reason when the file
--- isn't on disk, or carries no conflict markers and is neither binary nor a
+-- isn't on disk, or carries no conflict marker lines and is neither binary nor a
 -- modify/delete conflict
 ---@param root string
 ---@param relpath string
@@ -224,15 +228,20 @@ function M.build(root, relpath, head)
             theirs_text = "",
             result_text = "",
             regions = {},
+            orphans = {},
+            marker_size = 7, -- no markers in a binary result
             head = head,
             no_ancestor = no_ancestor,
             deleted = deleted_side(root, relpath),
             binary = stage_blobs(root, relpath, texts),
         }
     end
-    local regions = conflict.parse(to_lines(result_text))
+    local marker_size = git.marker_size(root, relpath)
+    local result_lines = to_lines(result_text)
+    local regions = conflict.parse(result_lines, marker_size)
+    local orphans = conflict.orphans(result_lines, marker_size)
     local deleted = nil
-    if #regions == 0 then
+    if #regions == 0 and #orphans == 0 then
         deleted = deleted_side(root, relpath)
         if not deleted then
             return nil, relpath .. " has no conflicts to resolve"
@@ -241,7 +250,7 @@ function M.build(root, relpath, head)
     -- with no ancestor the re-merge still yields empty base slabs, which recover would copy
     -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
     if not no_ancestor then
-        recover_base(regions, ours_text, base_text, theirs_text)
+        recover_base(regions, ours_text, base_text, theirs_text, marker_size)
     end
     return {
         path = relpath,
@@ -251,6 +260,8 @@ function M.build(root, relpath, head)
         theirs_text = theirs_text,
         result_text = result_text,
         regions = regions,
+        orphans = orphans,
+        marker_size = marker_size,
         head = head,
         no_ancestor = no_ancestor,
         deleted = deleted,

@@ -138,7 +138,7 @@ local function conflicts_left(root)
     local left = #vim.tbl_filter(function(p)
         return p ~= s.path
     end, conflicted)
-    if #s.regions > 0 or ((s.deleted or s.binary) and not s.staged) then
+    if #s.regions > 0 or #s.orphans > 0 or ((s.deleted or s.binary) and not s.staged) then
         left = left + 1
     end
     return left

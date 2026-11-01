@@ -150,6 +150,137 @@ describe("git.conflict.parse (edges)", function()
     end)
 end)
 
+describe("git.conflict.parse (marker shape)", function()
+    it("takes a marker only as exactly 7 chars then whitespace or end of line", function()
+        local r = conflict.parse({
+            "<<<<<<<<",
+            "<<<<<<<x",
+            "<<<<<<<\tHEAD",
+            "a",
+            "==========",
+            "=======",
+            "b",
+            ">>>>>>>",
+        })
+        assert.are.equal(1, #r)
+        assert.are.equal(3, r[1].result_start)
+        assert.are.same({ "a", "==========" }, r[1].ours)
+        assert.are.equal(6, r[1].mark_sep)
+        assert.are.equal("", r[1].label_theirs)
+    end)
+end)
+
+describe("git.conflict.orphans", function()
+    local function region(label)
+        return { "<<<<<<< HEAD", "a", "=======", "b", ">>>>>>> " .. label }
+    end
+
+    local function join(...)
+        local out = {}
+        for _, part in ipairs({ ... }) do
+            for _, line in ipairs(part) do
+                out[#out + 1] = line
+            end
+        end
+        return out
+    end
+
+    it("finds none in clean regions or a file without markers", function()
+        assert.are.same({}, conflict.orphans(join(region("x"), { "middle" }, region("y"))))
+        assert.are.same({}, conflict.orphans({ "plain", "text" }))
+    end)
+
+    it("ignores runs that are not git's marker shape", function()
+        assert.are.same(
+            {},
+            conflict.orphans({
+                "Title",
+                "==========",
+                "<<<<<<<<",
+                ">>>>>>>>x",
+                " =======",
+                "/* ======= */",
+            })
+        )
+    end)
+
+    it("reports the markers left when ======= is removed", function()
+        assert.are.same({ 1, 4 }, conflict.orphans({ "<<<<<<< HEAD", "a", "b", ">>>>>>> x" }))
+    end)
+
+    it("reports the markers left when <<<<<<< is removed", function()
+        assert.are.same({ 2, 4 }, conflict.orphans({ "a", "=======", "b", ">>>>>>> x" }))
+    end)
+
+    it("reports the markers left when >>>>>>> is removed", function()
+        assert.are.same({ 1, 3 }, conflict.orphans({ "<<<<<<< HEAD", "a", "=======", "b" }))
+    end)
+
+    it("reports the markers left when ||||||| is removed under diff3", function()
+        local lines = { "<<<<<<< HEAD", "a", "base", "=======", "b", ">>>>>>> x" }
+        assert.are.same({}, conflict.orphans(lines))
+        lines = { "<<<<<<< HEAD", "a", "||||||| base", "base", "b", ">>>>>>> x" }
+        assert.are.same({ 1, 3, 6 }, conflict.orphans(lines))
+    end)
+
+    it("reports a stray marker between two clean regions", function()
+        assert.are.same({ 6 }, conflict.orphans(join(region("x"), { "=======" }, region("y"))))
+    end)
+
+    it("restarts at a <<<<<<< inside an open region", function()
+        local lines = { "<<<<<<< HEAD", "a", "<<<<<<< HEAD", "=======", "b", ">>>>>>> x" }
+        local r = conflict.parse(lines)
+        assert.are.equal(1, #r)
+        assert.are.equal(3, r[1].result_start)
+        assert.are.same({}, r[1].ours)
+        assert.are.same({ 1 }, conflict.orphans(lines))
+    end)
+
+    it("breaks a region at a >>>>>>> before its =======", function()
+        local lines = join(region("x"), { "<<<<<<< HEAD", "c", ">>>>>>> y" }, region("z"))
+        local r = conflict.parse(lines)
+        assert.are.equal(2, #r)
+        assert.are.equal(1, r[1].result_start)
+        assert.are.equal(9, r[2].result_start)
+        assert.are.same({ "a" }, r[2].ours)
+        assert.are.same({ 6, 8 }, conflict.orphans(lines))
+    end)
+
+    it("breaks a diff3 region at a >>>>>>> in its base slab", function()
+        local lines = { "<<<<<<< HEAD", "a", "||||||| base", "o", ">>>>>>> x" }
+        assert.are.same({}, conflict.parse(lines))
+        assert.are.same({ 1, 3, 5 }, conflict.orphans(lines))
+    end)
+
+    it("keeps a stray ======= or ||||||| in the theirs slab as content", function()
+        local lines = { "<<<<<<< HEAD", "a", "=======", "b", "=======", "||||||| c", ">>>>>>> x" }
+        local r = conflict.parse(lines)
+        assert.are.equal(1, #r)
+        assert.are.same({ "b", "=======", "||||||| c" }, r[1].theirs)
+        assert.are.same({ 5, 6 }, conflict.orphans(lines))
+    end)
+
+    it("uses the given marker size", function()
+        local lines = { "<<<<<<<<< HEAD", "a", "=======", "b", "=========", "c", ">>>>>>>>> x" }
+        local r = conflict.parse(lines, 9)
+        assert.are.equal(1, #r)
+        assert.are.equal("HEAD", r[1].label_ours)
+        assert.are.same({ "a", "=======", "b" }, r[1].ours)
+        assert.are.same({}, conflict.orphans(lines, 9))
+        assert.are.same({}, conflict.parse(lines))
+        assert.are.same({ 3 }, conflict.orphans(lines))
+        assert.are.same(
+            { 1, 4 },
+            conflict.orphans({ "<<<<<<<<< HEAD", "a", "b", ">>>>>>>>> x" }, 9)
+        )
+    end)
+
+    it("reports an unterminated region at EOF after a clean one", function()
+        local lines = join(region("x"), { "<<<<<<< HEAD", "c", "=======", "d" })
+        assert.are.same({ 6, 8 }, conflict.orphans(lines))
+    end)
+end)
+
 describe("git.rev.parse_unmerged", function()
     it("splits the NUL-framed paths and drops the trailing field", function()
         assert.are.same({ "a.txt", "dir/b.lua" }, rev.parse_unmerged("a.txt\0dir/b.lua\0"))
