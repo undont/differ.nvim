@@ -173,6 +173,9 @@ end
 ---@param entry differ.FileEntry
 ---@return boolean
 local function partly_staged(entry)
+    if entry.x == nil or entry.y == nil then
+        return false
+    end
     if entry.status == "U" or entry.x == "?" then
         return false
     end

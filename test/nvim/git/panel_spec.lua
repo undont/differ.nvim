@@ -1685,6 +1685,23 @@ describe(":Differ panel (zero-hunk entries)", function()
         assert.is_nil(notice)
     end)
 
+    it("opens a committed pure rename in a rev-pair panel on a notice, unbadged", function()
+        local root = fresh_repo()
+        git(root, "mv", "a.lua", "b.lua")
+        git(root, "commit", "-q", "-m", "rename")
+        vim.cmd.edit(root .. "/b.lua")
+
+        git_src.panel({ rev = "HEAD~1...", open_first = true })
+        local p = assert(Panel.current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        local v = assert(require("differ.view").current())
+        local hunks, notice, staging = v.model.hunks, v.model.notice, v.staging
+        p:close()
+        assert.are.equal(0, #hunks)
+        assert.are.equal("Renamed from a.lua, content unchanged", notice)
+        assert.is_nil(staging and staging.badge)
+    end)
+
     it("names a moved submodule pointer, which reads empty on both sides", function()
         local root = fresh_repo()
         -- the submodule's own repo lives outside root, so it adds no untracked entry
