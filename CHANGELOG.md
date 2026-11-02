@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In `:Differ base` and other revision-pair panels, a file renamed without content changes in a commit opened as an `INDEX` view with the whole file as one added hunk; it now opens on the rename notice
+
+## [0.2.25] — 2026-11-02
+
+### Fixed
+
 - In the merge tool's OURS, THEIRS and BASE panes, the `▌` gutter sign also showed on the line after each conflict; it now marks only the conflict's own lines
 
 ## [0.2.24] — 2026-11-02
