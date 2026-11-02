@@ -1,7 +1,7 @@
--- the 3-way merge model: the full ours/base/theirs stage contents plus the
--- ordered conflict regions parsed from the worktree file (the result spine slices 2-3
--- render and edit). the stages are the authoritative column content, so they're correct
--- under any merge.conflictStyle; the marker parse only locates the regions
+-- the 3-way merge model: the full ours/base/theirs stage contents plus the ordered
+-- conflicts, each a complete region parsed from the worktree file or a group of markers a
+-- hand edit broke. the stages are the authoritative column content, so they're correct
+-- under any merge.conflictStyle; the marker parse only locates the conflicts
 
 local conflict = require("differ.git.conflict")
 local find_run = require("differ.util.lines").find_run
@@ -16,13 +16,23 @@ local to_lines = require("differ.util.text").to_lines
 ---@field base_text string   -- full :1: stage
 ---@field theirs_text string -- full :3: stage
 ---@field result_text string -- the worktree file as-is (markers intact)
----@field regions differ.merge.Region[]
+---@field conflicts differ.merge.Conflict[]
+---@field regions differ.merge.Region[]  -- the complete ones, indexed as their conflict
 ---@field orphans integer[]  -- marker lines no region uses (conflict.orphans)
 ---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
 ---@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
 ---@field binary table<"ours"|"base"|"theirs", differ.merge.Blob>|nil -- binary stages: no regions, empty texts
+
+---@class differ.merge.Conflict
+---@field index integer         -- 1-based, conflict order in the file
+---@field result_start integer  -- a broken one's first orphan, widened to its located slabs
+---@field result_end integer
+---@field ours string[]         -- `{}` where a broken one's slab wasn't recovered
+---@field base string[]|nil
+---@field theirs string[]
+---@field region differ.merge.Region|nil -- the parsed region, nil when its markers are broken
 
 ---@class differ.merge.Blob
 ---@field oid string
@@ -70,7 +80,7 @@ local function agree(synth, ours_last, theirs_last)
 end
 
 -- the run a worktree region owns, scanning past synthetic regions nothing corresponds to
--- (ort resolves cases merge-file conflicts on, so the re-merge can carry orphans). a claim
+-- (ort resolves cases merge-file conflicts on, so the re-merge can carry extra ones). a claim
 -- that needed skipping must be corroborated by both sides, else a region owning nothing
 -- would hunt the rest of the file for a coincidental match. nil when it owns nothing at all
 ---@param region differ.merge.Region
@@ -88,21 +98,21 @@ local function claim(region, synth, from)
     end
 end
 
--- the base-stage span a run covers, anchored on its first and last located slab. the span,
--- not the sub-slabs concatenated, so a coalesced block keeps its interstitials. all-empty
--- base slabs cover nothing, which take-base resolves to a deletion
----@param base_slabs string[][]  -- per synthetic region, in order
----@param at table<integer, integer>  -- synthetic index -> base-stage start
+-- the stage span a run covers, anchored on its first and last located slab. the span, not
+-- the sub-slabs concatenated, so a coalesced block keeps its interstitials. all-empty slabs
+-- cover nothing, which take-base resolves to a deletion
+---@param slabs string[][]  -- this side's slab per synthetic region, in order
+---@param at table<integer, integer>  -- synthetic index -> stage start
 ---@param first integer
 ---@param last integer
----@param base_lines string[]
+---@param stage_lines string[]
 ---@return string[]
-local function base_span(base_slabs, at, first, last, base_lines)
+local function stage_span(slabs, at, first, last, stage_lines)
     local from, to
     for i = first, last do
         if at[i] then
             from = from or at[i]
-            to = at[i] + #base_slabs[i] - 1
+            to = at[i] + #slabs[i] - 1
         end
     end
     if not from then
@@ -110,53 +120,180 @@ local function base_span(base_slabs, at, first, last, base_lines)
     end
     local slab = {}
     for i = from, to do
-        slab[#slab + 1] = base_lines[i]
+        slab[#slab + 1] = stage_lines[i]
     end
     return slab
 end
 
--- the default `merge` conflictStyle writes no base slab, so the parsed regions carry
--- `base = nil` and the BASE column has nothing to take. recover them by re-merging the
--- stages in diff3 style and mapping the synthetic regions onto the worktree ones: ort
--- coalesces conflicts that merge-file keeps apart, so a worktree region owns a run of them.
--- both sides claim independently and must agree where the run ends, a side with nothing
--- locatable abstains, anything ambiguous leaves base nil (a wrong slab gets spliced in by
--- take-base). only the slab is copied, never mark_base. a no-op under diff3/zdiff3
+-- start of `slab` in `lines` between `from` and `hi`, or nil
+---@param lines string[]
+---@param slab string[]
+---@param from integer
+---@param hi integer
+---@return integer|nil
+local function place(lines, slab, from, hi)
+    local s = find_run(lines, slab, from)
+    if s and s + #slab - 1 <= hi then
+        return s
+    end
+    return nil
+end
+
+-- the synthetic regions a broken conflict owns: those whose every non-empty side places in
+-- order inside its result window `lo`..`hi`. a region that won't place is skipped (ort
+-- resolved it, or the hand edit reached into it). nil when it owns none
+---@param lines string[]  -- the worktree result
+---@param lo integer
+---@param hi integer
+---@param synth differ.merge.Region[]
+---@param from integer
+---@param to integer
+---@return { first: integer, last: integer, top: integer, bottom: integer }|nil
+local function own(lines, lo, hi, synth, from, to)
+    local owned
+    local cursor = { ours = lo, theirs = lo }
+    for i = from, to do
+        local hits, ok = {}, true
+        for _, side in ipairs({ "ours", "theirs" }) do
+            local slab = synth[i][side]
+            if #slab > 0 then
+                hits[side] = place(lines, slab, cursor[side], hi)
+                ok = ok and hits[side] ~= nil
+            end
+        end
+        if ok and (hits.ours or hits.theirs) then
+            owned = owned or { first = i, top = math.huge, bottom = 0 }
+            owned.last = i
+            for side, s in pairs(hits) do
+                cursor[side] = s + #synth[i][side]
+                owned.top = math.min(owned.top, s)
+                owned.bottom = math.max(owned.bottom, cursor[side] - 1)
+            end
+        end
+    end
+    return owned
+end
+
+-- each side's slab per synthetic region, `{}` where a region carries none
+---@param synth differ.merge.Region[]
+---@param side "ours"|"base"|"theirs"
+---@return string[][]
+local function side_slabs(synth, side)
+    local out = {}
+    for i, r in ipairs(synth) do
+        out[i] = r[side] or {}
+    end
+    return out
+end
+
+-- the conflicts in result order: the complete regions plus one per incomplete group, its
+-- span the group's orphan lines until attach widens it. renumbers the regions to match
 ---@param regions differ.merge.Region[]
----@param ours_text string
----@param base_text string
----@param theirs_text string
+---@param groups { first: integer, last: integer }[]
+---@return differ.merge.Conflict[]
+local function spine(regions, groups)
+    local out, i, j = {}, 1, 1
+    while regions[i] or groups[j] do
+        local r, g = regions[i], groups[j]
+        local c
+        if r and (not g or r.result_start < g.first) then
+            r.index = #out + 1
+            c = {
+                result_start = r.result_start,
+                result_end = r.result_end,
+                ours = r.ours,
+                base = r.base,
+                theirs = r.theirs,
+                region = r,
+            }
+            i = i + 1
+        else
+            c = { result_start = g.first, result_end = g.last, ours = {}, theirs = {} }
+            j = j + 1
+        end
+        c.index = #out + 1
+        out[c.index] = c
+    end
+    return out
+end
+
+-- fill the conflicts from a diff3 re-merge of the stages, mapped onto the worktree: ort
+-- coalesces conflicts that merge-file keeps apart, so a complete region owns a run of
+-- synthetic ones. both sides claim independently and must agree where the run ends before
+-- its base is recovered (the default `merge` conflictStyle writes none), and anything
+-- ambiguous leaves base nil (a wrong slab gets spliced in by take-base). a broken conflict
+-- owns the leftover synthetic regions that place inside its window between its neighbours,
+-- taking its slabs from their stage spans and its result span widened to where they sit
+---@param conflicts differ.merge.Conflict[]
+---@param result_lines string[]
+---@param texts table<"ours"|"base"|"theirs", string>
 ---@param size integer  -- conflict marker length
-local function recover_base(regions, ours_text, base_text, theirs_text, size)
-    if #regions == 0 or regions[1].base then
+---@param no_ancestor boolean
+local function attach(conflicts, result_lines, texts, size, no_ancestor)
+    local recover, broken = false, false
+    for _, c in ipairs(conflicts) do
+        recover = recover or (c.region ~= nil and c.base == nil and not no_ancestor)
+        broken = broken or c.region == nil
+    end
+    if not (recover or broken) then
         return
     end
     local synth_text =
-        require("differ.git").merge_file_diff3(ours_text, base_text, theirs_text, size)
+        require("differ.git").merge_file_diff3(texts.ours, texts.base, texts.theirs, size)
     if not synth_text then
         return
     end
     local synth = conflict.parse(to_lines(synth_text), size)
-    local base_slabs = {}
-    for i, s in ipairs(synth) do
-        base_slabs[i] = s.base or {}
+    -- the synthetic regions came out of merging these stages, so each side's slabs must
+    -- appear in its stage in order; a side where they don't isn't described by the re-merge
+    local stage, slabs, at = {}, {}, {}
+    for _, side in ipairs({ "ours", "base", "theirs" }) do
+        stage[side] = to_lines(texts[side])
+        slabs[side] = side_slabs(synth, side)
+        at[side] = find_runs(stage[side], slabs[side], 1)
     end
-    -- the synthetic regions came out of merging this base, so their slabs must appear in it
-    -- in order; if they don't, the re-merge doesn't describe our stages
-    local base_lines = to_lines(base_text)
-    local at = find_runs(base_lines, base_slabs, 1)
-    if not at then
-        return
-    end
-    local from = 1
-    for _, r in ipairs(regions) do
-        local run = claim(r, synth, from)
+
+    local claimed, from = {}, 1
+    for _, c in ipairs(conflicts) do
+        local run = c.region and claim(c.region, synth, from)
         if run then
             local last = math.max(run.ours, run.theirs)
-            if agree(synth, run.ours, run.theirs) then
-                r.base = base_span(base_slabs, at, run.first, last, base_lines)
+            claimed[c.index] = { first = run.first, last = last }
+            local agreed = agree(synth, run.ours, run.theirs)
+            if c.base == nil and not no_ancestor and agreed and at.base then
+                c.base = stage_span(slabs.base, at.base, run.first, last, stage.base)
+                c.region.base = c.base
             end
             from = last + 1 -- consumed either way, a disputed run isn't the next region's
+        end
+    end
+
+    local cursor = 1
+    for k, c in ipairs(conflicts) do
+        if c.region then
+            cursor = claimed[k] and claimed[k].last + 1 or cursor
+        else
+            local stop = #synth
+            for n = k + 1, #conflicts do
+                if claimed[n] then
+                    stop = claimed[n].first - 1
+                    break
+                end
+            end
+            local lo = k > 1 and conflicts[k - 1].result_end + 1 or 1
+            local hi = conflicts[k + 1] and conflicts[k + 1].result_start - 1 or #result_lines
+            local owned = own(result_lines, lo, hi, synth, cursor, stop)
+            if owned then
+                c.result_start = math.min(c.result_start, owned.top)
+                c.result_end = math.max(c.result_end, owned.bottom)
+                for _, side in ipairs({ "ours", "base", "theirs" }) do
+                    if at[side] and not (side == "base" and no_ancestor) then
+                        c[side] =
+                            stage_span(slabs[side], at[side], owned.first, owned.last, stage[side])
+                    end
+                end
+                cursor = owned.last + 1
+            end
         end
     end
 end
@@ -227,6 +364,7 @@ function M.build(root, relpath, head)
             base_text = "",
             theirs_text = "",
             result_text = "",
+            conflicts = {},
             regions = {},
             orphans = {},
             marker_size = 7, -- no markers in a binary result
@@ -247,11 +385,11 @@ function M.build(root, relpath, head)
             return nil, relpath .. " has no conflicts to resolve"
         end
     end
-    -- with no ancestor the re-merge still yields empty base slabs, which recover would copy
+    local conflicts = spine(regions, conflict.incomplete(result_lines, marker_size))
+    -- with no ancestor the re-merge still yields empty base slabs, which attach would copy
     -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
-    if not no_ancestor then
-        recover_base(regions, ours_text, base_text, theirs_text, marker_size)
-    end
+    local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
+    attach(conflicts, result_lines, texts, marker_size, no_ancestor)
     return {
         path = relpath,
         root = root,
@@ -259,6 +397,7 @@ function M.build(root, relpath, head)
         base_text = base_text,
         theirs_text = theirs_text,
         result_text = result_text,
+        conflicts = conflicts,
         regions = regions,
         orphans = orphans,
         marker_size = marker_size,

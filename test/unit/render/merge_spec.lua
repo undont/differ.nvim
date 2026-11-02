@@ -9,7 +9,7 @@ local function model()
         base_text = "a\nb\nc\n",
         theirs_text = "a\nTHEIRS\nc\n",
         result_text = "a\n<<<<<<< HEAD\nOURS\n=======\nTHEIRS\n>>>>>>> br\nc\n",
-        regions = {
+        conflicts = {
             {
                 index = 1,
                 result_start = 2,
@@ -58,7 +58,7 @@ end)
 describe("render.merge (diff4 layout)", function()
     it("adds the base column between ours and theirs and locates its slab", function()
         local m = model()
-        m.regions[1].base = { "b" }
+        m.conflicts[1].base = { "b" }
         local r = merge.render(m, { layout = "diff4" })
         assert.are.equal(4, #r.columns)
         assert.are.equal("base", r.columns[2].side)
@@ -83,7 +83,7 @@ describe("render.merge (fold ranges)", function()
             ours_text = "x\n",
             theirs_text = "x\n",
             result_text = table.concat(result, "\n") .. "\n",
-            regions = {
+            conflicts = {
                 {
                     index = 1,
                     result_start = 15,
@@ -117,7 +117,7 @@ describe("render.merge (slab location edges)", function()
             base_text = "",
             theirs_text = "Y\nY\n",
             result_text = "<<<<<<< a\nX\n=======\nY\n>>>>>>> b\n<<<<<<< a\nX\n=======\nY\n>>>>>>> b\n",
-            regions = {
+            conflicts = {
                 { index = 1, result_start = 1, result_end = 5, ours = { "X" }, theirs = { "Y" } },
                 { index = 2, result_start = 6, result_end = 10, ours = { "X" }, theirs = { "Y" } },
             },
@@ -140,7 +140,7 @@ describe("render.merge (slab location edges)", function()
 
     it("omits an empty slab (deleted side)", function()
         local m = model()
-        m.regions[1].ours = {}
+        m.conflicts[1].ours = {}
         local r = merge.render(m, {})
         assert.are.same({}, by_side(r, "ours").regions)
     end)

@@ -110,6 +110,38 @@ function M.orphans(lines, size)
     return found
 end
 
+-- the incomplete conflicts: orphans outside every complete region, grouped in order. a
+-- `<<<<<<<`, an orphan after a `>>>>>>>`, or a complete region in between starts the next
+-- group. a stray marker inside a complete region's theirs slab belongs to no group
+---@param lines string[]
+---@param size integer|nil  -- marker length, 7 when nil
+---@return { first: integer, last: integer }[]  -- each group's first and last orphan line
+function M.incomplete(lines, size)
+    local regions = M.parse(lines, size)
+    local groups = {}
+    local prev, r = nil, 1
+    for _, lnum in ipairs(M.orphans(lines, size)) do
+        local passed = false
+        while regions[r] and regions[r].result_end < lnum do
+            passed, r = true, r + 1
+        end
+        local inside = regions[r] ~= nil and regions[r].result_start < lnum
+        if not inside then
+            local fresh = not prev
+                or passed
+                or lines[lnum]:sub(1, 1) == "<"
+                or lines[prev]:sub(1, 1) == ">"
+            if fresh then
+                groups[#groups + 1] = { first = lnum, last = lnum }
+            else
+                groups[#groups].last = lnum
+            end
+            prev = lnum
+        end
+    end
+    return groups
+end
+
 -- a clean conflict marker sits at column 0; a format-on-save that ignores the buffer's
 -- disable_autoformat opt-out reflows the whole region and indents the markers with it. the
 -- parser then can't see the region (it matches at column 0), so it would read as resolved

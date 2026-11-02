@@ -391,7 +391,7 @@ end
 
 -- one anchor per conflict, spanning its block so a splice retires it
 ---@param s differ.MergeSession
----@param r differ.merge.Region
+---@param r differ.merge.Region|differ.merge.Conflict
 ---@param index integer
 local function place_anchor(s, r, index)
     local id = vim.api.nvim_buf_set_extmark(s.result_buf, anchor_ns, r.result_start - 1, 0, {
@@ -1337,7 +1337,7 @@ local function lay_out(root, relpath, model, layout, files)
         marker_size = model.marker_size,
         anchors = {},
         base_slabs = {},
-        total = #model.regions,
+        total = #model.conflicts,
         restored = {},
         active_index = nil,
         labels = side_labels(model),
@@ -1364,14 +1364,14 @@ local function lay_out(root, relpath, model, layout, files)
         saved_markdown_render = quiet_markdown_render(result_buf), -- don't conceal the markers
         saved_diagnostics = vim.diagnostic.is_enabled({ bufnr = result_buf }),
     }
-    for _, r in ipairs(model.regions) do
-        place_anchor(session, r, r.index)
+    for _, c in ipairs(model.conflicts) do
+        place_anchor(session, c, c.index)
     end
     -- recovered base slabs by original conflict index: the default conflictStyle leaves no
     -- base in the live result parse, so take-base looks the slab up here (nil where the
     -- re-merge couldn't recover one, which take-base reports as no base version)
-    for _, r in ipairs(model.regions) do
-        session.base_slabs[r.index] = strip_cr(r.base)
+    for _, c in ipairs(model.conflicts) do
+        session.base_slabs[c.index] = strip_cr(c.base)
     end
 
     -- paint the panes + lay down the (latent) folds
