@@ -193,21 +193,24 @@ function M.union_pairs(root, path, head, index, work)
         pair("INDEX", "WORKTREE", index, work)
 end
 
--- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
--- a rename's old path
+-- a row's three diffs, or nil when the index can't be read. the index is always read
+-- fresh; HEAD (at a rename's old path) and the worktree come from `shown` when given
 ---@param root string
 ---@param entry differ.FileEntry
+---@param shown differ.DiffModel|nil -- the row's HEAD↔worktree model, read in this action
 ---@return differ.DiffModel|nil union, differ.DiffModel|nil cached, differ.DiffModel|nil unstaged
-function M.union_models(root, entry)
-    local at_head = entry.previous_path or entry.path
+function M.union_models(root, entry, shown)
     local index = M.read(INDEX, root, index_path(entry))
     if not index then
         return nil
     end
+    if shown then
+        return M.union_pairs(root, entry.path, shown.old_text, index, shown.new_text)
+    end
     return M.union_pairs(
         root,
         entry.path,
-        M.read(HEAD, root, at_head) or "",
+        M.read(HEAD, root, entry.previous_path or entry.path) or "",
         index,
         M.read(WORKTREE, root, entry.path) or ""
     )

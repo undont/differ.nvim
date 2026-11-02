@@ -582,8 +582,9 @@ end
 -- each op reads the pairs once and re-marks from the text it wrote
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
+---@param shown differ.DiffModel -- the row's HEAD↔worktree model, just built
 ---@return differ.view.Staging
-local function union_staging(ctx, entry)
+local function union_staging(ctx, entry, shown)
     local mode_change = false
     if entry.x ~= " " and entry.y ~= " " and mode_hidden(ctx, entry) then
         mode_change = true
@@ -593,7 +594,7 @@ local function union_staging(ctx, entry)
     ---@type differ.git.UnionSource
     local source = { ctx = ctx, entry = entry, staging = staging, mode_change = mode_change }
 
-    remark(source, union_models(ctx.root, entry))
+    remark(source, union_models(ctx.root, entry, shown))
     staging.apply = function(model, hunk, reverse)
         return apply(source, model, hunk, reverse)
     end
