@@ -8,7 +8,7 @@ local M = {}
 -- the lines a choice contributes. ours/theirs come from the region; both is ours then
 -- theirs (diffview's "take all" order); none drops the block. base is nil when the
 -- region carries no base slab (default conflictStyle), so the caller can notify
----@param region differ.merge.Region
+---@param region differ.merge.Region|differ.merge.Slabs
 ---@param choice "ours"|"theirs"|"both"|"base"|"none"
 ---@return string[]|nil
 function M.slab(region, choice)

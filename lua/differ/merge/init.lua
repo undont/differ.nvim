@@ -29,11 +29,9 @@ local M = {}
 
 local merge_ns = vim.api.nvim_create_namespace("differ.merge")
 local flash_ns = vim.api.nvim_create_namespace("differ.merge.flash")
--- take-base recovers the ancestor from a slab keyed by the conflict's *original* index, so
--- the live -> original mapping has to survive edits, resolves and undo. one extmark per
--- original conflict, spanning its block: it rides edits, `invalidate` retires it when its
--- block is spliced away, and undo restores both text and mark together. its own namespace,
--- since paint_result clears merge_ns on every repaint
+-- the tracked conflicts: one extmark per conflict, spanning its block. it rides edits,
+-- `invalidate` retires it when its whole block is deleted, and undo restores both text and
+-- mark together. its own namespace, since paint_result clears merge_ns on every repaint
 local anchor_ns = vim.api.nvim_create_namespace("differ.merge.anchor")
 local notice_ns = vim.api.nvim_create_namespace("differ.merge.notice")
 
@@ -58,17 +56,34 @@ local INPUT_HL = {
 ---@field win integer
 ---@field regions differ.merge.ColumnRegion[]  -- the side's located slabs, original indices
 
+---@class differ.merge.Slabs
+---@field ours string[]
+---@field theirs string[]
+---@field base string[]|nil
+
+-- a conflict the session tracks: an anchor whose range still holds a marker line
+---@class differ.merge.Tracked
+---@field index integer        -- the anchor's conflict index
+---@field result_start integer -- the anchor's range
+---@field result_end integer
+---@field stop integer         -- where ]x lands: the region's `<<<<<<<`, else the first marker
+---@field region differ.merge.Region|nil -- the live parse, nil while its markers are broken
+---@field shared boolean       -- the region overlaps more than one anchor
+
 ---@class differ.MergeSession
 ---@field root string
 ---@field path string
----@field regions differ.merge.Region[]   -- re-derived from the live result buffer
+---@field regions differ.merge.Region[]   -- the complete regions the live result buffer parses to
 ---@field orphans integer[]               -- marker lines no region uses, re-derived with regions
+---@field conflicts differ.merge.Tracked[] -- the unresolved conflicts, in result order
+---@field strays integer[]                -- first lines of marker groups outside every conflict
+---@field slabs table<integer, differ.merge.Slabs> -- conflict index -> the slabs it last parsed with
 ---@field marker_size integer             -- the path's conflict-marker-size
 ---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
 ---@field total integer                   -- conflict count, original plus restored (for the winbar N/M)
 ---@field restored table<integer, true>   -- indices of regions a hand edit restored after the build
----@field active_index integer|nil        -- live index of the conflict under the cursor
+---@field active_index integer|nil        -- index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
 ---@field deleted "ours"|"theirs"|nil     -- modify/delete: the side that deleted the file
@@ -312,17 +327,20 @@ end
 local function paint_result(active)
     local s = assert(session)
     vim.api.nvim_buf_clear_namespace(s.result_buf, merge_ns, 0, -1)
-    for _, r in ipairs(s.regions) do
-        local on = r.index == active
-        local function fill(side, first, last)
-            local pair = SECTION_HL[side]
-            paint_lines(s.result_buf, first, last, on and pair.active or pair.normal)
+    for _, c in ipairs(s.conflicts) do
+        local r = c.region
+        if r then
+            local on = c.index == active
+            local function fill(side, first, last)
+                local pair = SECTION_HL[side]
+                paint_lines(s.result_buf, first, last, on and pair.active or pair.normal)
+            end
+            fill("ours", r.result_start, (r.mark_base or r.mark_sep) - 1)
+            if r.mark_base then
+                fill("base", r.mark_base, r.mark_sep - 1)
+            end
+            fill("theirs", r.mark_sep, r.result_end)
         end
-        fill("ours", r.result_start, (r.mark_base or r.mark_sep) - 1)
-        if r.mark_base then
-            fill("base", r.mark_base, r.mark_sep - 1)
-        end
-        fill("theirs", r.mark_sep, r.result_end)
     end
     for _, lnum in ipairs(s.orphans) do
         paint_lines(s.result_buf, lnum, lnum, "differMergeConflict")
@@ -360,84 +378,195 @@ local function flash(buf, first, count)
     end, 250)
 end
 
--- the conflict regions of the live result buffer (re-parsed each call, so hand edits and
--- keymap splices stay consistent), plus the buffer's current lines
----@return differ.merge.Region[], string[]
-local function live_regions()
-    local s = assert(session)
-    local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
-    return conflict.parse(lines, s.marker_size), lines
-end
-
--- the ids of the valid anchors starting on result line `lnum`
----@param lnum integer
----@return integer[]
-local function anchors_on(lnum)
-    local s = assert(session)
-    local row = lnum - 1
-    local ids = {}
-    for _, m in
-        ipairs(vim.api.nvim_buf_get_extmarks(s.result_buf, anchor_ns, { row, 0 }, {
-            row,
-            -1,
-        }, { details = true }))
-    do
-        if not m[4].invalid then
-            ids[#ids + 1] = m[1]
-        end
-    end
-    return ids
-end
-
--- one anchor per conflict, spanning its block so a splice retires it
+-- one anchor per conflict, spanning its block to the end of its last line. a splice that
+-- replaces the whole block retires it, undo brings both back, and a hand edit that keeps
+-- any of the block keeps it
 ---@param s differ.MergeSession
----@param r differ.merge.Region|differ.merge.Conflict
----@param index integer
-local function place_anchor(s, r, index)
-    local id = vim.api.nvim_buf_set_extmark(s.result_buf, anchor_ns, r.result_start - 1, 0, {
-        end_row = r.result_end - 1,
+---@param first integer
+---@param last integer
+---@param id integer|nil  -- an existing anchor to move
+---@return integer
+local function set_anchor(s, first, last, id)
+    local tail = vim.api.nvim_buf_get_lines(s.result_buf, last - 1, last, false)[1] or ""
+    return vim.api.nvim_buf_set_extmark(s.result_buf, anchor_ns, first - 1, 0, {
+        id = id,
+        end_row = last - 1,
+        end_col = #tail,
         invalidate = true,
     })
-    s.anchors[id] = index
 end
 
--- the original conflict index a live region belongs to, by the surviving anchor sitting on
--- its `<<<<<<<` line. nil when no anchor is there or more than one has collapsed onto it:
--- callers refuse rather than guess, since guessing here writes another conflict's ancestor
--- into the file
----@param result_start integer  -- 1-based line of the region's `<<<<<<<`
----@return integer|nil
-local function original_index(result_start)
-    local ids = anchors_on(result_start)
-    if #ids ~= 1 then
-        return nil
+---@param s differ.MergeSession
+---@param first integer
+---@param last integer
+---@param index integer
+local function place_anchor(s, first, last, index)
+    s.anchors[set_anchor(s, first, last)] = index
+    s.slabs[index] = s.slabs[index] or { ours = {}, theirs = {} }
+end
+
+---@class differ.merge.Span
+---@field id integer
+---@field index integer
+---@field first integer
+---@field last integer
+
+-- the valid anchors in result order
+---@param s differ.MergeSession
+---@return differ.merge.Span[]
+local function spans(s)
+    local out = {}
+    for _, m in
+        ipairs(vim.api.nvim_buf_get_extmarks(s.result_buf, anchor_ns, 0, -1, { details = true }))
+    do
+        if not m[4].invalid then
+            out[#out + 1] =
+                { id = m[1], index = s.anchors[m[1]], first = m[2] + 1, last = m[4].end_row + 1 }
+        end
     end
-    return assert(session).anchors[ids[1]]
+    table.sort(out, function(a, b)
+        return a.first < b.first or (a.first == b.first and a.id < b.id)
+    end)
+    return out
 end
 
--- the original index of the conflict at live position `pos`, or nil
----@param pos integer|nil
----@return integer|nil
-local function original_at(pos)
-    local s = assert(session)
-    local region = pos and s.regions[pos]
-    return region and original_index(region.result_start) or nil
+---@param a { first: integer, last: integer }
+---@param r differ.merge.Region
+---@return boolean
+local function overlaps(a, r)
+    return a.first <= r.result_end and a.last >= r.result_start
 end
 
--- the live index of the conflict under the result cursor, else nil
+-- attach each complete region to the first free anchor it overlaps, snapping the anchor to
+-- its span. a region overlapping none is restored: a new anchor and the next index
+---@param s differ.MergeSession
+---@return differ.merge.Span[] live, table<integer, differ.merge.Region> owner, table<integer, boolean> shared
+local function attach_regions(s)
+    local live = spans(s)
+    local owner, shared, restored = {}, {}, false
+    for _, r in ipairs(s.regions) do
+        local hits, free = 0, nil
+        for _, a in ipairs(live) do
+            if overlaps(a, r) then
+                hits = hits + 1
+                free = free or (not owner[a.id] and a or nil)
+            end
+        end
+        if free then
+            if free.first ~= r.result_start or free.last ~= r.result_end then
+                set_anchor(s, r.result_start, r.result_end, free.id)
+                free.first, free.last = r.result_start, r.result_end
+            end
+            owner[free.id], shared[free.id] = r, hits > 1
+        elseif hits == 0 then
+            s.total = s.total + 1
+            s.restored[s.total] = true
+            place_anchor(s, r.result_start, r.result_end, s.total)
+            restored = true
+        end
+    end
+    if restored then
+        return attach_regions(s)
+    end
+    return live, owner, shared
+end
+
+-- every marker line: the orphans plus the complete regions' own
+---@param s differ.MergeSession
+---@return table<integer, true>
+local function marker_set(s)
+    local set = {}
+    for _, lnum in ipairs(s.orphans) do
+        set[lnum] = true
+    end
+    for _, r in ipairs(s.regions) do
+        for _, lnum in ipairs({ r.result_start, r.mark_base, r.mark_sep, r.result_end }) do
+            set[lnum] = true
+        end
+    end
+    return set
+end
+
+-- the first line of each incomplete marker group outside every tracked conflict
+---@param s differ.MergeSession
+---@param lines string[]
+---@return integer[]
+local function find_strays(s, lines)
+    local out = {}
+    for _, g in ipairs(conflict.incomplete(lines, s.marker_size)) do
+        local c = nil
+        for _, t in ipairs(s.conflicts) do
+            if g.first >= t.result_start and g.first <= t.result_end then
+                c = t
+            end
+        end
+        if not c then
+            out[#out + 1] = g.first
+        end
+    end
+    return out
+end
+
+-- re-derive the tracked conflicts from the live buffer: each anchor whose range still holds
+-- a marker line is unresolved. the slabs a conflict last parsed with are kept for when its
+-- markers break
+---@param s differ.MergeSession
+---@return string[]  -- the buffer's lines
+local function track(s)
+    local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+    s.regions = conflict.parse(lines, s.marker_size)
+    s.orphans = conflict.orphans(lines, s.marker_size)
+    local live, owner, shared = attach_regions(s)
+    local is_marker = marker_set(s)
+    s.conflicts = {}
+    for _, a in ipairs(live) do
+        local r = owner[a.id]
+        if r then
+            s.slabs[a.index] = { ours = r.ours, theirs = r.theirs, base = r.base }
+        end
+        local stop = nil
+        for lnum = a.first, a.last do
+            if is_marker[lnum] then
+                stop = stop or lnum
+            end
+        end
+        if stop then
+            s.conflicts[#s.conflicts + 1] = {
+                index = a.index,
+                result_start = a.first,
+                result_end = a.last,
+                stop = r and r.result_start or stop,
+                region = r,
+                shared = shared[a.id] or false,
+            }
+        end
+    end
+    s.strays = find_strays(s, lines)
+    return lines
+end
+
+-- the conflict whose range holds result line `lnum`, else nil
+---@param s differ.MergeSession
+---@param lnum integer
+---@return differ.merge.Tracked|nil
+local function conflict_on(s, lnum)
+    for _, c in ipairs(s.conflicts) do
+        if lnum >= c.result_start and lnum <= c.result_end then
+            return c
+        end
+    end
+    return nil
+end
+
+-- the index of the conflict under the result cursor, else nil
 ---@return integer|nil
 local function active_index()
     local s = assert(session)
     if not vim.api.nvim_win_is_valid(s.result_win) then
         return nil
     end
-    local cur = vim.api.nvim_win_get_cursor(s.result_win)[1]
-    for _, r in ipairs(s.regions) do
-        if cur >= r.result_start and cur <= r.result_end then
-            return r.index
-        end
-    end
-    return nil
+    local c = conflict_on(s, vim.api.nvim_win_get_cursor(s.result_win)[1])
+    return c and c.index
 end
 
 ---@param lines string[]
@@ -490,22 +619,15 @@ local function relocate(s, inp, indexed)
     return changed
 end
 
--- keep the input panes' slabs on the live regions. a hand edit can restore a region the
--- build never parsed (it gets an anchor and the next index) or split one that had
--- swallowed its neighbour, so the build-time slabs no longer cover every live region
+-- keep the input panes' slabs on the intact conflicts' text. a hand edit can restore a
+-- region the build never parsed, so the build-time slabs no longer cover every one; a
+-- broken conflict keeps the slabs it had
 ---@param s differ.MergeSession
 local function track_inputs(s)
     local indexed = {}
-    for _, r in ipairs(s.regions) do
-        local index = original_index(r.result_start)
-        if not index and #anchors_on(r.result_start) == 0 then
-            s.total = s.total + 1
-            index = s.total
-            s.restored[index] = true
-            place_anchor(s, r, index)
-        end
-        if index then
-            indexed[#indexed + 1] = { region = r, index = index }
+    for _, c in ipairs(s.conflicts) do
+        if c.region then
+            indexed[#indexed + 1] = { region = c.region, index = c.index }
         end
     end
     for _, inp in ipairs(s.inputs) do
@@ -517,15 +639,10 @@ local function track_inputs(s)
     end
 end
 
--- re-parse the result buffer and repaint its per-side colour + emphasis, caching the
--- regions on the session for navigation. keeps the order map aligned: a structured splice
--- maintains it itself (so this no-ops), but an arbitrary hand-edit + write rebuilds it to
--- the identity so the pane sync stays consistent (degrading to live-index = original-index)
+-- re-derive the tracked conflicts from the result buffer and repaint the result and panes
 local function repaint_result()
     local s = assert(session)
-    local lines
-    s.regions, lines = live_regions()
-    s.orphans = conflict.orphans(lines, s.marker_size)
+    track(s)
     track_inputs(s)
     s.active_index = active_index()
     paint_result(s.active_index)
@@ -601,59 +718,19 @@ local function on_cursor_moved()
     end
     session.active_index = active
     paint_result(active)
-    sync_inputs(original_at(active))
+    sync_inputs(active)
 end
 
----@param regions differ.merge.Region[]
----@param first integer
----@param last integer
----@return boolean
-local function overlaps_region(regions, first, last)
-    for _, r in ipairs(regions) do
-        if r.result_start <= last and r.result_end >= first then
-            return true
-        end
-    end
-    return false
-end
-
--- the first line of each incomplete conflict: orphans outside the complete regions, grouped
--- in order. a `<<<<<<<`, an orphan after a `>>>>>>>`, or a complete region in between
--- starts the next group
----@param regions differ.merge.Region[]
----@param orphans integer[]
----@param lines string[]
----@return integer[]
-local function incomplete_starts(regions, orphans, lines)
-    local starts = {}
-    local prev
-    for _, lnum in ipairs(orphans) do
-        if not overlaps_region(regions, lnum, lnum) then
-            local fresh = not prev
-                or lines[lnum]:sub(1, 1) == "<"
-                or lines[prev]:sub(1, 1) == ">"
-                or overlaps_region(regions, prev, lnum)
-            if fresh then
-                starts[#starts + 1] = lnum
-            end
-            prev = lnum
-        end
-    end
-    return starts
-end
-
--- jump the result cursor to the next/prev conflict, complete or incomplete (wrapping at the
--- ends), repaint the emphasis, and scroll the input panes to the same conflict
+-- jump the result cursor to the next/prev conflict, complete, broken or a stray marker
+-- group (wrapping at the ends), repaint the emphasis, and scroll the input panes to it
 ---@param dir "next"|"prev"
 local function goto_conflict(dir)
     if not live_session() then
         return
     end
-    local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
-    local starts = incomplete_starts(session.regions, session.orphans, lines)
-    local stops = vim.list_extend({}, starts)
-    for _, r in ipairs(session.regions) do
-        stops[#stops + 1] = r.result_start
+    local stops = vim.list_extend({}, session.strays)
+    for _, c in ipairs(session.conflicts) do
+        stops[#stops + 1] = c.stop
     end
     if #stops == 0 then
         return notify("no conflicts remain")
@@ -671,9 +748,9 @@ local function goto_conflict(dir)
     if not target then -- wrap
         target = dir == "next" and stops[1] or stops[#stops]
     end
-    -- the winbar names the first orphan once no complete region is left
-    local named = #session.regions == 0 and target == session.orphans[1]
-    if vim.tbl_contains(starts, target) and not named then
+    -- a stray group is named in the winbar when nothing else is left
+    local named = #session.conflicts == 0 and target == session.orphans[1]
+    if vim.tbl_contains(session.strays, target) and not named then
         notify(incomplete(target))
     end
     vim.api.nvim_win_set_cursor(session.result_win, { target, 0 })
@@ -731,25 +808,87 @@ end
 
 -- the conflict at the cursor, else the first one at or below it (so a take-this from just
 -- above a block still resolves it)
----@param regions differ.merge.Region[]
+---@param s differ.MergeSession
 ---@param lnum integer
----@return differ.merge.Region|nil
-local function region_at(regions, lnum)
-    for _, r in ipairs(regions) do
-        if lnum >= r.result_start and lnum <= r.result_end then
-            return r
-        end
+---@return differ.merge.Tracked|nil
+local function conflict_at(s, lnum)
+    local c = conflict_on(s, lnum)
+    if c then
+        return c
     end
-    for _, r in ipairs(regions) do
-        if r.result_start >= lnum then
-            return r
+    for _, t in ipairs(s.conflicts) do
+        if t.result_start >= lnum then
+            return t
         end
     end
     return nil
 end
 
--- resolve the conflict under the cursor by splicing in the chosen slab, then re-derive +
--- repaint, flash the produced lines, and advance to the next remaining conflict
+-- the conflict's slabs: the live ones while its markers are intact, else the last it
+-- parsed with. take-base falls back to the slab recovered at build time
+---@param s differ.MergeSession
+---@param c differ.merge.Tracked
+---@return differ.merge.Slabs
+local function slabs_of(s, c)
+    local known = c.region or s.slabs[c.index]
+    return { ours = known.ours, theirs = known.theirs, base = known.base or s.base_slabs[c.index] }
+end
+
+---@param a string[]
+---@param b string[]
+---@return boolean
+local function same(a, b)
+    if #a ~= #b then
+        return false
+    end
+    for i, line in ipairs(a) do
+        if b[i] ~= line then
+            return false
+        end
+    end
+    return true
+end
+
+-- whether a broken conflict's range holds only its own slabs between its surviving markers,
+-- so a take replaces nothing the user typed
+---@param s differ.MergeSession
+---@param c differ.merge.Tracked
+---@param lines string[]
+---@return boolean
+local function only_own(s, c, lines)
+    local marker = {}
+    for _, lnum in ipairs(s.orphans) do
+        marker[lnum] = true
+    end
+    local content = {}
+    for lnum = c.result_start, c.result_end do
+        if not marker[lnum] then
+            content[#content + 1] = lines[lnum]
+        end
+    end
+    local known = s.slabs[c.index]
+    if same(content, vim.list_extend(vim.list_extend({}, known.ours), known.theirs)) then
+        return true
+    end
+    if not known.base then
+        return false
+    end
+    local diff3 = vim.list_extend(vim.list_extend({}, known.ours), known.base)
+    return same(content, vim.list_extend(diff3, known.theirs))
+end
+
+local TAKE_WORDS = {
+    ours = "ours",
+    theirs = "theirs",
+    both = "ours then theirs",
+    base = "base",
+    none = "nothing",
+}
+
+-- resolve the conflict under the cursor by splicing the chosen slab over its whole range,
+-- then re-derive + repaint, flash the produced lines, and advance to the next remaining
+-- conflict. a broken conflict takes the slabs it last parsed with, confirming first when
+-- its range holds text from neither
 ---@param choice "ours"|"theirs"|"both"|"base"|"none"
 local function resolve_choice(choice)
     local s = live_session()
@@ -762,69 +901,63 @@ local function resolve_choice(choice)
     if s.binary then
         return require("differ.merge.binary").resolve(s, choice)
     end
-    local regions, lines = live_regions()
-    local orphans = conflict.orphans(lines, s.marker_size)
-    if #regions == 0 and orphans[1] then
-        return notify(incomplete(orphans[1]), vim.log.levels.WARN)
+    local lines = track(s)
+    if #s.conflicts == 0 and s.orphans[1] then
+        return notify(incomplete(s.orphans[1]), vim.log.levels.WARN)
     end
-    if #regions == 0 then
+    if #s.conflicts == 0 then
         return notify("no conflicts remain")
     end
-    local cur = vim.api.nvim_win_get_cursor(session.result_win)[1]
-    local region = region_at(regions, cur)
-    -- an incomplete conflict between the cursor and the region below it is the one meant
-    if not (region and cur >= region.result_start) then
-        for _, lnum in ipairs(orphans) do
-            local before = not region or lnum < region.result_start
-            if lnum >= cur and before and not overlaps_region(regions, lnum, lnum) then
-                return notify(incomplete(lnum), vim.log.levels.WARN)
-            end
+    local cur = vim.api.nvim_win_get_cursor(s.result_win)[1]
+    local c = conflict_at(s, cur)
+    -- a stray marker group between the cursor and the conflict below it is the one meant
+    for _, lnum in ipairs(s.strays) do
+        if lnum >= cur and (not c or lnum < c.result_start) then
+            return notify(incomplete(lnum), vim.log.levels.WARN)
         end
     end
-    if not region then
+    if not c then
         return notify("no conflict under the cursor", vim.log.levels.WARN)
     end
-    -- the live buffer parse carries no base under the default conflictStyle, so take-base
-    -- reads the slab recovered at build time, mapped live index -> original via `order`
-    if choice == "base" and not region.base then
-        local original = original_index(region.result_start)
-        if not original or session.restored[original] then
-            return notify(
-                "this conflict's markers were edited; run :Differ mergetool again to use its base",
-                vim.log.levels.WARN
-            )
-        end
-        region.base = session.base_slabs[original]
+    local slabs = slabs_of(s, c)
+    if choice == "base" and not slabs.base and (s.restored[c.index] or c.shared) then
+        return notify(
+            "this conflict's markers were edited; run :Differ mergetool again to use its base",
+            vim.log.levels.WARN
+        )
     end
-    local slab = require("differ.merge.resolve").slab(region, choice)
+    local slab = require("differ.merge.resolve").slab(slabs, choice)
     if not slab then
         return notify("no base version in this conflict", vim.log.levels.WARN)
     end
-    local anchor = region.result_start
-    local slab_count = #slab -- 0 for `none`
-    vim.bo[session.result_buf].modifiable = true
+    if not c.region and not only_own(s, c, lines) then
+        local tick = vim.api.nvim_buf_get_changedtick(s.result_buf)
+        local prompt = ("Replace your edits in the conflict at line %d with %s?"):format(
+            c.stop,
+            TAKE_WORDS[choice]
+        )
+        local yes = vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
+        -- confirm runs scheduled callbacks while it blocks: the session or buffer can move
+        local unmoved = session == s and vim.api.nvim_buf_get_changedtick(s.result_buf) == tick
+        if not (yes and unmoved) then
+            return
+        end
+    end
+    local anchor = c.result_start
+    vim.bo[s.result_buf].modifiable = true
     -- replace just the conflict's own lines, not the whole buffer: a whole-buffer set
     -- deletes every line and takes the anchors with it, and the surviving conflicts' marks
     -- are exactly what take-base needs afterwards
-    vim.api.nvim_buf_set_lines(
-        session.result_buf,
-        region.result_start - 1,
-        region.result_end,
-        false,
-        slab
-    )
+    vim.api.nvim_buf_set_lines(s.result_buf, c.result_start - 1, c.result_end, false, slab)
     repaint_result()
-    flash(session.result_buf, anchor, slab_count)
+    flash(s.result_buf, anchor, #slab)
     -- land on the next remaining conflict at or after where this one was
-    local target
-    for _, r in ipairs(session.regions) do
-        if r.result_start >= anchor then
-            target = target or r
+    for _, t in ipairs(s.conflicts) do
+        if t.stop >= anchor then
+            vim.api.nvim_win_set_cursor(s.result_win, { t.stop, 0 })
+            on_cursor_moved()
+            return
         end
-    end
-    if target then
-        vim.api.nvim_win_set_cursor(session.result_win, { target.result_start, 0 })
-        on_cursor_moved()
     end
 end
 
@@ -832,8 +965,8 @@ end
 ---@return integer
 local function active_pos()
     local s = assert(session)
-    for i, r in ipairs(s.regions) do
-        if r.index == s.active_index then
+    for i, c in ipairs(s.conflicts) do
+        if c.index == s.active_index then
             return i
         end
     end
@@ -850,7 +983,8 @@ local function base_label()
     if s.no_ancestor then
         return label .. " · no common ancestor"
     end
-    if #s.regions > 0 and not s.base_slabs[original_at(active_pos())] then
+    local c = s.conflicts[active_pos()]
+    if c and not s.base_slabs[c.index] then
         return label .. " · none for this conflict"
     end
     return label
@@ -869,7 +1003,7 @@ end
 ---@return string
 local function result_winbar(s)
     local file = ("RESULT · file %d/%d"):format(s.file_index, #s.files)
-    local remaining = #s.regions
+    local remaining = #s.conflicts
     if s.deleted and not s.staged then
         return ("%s · %s"):format(file, tint("deleted in " .. s.deleted, "differMergeUnstaged"))
     end
@@ -1334,6 +1468,9 @@ local function lay_out(root, relpath, model, layout, files)
         path = relpath,
         regions = model.regions,
         orphans = model.orphans,
+        conflicts = {},
+        strays = {},
+        slabs = {},
         marker_size = model.marker_size,
         anchors = {},
         base_slabs = {},
@@ -1365,7 +1502,9 @@ local function lay_out(root, relpath, model, layout, files)
         saved_diagnostics = vim.diagnostic.is_enabled({ bufnr = result_buf }),
     }
     for _, c in ipairs(model.conflicts) do
-        place_anchor(session, c, c.index)
+        place_anchor(session, c.result_start, c.result_end, c.index)
+        session.slabs[c.index] =
+            { ours = strip_cr(c.ours) or {}, theirs = strip_cr(c.theirs) or {} }
     end
     -- recovered base slabs by original conflict index: the default conflictStyle leaves no
     -- base in the live result parse, so take-base looks the slab up here (nil where the
@@ -1381,7 +1520,7 @@ local function lay_out(root, relpath, model, layout, files)
         apply_folds(inp.win, inp.folds)
     end
     apply_folds(result_win, result_col and result_col.folds)
-    paint_result(nil)
+    repaint_result()
 
     -- the result is the real file, so a format-on-save would run on :w and choke on (or
     -- mangle) the conflict markers. set conform's buffer-local opt-out for the session,
@@ -1533,10 +1672,9 @@ local function lay_out(root, relpath, model, layout, files)
     -- land in the result on the first conflict, else the first orphan marker;
     -- on_cursor_moved centres the inputs on it
     vim.api.nvim_set_current_win(result_win)
-    if #model.regions > 0 then
-        vim.api.nvim_win_set_cursor(result_win, { model.regions[1].result_start, 0 })
-    elseif model.orphans[1] then
-        vim.api.nvim_win_set_cursor(result_win, { model.orphans[1], 0 })
+    local land = session.conflicts[1] and session.conflicts[1].stop or session.strays[1]
+    if land then
+        vim.api.nvim_win_set_cursor(result_win, { land, 0 })
     end
     vim.cmd("normal! zz")
     on_cursor_moved()
