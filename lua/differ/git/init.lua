@@ -432,42 +432,39 @@ function M.head_branch(root)
 end
 local head_branch = M.head_branch
 
--- the HEAD commit, or nil on an unborn branch
----@param root string
----@return string|nil
-local function head_sha(root)
-    local out = git({ "rev-parse", "HEAD" }, root)
-    return out and chomp(out) or nil
-end
-
--- the HEAD commit and the branch name in one read; both nil on an unborn branch, and
--- the branch nil on a detached HEAD
----@param root string
----@return string|nil sha, string|nil branch
-local function head(root)
-    local out = git({ "rev-parse", "HEAD", "--abbrev-ref", "HEAD" }, root)
-    local sha, name = (out or ""):match("^(%x+)\n(.-)\n?$")
-    if name == "HEAD" then
-        name = nil
-    end
-    return sha, name
-end
-
 -- what one refresh read, shared by the change signature and the panel footer
 ---@class differ.git.Reads
----@field head? string -- the HEAD commit
----@field status? string -- raw `status --porcelain=v1 -z -uall` output
+---@field head? string -- the HEAD commit, nil on an unborn branch
+---@field branch? string -- nil on a detached HEAD
+---@field status? string -- raw STATUS_ARGS output, part of the change signature
+
+-- every worktree status read. the raw output is part of the change signature, so every
+-- signature producer reads this same format. `--no-ahead-behind` skips the upstream
+-- revision walk and keeps a fetch out of the signature
+local STATUS_ARGS = { "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "-uall" }
+
+-- the worktree's status entries and what the read carries for the refresh's reads
+---@param root string
+---@return differ.git.StatusEntry[] entries, differ.git.Reads reads, string|nil err
+local function read_status(root)
+    local out, err = git(STATUS_ARGS, root)
+    local entries, sha, branch = rev.parse_status(out or "")
+    return entries, { head = sha, branch = branch, status = out }, err
+end
 
 -- the "Showing changes for:" footer label: the user's rev spec, or the resolved HEAD
--- commit for the default uncommitted view (mirrors diffview). `sha` is HEAD as the
--- caller already read it
+-- commit for the default uncommitted view (mirrors diffview). `reads` are the
+-- refresh's, which already carry HEAD
 ---@param args string[]
 ---@param root string
----@param sha? string
+---@param reads? differ.git.Reads
 ---@return string|nil
-local function footer_label(args, root, sha)
+local function footer_label(args, root, reads)
     if #args == 0 then
-        return sha or head_sha(root)
+        if reads then
+            return reads.head
+        end
+        return M.head_sha(root)
     elseif #args == 2 then
         return args[1] .. ".." .. args[2]
     end
@@ -560,19 +557,18 @@ local function row_of(s)
 end
 
 -- the worktree's porcelain entries, the set of paths it lists as untracked, and the
--- raw status output they came from
+-- reads they came from
 ---@param root string
----@return differ.git.StatusEntry[] entries, table<string, boolean> untracked, string|nil err, string|nil status
+---@return differ.git.StatusEntry[] entries, table<string, boolean> untracked, string|nil err, differ.git.Reads reads
 local function porcelain(root)
-    local out, err = git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
-    local entries = rev.parse_status(out or "")
+    local entries, reads, err = read_status(root)
     local untracked = {}
     for _, s in ipairs(entries) do
         if s.x == "?" then
             untracked[s.path] = true
         end
     end
-    return entries, untracked, err, out
+    return entries, untracked, err, reads
 end
 
 -- what a row leaves to review, from the two status letters: a conflict is the merge
@@ -621,12 +617,12 @@ end
 -- every changed path takes one row, counted against HEAD since that is the diff it
 -- opens. a staged deletion counts against the index: porcelain lists a file removed
 -- from the index but still on disk twice (`D ` and `??`), and its one row is the
--- deletion, marked `kept`. empty sections are dropped by the caller. `status` is the
--- raw porcelain output the rows came from
+-- deletion, marked `kept`. empty sections are dropped by the caller. `reads` are what
+-- the rows came from
 ---@param root string
----@return differ.panel.Section[] sections, string|nil err, string|nil status
+---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
 function M.status_sections(root)
-    local entries, untracked, err, out = porcelain(root)
+    local entries, untracked, err, reads = porcelain(root)
     local staged_counts = numstat({ "--cached" }, root)
     local head_counts = numstat({ "HEAD" }, root)
     local removed = {}
@@ -655,15 +651,15 @@ function M.status_sections(root)
         { title = "Unstaged", entries = rows.Unstaged },
         { title = "Untracked", entries = rows.Untracked },
     }
-    return sections, err, out
+    return sections, err, reads
 end
 
 -- the rows a commit would take, as one section: every path the index changes, counted
 -- and lettered against HEAD. conflicts and untracked files hold nothing to commit
 ---@param root string
----@return differ.panel.Section[] sections, string|nil err, string|nil status
+---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
 function M.staged_sections(root)
-    local entries, untracked, err, out = porcelain(root)
+    local entries, untracked, err, reads = porcelain(root)
     local counts = numstat({ "--cached" }, root)
     local rows = {}
     for _, s in ipairs(entries) do
@@ -672,7 +668,7 @@ function M.staged_sections(root)
             rows[#rows + 1] = status_row(s, s.x, counts, untracked)
         end
     end
-    return { { title = "Staged changes", entries = rows } }, err, out
+    return { { title = "Staged changes", entries = rows } }, err, reads
 end
 
 -- file-level staging ops driven from the panel (slice C); each is whole-file
@@ -727,7 +723,7 @@ end
 ---@param entry differ.FileEntry
 ---@return differ.git.StatusEntry|nil
 local function live_row(root, entry)
-    local args = { "status", "--porcelain=v1", "-z", "-uall", "--", entry.path }
+    local args = vim.list_extend({ unpack(STATUS_ARGS) }, { "--", entry.path })
     -- git pairs a rename only with both paths in the pathspec; with one it reports an add
     if entry.previous_path then
         args[#args + 1] = entry.previous_path
@@ -1160,8 +1156,7 @@ function M.panel(opts)
     local opening ---@type differ.git.Reads|nil -- the opening listing's, for the first signature
     local staging_ops ---@type table -- assigned below; the hooks read it at call time
     if is_worktree_status(source) then
-        opening = { head = head_sha(root) }
-        sections, list_err, opening.status = M.status_sections(root)
+        sections, list_err, opening = M.status_sections(root)
         -- `branch` is read per build, so a branch switch under an open panel updates the
         -- synthetic buffer's statusline label
         model_for = function(entry, branch)
@@ -1227,9 +1222,7 @@ function M.panel(opts)
                 end
             end,
             reload = function()
-                local reads = { head = head_sha(root) } ---@type differ.git.Reads
-                local live, err
-                live, err, reads.status = (preview and M.staged_sections or M.status_sections)(root)
+                local live, err, reads = (preview and M.staged_sections or M.status_sections)(root)
                 list_failed = err ~= nil
                 if err then
                     notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
@@ -1275,7 +1268,7 @@ function M.panel(opts)
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
     local kept_empty = total == 0 -- an empty panel with no diff: the next change opens one
 
-    -- a cheap fingerprint of the diff's inputs: HEAD + porcelain status + the shown
+    -- a cheap fingerprint of the diff's inputs: porcelain status (HEAD among it) + the shown
     -- file's index blobs (the index side) + its mtime/size (the worktree side). external
     -- refreshes act only when it moved, so a stray event doesn't re-source over an
     -- in-progress in-differ staging session, and a differ stage records it so the index
@@ -1300,12 +1293,8 @@ function M.panel(opts)
             return ""
         end
         reads = reads or {}
-        local status = reads.status or git({ "status", "--porcelain=v1", "-z", "-uall" }, root)
-        local sig = (reads.head or head_sha(root) or "")
-            .. "\0"
-            .. (status or "")
-            .. "\0"
-            .. (M.operation(root) or "")
+        local status = reads.status or git(STATUS_ARGS, root)
+        local sig = (status or "") .. "\0" .. (M.operation(root) or "")
         if active_entry then
             sig = sig .. "\0" .. row_signature(active_entry)
         end
@@ -1425,14 +1414,14 @@ function M.panel(opts)
             return
         end
         local focus_line, focus_col = view:cursor_new_line()
-        local sha, branch = head(root)
+        local _, reads = read_status(root)
         local at_index = index_path(entry)
         local prev = nil ---@type string|nil
         if at_index ~= entry.path then
             prev = at_index
         end
         local file = { path = entry.path, status = entry.status, previous_path = prev }
-        local model = M.model({ old = INDEX, new = WORKTREE }, root, file, branch)
+        local model = M.model({ old = INDEX, new = WORKTREE }, root, file, reads.branch)
         if #model.hunks == 0 and not model.binary then
             model.notice = empty_notice(root, entry, model, {}) or "No local content change"
         end
@@ -1445,7 +1434,7 @@ function M.panel(opts)
         staging.badge, staging.toggle_local, staging.leave = "LOCAL", back, back
         local focus = focus_line and { focus_line = focus_line, focus_col = focus_col } or nil
         view:set_source(model, staging, focus)
-        last_sig = git_signature({ head = sha })
+        last_sig = git_signature(reads)
     end
 
     -- a row whose staged change the worktree has put back, or a staged add whose file is
@@ -1483,9 +1472,10 @@ function M.panel(opts)
     ---@param reads? differ.git.Reads
     ---@return boolean shown
     local function show_entry(entry, source_opts, reads)
-        local sha, branch ---@type string|nil, string|nil
+        local branch ---@type string|nil
         if stageable then
-            sha, branch = head(root)
+            reads = reads or select(2, read_status(root))
+            branch = reads.branch
         end
         local model = model_for(entry, branch)
         local staged_only = false
@@ -1545,17 +1535,17 @@ function M.panel(opts)
             watcher:watch_file(root .. "/" .. entry.path)
         end
         -- record the state we're now showing
-        last_sig = git_signature({ head = sha, status = reads and reads.status })
+        last_sig = git_signature(reads)
         return true
     end
 
     -- the current changed-file entries for a path: an external op (lazygit) can move it
     -- to another section or out of the change set
     ---@param path string
-    ---@return differ.FileEntry[]
+    ---@return differ.FileEntry[] entries, differ.git.Reads reads
     local function entries_for_path(path)
         local out = {}
-        local live = preview and M.staged_sections(root) or M.status_sections(root)
+        local live, _, reads = (preview and M.staged_sections or M.status_sections)(root)
         for _, sec in ipairs(live) do
             for _, e in ipairs(sec.entries) do
                 if e.path == path then
@@ -1563,7 +1553,7 @@ function M.panel(opts)
                 end
             end
         end
-        return out
+        return out, reads
     end
 
     -- the refreshed list's row for `path`, or nil once it has left the change set
@@ -1596,7 +1586,9 @@ function M.panel(opts)
         if reads then
             pick = listed(active_entry.path)
         else
-            pick = entries_for_path(active_entry.path)[1]
+            local entries
+            entries, reads = entries_for_path(active_entry.path)
+            pick = entries[1]
         end
         local was = active_entry
         local source_opts = { focus_line = focus_line, focus_col = focus_col, keep_folds = true }
@@ -1714,7 +1706,7 @@ function M.panel(opts)
         sections = nonempty,
         root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
         footer = function(reads)
-            return footer_label(args, root, reads and reads.head)
+            return footer_label(args, root, reads)
         end,
         reads = opening,
         operation = stageable and function()
