@@ -67,13 +67,24 @@ local function fetch_opts()
     return { timeout = M.fetch_timeout_ms, env = { GIT_TERMINAL_PROMPT = "0" } }
 end
 
--- repo root containing `path` (a file or directory), or nil if not in a repo
+---@type table<string, string>
+local git_dirs = {}
+
+-- repo root containing `path` (a file or directory), or nil if not in a repo. the same
+-- read fills the root's git dir
 ---@param path string
 ---@return string|nil
 function M.root(path)
     local dir = vim.fn.isdirectory(path) == 1 and path or vim.fs.dirname(path)
-    local out = git({ "rev-parse", "--show-toplevel" }, dir)
-    return out and chomp(out) or nil
+    local out = git({ "rev-parse", "--show-toplevel", "--absolute-git-dir" }, dir)
+    if not out then
+        return nil
+    end
+    local root, git_dir = out:match("^([^\n]+)\n([^\n]+)")
+    if root then
+        git_dirs[root] = git_dir
+    end
+    return root
 end
 
 -- the repo's current HEAD sha, or nil outside a repo
@@ -83,9 +94,6 @@ function M.head_sha(root)
     local out = git({ "rev-parse", "HEAD" }, root)
     return out and chomp(out) or nil
 end
-
----@type table<string, string>
-local git_dirs = {}
 
 -- the repo's absolute git dir, or nil outside a repo. only found dirs are cached: a
 -- directory outside a repo can become one
@@ -623,13 +631,16 @@ end
 ---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
 function M.status_sections(root)
     local entries, untracked, err, reads = porcelain(root)
-    local staged_counts = numstat({ "--cached" }, root)
     local head_counts = numstat({ "HEAD" }, root)
     local removed = {}
     for _, s in ipairs(entries) do
         if s.x == "D" then
             removed[s.path] = true
         end
+    end
+    local staged_counts = {}
+    if next(removed) then
+        staged_counts = numstat({ "--cached" }, root)
     end
     local rows = { Conflicts = {}, Staged = {}, Partial = {}, Unstaged = {}, Untracked = {} }
     for _, s in ipairs(entries) do
@@ -1268,23 +1279,21 @@ function M.panel(opts)
     local active_entry ---@type differ.FileEntry|nil -- the file the view currently shows
     local kept_empty = total == 0 -- an empty panel with no diff: the next change opens one
 
-    -- a cheap fingerprint of the diff's inputs: porcelain status (HEAD among it) + the shown
-    -- file's index blobs (the index side) + its mtime/size (the worktree side). external
-    -- refreshes act only when it moved, so a stray event doesn't re-source over an
-    -- in-progress in-differ staging session, and a differ stage records it so the index
+    -- a cheap fingerprint of the diff's inputs: porcelain status (HEAD and every changed
+    -- path's index blob among it) + the shown file's mtime/size (the worktree side).
+    -- external refreshes act only when it moved, so a stray event doesn't re-source over
+    -- an in-progress in-differ staging session, and a differ stage records it so the index
     -- write it caused doesn't read as outside
-    -- one row's part of it: its index blobs, and its file's mtime and size. a partial
-    -- stage that leaves the row MM moves only the blob
+    -- one row's worktree part of it. a partial stage that leaves the row MM moves only the
+    -- status record's index blob
     ---@param entry differ.FileEntry
     ---@return string
     local function row_signature(entry)
-        local blobs = { "ls-files", "-s", "--", entry.path, entry.previous_path }
-        local sig = git(blobs, root) or ""
         local st = (vim.uv or vim.loop).fs_stat(root .. "/" .. entry.path)
-        if st and st.mtime then
-            sig = sig .. "\0" .. st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size
+        if not (st and st.mtime) then
+            return ""
         end
-        return sig
+        return st.mtime.sec .. "." .. st.mtime.nsec .. ":" .. st.size
     end
     -- `reads` comes from the same refresh as the call, never an earlier one
     ---@param reads? differ.git.Reads
@@ -1302,13 +1311,19 @@ function M.panel(opts)
     end
 
     -- rows the review walk stepped off with nothing left for its key, by walk (false: s)
-    -- then path, each with HEAD and the row's signature as they were. any change to
-    -- either puts the row back in the walk
+    -- then path, each with its status (HEAD and the index blob among it) and file stat as
+    -- they were. any change to either puts the row back in the walk
     local passed = { [false] = {}, [true] = {} } ---@type table<boolean, table<string, string>>
     ---@param entry differ.FileEntry
     ---@return string
     local function passed_key(entry)
-        return (git({ "rev-parse", "HEAD" }, root) or "") .. "\0" .. row_signature(entry)
+        local row_args = vim.list_extend(
+            { unpack(STATUS_ARGS) },
+            { "--", entry.path, entry.previous_path }
+        )
+        -- a branch switch alone leaves the row as it was
+        local status = (git(row_args, root) or ""):gsub("# branch%.head [^%z]*%z", "")
+        return status .. "\0" .. row_signature(entry)
     end
     ---@type differ.panel.ReviewHooks
     local review_hooks = {

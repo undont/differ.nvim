@@ -95,6 +95,48 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- 1x staged, 6y and 12x not, so each case below leaves the row MM and only its index
+    -- blob moves
+    local function mm_states(v)
+        local out = {}
+        for i = 1, #v.model.hunks do
+            out[i] = v:_hunk_state(i)
+        end
+        return out
+    end
+    local function mm_row()
+        local twelve = helpers.twelve
+        return staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [6] = "6y", [12] = "12x" }))
+    end
+
+    it("re-sources on a git add -p from outside that leaves the row MM", function()
+        local root, p, v = mm_row()
+        -- add -p offers 6y and 12x as one hunk: split it, take 6y, leave 12x
+        local res = vim.system({ "git", "add", "-p", "a.lua" }, { cwd = root, stdin = "s\ny\nn\n" })
+            :wait()
+        assert.are.equal(0, res.code, res.stderr)
+        assert.are.equal(helpers.twelve({ "1x", [6] = "6y" }), indexed(root, "a.lua"))
+        p.on_external_change()
+        local after = mm_states(v)
+        p:close()
+        assert.are.same({ "staged", "staged", "unstaged" }, after)
+    end)
+
+    it("re-sources when the index goes back on a row a partial stage left MM", function()
+        local root, p, v = mm_row()
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        local staged = mm_states(v)
+        helpers.stage_behind(root, helpers.twelve({ "1x" }))
+        p.on_external_change()
+        local after = mm_states(v)
+        p:close()
+        assert.are.same({ "staged", "staged", "unstaged" }, staged)
+        assert.are.same({ "staged", "unstaged", "unstaged" }, after)
+    end)
+
     it("unstages a staged hunk in place, then re-stages it", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
