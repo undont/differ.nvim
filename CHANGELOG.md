@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- In the merge tool, a conflict with a broken marker stays unresolved until a take-this or until all its markers are deleted: it keeps its place in the winbar count, and take-this replaces it with the side you pick, asking first if you've edited inside it
+
+### Fixed
+
+- In the merge tool, a conflict with a broken marker lost its tint in the OURS and THEIRS panes and dropped out of the count after reopening the file; both now survive the reopen
+- In the merge tool, a `=======` line from ours or theirs outside a conflict (e.g. a markdown setext underline) read as an incomplete conflict and blocked staging; it's now treated as content, and `:w` asks before staging a leftover bare `=======` or `|||||||` line
+
+## [0.2.23] — 2026-11-01
+
 ### Fixed
 
 - In the merge tool, `gC` and `:Differ continue` on conflicts left by `git stash pop` or `checkout -m` said "no merge, rebase, cherry-pick, revert or am in progress" and staged nothing; they now stage the result and say how many conflicted files are left, or close into the worktree panel once all are resolved
