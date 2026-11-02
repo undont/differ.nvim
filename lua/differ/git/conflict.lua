@@ -115,12 +115,13 @@ end
 -- group. a stray marker inside a complete region's theirs slab belongs to no group
 ---@param lines string[]
 ---@param size integer|nil  -- marker length, 7 when nil
+---@param orphans integer[]|nil  -- the orphans to group, all of them when nil
 ---@return { first: integer, last: integer }[]  -- each group's first and last orphan line
-function M.incomplete(lines, size)
+function M.incomplete(lines, size, orphans)
     local regions = M.parse(lines, size)
     local groups = {}
     local prev, r = nil, 1
-    for _, lnum in ipairs(M.orphans(lines, size)) do
+    for _, lnum in ipairs(orphans or M.orphans(lines, size)) do
         local passed = false
         while regions[r] and regions[r].result_end < lnum do
             passed, r = true, r + 1
@@ -140,6 +141,52 @@ function M.incomplete(lines, size)
         end
     end
     return groups
+end
+
+---@param line string
+---@return string
+local function key(line)
+    return (line:gsub("\r$", ""))
+end
+
+-- the marker-shaped lines of line-split stage contents, by text (CR stripped): a setext
+-- `=======` underline, say
+---@param stages string[][]
+---@param size integer|nil  -- marker length, 7 when nil
+---@return table<string, true>
+function M.content_markers(stages, size)
+    size = size or DEFAULT_SIZE
+    local set = {}
+    for _, stage in ipairs(stages) do
+        for _, line in ipairs(stage) do
+            local ch = line:sub(1, 1)
+            if (ch == "<" or ch == "|" or ch == "=" or ch == ">") and marker(line, ch, size) then
+                set[key(line)] = true
+            end
+        end
+    end
+    return set
+end
+
+-- the orphans that are markers: every one inside a conflict's span, and one outside every
+-- span unless a stage carries its text
+---@param lines string[]
+---@param orphans integer[]
+---@param spans { result_start: integer, result_end: integer }[]
+---@param content table<string, true>  -- from content_markers
+---@return integer[]
+function M.markers(lines, orphans, spans, content)
+    local out = {}
+    for _, lnum in ipairs(orphans) do
+        local inside = false
+        for _, sp in ipairs(spans) do
+            inside = inside or (lnum >= sp.result_start and lnum <= sp.result_end)
+        end
+        if inside or not content[key(lines[lnum])] then
+            out[#out + 1] = lnum
+        end
+    end
+    return out
 end
 
 -- a clean conflict marker sits at column 0; a format-on-save that ignores the buffer's

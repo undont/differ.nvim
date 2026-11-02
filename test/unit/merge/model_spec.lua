@@ -529,6 +529,62 @@ describe("merge.model conflicts", function()
         assert.are.same({ "X2" }, c.theirs)
     end)
 
+    it("reads a setext ======= the stages carry as content, not a conflict", function()
+        local m = build(file(merge_block({ "Title A" }, { "Title B" }), "======="), {
+            diff3 = file(diff3_block({ "Title A" }, { "Title" }, { "Title B" }), "======="),
+            stages = {
+                [1] = "Title\n=======\n",
+                [2] = "Title A\n=======\n",
+                [3] = "Title B\n=======\n",
+            },
+        })
+        assert.are.equal(1, #m.conflicts)
+        assert.are.same({}, m.orphans)
+        assert.is_true(m.content_markers["======="])
+    end)
+
+    it("has no conflicts when the only marker-shaped line is stage content", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = file("Title", "=======", "body"),
+            diff3 = file("Title", "=======", "body"),
+            stages = { [1] = "Title\n=======\n", [2] = "Title\n=======\n", [3] = "x\n" },
+        })
+        local m, err = model.build("/repo", "a.md", nil)
+        assert.is_nil(m)
+        assert.matches("has no conflicts to resolve", err)
+    end)
+
+    it("keeps a broken conflict whose only marker is a stage-content =======", function()
+        local stages = {
+            [1] = "T\n=======\nY\nX\n",
+            [2] = "T\n=======\nY1\nX1\n",
+            [3] = "T\n=======\nY2\nX2\n",
+        }
+        local synth = file(
+            "T",
+            "=======",
+            diff3_block({ "Y1" }, { "Y" }, { "Y2" }),
+            diff3_block({ "X1" }, { "X" }, { "X2" })
+        )
+        local worktree = file("T", "=======", INTACT_Y, "X1", "=======", "X2")
+        local m = build(worktree, { diff3 = synth, stages = stages })
+        assert.are.equal(2, #m.conflicts)
+        local c = m.conflicts[2]
+        assert.is_nil(c.region)
+        assert.are.same({ 2, 8, 10 }, { c.index, c.result_start, c.result_end })
+        assert.are.same({ "X1" }, c.ours)
+        assert.are.same({ 9 }, m.orphans)
+    end)
+
+    it("keeps a stage-content group as a conflict when the re-merge is unavailable", function()
+        local m = build(file(merge_block({ "Title A" }, { "Title B" }), "======="), {
+            diff3 = false,
+            stages = { [1] = "Title\n", [2] = "Title A\n=======\n", [3] = "Title B\n" },
+        })
+        assert.are.equal(2, #m.conflicts)
+        assert.are.same({ 6 }, m.orphans)
+    end)
+
     it("keeps a broken conflict on its marker lines when the re-merge is unavailable", function()
         local m = build(file("a", "<<<<<<< HEAD", "X1", "X2", ">>>>>>> br", "b"), { diff3 = false })
         local c = m.conflicts[1]

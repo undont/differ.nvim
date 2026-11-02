@@ -74,7 +74,8 @@ local INPUT_HL = {
 ---@field root string
 ---@field path string
 ---@field regions differ.merge.Region[]   -- the complete regions the live result buffer parses to
----@field orphans integer[]               -- marker lines no region uses, re-derived with regions
+---@field orphans integer[]               -- marker lines no region uses, content excluded (conflict.markers)
+---@field content_markers table<string, true> -- marker-shaped text that is content outside every conflict
 ---@field conflicts differ.merge.Tracked[] -- the unresolved conflicts, in result order
 ---@field strays integer[]                -- first lines of marker groups outside every conflict
 ---@field slabs table<integer, differ.merge.Slabs> -- conflict index -> the slabs it last parsed with
@@ -493,7 +494,7 @@ end
 ---@return integer[]
 local function find_strays(s, lines)
     local out = {}
-    for _, g in ipairs(conflict.incomplete(lines, s.marker_size)) do
+    for _, g in ipairs(conflict.incomplete(lines, s.marker_size, s.orphans)) do
         local c = nil
         for _, t in ipairs(s.conflicts) do
             if g.first >= t.result_start and g.first <= t.result_end then
@@ -515,8 +516,13 @@ end
 local function track(s)
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
     s.regions = conflict.parse(lines, s.marker_size)
-    s.orphans = conflict.orphans(lines, s.marker_size)
     local live, owner, shared = attach_regions(s)
+    local ranges = {}
+    for i, a in ipairs(live) do
+        ranges[i] = { result_start = a.first, result_end = a.last }
+    end
+    local orphans = conflict.orphans(lines, s.marker_size)
+    s.orphans = conflict.markers(lines, orphans, ranges, s.content_markers)
     local is_marker = marker_set(s)
     s.conflicts = {}
     for _, a in ipairs(live) do
@@ -1269,10 +1275,51 @@ local function stage_result()
     end
 end
 
+-- a bare ======= or ||||||| can be content (a setext underline). when every marker left is
+-- one, ask; on yes the conflicts holding them retire and their text reads as content
+---@param s differ.MergeSession
+---@return boolean staged_as_content
+local function confirm_content(s)
+    local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+    for _, lnum in ipairs(s.orphans) do
+        local ch = lines[lnum]:sub(1, 1)
+        if ch ~= "=" and ch ~= "|" then
+            return false
+        end
+    end
+    local prompt = ("Line %d looks like a conflict marker. Stage it as content?"):format(
+        s.orphans[1]
+    )
+    if #s.orphans > 1 then
+        prompt = ("Lines %s look like conflict markers. Stage them as content?"):format(
+            table.concat(s.orphans, ", ")
+        )
+    end
+    local tick = vim.api.nvim_buf_get_changedtick(s.result_buf)
+    local yes = vim.fn.confirm(prompt, "&Yes\n&No", 2) == 1
+    -- confirm runs scheduled callbacks while it blocks: the session or buffer can move
+    local unmoved = session == s and vim.api.nvim_buf_get_changedtick(s.result_buf) == tick
+    if not (yes and unmoved) then
+        return false
+    end
+    for _, lnum in ipairs(s.orphans) do
+        s.content_markers[lines[lnum]] = true
+        local c = conflict_on(s, lnum)
+        for _, a in ipairs(c and spans(s) or {}) do
+            if a.index == c.index then
+                vim.api.nvim_buf_del_extmark(s.result_buf, anchor_ns, a.id)
+            end
+        end
+    end
+    repaint_result()
+    return true
+end
+
 -- BufWritePost on the result: stage once no markers remain. repaint so a hand-edit's
 -- regions stay current
 local function on_write()
-    if not session then
+    local s = session
+    if not s then
         return
     end
     repaint_result()
@@ -1290,12 +1337,14 @@ local function on_write()
         end
         return
     end
-    if #session.regions > 0 then
+    if #s.regions > 0 then
         return
     end
-    local orphan = session.orphans[1]
-    if orphan then
-        notify(incomplete(orphan) .. "; not staged", vim.log.levels.WARN)
+    local orphan = s.orphans[1]
+    if orphan and not confirm_content(s) then
+        if session == s then
+            notify(incomplete(orphan) .. "; not staged", vim.log.levels.WARN)
+        end
         return
     end
     stage_result()
@@ -1468,6 +1517,7 @@ local function lay_out(root, relpath, model, layout, files)
         path = relpath,
         regions = model.regions,
         orphans = model.orphans,
+        content_markers = model.content_markers,
         conflicts = {},
         strays = {},
         slabs = {},

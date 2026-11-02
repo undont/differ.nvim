@@ -319,6 +319,42 @@ describe("git.conflict.incomplete", function()
     end)
 end)
 
+describe("git.conflict.incomplete over given orphans", function()
+    it("groups only the orphans it is given", function()
+        local lines = { "=======", "a", "<<<<<<< HEAD", "b" }
+        assert.are.same({ { first = 3, last = 3 } }, conflict.incomplete(lines, nil, { 3 }))
+    end)
+end)
+
+describe("git.conflict.content_markers", function()
+    it("collects the stages' marker-shaped lines by text, CR stripped", function()
+        local set = conflict.content_markers({
+            { "Title", "=======\r", "body" },
+            { ">>>>>>> quoted", "========" },
+        })
+        assert.are.same({ ["======="] = true, [">>>>>>> quoted"] = true }, set)
+    end)
+
+    it("uses the given marker size", function()
+        assert.are.same({ ["========="] = true }, conflict.content_markers({ { "=========" } }, 9))
+    end)
+end)
+
+describe("git.conflict.markers", function()
+    local content = { ["======="] = true }
+
+    it("drops an orphan outside every span whose text a stage carries", function()
+        local lines = join(region("x"), { "Title", "=======", ">>>>>>> y" })
+        assert.are.same({ 8 }, conflict.markers(lines, { 7, 8 }, {}, content))
+    end)
+
+    it("keeps every orphan inside a span, whatever a stage carries", function()
+        local lines = { "Title", "=======", "X2", "=======\r" }
+        local spans = { { result_start = 1, result_end = 3 } }
+        assert.are.same({ 2 }, conflict.markers(lines, { 2, 4 }, spans, content))
+    end)
+end)
+
 describe("git.rev.parse_unmerged", function()
     it("splits the NUL-framed paths and drops the trailing field", function()
         assert.are.same({ "a.txt", "dir/b.lua" }, rev.parse_unmerged("a.txt\0dir/b.lua\0"))

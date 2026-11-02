@@ -18,7 +18,8 @@ local to_lines = require("differ.util.text").to_lines
 ---@field result_text string -- the worktree file as-is (markers intact)
 ---@field conflicts differ.merge.Conflict[]
 ---@field regions differ.merge.Region[]  -- the complete ones, indexed as their conflict
----@field orphans integer[]  -- marker lines no region uses (conflict.orphans)
+---@field orphans integer[]  -- marker lines no region uses, content excluded (conflict.markers)
+---@field content_markers table<string, true> -- the stages' marker-shaped lines (conflict.content_markers)
 ---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
@@ -229,6 +230,7 @@ end
 ---@param texts table<"ours"|"base"|"theirs", string>
 ---@param size integer  -- conflict marker length
 ---@param no_ancestor boolean
+---@return boolean remerged
 local function attach(conflicts, result_lines, texts, size, no_ancestor)
     local recover, broken = false, false
     for _, c in ipairs(conflicts) do
@@ -236,12 +238,12 @@ local function attach(conflicts, result_lines, texts, size, no_ancestor)
         broken = broken or c.region == nil
     end
     if not (recover or broken) then
-        return
+        return false
     end
     local synth_text =
         require("differ.git").merge_file_diff3(texts.ours, texts.base, texts.theirs, size)
     if not synth_text then
-        return
+        return false
     end
     local synth = conflict.parse(to_lines(synth_text), size)
     -- the synthetic regions came out of merging these stages, so each side's slabs must
@@ -296,6 +298,29 @@ local function attach(conflicts, result_lines, texts, size, no_ancestor)
             end
         end
     end
+    return true
+end
+
+-- whether a broken conflict is a conflict rather than marker-shaped content: it is content
+-- when the re-merge ran and gave it no slabs, and every orphan in its span is text a stage
+-- carries
+---@param c differ.merge.Conflict
+---@param lines string[]
+---@param orphans integer[]
+---@param content table<string, true>
+---@param remerged boolean
+---@return boolean
+local function is_conflict(c, lines, orphans, content, remerged)
+    if c.region or not remerged or #c.ours > 0 or #c.theirs > 0 then
+        return true
+    end
+    local inside = {}
+    for _, lnum in ipairs(orphans) do
+        if lnum >= c.result_start and lnum <= c.result_end then
+            inside[#inside + 1] = lnum
+        end
+    end
+    return #conflict.markers(lines, inside, {}, content) > 0
 end
 
 -- the side that deleted a modify/delete file: the ancestor and exactly one side's stage
@@ -367,6 +392,7 @@ function M.build(root, relpath, head)
             conflicts = {},
             regions = {},
             orphans = {},
+            content_markers = {},
             marker_size = 7, -- no markers in a binary result
             head = head,
             no_ancestor = no_ancestor,
@@ -378,18 +404,32 @@ function M.build(root, relpath, head)
     local result_lines = to_lines(result_text)
     local regions = conflict.parse(result_lines, marker_size)
     local orphans = conflict.orphans(result_lines, marker_size)
+    local content = conflict.content_markers(
+        { to_lines(ours_text), to_lines(base_text), to_lines(theirs_text) },
+        marker_size
+    )
+    local spun = spine(regions, conflict.incomplete(result_lines, marker_size))
+    -- with no ancestor the re-merge still yields empty base slabs, which attach would copy
+    -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
+    local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
+    local remerged = attach(spun, result_lines, texts, marker_size, no_ancestor)
+    local conflicts = {}
+    for _, c in ipairs(spun) do
+        if is_conflict(c, result_lines, orphans, content, remerged) then
+            c.index = #conflicts + 1
+            if c.region then
+                c.region.index = c.index
+            end
+            conflicts[c.index] = c
+        end
+    end
     local deleted = nil
-    if #regions == 0 and #orphans == 0 then
+    if #conflicts == 0 then
         deleted = deleted_side(root, relpath)
         if not deleted then
             return nil, relpath .. " has no conflicts to resolve"
         end
     end
-    local conflicts = spine(regions, conflict.incomplete(result_lines, marker_size))
-    -- with no ancestor the re-merge still yields empty base slabs, which attach would copy
-    -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
-    local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
-    attach(conflicts, result_lines, texts, marker_size, no_ancestor)
     return {
         path = relpath,
         root = root,
@@ -399,7 +439,8 @@ function M.build(root, relpath, head)
         result_text = result_text,
         conflicts = conflicts,
         regions = regions,
-        orphans = orphans,
+        orphans = conflict.markers(result_lines, orphans, conflicts, content),
+        content_markers = content,
         marker_size = marker_size,
         head = head,
         no_ancestor = no_ancestor,
