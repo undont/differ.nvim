@@ -1413,7 +1413,7 @@ function M.panel(opts)
     ---@param entry differ.FileEntry
     ---@return differ.DiffModel|nil
     local function staged_model(entry)
-        if preview then
+        if preview or not stageable then
             return nil
         end
         local gone = entry.x == "A" and entry.y == "D"
