@@ -110,7 +110,7 @@ local LINE_HL = {
 ---@field on_external_change fun()|nil
 ---@field on_empty fun()|nil
 ---@field on_refresh fun(reads: any)|nil
----@field on_staged fun(paths: table<string, boolean>|nil)|nil
+---@field on_staged fun(paths: table<string, boolean>|nil, reads: any)|nil
 ---@field root string|nil
 ---@field chrome_sources { footer?: string|(fun(reads: any): string|nil), operation?: (fun(reads: any): string|nil) }
 ---@field chrome { footer?: string, operation?: string } -- chrome_sources as last read
@@ -156,14 +156,15 @@ Panel.__index = Panel
 -- and the watcher doesn't read them back as an outside change
 ---@field on_refresh? fun(reads: any)
 -- fired after the panel's own staging keys, so the session can re-source the diff it
--- drives. separate from on_refresh, which every reload fires: the diff window's own
--- s / u keep their frozen marks
----@field on_staged? fun(paths: table<string, boolean>|nil)
+-- drives, with the reads of the reload just before it. separate from on_refresh, which
+-- every reload fires: the diff window's own s / u keep their frozen marks
+---@field on_staged? fun(paths: table<string, boolean>|nil, reads: any)
 ---@field root? string  -- repo/worktree path shown in the panel header
 -- rev spec shown under "Showing changes for:"; a function is re-read on every reload, as
 -- is `operation`, the in-progress git operation
 ---@field footer? string|fun(reads: any): string|nil
 ---@field operation? fun(reads: any): string|nil
+---@field reads? any -- what the opening listing read, for the first chrome read
 ---@field actions? differ.panel.Actions -- file-level staging hooks (slice C)
 ---@field keymaps? table<string, string|string[]|false> -- resolved panel action -> lhs
 ---@field extra_keymaps? differ.panel.ExtraMap[] -- session maps (pr viewed nav)
@@ -239,7 +240,7 @@ function Panel.new(opts)
         lines = {},
         meta = {},
     }, Panel)
-    self:_read_chrome()
+    self:_read_chrome(opts.reads)
     return self
 end
 
@@ -767,10 +768,11 @@ end
 -- visible diff, so its model tracks git either way. every reload reports itself through
 -- `on_refresh` (whatever drove it, including the panel's own staging keys), and one that
 -- empties the change set hands over to `on_empty`, which may end the session, so nothing
--- touches self after it
+-- touches self after it. returns the reload's reads
+---@return any
 function Panel:refresh()
     if not self.actions or not self:is_alive() then
-        return
+        return nil
     end
     local anchor = self:_cursor_anchor()
     local sections, reads = self.actions.reload()
@@ -779,9 +781,11 @@ function Panel:refresh()
         self.on_refresh(reads)
     end
     if self.file_total == 0 and self.on_empty then
-        return self.on_empty()
+        self.on_empty()
+        return reads
     end
     self:_restore_anchor(anchor)
+    return reads
 end
 
 -- the full "git may have moved outside differ" refresh: re-source the list *and* the
@@ -883,9 +887,9 @@ end
 -- re-source the diff it drives. `paths` is what the op moved, nil meaning every file
 ---@param paths table<string, boolean>|nil
 function Panel:_after_stage_op(paths)
-    self:refresh()
+    local reads = self:refresh()
     if self.on_staged and self:is_alive() then
-        self.on_staged(paths)
+        self.on_staged(paths, reads)
     end
 end
 
