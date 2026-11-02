@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the merge tool's OURS, THEIRS and BASE panes, the `▌` gutter sign also showed on the line after each conflict; it now marks only the conflict's own lines
+
+## [0.2.24] — 2026-11-02
+
 ### Changed
 
 - In the merge tool, a conflict with a broken marker stays unresolved until a take-this or until all its markers are deleted: it keeps its place in the winbar count, and take-this replaces it with the side you pick, asking first if you've edited inside it

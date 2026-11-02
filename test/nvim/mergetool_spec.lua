@@ -177,6 +177,25 @@ local conflict_repo_multi = fixture.cached(function()
     return root
 end)
 
+-- a repo where both sides change lines 2-3 of four, so each input slab spans two rows
+-- with an unchanged line after it
+local conflict_repo_tall = fixture.cached(function()
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/f.txt", "a\nb\nc\nd\n")
+    git_ok(root, "add", "f.txt")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    write(root .. "/f.txt", "a\nTHEIRS1\nTHEIRS2\nd\n")
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    write(root .. "/f.txt", "a\nOURS1\nOURS2\nd\n")
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end)
+
 -- a repo where both sides change two spots two unchanged lines apart. ort coalesces them
 -- into one conflict block while git merge-file keeps them separate, which is the grouping
 -- disagreement base recovery has to map across (a gap of four or more stops coalescing)
@@ -1189,13 +1208,53 @@ describe(":Differ mergetool resolution", function()
         for _, inp in ipairs(s.inputs) do
             local rows = {}
             local buf = vim.api.nvim_win_get_buf(inp.win)
-            for _, m in ipairs(vim.api.nvim_buf_get_extmarks(buf, merge_ns, 0, -1, {})) do
-                rows[#rows + 1] = m[2] + 1
+            local marks = vim.api.nvim_buf_get_extmarks(buf, merge_ns, 0, -1, { details = true })
+            for _, m in ipairs(marks) do
+                if m[4].hl_group then
+                    rows[#rows + 1] = m[2] + 1
+                end
             end
             out[inp.side] = rows
         end
         return out
     end
+
+    -- the rows each input pane draws a gutter sign on, by side
+    ---@param s table
+    ---@return table<string, integer[]>
+    local function sign_rows(s)
+        local out = {}
+        for _, inp in ipairs(s.inputs) do
+            local rows = {}
+            local buf = vim.api.nvim_win_get_buf(inp.win)
+            local marks = vim.api.nvim_buf_get_extmarks(buf, merge_ns, 0, -1, { details = true })
+            for _, m in ipairs(marks) do
+                if m[4].sign_text then
+                    rows[#rows + 1] = m[2] + 1
+                    -- a ranged mark draws its sign on its end row as well
+                    if m[4].end_row then
+                        rows[#rows + 1] = m[4].end_row + 1
+                    end
+                end
+            end
+            out[inp.side] = rows
+        end
+        return out
+    end
+
+    it("signs only a slab's own rows", function()
+        for _, case in ipairs({
+            { root = conflict_repo(), rows = { 2 } },
+            { root = conflict_repo_tall(), rows = { 2, 3 } },
+        }) do
+            vim.cmd.edit(case.root .. "/f.txt")
+            merge.open({})
+            local s = merge.current()
+            assert.are.same({ ours = case.rows, theirs = case.rows }, pane_rows(s))
+            assert.are.same({ ours = case.rows, theirs = case.rows }, sign_rows(s))
+            merge.close()
+        end
+    end)
 
     ---@param s table
     ---@param k integer

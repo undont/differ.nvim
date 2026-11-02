@@ -311,6 +311,10 @@ local function paint_input(buf, side, regions)
                 hl_group = hl.body,
                 hl_eol = true,
                 priority = 100,
+            })
+            -- a ranged mark also draws its sign on its end row, so the sign gets a point mark
+            vim.api.nvim_buf_set_extmark(buf, merge_ns, row, 0, {
+                priority = 100,
                 sign_text = "▌",
                 sign_hl_group = hl.sign,
             })
