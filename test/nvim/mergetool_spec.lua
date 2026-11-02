@@ -1113,10 +1113,7 @@ describe(":Differ mergetool resolution", function()
             assert.are.equal("differMergeConflict", marks[1][4].hl_group)
         end
         vim.g.statusline_winid = s.result_win
-        assert.are.equal(
-            "RESULT · file 1/1 · conflict 1/1 · 1 unresolved",
-            plain(merge.winbar())
-        )
+        assert.are.equal("RESULT · file 1/1 · conflict 1/1", plain(merge.winbar()))
 
         -- ]x lands on the incomplete conflict without a message
         vim.api.nvim_win_set_cursor(s.result_win, { 1, 0 })
@@ -1243,10 +1240,7 @@ describe(":Differ mergetool resolution", function()
         vim.api.nvim_win_set_cursor(s.result_win, { s.regions[1].result_start, 0 })
         vim.cmd("doautocmd CursorMoved")
         vim.g.statusline_winid = s.result_win
-        assert.are.equal(
-            "RESULT · file 1/1 · conflict 1/3 · 3 unresolved",
-            plain(merge.winbar())
-        )
+        assert.are.equal("RESULT · file 1/1 · conflict 1/3", plain(merge.winbar()))
     end)
 
     it("keeps a broken conflict's pane tint and count across a reopen", function()
@@ -1369,10 +1363,29 @@ describe(":Differ mergetool resolution", function()
         vim.api.nvim_win_set_cursor(s.result_win, { stops[2], 0 })
         vim.cmd("doautocmd CursorMoved")
         vim.g.statusline_winid = s.result_win
-        assert.are.equal(
-            "RESULT · file 1/1 · conflict 2/3 · 3 unresolved",
-            plain(merge.winbar())
-        )
+        assert.are.equal("RESULT · file 1/1 · conflict 2/3", plain(merge.winbar()))
+    end)
+
+    it("numbers the winbar over the unresolved conflicts only", function()
+        local root = conflict_repo_multi()
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = merge.current()
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.api.nvim_win_set_cursor(s.result_win, { s.conflicts[2].stop, 0 })
+        vim.cmd("doautocmd CursorMoved")
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal(2, #s.conflicts)
+
+        vim.g.statusline_winid = s.result_win
+        local function at(lnum)
+            vim.api.nvim_win_set_cursor(s.result_win, { lnum, 0 })
+            vim.cmd("doautocmd CursorMoved")
+            return plain(merge.winbar())
+        end
+        assert.are.equal("RESULT · file 1/1 · conflict 1/2", at(s.conflicts[1].stop))
+        assert.are.equal("RESULT · file 1/1 · conflict 2/2", at(s.conflicts[2].stop))
+        assert.are.equal("RESULT · file 1/1 · 2 conflicts", at(s.conflicts[1].result_end + 1))
     end)
 
     it("takes a side of a conflict that lost its =======", function()
@@ -1714,10 +1727,7 @@ describe(":Differ mergetool file stepping", function()
         local root = conflict_repo_two()
         local s = open_at(root, "f.txt")
         vim.g.statusline_winid = s.result_win
-        assert.are.equal(
-            "RESULT · file 1/2 · conflict 1/1 · 1 unresolved",
-            plain(merge.winbar())
-        )
+        assert.are.equal("RESULT · file 1/2 · conflict 1/1", plain(merge.winbar()))
         fire(s.result_buf, "differ: take ours")
         assert.are.equal("RESULT · file 1/2 · all resolved · not staged", plain(merge.winbar()))
         vim.api.nvim_set_current_win(s.result_win)

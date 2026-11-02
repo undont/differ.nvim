@@ -82,7 +82,7 @@ local INPUT_HL = {
 ---@field marker_size integer             -- the path's conflict-marker-size
 ---@field anchors table<integer, integer> -- anchor extmark id -> original conflict index
 ---@field base_slabs table<integer, string[]> -- original conflict index -> recovered base slab
----@field total integer                   -- conflict count, original plus restored (for the winbar N/M)
+---@field total integer                   -- highest conflict index, original plus restored
 ---@field restored table<integer, true>   -- indices of regions a hand edit restored after the build
 ---@field active_index integer|nil        -- index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
@@ -967,8 +967,8 @@ local function resolve_choice(choice)
     end
 end
 
--- the active conflict's position among the remaining ones
----@return integer
+-- the active conflict's position among the remaining ones, nil off a conflict
+---@return integer|nil
 local function active_pos()
     local s = assert(session)
     for i, c in ipairs(s.conflicts) do
@@ -976,7 +976,7 @@ local function active_pos()
             return i
         end
     end
-    return 1
+    return nil
 end
 
 -- the base pane says why it's empty rather than looking broken: add/add has no ancestor at
@@ -989,7 +989,8 @@ local function base_label()
     if s.no_ancestor then
         return label .. " · no common ancestor"
     end
-    local c = s.conflicts[active_pos()]
+    local pos = active_pos()
+    local c = pos and s.conflicts[pos]
     if c and not s.base_slabs[c.index] then
         return label .. " · none for this conflict"
     end
@@ -1037,8 +1038,11 @@ local function result_winbar(s)
     if remaining == 0 then
         return ("%s · all resolved · %s"):format(file, tint("not staged", "differMergeUnstaged"))
     end
-    local n = (s.total - remaining) + active_pos() -- the absolute conflict ordinal
-    return ("%s · conflict %d/%d · %d unresolved"):format(file, n, s.total, remaining)
+    local pos = active_pos()
+    if not pos then
+        return ("%s · %s"):format(file, plural(remaining, "conflict"))
+    end
+    return ("%s · conflict %d/%d"):format(file, pos, remaining)
 end
 
 -- winbar text for the merge windows: the result shows the conflict counter, an input

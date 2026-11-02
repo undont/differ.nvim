@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 
 - In the merge tool, a conflict with a broken marker stays unresolved until a take-this or until all its markers are deleted: it keeps its place in the winbar count, and take-this replaces it with the side you pick, asking first if you've edited inside it
+- In the merge tool, the winbar's `conflict n/N` counts only the conflicts still unresolved, so resolving out of order no longer misnumbers the ones left; the `k unresolved` count is gone, and off a conflict it reads `N conflicts`
 
 ### Fixed
 
