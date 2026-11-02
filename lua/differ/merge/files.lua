@@ -125,9 +125,10 @@ local function stale_reason(s, conflicted)
     end
     local conflict = require("differ.git.conflict")
     local size = s.marker_size
+    local orphans = conflict.orphans(lines, size)
     if
         #conflict.parse(lines, size) > 0
-        or #conflict.orphans(lines, size) > 0
+        or #conflict.markers(lines, orphans, {}, s.content_markers) > 0
         or conflict.reformatted(lines)
     then
         return s.path .. " was staged with conflict markers outside the merge tool",

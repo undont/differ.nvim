@@ -4,6 +4,20 @@ local rev = require("differ.git.rev")
 -- a conflicted file as line arrays. labels after the markers are arbitrary (git
 -- appends the ref); the parser must ignore them
 
+local function region(label)
+    return { "<<<<<<< HEAD", "a", "=======", "b", ">>>>>>> " .. label }
+end
+
+local function join(...)
+    local out = {}
+    for _, part in ipairs({ ... }) do
+        for _, line in ipairs(part) do
+            out[#out + 1] = line
+        end
+    end
+    return out
+end
+
 describe("git.conflict.parse (default style)", function()
     local lines = {
         "context above",
@@ -171,20 +185,6 @@ describe("git.conflict.parse (marker shape)", function()
 end)
 
 describe("git.conflict.orphans", function()
-    local function region(label)
-        return { "<<<<<<< HEAD", "a", "=======", "b", ">>>>>>> " .. label }
-    end
-
-    local function join(...)
-        local out = {}
-        for _, part in ipairs({ ... }) do
-            for _, line in ipairs(part) do
-                out[#out + 1] = line
-            end
-        end
-        return out
-    end
-
     it("finds none in clean regions or a file without markers", function()
         assert.are.same({}, conflict.orphans(join(region("x"), { "middle" }, region("y"))))
         assert.are.same({}, conflict.orphans({ "plain", "text" }))
@@ -278,6 +278,80 @@ describe("git.conflict.orphans", function()
     it("reports an unterminated region at EOF after a clean one", function()
         local lines = join(region("x"), { "<<<<<<< HEAD", "c", "=======", "d" })
         assert.are.same({ 6, 8 }, conflict.orphans(lines))
+    end)
+end)
+
+describe("git.conflict.incomplete", function()
+    it("finds none when every region is complete", function()
+        assert.are.same({}, conflict.incomplete(join(region("x"), { "mid" }, region("y"))))
+    end)
+
+    it("groups the markers left of a region missing its =======", function()
+        local lines = join({ "top" }, { "<<<<<<< HEAD", "a", "b", ">>>>>>> x" }, { "end" })
+        assert.are.same({ { first = 2, last = 5 } }, conflict.incomplete(lines))
+    end)
+
+    it("starts a new group at each <<<<<<< and after each >>>>>>>", function()
+        local lines = join(
+            { "<<<<<<< HEAD", "a", ">>>>>>> x" },
+            { "=======", "b", ">>>>>>> y" },
+            { "<<<<<<< HEAD", "c", "=======" }
+        )
+        assert.are.same({
+            { first = 1, last = 3 },
+            { first = 4, last = 6 },
+            { first = 7, last = 9 },
+        }, conflict.incomplete(lines))
+    end)
+
+    it("splits groups either side of a complete region", function()
+        local lines = join({ "=======" }, region("x"), { "=======" })
+        assert.are.same(
+            { { first = 1, last = 1 }, { first = 7, last = 7 } },
+            conflict.incomplete(lines)
+        )
+    end)
+
+    it("leaves a stray marker inside a complete region out of every group", function()
+        local lines = { "<<<<<<< HEAD", "a", "=======", "b", "=======", ">>>>>>> x" }
+        assert.are.same({ 5 }, conflict.orphans(lines))
+        assert.are.same({}, conflict.incomplete(lines))
+    end)
+end)
+
+describe("git.conflict.incomplete over given orphans", function()
+    it("groups only the orphans it is given", function()
+        local lines = { "=======", "a", "<<<<<<< HEAD", "b" }
+        assert.are.same({ { first = 3, last = 3 } }, conflict.incomplete(lines, nil, { 3 }))
+    end)
+end)
+
+describe("git.conflict.content_markers", function()
+    it("collects the stages' marker-shaped lines by text, CR stripped", function()
+        local set = conflict.content_markers({
+            { "Title", "=======\r", "body" },
+            { ">>>>>>> quoted", "========" },
+        })
+        assert.are.same({ ["======="] = true, [">>>>>>> quoted"] = true }, set)
+    end)
+
+    it("uses the given marker size", function()
+        assert.are.same({ ["========="] = true }, conflict.content_markers({ { "=========" } }, 9))
+    end)
+end)
+
+describe("git.conflict.markers", function()
+    local content = { ["======="] = true }
+
+    it("drops an orphan outside every span whose text a stage carries", function()
+        local lines = join(region("x"), { "Title", "=======", ">>>>>>> y" })
+        assert.are.same({ 8 }, conflict.markers(lines, { 7, 8 }, {}, content))
+    end)
+
+    it("keeps every orphan inside a span, whatever a stage carries", function()
+        local lines = { "Title", "=======", "X2", "=======\r" }
+        local spans = { { result_start = 1, result_end = 3 } }
+        assert.are.same({ 2 }, conflict.markers(lines, { 2, 4 }, spans, content))
     end)
 end)
 

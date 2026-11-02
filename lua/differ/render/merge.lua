@@ -54,10 +54,10 @@ local function fold_ranges(total, regions)
     return folds
 end
 
--- locate each region's `key` slab (ours/base/theirs) inside a stage file's lines, in
+-- locate each conflict's `key` slab (ours/base/theirs) inside a stage file's lines, in
 -- order; an empty or unlocated slab contributes no region (so it stays unhighlighted)
 ---@param lines string[]
----@param regions differ.merge.Region[]
+---@param regions differ.merge.Conflict[]
 ---@param key "ours"|"base"|"theirs"
 ---@return differ.merge.ColumnRegion[]
 local function locate_regions(lines, regions, key)
@@ -102,7 +102,7 @@ function M.render(model, opts)
     local theirs = to_lines(model.theirs_text)
     local result = to_lines(model.result_text)
 
-    local ours_regions = locate_regions(ours, model.regions, "ours")
+    local ours_regions = locate_regions(ours, model.conflicts, "ours")
     local columns = {
         {
             side = "ours",
@@ -113,7 +113,7 @@ function M.render(model, opts)
     }
     if show_base then
         local base = to_lines(model.base_text)
-        local base_regions = locate_regions(base, model.regions, "base")
+        local base_regions = locate_regions(base, model.conflicts, "base")
         columns[#columns + 1] = {
             side = "base",
             lines = strip_cr(base),
@@ -121,7 +121,7 @@ function M.render(model, opts)
             folds = fold_ranges(#base, base_regions),
         }
     end
-    local theirs_regions = locate_regions(theirs, model.regions, "theirs")
+    local theirs_regions = locate_regions(theirs, model.conflicts, "theirs")
     columns[#columns + 1] = {
         side = "theirs",
         lines = strip_cr(theirs),
@@ -129,9 +129,9 @@ function M.render(model, opts)
         folds = fold_ranges(#theirs, theirs_regions),
     }
 
-    -- the result regions are exact: each marker block's line span (markers included)
+    -- each conflict's result span: a complete one's marker block, markers included
     local result_regions = {}
-    for _, r in ipairs(model.regions) do
+    for _, r in ipairs(model.conflicts) do
         result_regions[#result_regions + 1] =
             { index = r.index, first = r.result_start, last = r.result_end }
     end
