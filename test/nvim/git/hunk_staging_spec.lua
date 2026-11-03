@@ -59,6 +59,27 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    it("stages onto an index written outside differ since the diff was drawn", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local blob = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
+            cwd = root,
+            stdin = "1x\n2\n3\n4\n5\n6\n7\n8\n",
+        })
+            :wait().stdout
+        git(root, "update-index", "--cacheinfo", "100644," .. vim.trim(blob) .. ",a.lua")
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+
+        assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8x\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
     -- the in-place staged marks are the whole point of the frozen diff, and the watcher
     -- protects them by re-sourcing only when git moved for a reason differ didn't cause.
     -- a staging key pressed in the sidebar writes the index too, so it has to re-baseline

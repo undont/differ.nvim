@@ -45,8 +45,8 @@ local REVERT_ENDING = {
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param text string
----@param mode? string  -- the mode the entry takes; nil keeps the one it has
----@return boolean ok
+---@param mode string|nil  -- the mode the entry takes, from index.listed in this op
+---@return boolean ok, string|nil sha  -- the blob now at entry.path; nil once it leaves the index
 local function put_index(ctx, entry, text, mode)
     if entry.x == "A" and text == "" then
         if not gitmod().unstage(ctx.root, entry.path) then
@@ -55,7 +55,8 @@ local function put_index(ctx, entry, text, mode)
         ctx.retarget_later()
         return true
     end
-    if not write_index(ctx.root, entry.path, text, mode) then
+    local ok, sha = write_index(ctx.root, entry.path, text, mode)
+    if not ok then
         return false
     end
     if entry.y == "R" and entry.previous_path then
@@ -65,7 +66,7 @@ local function put_index(ctx, entry, text, mode)
         end
         ctx.retarget_later()
     end
-    return true
+    return true, sha
 end
 
 -- an op built on a failed index read would write the file's index from nothing

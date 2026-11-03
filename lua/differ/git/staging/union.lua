@@ -8,6 +8,7 @@ local notify = exec.notify
 local content_ops = require("differ.git.content")
 local raw_line = content_ops.raw_line
 local union_models, union_pairs = content_ops.union_models, content_ops.union_pairs
+local index_ops = require("differ.git.index")
 local write = require("differ.git.staging.write")
 local edits, MOVES_OTHERS = write.edits, write.MOVES_OTHERS
 local put_index, index_unreadable = write.put_index, write.index_unreadable
@@ -232,6 +233,7 @@ end
 ---@field entry differ.FileEntry
 ---@field staging differ.view.Staging
 ---@field mode_change boolean  -- the index holds a mode change, which no hunk shows
+---@field index differ.git.Blob|nil  -- the index blob last read or written; its sha keys it
 
 -- the view keeps staging.marks, so a re-mark writes through it. marks come from
 -- the index's own lines at each hunk, and from the two pairs only when the index
@@ -240,11 +242,15 @@ end
 ---@param union differ.DiffModel|nil  -- nil keeps the marks there are
 ---@param cached differ.DiffModel|nil
 ---@param unstaged differ.DiffModel|nil
-local function remark(source, union, cached, unstaged)
+---@param index differ.git.Blob|nil  -- the blob `cached` was read from, when read here
+local function remark(source, union, cached, unstaged, index)
     local stage = require("differ.model.stage")
     local staging = source.staging
     if not (union and cached and unstaged) then
         return
+    end
+    if index then
+        source.index = index
     end
     local m, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
     staging.marks.old, staging.marks.new = m.old, m.new
@@ -255,6 +261,45 @@ local function remark(source, union, cached, unstaged)
     if hidden then
         staging.hidden, staging.hidden_in = true, hidden_in
     end
+end
+
+-- an op's three diffs, nil when the index has no entry to read. one listing gives
+-- the index blob's id and the mode a write takes; the blob's bytes are read only when
+-- the id isn't the one last read or written
+---@param source differ.git.UnionSource
+---@return differ.DiffModel|nil union
+---@return differ.DiffModel|nil cached
+---@return differ.DiffModel|nil unstaged
+---@return string|nil mode  -- the mode entry.path holds
+local function op_models(source)
+    local ctx, entry = source.ctx, source.entry
+    local sha, mode = index_ops.listed(ctx.root, index_ops.index_path(entry), entry.path)
+    if not sha then
+        return nil
+    end
+    local index = source.index
+    if not (index and index.sha == sha) then
+        index = content_ops.blob(ctx.root, sha)
+    end
+    if not index then
+        return nil
+    end
+    source.index = index
+    local union, cached, unstaged = union_models(ctx.root, entry, nil, index)
+    return union, cached, unstaged, mode
+end
+
+-- put_index, keeping the blob written as the one the next op's listing is checked against
+---@param source differ.git.UnionSource
+---@param text string
+---@param mode string|nil
+---@return boolean
+local function put(source, text, mode)
+    local ok, sha = put_index(source.ctx, source.entry, text, mode)
+    if ok then
+        source.index = sha and { sha = sha, text = text } or nil
+    end
+    return ok
 end
 
 ---@param source differ.git.UnionSource
@@ -268,7 +313,7 @@ local function apply(source, model, hunk, reverse)
     if not hunk then
         return false
     end
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged, mode = op_models(source)
     if not (union and cached and unstaged) then
         return index_unreadable(entry)
     end
@@ -297,7 +342,7 @@ local function apply(source, model, hunk, reverse)
         notify(refusal(ctx.keys, take, reaches), vim.log.levels.WARN)
         return false, true
     end
-    if not put_index(ctx, entry, text) then
+    if not put(source, text, mode) then
         return false
     end
     remark(source, unpack(after))
@@ -313,7 +358,7 @@ end
 ---@return boolean, boolean?
 local function apply_lines(source, model, selection, reverse)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged, mode = op_models(source)
     if not (union and cached and unstaged) then
         return index_unreadable(entry)
     end
@@ -344,7 +389,7 @@ local function apply_lines(source, model, selection, reverse)
         notify("these lines are already " .. state, vim.log.levels.INFO)
         return false
     end
-    if not put_index(ctx, entry, text) then
+    if not put(source, text, mode) then
         return false
     end
     remark(source, unpack(after))
@@ -404,7 +449,7 @@ end
 ---@return boolean
 local function refuses_revert(source, model, idx)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged = op_models(source)
     if not (union and cached and unstaged) then
         index_unreadable(entry)
         return true
@@ -428,7 +473,7 @@ end
 ---@return boolean
 local function revert(source, model, idx)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged, mode = op_models(source)
     if not (union and cached and unstaged) then
         return index_unreadable(entry)
     end
@@ -446,7 +491,7 @@ local function revert(source, model, idx)
     end
     local p = patch.hunk(model.path, model.hunks[idx], model.old_text, model.new_text, 0, "new")
     local ok = revert_worktree(ctx, entry, p, function()
-        return index_text == cached.new_text or put_index(ctx, entry, index_text)
+        return index_text == cached.new_text or put(source, index_text, mode)
     end)
     if not ok then
         remark(source, union_models(ctx.root, entry))
@@ -463,7 +508,7 @@ end
 ---@return boolean
 local function refuses_revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged = op_models(source)
     if not (union and cached and unstaged) then
         index_unreadable(entry)
         return true
@@ -487,7 +532,7 @@ end
 ---@return boolean, boolean?, differ.DiffModel?
 local function revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged, mode = op_models(source)
     if not (union and cached and unstaged) then
         return index_unreadable(entry)
     end
@@ -510,7 +555,7 @@ local function revert_lines(source, model, selection)
             patch.hunk(model.path, h, reverted.old_text, reverted.new_text, 0, "new")
     end
     local ok = revert_worktree(ctx, entry, table.concat(patches), function()
-        return index_text == cached.new_text or put_index(ctx, entry, index_text)
+        return index_text == cached.new_text or put(source, index_text, mode)
     end)
     if not ok then
         remark(source, union_models(ctx.root, entry))
@@ -529,7 +574,7 @@ end
 ---@return boolean, boolean?
 local function set_all(source, model, staged)
     local ctx, entry = source.ctx, source.entry
-    local union, cached = union_models(ctx.root, entry)
+    local union, cached, _, held = op_models(source)
     if not (union and cached) then
         return index_unreadable(entry), true
     end
@@ -541,7 +586,7 @@ local function set_all(source, model, staged)
     if text == cached.new_text and not mode then
         return false
     end
-    if not put_index(ctx, entry, text, mode) then
+    if not put(source, text, mode or held) then
         return false, true
     end
     remark(source, union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text))
@@ -563,7 +608,7 @@ local function unheld(source, model, idx)
     if not vim.tbl_contains(staging.hidden_in or {}, idx) then
         return false
     end
-    local union, cached, unstaged = union_models(ctx.root, entry)
+    local union, cached, unstaged = op_models(source)
     if not (union and cached and unstaged) then
         return true
     end

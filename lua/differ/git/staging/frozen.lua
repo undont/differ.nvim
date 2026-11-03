@@ -39,6 +39,7 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
     -- the commit preview opens staged with the index as its new side; the local view
     -- opens unstaged with it as its old side
     local held = staged and model.new_text or model.old_text
+    local held_sha ---@type string|nil -- held's blob id, once a listing has matched it
     local at_index = index_path(entry)
     local marks = { old = {}, new = {} }
     ---@param h differ.Hunk
@@ -61,7 +62,14 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
             if not hunk then
                 return false
             end
-            if (read(INDEX, ctx.root, at_index) or "") ~= held then
+            local sha, mode = index_ops.listed(ctx.root, at_index, entry.path)
+            if sha and sha ~= held_sha then
+                local index = content_ops.blob(ctx.root, sha)
+                if index and index.text == held then
+                    held_sha = sha
+                end
+            end
+            if not sha or sha ~= held_sha then
                 notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
                 vim.schedule(reopen)
                 return false
@@ -72,8 +80,10 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
                 applied[i] = state(marks, h) == "staged"
             end
             local text = splice(model, applied)
-            if put_index(ctx, entry, text) then
-                held, at_index = text, entry.path -- put_index stages a rename at the new path
+            local ok, written = put_index(ctx, entry, text, mode)
+            if ok then
+                -- put_index stages a rename at the new path
+                held, held_sha, at_index = text, written, entry.path
                 return true
             end
             mark(hunk, reverse)
@@ -363,8 +373,9 @@ end
 ---@param model differ.DiffModel  -- index↔worktree, as the view opened on it
 ---@param staging differ.view.Staging
 ---@param idx integer
+---@param index? differ.git.Blob  -- the index blob, identified in this op
 ---@return string|nil text, string|nil scope, "unreadable"|"changed"|nil why
-local function drop_index(ctx, entry, model, staging, idx)
+local function drop_index(ctx, entry, model, staging, idx, index)
     local marks = require("differ.model.marks")
     local stage = require("differ.model.stage")
     local splice = require("differ.model.apply").splice
@@ -375,7 +386,7 @@ local function drop_index(ctx, entry, model, staging, idx)
             moved[#moved + 1] = h
         end
     end
-    local _, cached = union_models(ctx.root, entry)
+    local _, cached = union_models(ctx.root, entry, nil, index)
     if not cached then
         return nil, nil, "unreadable"
     end
@@ -427,7 +438,15 @@ end
 ---@param reopen fun()
 ---@return boolean
 local function drop_hidden(ctx, entry, model, staging, idx, reopen)
-    local text, _, why = drop_index(ctx, entry, model, staging, idx)
+    local sha, mode = index_ops.listed(ctx.root, index_path(entry), entry.path)
+    local index = nil
+    if sha then
+        index = content_ops.blob(ctx.root, sha)
+    end
+    if not index then
+        return index_unreadable(entry)
+    end
+    local text, _, why = drop_index(ctx, entry, model, staging, idx, index)
     if why == "unreadable" then
         return index_unreadable(entry)
     end
@@ -438,7 +457,7 @@ local function drop_hidden(ctx, entry, model, staging, idx, reopen)
         end)
         return false
     end
-    if not put_index(ctx, entry, text) then
+    if not put_index(ctx, entry, text, mode) then
         return false
     end
     ctx.refresh()
