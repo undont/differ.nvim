@@ -418,6 +418,26 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("one\n", back)
     end)
 
+    it("s in the commit preview puts back an add its own u took out", function()
+        local root = preview_repo()
+        local p = open_panel()
+        toggle_preview(p)
+        assert.is_true(p:goto_path("c.lua", true))
+        local v = view_in_origin(p)
+        confirming(1, function()
+            v:unstage_hunk()
+        end)
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = vim.tbl_map(function(n)
+            return n.msg
+        end, _G.notifs)
+        local index = indexed(root, "c.lua")
+        p:close()
+        assert.are.same({}, said)
+        assert.are.equal("one\n", index)
+    end)
+
     it("s in the commit preview refuses an add staged from outside since u", function()
         local root = preview_repo()
         local p = open_panel()
@@ -597,7 +617,8 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("differ: c.lua has local changes: dw shows them", said)
     end)
 
-    -- b.lua staged then put back on disk: passed once, and back in the walk once it changes
+    -- b.lua staged then put back on disk, so ]f leaves it with nothing to stage; its file
+    -- then changes while its index stays as it was
     it("puts a passed row back in the walk when its file changes", function()
         local root = fresh_repo()
         write(root .. "/b.lua", "one\n")
@@ -607,17 +628,84 @@ describe(":Differ diff hunk staging", function()
         git(root, "add", "b.lua")
         write(root .. "/b.lua", "one\n")
         write(root .. "/a.lua", "changed\n")
-        vim.cmd.edit(root .. "/a.lua")
+        vim.cmd.edit(root .. "/b.lua")
         local p = open_panel()
-        view_in_origin(p):stage_hunk() -- a.lua staged
-        view_in_origin(p):stage_hunk() -- onto b.lua
-        view_in_origin(p):stage_hunk() -- b.lua passed: nothing left
+        local opened = view_in_origin(p).model.path
+        view_in_origin(p):step_file("next") -- b.lua passed
         write(root .. "/b.lua", "three\n")
         p:refresh()
         assert.is_true(p:goto_path("a.lua", true))
-        view_in_origin(p):stage_hunk() -- a.lua is done: the walk looks again
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk() -- a.lua staged
+        v:stage_hunk() -- a.lua is done: the walk looks again
         local landed = view_in_origin(p).model.path
         p:close()
+        assert.are.equal("b.lua", opened)
+        assert.are.equal("b.lua", landed)
+    end)
+
+    -- b.lua passed as above; then a fetch moves the upstream and a new branch starts at
+    -- HEAD, neither touching b.lua
+    it("keeps a passed row out of the walk through a fetch and a branch switch", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        helpers.with_upstream(root)
+        write(root .. "/b.lua", "two\n")
+        git(root, "add", "b.lua")
+        write(root .. "/b.lua", "one\n")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/b.lua")
+        local p = open_panel()
+        local opened = view_in_origin(p).model.path
+        view_in_origin(p):step_file("next") -- b.lua passed
+        helpers.move_upstream(root)
+        git(root, "switch", "-q", "-c", "wip")
+        p:refresh()
+        assert.is_true(p:goto_path("a.lua", true))
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk() -- a.lua staged
+        v:stage_hunk() -- a.lua is done: the walk looks again
+        local landed = view_in_origin(p).model.path
+        p:close()
+        assert.are.equal("b.lua", opened)
+        assert.are.equal("a.lua", landed)
+    end)
+
+    -- b.lua staged then put back on disk, so ]f leaves it with nothing to stage; its index
+    -- then moves while the file stays as it was
+    it("puts a passed row back in the walk when its index changes", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "one\n")
+        git(root, "add", "b.lua")
+        git(root, "commit", "-q", "-m", "b")
+        write(root .. "/b.lua", "two\n")
+        git(root, "add", "b.lua")
+        write(root .. "/b.lua", "one\n")
+        write(root .. "/a.lua", "changed\n")
+        vim.cmd.edit(root .. "/b.lua")
+        local p = open_panel()
+        local opened = view_in_origin(p).model.path
+        view_in_origin(p):step_file("next") -- b.lua passed
+        helpers.index_as(root, "b.lua", "three\n")
+        p:refresh()
+        assert.is_true(p:goto_path("a.lua", true))
+        local v = view_in_origin(p)
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk() -- a.lua staged
+        v:stage_hunk() -- a.lua is done: the walk looks again
+        local landed = view_in_origin(p).model.path
+        p:close()
+        assert.are.equal("b.lua", opened)
         assert.are.equal("b.lua", landed)
     end)
 

@@ -212,30 +212,58 @@ end
 ---@field path string
 ---@field previous_path string|nil  -- source path on rename/copy
 
--- parse `git status --porcelain=v1 -z -uall` (slice B). each record is
--- `XY<sp><path>`; X is the staged (HEAD↔index) state, Y the unstaged
--- (index↔worktree) state. rename/copy records (X or Y = R/C) carry the original
--- path in the *next* NUL field, which we attach as previous_path
+-- the fields between XY and the path in each `status --porcelain=v2` record kind: `1`
+-- ordinary, `2` rename/copy (its source path is the next NUL field), `u` unmerged
+local STATUS_FIELDS = { ["1"] = 6, ["2"] = 7, u = 8 }
+
+-- a v2 XY letter, with git's `.` for unchanged read as v1's " "
+---@param c string
+---@return string
+local function status_letter(c)
+    if c == "." then
+        return " "
+    end
+    return c
+end
+
+-- parse `git status --porcelain=v2 --branch -z -uall`. X is the staged (HEAD↔index)
+-- state, Y the unstaged (index↔worktree) state. untracked
+-- and ignored records take their kind for both letters. the HEAD commit is nil on an
+-- unborn branch and the branch nil on a detached HEAD
 ---@param out string
----@return differ.git.StatusEntry[]
+---@return differ.git.StatusEntry[] entries, string|nil head, string|nil branch
 function M.parse_status(out)
     local toks = nul_split(out)
     local entries, i = {}, 1
+    local head, branch ---@type string|nil, string|nil
     while i <= #toks do
         local rec = toks[i]
         i = i + 1
-        if rec == "" then
-            break -- trailing empty field from the final NUL
+        local kind = rec:sub(1, 1)
+        local fields = STATUS_FIELDS[kind]
+        if kind == "#" then
+            local key, value = rec:match("^# (%S+) (.*)$")
+            if key == "branch.oid" and value ~= "(initial)" then
+                head = value
+            elseif key == "branch.head" and value ~= "(detached)" then
+                branch = value
+            end
+        elseif kind == "?" or kind == "!" then
+            entries[#entries + 1] = { x = kind, y = kind, path = rec:sub(3) }
+        elseif fields then
+            local entry = {
+                x = status_letter(rec:sub(3, 3)),
+                y = status_letter(rec:sub(4, 4)),
+                path = rec:match("^%S %S%S" .. (" %S+"):rep(fields) .. " (.*)$"),
+            }
+            if kind == "2" then
+                entry.previous_path = toks[i]
+                i = i + 1
+            end
+            entries[#entries + 1] = entry
         end
-        local x, y, path = rec:sub(1, 1), rec:sub(2, 2), rec:sub(4)
-        local prev
-        if x == "R" or x == "C" or y == "R" or y == "C" then
-            prev = toks[i]
-            i = i + 1
-        end
-        entries[#entries + 1] = { x = x, y = y, path = path, previous_path = prev }
     end
-    return entries
+    return entries, head, branch
 end
 
 -- parse `git diff --numstat -z` into a path -> {additions, deletions} map

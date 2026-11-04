@@ -173,6 +173,17 @@ local function stage_behind(root, content)
     os.remove(blob)
     git(root, "update-index", "--cacheinfo", "100644," .. sha .. ",a.lua")
 end
+-- main tracks origin/main at HEAD, with no remote to reach
+local function with_upstream(root)
+    git(root, "remote", "add", "origin", "/nonexistent")
+    git(root, "update-ref", "refs/remotes/origin/main", "HEAD")
+    git(root, "branch", "-q", "-u", "origin/main")
+end
+-- a fetch that brings origin/main one commit past HEAD
+local function move_upstream(root)
+    local sha = vim.trim(git(root, "commit-tree", "HEAD^{tree}", "-p", "HEAD", "-m", "upstream"))
+    git(root, "update-ref", "refs/remotes/origin/main", sha)
+end
 local function paths(p)
     local out = {}
     for _, sec in ipairs(p.sections) do
@@ -207,4 +218,6 @@ return {
     staged_then = staged_then,
     stage_behind = stage_behind,
     paths = paths,
+    with_upstream = with_upstream,
+    move_upstream = move_upstream,
 }

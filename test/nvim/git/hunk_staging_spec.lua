@@ -59,6 +59,27 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    it("stages onto an index written outside differ since the diff was drawn", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n")
+        git(root, "commit", "-q", "-am", "8 lines")
+        write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+
+        local blob = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
+            cwd = root,
+            stdin = "1x\n2\n3\n4\n5\n6\n7\n8\n",
+        })
+            :wait().stdout
+        git(root, "update-index", "--cacheinfo", "100644," .. vim.trim(blob) .. ",a.lua")
+        vim.api.nvim_win_set_cursor(p.origin_win, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+
+        assert.are.equal("1x\n2\n3\n4\n5\n6\n7\n8x\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
     -- the in-place staged marks are the whole point of the frozen diff, and the watcher
     -- protects them by re-sourcing only when git moved for a reason differ didn't cause.
     -- a staging key pressed in the sidebar writes the index too, so it has to re-baseline
@@ -93,6 +114,48 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("staged", v:_hunk_state(1)) -- and hunk 1 is still marked staged
         assert.are.equal("unstaged", v:_hunk_state(2))
         p:close()
+    end)
+
+    -- 1x staged, 6y and 12x not, so each case below leaves the row MM and only its index
+    -- blob moves
+    local function mm_states(v)
+        local out = {}
+        for i = 1, #v.model.hunks do
+            out[i] = v:_hunk_state(i)
+        end
+        return out
+    end
+    local function mm_row()
+        local twelve = helpers.twelve
+        return staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [6] = "6y", [12] = "12x" }))
+    end
+
+    it("re-sources on a git add -p from outside that leaves the row MM", function()
+        local root, p, v = mm_row()
+        -- add -p offers 6y and 12x as one hunk: split it, take 6y, leave 12x
+        local res = vim.system({ "git", "add", "-p", "a.lua" }, { cwd = root, stdin = "s\ny\nn\n" })
+            :wait()
+        assert.are.equal(0, res.code, res.stderr)
+        assert.are.equal(helpers.twelve({ "1x", [6] = "6y" }), indexed(root, "a.lua"))
+        p.on_external_change()
+        local after = mm_states(v)
+        p:close()
+        assert.are.same({ "staged", "staged", "unstaged" }, after)
+    end)
+
+    it("re-sources when the index goes back on a row a partial stage left MM", function()
+        local root, p, v = mm_row()
+        local col = v.columns[#v.columns]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        local staged = mm_states(v)
+        helpers.stage_behind(root, helpers.twelve({ "1x" }))
+        p.on_external_change()
+        local after = mm_states(v)
+        p:close()
+        assert.are.same({ "staged", "staged", "unstaged" }, staged)
+        assert.are.same({ "staged", "unstaged", "unstaged" }, after)
     end)
 
     it("unstages a staged hunk in place, then re-stages it", function()
@@ -1559,6 +1622,20 @@ func getDownloadSpeed() {
         assert.are.equal("staged", v:_hunk_state(1))
         assert.are.equal("local x = 2\nreturn x\n", v.model.new_text)
         p:close()
+    end)
+
+    it("keeps the open diff through a fetch that moves the upstream", function()
+        local root = fresh_repo()
+        helpers.with_upstream(root)
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local model = v.model
+        helpers.move_upstream(root)
+        p.on_external_change()
+        local kept = v.model == model
+        p:close()
+        assert.is_true(kept)
     end)
 
     it("offsets later hunks by earlier staged ones (line-count shift)", function()

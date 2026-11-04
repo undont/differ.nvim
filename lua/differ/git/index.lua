@@ -79,23 +79,48 @@ function M.unstage_all(root)
     return git_ok({ "reset", "-q", "HEAD" }, root, "unstage all")
 end
 
--- point `path`'s index entry at `text`: a blob write and an entry move, so there's no
--- header to compute and nothing that can half-apply. `text` must already be in index
--- domain (M.read runs the worktree side through the clean filter). the entry keeps the
--- mode it has unless `mode` names another
+-- the stage-0 blob id at `at` and the mode `path` holds, from one listing; either is
+-- nil where its path has no entry. `at` differs from `path` where a worktree rename
+-- leaves the content at the old path
+---@param root string
+---@param at string
+---@param path string
+---@return string|nil sha, string|nil mode
+function M.index_entry(root, at, path)
+    local args = { "ls-files", "-s", "-z", "--", at }
+    if path ~= at then
+        args[#args + 1] = path
+    end
+    local out = git(args, root)
+    if not out then
+        return nil
+    end
+    local sha, mode
+    for m, s, stage, p in out:gmatch("(%d+) (%x+) (%d)\t([^%z]*)%z") do
+        if p == at and stage == "0" then
+            sha = s
+        end
+        if p == path and not mode then
+            mode = m
+        end
+    end
+    return sha, mode
+end
+
+-- point `path`'s index entry at `text`, giving it `mode` (nil where the caller's
+-- listing found no entry): a blob write and an entry move, so there's no header to
+-- compute and nothing that can half-apply. `text` must already be in index domain
+-- (M.read runs the worktree side through the clean filter)
 ---@param root string
 ---@param path string
 ---@param text string
----@param mode? string
----@return boolean ok
+---@param mode string|nil
+---@return boolean ok, string|nil sha  -- the blob written
 function M.write_index(root, path, text, mode)
-    local listed = git({ "ls-files", "-s", "--", path }, root)
-    local held = listed and listed:match("^(%d+)%s")
-    if not held then
+    if not mode then
         notify(("%s has no index entry to update"):format(path), vim.log.levels.ERROR)
         return false
     end
-    mode = mode or held
     local hashed = vim.system({ "git", "hash-object", "-w", "--stdin" }, {
         cwd = root,
         stdin = text,
@@ -107,8 +132,12 @@ function M.write_index(root, path, text, mode)
         )
         return false
     end
-    local spec = ("%s,%s,%s"):format(mode, exec.chomp(hashed.stdout), path)
-    return git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path)
+    local sha = exec.chomp(hashed.stdout)
+    local spec = ("%s,%s,%s"):format(mode, sha, path)
+    if not git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path) then
+        return false
+    end
+    return true, sha
 end
 
 -- the paths one entry's staging ops act on: a rename owns both ends of the move, a copy

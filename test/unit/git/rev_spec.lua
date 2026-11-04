@@ -131,9 +131,16 @@ describe("git.rev.parse_raw", function()
 end)
 
 describe("git.rev.parse_status", function()
-    it("splits XY into staged (x) and unstaged (y) state", function()
-        -- mM = staged + unstaged edit; ?? = untracked; " M" = unstaged-only
-        local out = "MM src/keep.txt\0?? src/new.txt\0 M src/edit.txt\0"
+    local Z = ("0"):rep(40)
+    -- a `1` record's fields before the path
+    local function ordinary(xy, path)
+        return ("1 %s N... 100644 100644 100644 %s %s %s\0"):format(xy, Z, Z, path)
+    end
+
+    it("splits XY into staged (x) and unstaged (y) state, `.` as unchanged", function()
+        local out = ordinary("MM", "src/keep.txt")
+            .. "? src/new.txt\0"
+            .. ordinary(".M", "src/edit.txt")
         assert.are.same({
             { x = "M", y = "M", path = "src/keep.txt" },
             { x = "?", y = "?", path = "src/new.txt" },
@@ -141,25 +148,54 @@ describe("git.rev.parse_status", function()
         }, rev.parse_status(out))
     end)
 
-    it("attaches previous_path from the next field on a rename", function()
-        local out = "R  deep/new.txt\0deep/old.txt\0M  src/a.txt\0"
+    it("keeps spaces in a path", function()
+        local out = ordinary("A.", "a dir/b c.txt") .. "? x y\0"
         assert.are.same({
-            { x = "R", y = " ", path = "deep/new.txt", previous_path = "deep/old.txt" },
-            { x = "M", y = " ", path = "src/a.txt" },
+            { x = "A", y = " ", path = "a dir/b c.txt" },
+            { x = "?", y = "?", path = "x y" },
         }, rev.parse_status(out))
     end)
 
-    it("consumes each old-path field in a run of renames", function()
-        local out = "R  new/a.txt\0old/a.txt\0"
-            .. "R  new/b.txt\0old/b.txt\0"
-            .. "RM new/c.txt\0old/c.txt\0"
-            .. " M src/tail.txt\0"
+    it("attaches previous_path from the next field on a rename", function()
+        local rename = ("2 R. N... 100644 100644 100644 %s %s R100 deep/new.txt\0deep/old.txt\0"):format(
+            Z,
+            Z
+        )
         assert.are.same({
-            { x = "R", y = " ", path = "new/a.txt", previous_path = "old/a.txt" },
-            { x = "R", y = " ", path = "new/b.txt", previous_path = "old/b.txt" },
-            { x = "R", y = "M", path = "new/c.txt", previous_path = "old/c.txt" },
-            { x = " ", y = "M", path = "src/tail.txt" },
+            { x = "R", y = " ", path = "deep/new.txt", previous_path = "deep/old.txt" },
+            { x = "M", y = " ", path = "src/a.txt" },
+        }, rev.parse_status(rename .. ordinary("M.", "src/a.txt")))
+    end)
+
+    it("reads an unmerged record and an ignored one", function()
+        local out = ("u UU N... 100644 100644 100644 100644 %s %s %s c.txt\0! build/out\0"):format(
+            Z,
+            Z,
+            Z
+        )
+        assert.are.same({
+            { x = "U", y = "U", path = "c.txt" },
+            { x = "!", y = "!", path = "build/out" },
         }, rev.parse_status(out))
+    end)
+
+    it("reads HEAD and the branch from the headers, skipping the upstream ones", function()
+        local out = "# branch.oid abc123\0# branch.head main\0# branch.upstream origin/main\0"
+            .. "# branch.ab +? -?\0"
+            .. ordinary(".M", "a.txt")
+        local entries, head, branch = rev.parse_status(out)
+        assert.are.same({ { x = " ", y = "M", path = "a.txt" } }, entries)
+        assert.are.equal("abc123", head)
+        assert.are.equal("main", branch)
+    end)
+
+    it("reads no HEAD on an unborn branch and no branch when detached", function()
+        local _, head, branch = rev.parse_status("# branch.oid (initial)\0# branch.head main\0")
+        assert.is_nil(head)
+        assert.are.equal("main", branch)
+        _, head, branch = rev.parse_status("# branch.oid abc123\0# branch.head (detached)\0")
+        assert.are.equal("abc123", head)
+        assert.is_nil(branch)
     end)
 
     it("returns nothing for empty output", function()

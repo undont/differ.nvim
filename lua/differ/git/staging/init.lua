@@ -70,7 +70,7 @@ local function for_union(ctx, entry, diff)
         return nil
     end
     if by_line(entry) and #diff.hunks > 0 then
-        local staging = union_staging(ctx, entry)
+        local staging = union_staging(ctx, entry, diff)
         if entry.x == "A" then
             -- throwing away an add is deleting the file, not reverting a hunk of it
             staging.revert, staging.revert_label, staging.no_revert =
@@ -161,8 +161,9 @@ local function unstage_drops(ctx, entry, work_model)
     if entry.x == " " or entry.x == "?" then
         return false
     end
-    if by_line(entry) and #work_model().hunks > 0 then
-        return union_staging(ctx, entry).hidden == true
+    local shown = by_line(entry) and work_model()
+    if shown and #shown.hunks > 0 then
+        return union_staging(ctx, entry, shown).hidden == true
     end
     return unheld_blob(ctx, entry)
 end

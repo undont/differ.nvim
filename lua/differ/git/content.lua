@@ -2,7 +2,8 @@
 -- pairs a row's staging marks come from
 
 local exec = require("differ.git.exec")
-local index_path = require("differ.git.index").index_path
+local index_ops = require("differ.git.index")
+local index_path = index_ops.index_path
 local text_util = require("differ.util.text")
 local GIT = exec.GIT
 local chomp, git, git_raw = exec.chomp, exec.git, exec.git_raw
@@ -193,24 +194,71 @@ function M.union_pairs(root, path, head, index, work)
         pair("INDEX", "WORKTREE", index, work)
 end
 
--- a row's three diffs, read fresh, or nil when the index can't be read. HEAD is read at
--- a rename's old path
+---@class differ.git.Blob
+---@field sha string
+---@field text string
+
+-- a blob's id and bytes, by any name git resolves (`:0:path`, an object id) that
+-- holds no newline or trailing CR, or nil when the name resolves to nothing or to
+-- another object type
+---@param root string
+---@param name string
+---@return differ.git.Blob|nil
+function M.blob(root, name)
+    local out = git_raw({ "cat-file", "--batch" }, root, name .. "\n")
+    if not out then
+        return nil
+    end
+    local sha, kind, size = out:match("^(%x+) (%l+) (%d+)\n")
+    if kind ~= "blob" then
+        return nil
+    end
+    local start = #sha + #kind + #size + 4
+    return { sha = sha, text = out:sub(start, start + tonumber(size) - 1) }
+end
+
+-- the stage-0 blob at `relpath`. `cat-file --batch` reads one name per line and drops
+-- a CR ending it, so a path holding either is read by the id its listing gives (`-Z`
+-- would need git 2.42)
+---@param root string
+---@param relpath string
+---@return differ.git.Blob|nil
+local function index_blob(root, relpath)
+    if not relpath:find("[\r\n]") then
+        return M.blob(root, ":0:" .. relpath)
+    end
+    local sha = index_ops.index_entry(root, relpath, relpath)
+    if not sha then
+        return nil
+    end
+    return M.blob(root, sha)
+end
+
+-- a row's three diffs and the index blob they read, or nil when the index can't be
+-- read. HEAD (at a rename's old path) and the worktree come from `shown` when given,
+-- the index from `index` when given
 ---@param root string
 ---@param entry differ.FileEntry
----@return differ.DiffModel|nil union, differ.DiffModel|nil cached, differ.DiffModel|nil unstaged
-function M.union_models(root, entry)
-    local at_head = entry.previous_path or entry.path
-    local index = M.read(INDEX, root, index_path(entry))
+---@param shown differ.DiffModel|nil -- the row's HEAD↔worktree model, read in this action
+---@param index differ.git.Blob|nil  -- the index entry's blob, identified in this action
+---@return differ.DiffModel|nil union
+---@return differ.DiffModel|nil cached
+---@return differ.DiffModel|nil unstaged
+---@return differ.git.Blob|nil index
+function M.union_models(root, entry, shown, index)
+    index = index or index_blob(root, index_path(entry))
     if not index then
         return nil
     end
-    return M.union_pairs(
-        root,
-        entry.path,
-        M.read(HEAD, root, at_head) or "",
-        index,
-        M.read(WORKTREE, root, entry.path) or ""
-    )
+    local head, work
+    if shown then
+        head, work = shown.old_text, shown.new_text
+    else
+        head = M.read(HEAD, root, entry.previous_path or entry.path) or ""
+        work = M.read(WORKTREE, root, entry.path) or ""
+    end
+    local union, cached, unstaged = M.union_pairs(root, entry.path, head, index.text, work)
+    return union, cached, unstaged, index
 end
 
 return M

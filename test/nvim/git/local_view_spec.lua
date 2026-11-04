@@ -1,6 +1,5 @@
 -- runs under headless nvim against a throwaway git repo: dw's local view of a
 -- partly staged file, and the keys inside it
-local content_ops = require("differ.git.content")
 local helpers = require("test.nvim.git.helpers")
 local git = helpers.git
 local write = helpers.write
@@ -594,6 +593,24 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(twelve({ "1x", "2x" }), index)
     end)
 
+    it("s in the local view refuses an index put back from outside after its own write", function()
+        local root = staged_then(twelve({ "1x", [6] = "6x", [12] = "12x" }))
+        local p, v = local_view_at(1)
+        v:stage_hunk()
+        local staged = indexed(root, "a.lua")
+        stage_behind(root, twelve({ "1x" }))
+        _G.notifs = {}
+        local col = v.columns[#v.columns]
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "a.lua")
+        p:close()
+        assert.are.equal(twelve({ "1x", [6] = "6x" }), staged)
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal(twelve({ "1x" }), index)
+    end)
+
     it("u on a ! hunk refuses an index staged from outside since the view opened", function()
         local root = staged_then(twelve({ [12] = "12x" }))
         local p, v = local_view_at(1)
@@ -651,6 +668,20 @@ describe(":Differ diff hunk staging", function()
         assert.are.same({ S, S, U }, after)
     end)
 
+    it("keeps the local view through a branch switch at the same commit", function()
+        local root = partly_staged_repo()
+        helpers.with_upstream(root)
+        local p, v = open_panel()
+        v:toggle_local()
+        local model = v.model
+        git(root, "switch", "-q", "-c", "wip")
+        p.on_external_change()
+        local kept, badge = v.model == model, v.staging.badge
+        p:close()
+        assert.is_true(kept)
+        assert.are.equal("LOCAL", badge)
+    end)
+
     -- git reads `:1:x.txt` as conflict stage 1 of x.txt
     it("reads the index of a file whose name starts with a stage number", function()
         local root = fresh_repo()
@@ -668,19 +699,17 @@ describe(":Differ diff hunk staging", function()
 
     it("refuses s when the index can't be read", function()
         local root, p, v = staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [12] = "12x" }))
-        local read = content_ops.read
-        content_ops.read = function(ref, ...)
-            if ref.kind == "index" then
-                return nil
-            end
-            return read(ref, ...)
+        local index_ops = require("differ.git.index")
+        local index_entry = index_ops.index_entry
+        index_ops.index_entry = function()
+            return nil
         end
         _G.notifs = {}
         local col = v.columns[#v.columns]
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
         v:stage_hunk()
-        content_ops.read = read
+        index_ops.index_entry = index_entry
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index = indexed(root, "a.lua")
         p:close()

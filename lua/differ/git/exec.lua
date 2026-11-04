@@ -63,11 +63,12 @@ end
 -- index, a rev, a conflict stage), never for plumbing output
 ---@param args string[]
 ---@param cwd string
+---@param stdin? string
 ---@return string|nil stdout, string|nil stderr
-function M.git_raw(args, cwd)
+function M.git_raw(args, cwd, stdin)
     local cmd = vim.list_extend({}, M.GIT)
     vim.list_extend(cmd, args)
-    local res, err = run(cmd, { cwd = cwd })
+    local res, err = run(cmd, { cwd = cwd, stdin = stdin })
     if not res then
         return nil, err
     end
