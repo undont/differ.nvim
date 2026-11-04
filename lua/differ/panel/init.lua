@@ -83,9 +83,9 @@ local LINE_HL = {
 ---@class differ.panel.Actions
 ---@field stage fun(entry: differ.FileEntry): boolean|nil  -- false: refused, nothing moved
 ---@field unstage fun(entry: differ.FileEntry)
----@field stage_drops? fun(entry: differ.FileEntry): boolean  -- staging loses content nothing else holds
+---@field stage_drops? fun(entries: differ.FileEntry[]): table<differ.FileEntry, true>  -- s/S warn on these
 ---@field drop_prompts? differ.panel.DropPrompts  -- what s/S and u/U ask when a drops hook says so
----@field unstage_drops? fun(entry: differ.FileEntry): boolean  -- unstaging loses content nothing else holds
+---@field unstage_drops? fun(entries: differ.FileEntry[]): table<differ.FileEntry, true>  -- u/U warn on these
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
@@ -871,9 +871,10 @@ function Panel:_drop_confirmed(verb, entries)
     if not drops or not prompts then
         return true
     end
+    local dropping = drops(entries)
     local lost = {} ---@type string[]
     for _, e in ipairs(entries) do
-        if drops(e) then
+        if dropping[e] then
             lost[#lost + 1] = e.path
         end
     end

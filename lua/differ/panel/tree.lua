@@ -17,6 +17,8 @@ local M = {}
 ---@field review differ.panel.Review|nil -- what the row leaves to review; nil off a staging source
 ---@field kept boolean|nil        -- a staged deletion whose file is still on disk, untracked
 ---@field previous_path string|nil -- renames/copies
+---@field modes differ.git.Modes|nil -- worktree panels: the row's porcelain v2 modes
+---@field index_sha string|nil     -- worktree panels: the listing's stage-0 blob, for display
 ---@field viewed boolean|nil       -- PR only
 
 ---@class differ.panel.Node

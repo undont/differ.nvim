@@ -1,6 +1,7 @@
 -- a file's content on each working-tree side, read in the repo domain, and the diff
 -- pairs a row's staging marks come from
 
+local cat_file = require("differ.git.cat_file")
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
 local index_path = index_ops.index_path
@@ -146,6 +147,13 @@ function M.read(ref, root, relpath)
     -- a rev is `<rev>:path`; the index is `:0:path`, since `:path` reads a leading
     -- `1:` as a stage number
     local spec = (ref.kind == "index" and ":0:" or (ref.rev .. ":")) .. relpath
+    local answered, object = cat_file.read(root, spec)
+    if answered and not object then
+        return nil
+    end
+    if answered and object.kind == "blob" then
+        return object.text
+    end
     return git_raw({ "show", spec }, root) -- nil if the path is absent in that tree
 end
 
@@ -205,6 +213,13 @@ end
 ---@param name string
 ---@return differ.git.Blob|nil
 function M.blob(root, name)
+    local answered, object = cat_file.read(root, name)
+    if answered then
+        if not (object and object.kind == "blob") then
+            return nil
+        end
+        return { sha = object.sha, text = object.text }
+    end
     local out = git_raw({ "cat-file", "--batch" }, root, name .. "\n")
     if not out then
         return nil

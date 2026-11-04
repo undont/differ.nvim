@@ -211,6 +211,13 @@ end
 ---@field y string                  -- worktree/unstaged status letter (" " if clean)
 ---@field path string
 ---@field previous_path string|nil  -- source path on rename/copy
+---@field modes differ.git.Modes|nil  -- tracked, unconflicted rows
+---@field index_sha string|nil  -- the stage-0 blob, all zeros when the index has none
+
+---@class differ.git.Modes
+---@field head string
+---@field index string
+---@field worktree string
 
 -- the fields between XY and the path in each `status --porcelain=v2` record kind: `1`
 -- ordinary, `2` rename/copy (its source path is the next NUL field), `u` unmerged
@@ -256,6 +263,11 @@ function M.parse_status(out)
                 y = status_letter(rec:sub(4, 4)),
                 path = rec:match("^%S %S%S" .. (" %S+"):rep(fields) .. " (.*)$"),
             }
+            if kind ~= "u" then
+                local mh, mi, mw, hi = rec:match("^%S %S%S %S+ (%d+) (%d+) (%d+) %x+ (%x+) ")
+                entry.modes = { head = mh, index = mi, worktree = mw }
+                entry.index_sha = hi
+            end
             if kind == "2" then
                 entry.previous_path = toks[i]
                 i = i + 1

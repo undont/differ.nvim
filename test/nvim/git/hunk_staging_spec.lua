@@ -1039,6 +1039,102 @@ func getDownloadSpeed() {
         assert.is_nil(hidden)
     end)
 
+    -- the panel's listing and the drawn marks predate a stage-then-revert outside differ
+    -- that leaves 5x in the index alone: U still asks, from git's state at the keypress
+    describe("after a stage-then-revert outside differ", function()
+        local function drawn_then_hidden()
+            local ten = {}
+            for i = 1, 10 do
+                ten[i] = tostring(i)
+            end
+            local head = lines_of(ten)
+            ten[1] = "1x"
+            local index = lines_of(ten)
+            ten[10] = "10x"
+            local root, p, v = staged_as(head, index, lines_of(ten))
+            assert.is_nil(v.staging.hidden)
+            ten[10], ten[5] = "10", "5x"
+            helpers.index_as(root, "a.lua", lines_of(ten))
+            return root, p, v, index
+        end
+
+        it("U in the view asks first", function()
+            local root, p, v, index = drawn_then_hidden()
+            local held = indexed(root, "a.lua")
+            local prompt = confirming(2, function()
+                v:unstage_all()
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+            assert.are_not.equal(index, written)
+        end)
+
+        it("U in the panel asks first on a row listed with nothing staged", function()
+            local ten = {}
+            for i = 1, 10 do
+                ten[i] = tostring(i)
+            end
+            local root = fresh_repo()
+            write(root .. "/a.lua", lines_of(ten))
+            git(root, "commit", "-q", "-am", "ten")
+            ten[10] = "10x"
+            write(root .. "/a.lua", lines_of(ten))
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            local listed = p.sections[1].entries[1]
+            assert.are.equal(" ", listed.x)
+            ten[10], ten[5] = "10", "5x"
+            helpers.index_as(root, "a.lua", lines_of(ten))
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            local prompt = confirming(2, function()
+                p:stage_op("unstage_all")
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+        end)
+
+        it("S in the panel asks first on a row listed as edited, now staged and deleted", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "edited\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            local listed = p.sections[1].entries[1]
+            assert.are.same({ " ", "M" }, { listed.x, listed.y })
+            write(root .. "/a.lua", "staged\n")
+            git(root, "add", "a.lua")
+            os.remove(root .. "/a.lua")
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            local prompt = confirming(2, function()
+                p:stage_op("stage_all")
+            end)
+            p:close()
+            assert.is_not_nil(prompt)
+            local written = indexed(root, "a.lua")
+            assert.are.equal("staged\n", held)
+            assert.are.equal(held, written)
+        end)
+
+        it("u on the panel row asks first", function()
+            local root, p = drawn_then_hidden()
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            vim.api.nvim_win_set_cursor(p.winid, { helpers.file_line(p, "a.lua"), 0 })
+            local prompt = confirming(2, function()
+                p:stage_op("unstage")
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+        end)
+    end)
+
     -- the file moves on disk after the diff is drawn and before the watcher re-reads it
     for _, case in ipairs({
         {

@@ -19,6 +19,13 @@ end
 ---@type table<thread, true>
 local runners = setmetatable({}, { __mode = "k" })
 
+-- whether the running coroutine is one M.async started, where M.await can yield
+---@return boolean
+function M.in_async()
+    local co = coroutine.running()
+    return co ~= nil and runners[co] == true
+end
+
 -- yield the running M.async coroutine until the callback handed to `start` fires (from
 -- any context, at most once counts), returning what it was called with
 ---@param start fun(resume: fun(...))
@@ -76,8 +83,7 @@ end
 ---@param opts table
 ---@return differ.GitResult|nil res, string|nil err
 local function run(cmd, opts)
-    local co = coroutine.running()
-    if co and runners[co] then
+    if M.in_async() then
         return run_yielding(cmd, opts)
     end
     local ok, obj = pcall(vim.system, cmd, opts)

@@ -5,6 +5,7 @@
 -- pure parsing/grammar lives in git/rev.lua; this module only does I/O + wiring
 
 local rev = require("differ.git.rev")
+local cat_file = require("differ.git.cat_file")
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
 local operation_ops = require("differ.git.operation")
@@ -403,20 +404,34 @@ end
 
 -- build a DiffModel for one changed file under an already-resolved source.
 -- renames read the old side from `previous_path`; an absent side reads as empty.
--- `head` (the current branch) rides along for the synthetic buffer's statusline
+-- `head` (the current branch) rides along for the synthetic buffer's statusline.
+-- an index side reads `index_sha` when given: a listing's blob, so display only
 ---@param source differ.git.Source -- resolved (no merge_base refs)
 ---@param root string
----@param file { path: string, previous_path?: string } -- only the path(s) are read
+---@param file { path: string, previous_path?: string, index_sha?: string }
 ---@param head string|nil
 ---@return differ.DiffModel
 function M.model(source, root, file, head)
     local old_path = file.previous_path or file.path
+    ---@param ref differ.git.Ref
+    ---@param path string
+    ---@return string
+    local function side(ref, path)
+        if ref.kind == "index" and file.index_sha then
+            local blob = content_ops.blob(root, file.index_sha)
+            if not blob then
+                return ""
+            end
+            return blob.text
+        end
+        return M.read(ref, root, path) or ""
+    end
     return require("differ.model.diff").build({
         path = file.path,
         old_rev = source.old.label,
         new_rev = source.new.label,
-        old_text = M.read(source.old, root, old_path) or "",
-        new_text = M.read(source.new, root, file.path) or "",
+        old_text = side(source.old, old_path),
+        new_text = side(source.new, file.path),
         head = head,
         root = root,
     })
@@ -664,6 +679,8 @@ local function status_row(s, status, counts, untracked)
         y = s.y,
         previous_path = s.previous_path,
         kept = (s.x == "D" and untracked[s.path]) or nil,
+        modes = s.modes,
+        index_sha = s.index_sha,
     }
 end
 
@@ -779,26 +796,74 @@ local function remove_ok(abs)
     return true
 end
 
+-- past this many pathspec bytes a live read lists the whole worktree, short of the
+-- argv limit
+local PATHSPEC_BYTES = 64 * 1024
+
+-- each entry's porcelain line as git reports it now, from one status read; an entry
+-- whose path has no changes left has none, and a failed read is nil. the panel's
+-- entries are a snapshot, which an op or the confirm before it can leave behind
+---@param root string
+---@param entries differ.FileEntry[]
+---@return table<differ.FileEntry, differ.git.StatusEntry>|nil
+local function live_rows(root, entries)
+    local paths, bytes = {}, 0
+    for _, entry in ipairs(entries) do
+        -- git pairs a rename only with both paths in the pathspec; with one it reports an add
+        for _, path in ipairs({ entry.path, entry.previous_path }) do
+            paths[#paths + 1] = path
+            bytes = bytes + #path + 1
+        end
+    end
+    local args = { unpack(STATUS_ARGS) }
+    if bytes <= PATHSPEC_BYTES then
+        args[#args + 1] = "--"
+        vim.list_extend(args, paths)
+    end
+    local out = git(args, root)
+    if not out then
+        return nil
+    end
+    local by_path = {} ---@type table<string, differ.git.StatusEntry[]>
+    for _, s in ipairs(rev.parse_status(out)) do
+        by_path[s.path] = by_path[s.path] or {}
+        table.insert(by_path[s.path], s)
+    end
+    local rows = {}
+    for _, entry in ipairs(entries) do
+        for _, s in ipairs(by_path[entry.path] or {}) do
+            -- a kept deletion's copy on disk is its own `??` line, and not this row's status
+            if not (s.x == "?" and entry.kept) then
+                rows[entry] = s
+                break
+            end
+        end
+    end
+    return rows
+end
+
 -- the entry's porcelain line as git reports it now, or nil when the path has no changes
--- left. the panel's entries are a snapshot, which an op or the confirm before it can
--- leave behind
+-- left (or the read failed)
 ---@param root string
 ---@param entry differ.FileEntry
 ---@return differ.git.StatusEntry|nil
 local function live_row(root, entry)
-    local args = vim.list_extend({ unpack(STATUS_ARGS) }, { "--", entry.path })
-    -- git pairs a rename only with both paths in the pathspec; with one it reports an add
-    if entry.previous_path then
-        args[#args + 1] = entry.previous_path
+    local rows = live_rows(root, { entry })
+    if not rows then
+        return nil
     end
-    local out = git(args, root)
-    for _, s in ipairs(rev.parse_status(out or "")) do
-        -- a kept deletion's copy on disk is its own `??` line, and not this row's status
-        if s.path == entry.path and not (s.x == "?" and entry.kept) then
-            return s
-        end
+    return rows[entry]
+end
+
+-- a row's status letter as its panel lists it
+---@param s differ.git.StatusEntry
+---@param preview? boolean  -- lettered by its index side, as the commit preview lists it
+---@return string
+local function row_status(s, preview)
+    if preview then
+        return s.x
     end
-    return nil
+    return (select(2, row_of(s)))
 end
 
 -- the entry's status as git reports it now, read from the side of the file the entry
@@ -812,10 +877,7 @@ local function live_status(root, entry, preview)
     if not s then
         return nil
     end
-    if preview then
-        return s.x
-    end
-    return select(2, row_of(s))
+    return row_status(s, preview)
 end
 
 -- the notice a zero-hunk entry opens on, or nil when it's stale (committed, staged
@@ -1239,6 +1301,32 @@ function M.panel(opts)
             notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
         end
     end
+    -- the entries `drops` says a panel s/S or u/U loses content from, each judged on its
+    -- letters as git reports them now: the listing can predate a change made outside
+    -- differ. a failed read counts every entry, so the op asks
+    ---@param entries differ.FileEntry[]
+    ---@param drops fun(entry: differ.FileEntry): boolean
+    ---@return table<differ.FileEntry, true>
+    local function drops_now(entries, drops)
+        local dropping = {}
+        local live = live_rows(root, entries)
+        for _, entry in ipairs(entries) do
+            local now = live and live[entry]
+            if not live then
+                dropping[entry] = true
+            elseif now then
+                local current = vim.tbl_extend("force", entry, {
+                    x = now.x,
+                    y = now.y,
+                    status = row_status(now, preview),
+                })
+                if drops(current) then
+                    dropping[entry] = true
+                end
+            end
+        end
+        return dropping
+    end
     if is_worktree_status(source) then
         renames = diff_renames(root)
         sections, list_err, opening = M.status_sections(root, nil, renames)
@@ -1268,13 +1356,18 @@ function M.panel(opts)
             unstage = function(entry)
                 set_staged(root, entry, false)
             end,
-            stage_drops = function(entry)
-                return not preview and staging_ops.stage_drops(entry)
+            stage_drops = function(entries)
+                if preview then
+                    return {}
+                end
+                return drops_now(entries, staging_ops.stage_drops)
             end,
             drop_prompts = require("differ.git.staging").DROP_PROMPTS,
-            unstage_drops = function(entry)
-                return staging_ops.unstage_drops(entry, function()
-                    return M.model({ old = HEAD, new = WORKTREE }, root, entry)
+            unstage_drops = function(entries)
+                return drops_now(entries, function(entry)
+                    return staging_ops.unstage_drops(entry, function()
+                        return M.model({ old = HEAD, new = WORKTREE }, root, entry)
+                    end)
                 end)
             end,
             stage_all = function()
@@ -1543,6 +1636,7 @@ function M.panel(opts)
             path = entry.path,
             status = entry.status,
             previous_path = entry.previous_path,
+            index_sha = entry.index_sha,
         }
         local model = M.model({ old = HEAD, new = INDEX }, root, file, branch)
         if #model.hunks == 0 then
@@ -1824,6 +1918,7 @@ function M.panel(opts)
     local return_tab, session_tab = open_session_tab()
     -- the opening listing's reads, for the open below and only that one
     local first_open_reads = opening
+    local release_reads ---@type fun()|nil -- set once the session opens
     panel = Panel.new({
         sections = nonempty,
         root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
@@ -1960,8 +2055,12 @@ function M.panel(opts)
                 view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
+            if release_reads then
+                release_reads()
+            end
         end,
     }):open()
+    release_reads = cat_file.hold(root)
     panel.return_tab = return_tab
     if stageable then
         panel.git_root = root
@@ -2085,6 +2184,7 @@ function M.history(opts)
     local cfg = require("differ").get_config()
     local hist_cfg = cfg.history or {}
     local return_tab, session_tab = open_session_tab()
+    local release_reads ---@type fun()|nil -- set once the session opens
     local history = History.new({
         commits = commits,
         path = vim.fn.fnamemodify(file, ":~"),
@@ -2116,8 +2216,12 @@ function M.history(opts)
                 view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
+            if release_reads then
+                release_reads()
+            end
         end,
     }):open()
+    release_reads = cat_file.hold(root)
     history.return_tab = return_tab
     return history
 end
@@ -2158,6 +2262,7 @@ function M.range_history(opts)
     local cfg = require("differ").get_config()
     local hist_cfg = cfg.history or {}
     local return_tab, session_tab = open_session_tab()
+    local release_reads ---@type fun()|nil -- set once the session opens
     local history = History.new({
         commits = commits,
         mode = "range",
@@ -2190,8 +2295,12 @@ function M.range_history(opts)
                 view:close() -- idempotent, and :q leaves the window already gone
             end
             close_session_tab(session_tab)
+            if release_reads then
+                release_reads()
+            end
         end,
     }):open()
+    release_reads = cat_file.hold(root)
     history.return_tab = return_tab
     return history
 end

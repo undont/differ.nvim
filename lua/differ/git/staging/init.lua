@@ -7,7 +7,8 @@ local help = require("differ.ui.help")
 local index_ops = require("differ.git.index")
 local set_staged = index_ops.set_staged
 local raw_line = require("differ.git.content").raw_line
-local union_staging = require("differ.git.staging.union").union_staging
+local union = require("differ.git.staging.union")
+local union_staging, hides_staged = union.union_staging, union.hides_staged
 local file_lines = require("differ.git.staging.write").file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, row_state = whole_file.whole_file_revert, whole_file.row_state
@@ -163,7 +164,7 @@ local function unstage_drops(ctx, entry, work_model)
     end
     local shown = by_line(entry) and work_model()
     if shown and #shown.hunks > 0 then
-        return union_staging(ctx, entry, shown).hidden == true
+        return hides_staged(ctx, entry, shown)
     end
     return unheld_blob(ctx, entry)
 end

@@ -136,22 +136,34 @@ describe("git.rev.parse_status", function()
     local function ordinary(xy, path)
         return ("1 %s N... 100644 100644 100644 %s %s %s\0"):format(xy, Z, Z, path)
     end
+    local MODES = { head = "100644", index = "100644", worktree = "100644" }
+    -- the entry `ordinary` parses to
+    local function tracked(x, y, path, previous_path)
+        return {
+            x = x,
+            y = y,
+            path = path,
+            previous_path = previous_path,
+            modes = MODES,
+            index_sha = Z,
+        }
+    end
 
     it("splits XY into staged (x) and unstaged (y) state, `.` as unchanged", function()
         local out = ordinary("MM", "src/keep.txt")
             .. "? src/new.txt\0"
             .. ordinary(".M", "src/edit.txt")
         assert.are.same({
-            { x = "M", y = "M", path = "src/keep.txt" },
+            tracked("M", "M", "src/keep.txt"),
             { x = "?", y = "?", path = "src/new.txt" },
-            { x = " ", y = "M", path = "src/edit.txt" },
+            tracked(" ", "M", "src/edit.txt"),
         }, rev.parse_status(out))
     end)
 
     it("keeps spaces in a path", function()
         local out = ordinary("A.", "a dir/b c.txt") .. "? x y\0"
         assert.are.same({
-            { x = "A", y = " ", path = "a dir/b c.txt" },
+            tracked("A", " ", "a dir/b c.txt"),
             { x = "?", y = "?", path = "x y" },
         }, rev.parse_status(out))
     end)
@@ -162,9 +174,17 @@ describe("git.rev.parse_status", function()
             Z
         )
         assert.are.same({
-            { x = "R", y = " ", path = "deep/new.txt", previous_path = "deep/old.txt" },
-            { x = "M", y = " ", path = "src/a.txt" },
+            tracked("R", " ", "deep/new.txt", "deep/old.txt"),
+            tracked("M", " ", "src/a.txt"),
         }, rev.parse_status(rename .. ordinary("M.", "src/a.txt")))
+    end)
+
+    it("reads each side's mode and the index blob, HEAD's blob aside", function()
+        local head_sha, index_sha = ("a"):rep(40), ("b"):rep(40)
+        local out = ("1 MM N... 100644 100755 120000 %s %s x.sh\0"):format(head_sha, index_sha)
+        local entry = rev.parse_status(out)[1]
+        assert.are.same({ head = "100644", index = "100755", worktree = "120000" }, entry.modes)
+        assert.are.equal(index_sha, entry.index_sha)
     end)
 
     it("reads an unmerged record and an ignored one", function()
@@ -184,7 +204,7 @@ describe("git.rev.parse_status", function()
             .. "# branch.ab +? -?\0"
             .. ordinary(".M", "a.txt")
         local entries, head, branch = rev.parse_status(out)
-        assert.are.same({ { x = " ", y = "M", path = "a.txt" } }, entries)
+        assert.are.same({ tracked(" ", "M", "a.txt") }, entries)
         assert.are.equal("abc123", head)
         assert.are.equal("main", branch)
     end)
