@@ -91,9 +91,9 @@ local LINE_HL = {
 ---@field discard fun(entry: differ.FileEntry)
 ---@field discard_refusals? fun(entries: differ.FileEntry[]): table<differ.FileEntry, string>  -- X's refusals
 ---@field discard_prompt? fun(entry: differ.FileEntry): string|nil  -- X's confirm where it isn't a discard
--- recompute sections after an op. `reads` is opaque here: the chrome sources and
--- on_refresh get it back
----@field reload fun(): differ.panel.Section[], any
+-- recompute sections after an op. `listing` (a read the caller already took) and
+-- `reads` are opaque here: the chrome sources and on_refresh get `reads` back
+---@field reload fun(listing?: any): differ.panel.Section[], any
 
 ---@class differ.Panel
 ---@field bufnr integer
@@ -769,13 +769,14 @@ end
 -- `on_refresh` (whatever drove it, including the panel's own staging keys), and one that
 -- empties the change set hands over to `on_empty`, which may end the session, so nothing
 -- touches self after it. returns the reload's reads
+---@param listing? any -- handed to actions.reload
 ---@return any
-function Panel:refresh()
+function Panel:refresh(listing)
     if not self.actions or not self:is_alive() then
         return nil
     end
     local anchor = self:_cursor_anchor()
-    local sections, reads = self.actions.reload()
+    local sections, reads = self.actions.reload(listing)
     self:set_sections(sections, reads)
     if self.on_refresh then
         self.on_refresh(reads)

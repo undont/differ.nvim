@@ -700,8 +700,8 @@ describe(":Differ diff hunk staging", function()
     it("refuses s when the index can't be read", function()
         local root, p, v = staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [12] = "12x" }))
         local index_ops = require("differ.git.index")
-        local listed = index_ops.listed
-        index_ops.listed = function()
+        local index_entry = index_ops.index_entry
+        index_ops.index_entry = function()
             return nil
         end
         _G.notifs = {}
@@ -709,7 +709,7 @@ describe(":Differ diff hunk staging", function()
         vim.api.nvim_set_current_win(col.winid)
         vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 2), 0 })
         v:stage_hunk()
-        index_ops.listed = listed
+        index_ops.index_entry = index_entry
         local said = (_G.notifs[#_G.notifs] or {}).msg
         local index = indexed(root, "a.lua")
         p:close()

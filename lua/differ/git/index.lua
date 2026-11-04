@@ -86,7 +86,7 @@ end
 ---@param at string
 ---@param path string
 ---@return string|nil sha, string|nil mode
-function M.listed(root, at, path)
+function M.index_entry(root, at, path)
     local args = { "ls-files", "-s", "-z", "--", at }
     if path ~= at then
         args[#args + 1] = path

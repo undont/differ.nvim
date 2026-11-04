@@ -50,7 +50,6 @@ describe("git.read / changed_files", function()
         assert.are.equal("a\r\nB\r\nc\r\n", git_src.read(index, root, "f.txt"))
     end)
 
-    -- git stores a symlink as the path it points at, not the contents behind it
     it("reads the index blob of a path holding a newline", function()
         local root = fresh_repo()
         local name = "a\nb.txt"
@@ -64,6 +63,21 @@ describe("git.read / changed_files", function()
         assert.are.equal(vim.trim(git(root, "rev-parse", ":0:" .. name)), index.sha)
     end)
 
+    -- a.lua is there too, and `cat-file --batch` reads `:0:a.lua\r` as `:0:a.lua`
+    it("reads the index blob of a path ending in a CR", function()
+        local root = fresh_repo()
+        local name = "a.lua\r"
+        write(root .. "/" .. name, "staged\n")
+        git(root, "add", "--", name)
+        write(root .. "/" .. name, "work\n")
+        local content = require("differ.git.content")
+        local entry = { path = name, x = "A", y = "M" }
+        local _, cached, _, index = content.union_models(root, entry)
+        assert.are.equal("staged\n", cached.new_text)
+        assert.are.equal(vim.trim(git(root, "rev-parse", ":0:" .. name)), index.sha)
+    end)
+
+    -- git stores a symlink as the path it points at, not the contents behind it
     it("reads a worktree symlink as its target path", function()
         local root = fresh_repo()
         write(root .. "/b.lua", "local y = 1\n")

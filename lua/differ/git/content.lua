@@ -199,34 +199,35 @@ end
 ---@field text string
 
 -- a blob's id and bytes, by any name git resolves (`:0:path`, an object id) that
--- holds no newline, or nil when the name resolves to nothing or to another object type
+-- holds no newline or trailing CR, or nil when the name resolves to nothing or to
+-- another object type
 ---@param root string
 ---@param name string
 ---@return differ.git.Blob|nil
 function M.blob(root, name)
-    local cmd = { "git", "cat-file", "--batch" }
-    local res = vim.system(cmd, { cwd = root, stdin = name .. "\n" }):wait()
-    if res.code ~= 0 or not res.stdout then
+    local out = git_raw({ "cat-file", "--batch" }, root, name .. "\n")
+    if not out then
         return nil
     end
-    local sha, kind, size = res.stdout:match("^(%x+) (%l+) (%d+)\n")
+    local sha, kind, size = out:match("^(%x+) (%l+) (%d+)\n")
     if kind ~= "blob" then
         return nil
     end
     local start = #sha + #kind + #size + 4
-    return { sha = sha, text = res.stdout:sub(start, start + tonumber(size) - 1) }
+    return { sha = sha, text = out:sub(start, start + tonumber(size) - 1) }
 end
 
--- the stage-0 blob at `relpath`. `cat-file --batch` reads one name per line, so a path
--- holding a newline is read by the id its listing gives (`-Z` would need git 2.42)
+-- the stage-0 blob at `relpath`. `cat-file --batch` reads one name per line and drops
+-- a CR ending it, so a path holding either is read by the id its listing gives (`-Z`
+-- would need git 2.42)
 ---@param root string
 ---@param relpath string
 ---@return differ.git.Blob|nil
 local function index_blob(root, relpath)
-    if not relpath:find("\n", 1, true) then
+    if not relpath:find("[\r\n]") then
         return M.blob(root, ":0:" .. relpath)
     end
-    local sha = index_ops.listed(root, relpath, relpath)
+    local sha = index_ops.index_entry(root, relpath, relpath)
     if not sha then
         return nil
     end

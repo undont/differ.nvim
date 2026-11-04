@@ -273,7 +273,7 @@ end
 ---@return string|nil mode  -- the mode entry.path holds
 local function op_models(source)
     local ctx, entry = source.ctx, source.entry
-    local sha, mode = index_ops.listed(ctx.root, index_ops.index_path(entry), entry.path)
+    local sha, mode = index_ops.index_entry(ctx.root, index_ops.index_path(entry), entry.path)
     if not sha then
         return nil
     end
@@ -296,10 +296,15 @@ end
 ---@return boolean
 local function put(source, text, mode)
     local ok, sha = put_index(source.ctx, source.entry, text, mode)
-    if ok then
-        source.index = sha and { sha = sha, text = text } or nil
+    if not ok then
+        return false
     end
-    return ok
+    if sha then
+        source.index = { sha = sha, text = text }
+    else
+        source.index = nil
+    end
+    return true
 end
 
 ---@param source differ.git.UnionSource

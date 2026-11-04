@@ -45,7 +45,7 @@ local REVERT_ENDING = {
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param text string
----@param mode string|nil  -- the mode the entry takes, from index.listed in this op
+---@param mode string|nil  -- the mode the entry takes, from index.index_entry in this op
 ---@return boolean ok, string|nil sha  -- the blob now at entry.path; nil once it leaves the index
 local function put_index(ctx, entry, text, mode)
     if entry.x == "A" and text == "" then

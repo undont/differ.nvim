@@ -465,11 +465,16 @@ local function signature_status(status)
     )
 end
 
--- the worktree's status entries and what the read carries for the refresh's reads
+-- the worktree's status entries and what the read carries for the refresh's reads.
+-- `listing` is a STATUS_ARGS read already taken in this action
 ---@param root string
+---@param listing? string
 ---@return differ.git.StatusEntry[] entries, differ.git.Reads reads, string|nil err
-local function read_status(root)
-    local out, err = git(STATUS_ARGS, root)
+local function read_status(root, listing)
+    local out, err = listing, nil
+    if not out then
+        out, err = git(STATUS_ARGS, root)
+    end
     local entries, sha, branch = rev.parse_status(out or "")
     return entries, { head = sha, branch = branch, status = out }, err
 end
@@ -478,15 +483,14 @@ end
 -- commit for the default uncommitted view (mirrors diffview). `reads` are the
 -- refresh's, which already carry HEAD
 ---@param args string[]
----@param root string
 ---@param reads? differ.git.Reads
 ---@return string|nil
-local function footer_label(args, root, reads)
+local function footer_label(args, reads)
     if #args == 0 then
-        if reads then
-            return reads.head
+        if not reads then
+            return nil
         end
-        return M.head_sha(root)
+        return reads.head
     elseif #args == 2 then
         return args[1] .. ".." .. args[2]
     end
@@ -581,9 +585,10 @@ end
 -- the worktree's porcelain entries, the set of paths it lists as untracked, and the
 -- reads they came from
 ---@param root string
+---@param listing? string
 ---@return differ.git.StatusEntry[] entries, table<string, boolean> untracked, string|nil err, differ.git.Reads reads
-local function porcelain(root)
-    local entries, reads, err = read_status(root)
+local function porcelain(root, listing)
+    local entries, reads, err = read_status(root, listing)
     local untracked = {}
     for _, s in ipairs(entries) do
         if s.x == "?" then
@@ -640,11 +645,12 @@ end
 -- opens. a staged deletion counts against the index: porcelain lists a file removed
 -- from the index but still on disk twice (`D ` and `??`), and its one row is the
 -- deletion, marked `kept`. empty sections are dropped by the caller. `reads` are what
--- the rows came from
+-- the rows came from. `listing` is a STATUS_ARGS read already taken in this action
 ---@param root string
+---@param listing? string
 ---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
-function M.status_sections(root)
-    local entries, untracked, err, reads = porcelain(root)
+function M.status_sections(root, listing)
+    local entries, untracked, err, reads = porcelain(root, listing)
     local head_counts = numstat({ "HEAD" }, root)
     local removed = {}
     for _, s in ipairs(entries) do
@@ -682,9 +688,10 @@ end
 -- the rows a commit would take, as one section: every path the index changes, counted
 -- and lettered against HEAD. conflicts and untracked files hold nothing to commit
 ---@param root string
+---@param listing? string -- a STATUS_ARGS read already taken in this action
 ---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
-function M.staged_sections(root)
-    local entries, untracked, err, reads = porcelain(root)
+function M.staged_sections(root, listing)
+    local entries, untracked, err, reads = porcelain(root, listing)
     local counts = numstat({ "--cached" }, root)
     local rows = {}
     for _, s in ipairs(entries) do
@@ -1246,8 +1253,13 @@ function M.panel(opts)
                     return ("Restore %s as staged?"):format(entry.path)
                 end
             end,
-            reload = function()
-                local live, err, reads = (preview and M.staged_sections or M.status_sections)(root)
+            ---@param listing? string
+            reload = function(listing)
+                local list = M.status_sections
+                if preview then
+                    list = M.staged_sections
+                end
+                local live, err, reads = list(root, listing)
                 list_failed = err ~= nil
                 if err then
                     notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
@@ -1686,10 +1698,11 @@ function M.panel(opts)
         if not (panel and panel:is_alive()) then
             return
         end
-        if git_signature() == last_sig then
+        local listing = git(STATUS_ARGS, root)
+        if git_signature({ status = listing }) == last_sig then
             return
         end
-        local reads = panel:refresh()
+        local reads = panel:refresh(listing)
         if not panel:is_alive() then
             return -- the change set emptied and on_empty ended the session
         end
@@ -1733,7 +1746,7 @@ function M.panel(opts)
         sections = nonempty,
         root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
         footer = function(reads)
-            return footer_label(args, root, reads)
+            return footer_label(args, reads)
         end,
         reads = opening,
         operation = stageable and function()

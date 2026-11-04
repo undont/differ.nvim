@@ -62,7 +62,7 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
             if not hunk then
                 return false
             end
-            local sha, mode = index_ops.listed(ctx.root, at_index, entry.path)
+            local sha, mode = index_ops.index_entry(ctx.root, at_index, entry.path)
             if sha and sha ~= held_sha then
                 local index = content_ops.blob(ctx.root, sha)
                 if index and index.text == held then
@@ -438,7 +438,7 @@ end
 ---@param reopen fun()
 ---@return boolean
 local function drop_hidden(ctx, entry, model, staging, idx, reopen)
-    local sha, mode = index_ops.listed(ctx.root, index_path(entry), entry.path)
+    local sha, mode = index_ops.index_entry(ctx.root, index_path(entry), entry.path)
     local index = nil
     if sha then
         index = content_ops.blob(ctx.root, sha)
