@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Opening the panel, staging and unstaging hunks, moving between files and reloading run between a half and a third as many git commands as before, so each responds sooner
+- differ now needs git 2.17 or newer
+
+## [0.2.26] — 2026-11-02
+
 ### Fixed
 
 - In `:Differ base` and other revision-pair panels, a file renamed without content changes in a commit opened as an `INDEX` view with the whole file as one added hunk; it now opens on the rename notice
