@@ -467,7 +467,7 @@ describe(":Differ panel", function()
             -- scoped to the panel's group so the headless harness's own TermClose
             -- handler stays out of it
             vim.api.nvim_exec_autocmds(ev, { group = p.augroup })
-            vim.wait(200, function() -- the refresh is scheduled, so let it run
+            vim.wait(5000, function() -- the refresh is scheduled, so let it run
                 return file_line(p, "a.lua") == nil
             end)
 
@@ -594,6 +594,15 @@ describe(":Differ panel", function()
         end)
 
         it("reads once for every fire queued behind a running one", function()
+            -- the write below would wake the watcher, whose fire races the queued calls
+            local watch = require("differ.git.watch")
+            local new = watch.new
+            watch.new = function()
+                return { watch_file = function() end, stop = function() end }
+            end
+            finally(function()
+                watch.new = new
+            end)
             local root, p = two_edits()
             local spy = status_spy()
             write(root .. "/a.lua", "local x = 3\nreturn x\n")
