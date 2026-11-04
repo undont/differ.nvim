@@ -668,6 +668,20 @@ describe(":Differ diff hunk staging", function()
         assert.are.same({ S, S, U }, after)
     end)
 
+    it("keeps the local view through a branch switch at the same commit", function()
+        local root = partly_staged_repo()
+        helpers.with_upstream(root)
+        local p, v = open_panel()
+        v:toggle_local()
+        local model = v.model
+        git(root, "switch", "-q", "-c", "wip")
+        p.on_external_change()
+        local kept, badge = v.model == model, v.staging.badge
+        p:close()
+        assert.is_true(kept)
+        assert.are.equal("LOCAL", badge)
+    end)
+
     -- git reads `:1:x.txt` as conflict stage 1 of x.txt
     it("reads the index of a file whose name starts with a stage number", function()
         local root = fresh_repo()

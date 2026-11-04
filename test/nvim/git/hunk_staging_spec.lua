@@ -1624,6 +1624,20 @@ func getDownloadSpeed() {
         p:close()
     end)
 
+    it("keeps the open diff through a fetch that moves the upstream", function()
+        local root = fresh_repo()
+        helpers.with_upstream(root)
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = open_panel()
+        local model = v.model
+        helpers.move_upstream(root)
+        p.on_external_change()
+        local kept = v.model == model
+        p:close()
+        assert.is_true(kept)
+    end)
+
     it("offsets later hunks by earlier staged ones (line-count shift)", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "a\nb\nc\nd\n")

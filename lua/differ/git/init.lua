@@ -446,10 +446,24 @@ local head_branch = M.head_branch
 ---@field branch? string -- nil on a detached HEAD
 ---@field status? string -- raw STATUS_ARGS output, part of the change signature
 
--- every worktree status read. the raw output is part of the change signature, so every
+-- every worktree status read. its output is part of the change signature, so every
 -- signature producer reads this same format. `--no-ahead-behind` skips the upstream
--- revision walk and keeps a fetch out of the signature
+-- revision walk
 local STATUS_ARGS = { "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "-uall" }
+
+-- a STATUS_ARGS read as the change signature takes it: HEAD's sha stays, the branch
+-- name and its upstream go, so a fetch or a branch switch at HEAD isn't a change
+---@param status string
+---@return string
+local function signature_status(status)
+    return (
+        status:gsub("# branch%.(%a+) [^%z]*%z", function(key)
+            if key ~= "oid" then
+                return ""
+            end
+        end)
+    )
+end
 
 -- the worktree's status entries and what the read carries for the refresh's reads
 ---@param root string
@@ -1303,7 +1317,7 @@ function M.panel(opts)
         end
         reads = reads or {}
         local status = reads.status or git(STATUS_ARGS, root)
-        local sig = (status or "") .. "\0" .. (M.operation(root) or "")
+        local sig = signature_status(status or "") .. "\0" .. (M.operation(root) or "")
         if active_entry then
             sig = sig .. "\0" .. row_signature(active_entry)
         end
@@ -1321,9 +1335,7 @@ function M.panel(opts)
             { unpack(STATUS_ARGS) },
             { "--", entry.path, entry.previous_path }
         )
-        -- a branch switch alone leaves the row as it was
-        local status = (git(row_args, root) or ""):gsub("# branch%.head [^%z]*%z", "")
-        return status .. "\0" .. row_signature(entry)
+        return signature_status(git(row_args, root) or "") .. "\0" .. row_signature(entry)
     end
     ---@type differ.panel.ReviewHooks
     local review_hooks = {
