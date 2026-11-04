@@ -357,6 +357,84 @@ describe(":Differ panel", function()
         p:close()
     end)
 
+    describe("read-only status", function()
+        local inherited
+        before_each(function()
+            inherited = vim.env.GIT_OPTIONAL_LOCKS -- a shell can export it, hiding the lock
+            vim.env.GIT_OPTIONAL_LOCKS = nil
+        end)
+        after_each(function()
+            vim.env.GIT_OPTIONAL_LOCKS = inherited
+        end)
+
+        -- the env of every `git status` spawned while `fn` runs
+        local function status_envs(fn)
+            local orig, envs = vim.system, {}
+            vim.system = function(cmd, opts, ...)
+                if vim.tbl_contains(cmd, "status") then
+                    envs[#envs + 1] = (opts and opts.env) or {}
+                end
+                return orig(cmd, opts, ...)
+            end
+            local ok, err = pcall(fn)
+            vim.system = orig
+            assert(ok, err)
+            return envs
+        end
+
+        local function index_mtime(root)
+            local st = assert((vim.uv or vim.loop).fs_stat(root .. "/.git/index"))
+            return st.mtime.sec .. "." .. st.mtime.nsec
+        end
+
+        -- a panel on a modified a.lua whose clean b.lua no longer matches the index's
+        -- stat data, which git status refreshes and writes back when it may take the lock
+        local function open_stale()
+            local root = fresh_repo()
+            write(root .. "/b.lua", "clean\n")
+            git(root, "add", "b.lua")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            vim.wait(200) -- the open's own watcher fire
+            local past = os.time() - 60
+            assert((vim.uv or vim.loop).fs_utime(root .. "/b.lua", past, past))
+            return root, p
+        end
+
+        it("R leaves the index alone when its stat data is stale", function()
+            local root, p = open_stale()
+            local before = index_mtime(root)
+
+            local envs = status_envs(function()
+                vim.api.nvim_set_current_win(p.winid)
+                vim.api.nvim_feedkeys("R", "x", false)
+            end)
+
+            assert.is_true(#envs > 0)
+            for _, env in ipairs(envs) do
+                assert.are.equal("0", env.GIT_OPTIONAL_LOCKS)
+            end
+            assert.are.equal(before, index_mtime(root))
+            p:close()
+        end)
+
+        it("doesn't wake the panel's own watcher", function()
+            local _, p = open_stale()
+            vim.api.nvim_set_current_win(p.winid)
+            vim.api.nvim_feedkeys("R", "x", false)
+            vim.wait(200)
+
+            local envs = status_envs(function()
+                vim.wait(400)
+            end)
+
+            assert.are.same({}, envs)
+            p:close()
+        end)
+    end)
+
     -- the panel refreshes on any of these: regaining focus, an in-nvim `:!`, or a
     -- terminal git UI (lazygit) closing in a float (TermClose/TermLeave)
     for _, ev in ipairs({ "FocusGained", "ShellCmdPost", "TermClose", "TermLeave" }) do

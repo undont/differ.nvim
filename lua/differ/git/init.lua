@@ -451,6 +451,10 @@ local head_branch = M.head_branch
 -- revision walk
 local STATUS_ARGS = { "status", "--porcelain=v2", "--branch", "--no-ahead-behind", "-z", "-uall" }
 
+-- a status read off the write path skips the opportunistic index refresh: taking
+-- index.lock for it fires the session's git-dir watcher, whose refresh reads status again
+local READ_OPTS = { env = { GIT_OPTIONAL_LOCKS = "0" } }
+
 -- a STATUS_ARGS read as the change signature takes it: HEAD's sha stays, the branch
 -- name and its upstream go, so a fetch or a branch switch at HEAD isn't a change
 ---@param status string
@@ -473,7 +477,7 @@ end
 local function read_status(root, listing)
     local out, err = listing, nil
     if not out then
-        out, err = git(STATUS_ARGS, root)
+        out, err = git(STATUS_ARGS, root, READ_OPTS)
     end
     local entries, sha, branch = rev.parse_status(out or "")
     return entries, { head = sha, branch = branch, status = out }, err
@@ -1328,7 +1332,7 @@ function M.panel(opts)
             return ""
         end
         reads = reads or {}
-        local status = reads.status or git(STATUS_ARGS, root)
+        local status = reads.status or git(STATUS_ARGS, root, READ_OPTS)
         local sig = signature_status(status or "") .. "\0" .. (M.operation(root) or "")
         if active_entry then
             sig = sig .. "\0" .. row_signature(active_entry)
@@ -1347,7 +1351,8 @@ function M.panel(opts)
             { unpack(STATUS_ARGS) },
             { "--", entry.path, entry.previous_path }
         )
-        return signature_status(git(row_args, root) or "") .. "\0" .. row_signature(entry)
+        local status = git(row_args, root, READ_OPTS) or ""
+        return signature_status(status) .. "\0" .. row_signature(entry)
     end
     ---@type differ.panel.ReviewHooks
     local review_hooks = {
@@ -1698,7 +1703,7 @@ function M.panel(opts)
         if not (panel and panel:is_alive()) then
             return
         end
-        local listing = git(STATUS_ARGS, root)
+        local listing = git(STATUS_ARGS, root, READ_OPTS)
         if git_signature({ status = listing }) == last_sig then
             return
         end
