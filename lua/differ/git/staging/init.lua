@@ -13,6 +13,7 @@ local file_lines = require("differ.git.staging.write").file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, row_state = whole_file.whole_file_revert, whole_file.row_state
 local unheld_blob, stage_drops = whole_file.unheld_blob, whole_file.stage_drops
+local stage_prompt = whole_file.stage_prompt
 local frozen = require("differ.git.staging.frozen")
 local for_index, for_preview, for_local = frozen.for_index, frozen.for_preview, frozen.for_local
 
@@ -98,10 +99,10 @@ local function for_union(ctx, entry, diff)
             return unheld_blob(ctx, entry)
         end,
         refresh = ctx.refresh,
+        confirm_stage = function()
+            return stage_prompt(ctx, entry)
+        end,
     }
-    if stage_drops(ctx, entry) then
-        staging.confirm_stage = M.DROP_PROMPTS.stage.one
-    end
     -- X puts a mode change or a binary file back as HEAD has it. a move stays with the
     -- panel row's keys, and a submodule has no X
     if entry.status == "M" then

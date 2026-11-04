@@ -866,6 +866,35 @@ local function row_status(s, preview)
     return (select(2, row_of(s)))
 end
 
+-- the entries `drops` says an s/S or u/U loses content from, each judged on its letters
+-- as git reports them now: the listing can predate a change made outside differ. a
+-- failed read counts every entry, so the op asks
+---@param root string
+---@param entries differ.FileEntry[]
+---@param drops fun(entry: differ.FileEntry): boolean
+---@param preview? boolean  -- the entries are lettered by their index side
+---@return table<differ.FileEntry, true>
+local function drops_now(root, entries, drops, preview)
+    local dropping = {}
+    local live = live_rows(root, entries)
+    for _, entry in ipairs(entries) do
+        local now = live and live[entry]
+        if not live then
+            dropping[entry] = true
+        elseif now then
+            local current = vim.tbl_extend("force", entry, {
+                x = now.x,
+                y = now.y,
+                status = row_status(now, preview),
+            })
+            if drops(current) then
+                dropping[entry] = true
+            end
+        end
+    end
+    return dropping
+end
+
 -- the entry's status as git reports it now, read from the side of the file the entry
 -- came from, or nil when the path has no changes left
 ---@param root string
@@ -1301,32 +1330,6 @@ function M.panel(opts)
             notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
         end
     end
-    -- the entries `drops` says a panel s/S or u/U loses content from, each judged on its
-    -- letters as git reports them now: the listing can predate a change made outside
-    -- differ. a failed read counts every entry, so the op asks
-    ---@param entries differ.FileEntry[]
-    ---@param drops fun(entry: differ.FileEntry): boolean
-    ---@return table<differ.FileEntry, true>
-    local function drops_now(entries, drops)
-        local dropping = {}
-        local live = live_rows(root, entries)
-        for _, entry in ipairs(entries) do
-            local now = live and live[entry]
-            if not live then
-                dropping[entry] = true
-            elseif now then
-                local current = vim.tbl_extend("force", entry, {
-                    x = now.x,
-                    y = now.y,
-                    status = row_status(now, preview),
-                })
-                if drops(current) then
-                    dropping[entry] = true
-                end
-            end
-        end
-        return dropping
-    end
     if is_worktree_status(source) then
         renames = diff_renames(root)
         sections, list_err, opening = M.status_sections(root, nil, renames)
@@ -1360,15 +1363,15 @@ function M.panel(opts)
                 if preview then
                     return {}
                 end
-                return drops_now(entries, staging_ops.stage_drops)
+                return drops_now(root, entries, staging_ops.stage_drops, preview)
             end,
             drop_prompts = require("differ.git.staging").DROP_PROMPTS,
             unstage_drops = function(entries)
-                return drops_now(entries, function(entry)
+                return drops_now(root, entries, function(entry)
                     return staging_ops.unstage_drops(entry, function()
                         return M.model({ old = HEAD, new = WORKTREE }, root, entry)
                     end)
-                end)
+                end, preview)
             end,
             stage_all = function()
                 if preview then
@@ -2355,5 +2358,6 @@ function M.close()
 end
 
 M.live_row = live_row
+M.drops_now = drops_now
 
 return M

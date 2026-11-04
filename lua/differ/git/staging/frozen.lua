@@ -18,7 +18,7 @@ local index_unreadable, revert_worktree = write.index_unreadable, write.revert_w
 local file_lines = write.file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, unheld_blob = whole_file.whole_file_revert, whole_file.unheld_blob
-local stage_drops, DROP_PROMPTS = whole_file.stage_drops, whole_file.DROP_PROMPTS
+local stage_prompt = whole_file.stage_prompt
 
 -- the `update-index --chmod` flag that gives a file a mode
 ---@type table<string, string>
@@ -578,10 +578,10 @@ local function for_local(ctx, entry, model, reopen)
             ctx.retarget_later()
             return true
         end,
+        confirm_stage = function()
+            return stage_prompt(ctx, entry)
+        end,
     }
-    if stage_drops(ctx, entry) then
-        staging.confirm_stage = DROP_PROMPTS.stage.one
-    end
     staging.revert = function()
         return local_file_revert(ctx, entry)
     end
