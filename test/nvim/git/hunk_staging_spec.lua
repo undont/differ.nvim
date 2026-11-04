@@ -109,6 +109,7 @@ describe(":Differ diff hunk staging", function()
         -- the index write that caused: the watcher fires, and must read it as differ's
         -- own doing rather than re-sourcing a.lua's diff out from under the marks
         p.on_external_change()
+        helpers.settle(p)
 
         assert.are.equal(2, #v.model.hunks) -- still frozen on the same two hunks
         assert.are.equal("staged", v:_hunk_state(1)) -- and hunk 1 is still marked staged
@@ -138,6 +139,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(0, res.code, res.stderr)
         assert.are.equal(helpers.twelve({ "1x", [6] = "6y" }), indexed(root, "a.lua"))
         p.on_external_change()
+        helpers.settle(p)
         local after = mm_states(v)
         p:close()
         assert.are.same({ "staged", "staged", "unstaged" }, after)
@@ -152,6 +154,7 @@ describe(":Differ diff hunk staging", function()
         local staged = mm_states(v)
         helpers.stage_behind(root, helpers.twelve({ "1x" }))
         p.on_external_change()
+        helpers.settle(p)
         local after = mm_states(v)
         p:close()
         assert.are.same({ "staged", "staged", "unstaged" }, staged)
@@ -274,6 +277,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/other.lua", "unrelated\n")
         git(root, "add", "other.lua")
         p:reload()
+        helpers.settle(p)
 
         local msg
         for _, n in ipairs(_G.notifs) do
@@ -298,6 +302,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/b.lua", "new\n")
         git(root, "add", "b.lua")
         p:reload()
+        helpers.settle(p)
 
         for _, n in ipairs(_G.notifs) do
             assert.is_nil(tostring(n.msg):find("changed outside differ", 1, true))
@@ -1633,6 +1638,7 @@ func getDownloadSpeed() {
         local model = v.model
         helpers.move_upstream(root)
         p.on_external_change()
+        helpers.settle(p)
         local kept = v.model == model
         p:close()
         assert.is_true(kept)

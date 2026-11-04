@@ -252,11 +252,13 @@ function M.merge_file_diff3(ours_text, base_text, theirs_text, size)
     return out
 end
 
--- repo-relative paths of the unmerged (conflicted) files, in git's order
+-- repo-relative paths of the unmerged (conflicted) files, in git's order. diff-files,
+-- since `git diff` writes refreshed stat data back to the index, which wakes the
+-- session's git-dir watcher
 ---@param root string
 ---@return string[]
 function M.conflicted(root)
-    local out = git({ "diff", "--name-only", "--diff-filter=U", "-z" }, root)
+    local out = git({ "diff-files", "--name-only", "--diff-filter=U", "-z" }, root)
     return out and rev.parse_unmerged(out) or {}
 end
 
@@ -521,6 +523,29 @@ local function numstat(args, root)
     return rev.parse_numstat(git(full, root) or "")
 end
 
+-- HEAD↔worktree counts through diff-index, which never writes the index (see
+-- M.conflicted). plumbing ignores diff.renames, so `renames` carries it
+---@param root string
+---@param renames boolean
+---@return table<string, { additions: integer, deletions: integer }>
+local function head_numstat(root, renames)
+    local pairing = "-M"
+    if not renames then
+        pairing = "--no-renames"
+    end
+    local args = { "diff-index", "--numstat", "-z", pairing, "HEAD" }
+    return rev.parse_numstat(git(args, root) or "")
+end
+
+-- whether `git diff` pairs renames in `root`: diff.renames, on unless set false.
+-- `copies` fails the bool read and counts as on
+---@param root string
+---@return boolean
+local function diff_renames(root)
+    local out = git({ "config", "--get", "--type=bool", "diff.renames" }, root)
+    return not (out and vim.trim(out) == "false")
+end
+
 -- the change set as panel FileEntry records: one flat list with `+N -M` counts,
 -- used for rev-pair sources. working-tree sources use status_sections instead.
 -- `git diff` never lists untracked files regardless of the refs passed to it, so
@@ -649,13 +674,15 @@ end
 -- opens. a staged deletion counts against the index: porcelain lists a file removed
 -- from the index but still on disk twice (`D ` and `??`), and its one row is the
 -- deletion, marked `kept`. empty sections are dropped by the caller. `reads` are what
--- the rows came from. `listing` is a STATUS_ARGS read already taken in this action
+-- the rows came from. `listing` is a STATUS_ARGS read already taken in this action;
+-- `renames` is diff.renames (default on)
 ---@param root string
 ---@param listing? string
+---@param renames? boolean
 ---@return differ.panel.Section[] sections, string|nil err, differ.git.Reads reads
-function M.status_sections(root, listing)
+function M.status_sections(root, listing, renames)
     local entries, untracked, err, reads = porcelain(root, listing)
-    local head_counts = numstat({ "HEAD" }, root)
+    local head_counts = head_numstat(root, renames ~= false)
     local removed = {}
     for _, s in ipairs(entries) do
         if s.x == "D" then
@@ -1191,8 +1218,30 @@ function M.panel(opts)
     local list_err ---@type string|nil -- git's own words when the listing failed
     local opening ---@type differ.git.Reads|nil -- the opening listing's, for the first signature
     local staging_ops ---@type table -- assigned below; the hooks read it at call time
+    local renames ---@type boolean|nil -- diff.renames, read once per session
+    -- the worktree listing's reads alone, with no message or state, so it can run in the
+    -- background. `listing` is a STATUS_ARGS read already taken
+    ---@param listing? string
+    ---@return differ.panel.Section[] sections, differ.git.Reads reads, string|nil err
+    local function list_sections(listing)
+        local live, err, reads
+        if preview then
+            live, err, reads = M.staged_sections(root, listing)
+        else
+            live, err, reads = M.status_sections(root, listing, renames)
+        end
+        return (nonempty_sections(live)), reads, err
+    end
+    ---@param err string|nil
+    local function report_listing(err)
+        list_failed = err ~= nil
+        if err then
+            notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
+        end
+    end
     if is_worktree_status(source) then
-        sections, list_err, opening = M.status_sections(root)
+        renames = diff_renames(root)
+        sections, list_err, opening = M.status_sections(root, nil, renames)
         -- `branch` is read per build, so a branch switch under an open panel updates the
         -- synthetic buffer's statusline label
         model_for = function(entry, branch)
@@ -1257,18 +1306,13 @@ function M.panel(opts)
                     return ("Restore %s as staged?"):format(entry.path)
                 end
             end,
-            ---@param listing? string
-            reload = function(listing)
-                local list = M.status_sections
-                if preview then
-                    list = M.staged_sections
-                end
-                local live, err, reads = list(root, listing)
-                list_failed = err ~= nil
-                if err then
-                    notify(exec.with_stderr("couldn't list changes", err), vim.log.levels.ERROR)
-                end
-                return (nonempty_sections(live)), reads
+            -- a listing taken here is newer than any background one in flight, which
+            -- would otherwise land over it
+            reload = function()
+                exec.supersede(root)
+                local live, reads, err = list_sections()
+                report_listing(err)
+                return live, reads
             end,
         }
     else
@@ -1589,7 +1633,12 @@ function M.panel(opts)
     ---@return differ.FileEntry[] entries, differ.git.Reads reads
     local function entries_for_path(path)
         local out = {}
-        local live, _, reads = (preview and M.staged_sections or M.status_sections)(root)
+        local live, _, reads
+        if preview then
+            live, _, reads = M.staged_sections(root)
+        else
+            live, _, reads = M.status_sections(root, nil, renames)
+        end
         for _, sec in ipairs(live) do
             for _, e in ipairs(sec.entries) do
                 if e.path == path then
@@ -1693,27 +1742,17 @@ function M.panel(opts)
         end
     end
 
-    -- after an external git change (lazygit, a tmux-pane commit, `:!git`): refresh the
-    -- list, then re-source the open diff so it reflects the new state too rather than
-    -- staying frozen. gated on the signature so unrelated terminal events are no-ops
-    local function refresh_external()
-        -- a debounced watcher fire (or a queued schedule) can land after the panel is
-        -- gone; bail before touching its deleted buffer. a hidden sidebar is still live
-        -- (and still driving a visible diff), so it refreshes like an open one
-        if not (panel and panel:is_alive()) then
-            return
-        end
-        local listing = git(STATUS_ARGS, root, READ_OPTS)
-        if git_signature({ status = listing }) == last_sig then
-            return
-        end
-        local reads = panel:refresh(listing)
+    -- refresh_external's screen half: repaint the list from a background read, then
+    -- re-source the open diff so it reflects the new state too rather than staying frozen
+    ---@param read { sections: differ.panel.Section[], reads: differ.git.Reads, conflicted: string[] }
+    local function land_external(read)
+        local reads = panel:relist(read.sections, read.reads)
         if not panel:is_alive() then
             return -- the change set emptied and on_empty ended the session
         end
         -- a merge started under a live session runs no command, so the dispatch gate
         -- never sees it
-        M.notify_conflicts(root, M.conflicted(root))
+        M.notify_conflicts(root, read.conflicted)
         if retarget_view(true, reads) then
             return
         end
@@ -1728,6 +1767,44 @@ function M.panel(opts)
         end
         -- no view, and nothing to hand over to: just record the state
         record_state()
+    end
+
+    -- refresh_external calls so far: a queued refresh with a newer one behind it skips
+    -- its reads, since the newer one takes them later
+    local external_calls = 0
+
+    -- after an external git change (lazygit, a tmux-pane commit, `:!git`): read the
+    -- listing in the background, gated on the signature so unrelated terminal events
+    -- are no-ops. a sync listing supersedes it (see actions.reload)
+    local function refresh_external()
+        -- a debounced watcher fire (or a queued schedule) can land after the panel is
+        -- gone; bail before touching its deleted buffer. a hidden sidebar is still live
+        -- (and still driving a visible diff), so it refreshes like an open one
+        if not (panel and panel:is_alive()) then
+            return
+        end
+        external_calls = external_calls + 1
+        local call = external_calls
+        exec.submit(root, function()
+            if call ~= external_calls then
+                return nil
+            end
+            local listing = git(STATUS_ARGS, root, READ_OPTS)
+            if git_signature({ status = listing }) == last_sig then
+                return nil
+            end
+            local live, reads, err = list_sections(listing)
+            return { sections = live, reads = reads, err = err, conflicted = M.conflicted(root) }
+        end, function(ok, read)
+            if not ok then
+                error(read, 0)
+            end
+            if not (read and panel and panel:is_alive()) then
+                return
+            end
+            report_listing(read.err)
+            land_external(read)
+        end)
     end
 
     -- watch the git dir and the shown file's dir so an external change (lazygit, an

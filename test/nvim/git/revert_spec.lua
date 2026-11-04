@@ -510,6 +510,7 @@ describe(":Differ diff hunk staging", function()
         git(root, "commit", "-q", "-am", "committed elsewhere")
         _G.notifs = {}
         p.on_external_change() -- what the fs watcher / FocusGained fire
+        helpers.settle(p)
 
         assert.is_nil(Panel.current())
         assert.is_false(p:is_alive())
@@ -526,6 +527,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/.git/index", "garbage")
         _G.notifs = {}
         p.on_external_change()
+        helpers.settle(p)
 
         assert.is_false(p:is_alive())
         assert.are.equal(1, #_G.notifs)

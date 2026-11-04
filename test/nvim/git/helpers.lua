@@ -195,7 +195,19 @@ local function paths(p)
     return out
 end
 
+-- wait out the background refresh a reload or an external change started
+local function settle(p)
+    local exec = require("differ.git.exec")
+    assert(
+        vim.wait(5000, function()
+            return exec.idle(p.git_root)
+        end, 5),
+        "background refresh never landed"
+    )
+end
+
 return {
+    settle = settle,
     git = git,
     write = write,
     V1 = V1,

@@ -167,6 +167,14 @@ function M.supersede(root)
     q.generation = q.generation + 1
 end
 
+-- nothing submitted on `root` is still running or queued
+---@param root string
+---@return boolean
+function M.idle(root)
+    local q = queues[root]
+    return not (q and q.busy)
+end
+
 -- run git in `cwd`: stdout on success, nil + stderr on failure. `text = true`
 -- normalises `\r\n`, which is right for plumbing output but would corrupt file content
 -- read via `git show`; content reads use git_raw instead
