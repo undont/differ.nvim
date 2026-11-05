@@ -111,5 +111,30 @@ describe("git.staging.selection", function()
             assert.is_nil(after)
             assert.are.equal("moves_others", refusal)
         end)
+
+        -- the worktree's c reads back staged in one hunk, HEAD's third c as a staged
+        -- deletion in the next
+        it("X on - c - c brings both back with the index as it was", function()
+            local t = { head = "c\nc\nc\n", index = "c\nd\nc\nc\n", work = "c\nd\nx4\nx4\n" }
+            local outcome = fuzz.run_op(t, "X", { old = { [2] = true, [3] = true }, new = {} })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal("c\nd\nc\nc\n", outcome.index)
+            assert.are.equal("c\nd\nc\nc\nx4\nx4\n", outcome.work)
+        end)
+    end)
+
+    -- the read-back stages HEAD's second b and the worktree's added b, a hunk apart,
+    -- where the drawn marks stage the x36 deletion
+    describe("on HEAD x29 b x36 b b, index x29 b x36 b b x6, worktree x29 x6 b b b x6", function()
+        it("s on - x36 stages the deletion", function()
+            local t = {
+                head = "x29\nb\nx36\nb\nb\n",
+                index = "x29\nb\nx36\nb\nb\nx6\n",
+                work = "x29\nx6\nb\nb\nb\nx6\n",
+            }
+            local outcome = fuzz.run_op(t, "s", { old = { [3] = true }, new = {} })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal("x29\nb\nb\nb\nx6\n", outcome.index)
+        end)
     end)
 end)
