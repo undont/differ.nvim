@@ -8,6 +8,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Changed
 
+- The panel no longer freezes nvim to refresh after git changes outside differ (the file watcher, returning to nvim, closing a terminal) or on `R`; it refreshes in the background
+
+### Fixed
+
+- An open panel no longer re-runs `git status` in a loop while idle, and no longer takes `.git/index.lock` or rewrites the index to refresh, which could make your own `git commit` or `rebase` fail on `index.lock`
+- `s`, `S`, `u` and `U` now ask first when they'd drop staged content that changed outside differ since the panel last refreshed
+
+## [0.2.27] — 2026-11-04
+
+### Changed
+
 - Opening the panel, staging and unstaging hunks, moving between files and reloading run between a half and a third as many git commands as before, so each responds sooner
 - differ now needs git 2.17 or newer
 
