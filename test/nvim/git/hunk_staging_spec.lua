@@ -1396,9 +1396,7 @@ func getDownloadSpeed() {
                 v[case.op](v)
             end)
             local after = { worktree(root, "a.lua"), indexed(root, "a.lua") }
-            -- the first thing said, since s and u go on to step the walk and may
-            -- announce a wrap after the refusal
-            local said = (_G.notifs[1] or {}).msg or ""
+            local said = (_G.notifs[#_G.notifs] or {}).msg or ""
             p:close()
             assert.are.equal(2, hunks)
             assert.are.same(before, after)
@@ -1418,6 +1416,118 @@ func getDownloadSpeed() {
         assert.is_true(v.stuck.staged[1])
         p:close()
     end)
+
+    -- a.lua and b.lua each carry shared_change's hunks, neither of which s or u can
+    -- take alone. `passed` accepts the open file's local view as ]f leaving it does, so
+    -- the s walk steps past it rather than stopping there
+    ---@param open string
+    ---@param passed boolean
+    local function both_shared(open, passed)
+        local root = fresh_repo()
+        for _, f in ipairs({ "a.lua", "b.lua" }) do
+            write(root .. "/" .. f, "1\n2\n3\n4\n5\n6\n7\n")
+        end
+        git(root, "add", ".")
+        git(root, "commit", "-q", "-m", "seven lines")
+        for _, f in ipairs({ "a.lua", "b.lua" }) do
+            write(root .. "/" .. f, "1\nA\nB\nC\nD\nE\n7\n")
+            git(root, "add", f)
+            write(root .. "/" .. f, "1\nA2\n3\n4\nD2\nE2\n7\n")
+        end
+        vim.cmd.edit(root .. "/" .. open)
+        local p, v = open_panel()
+        if passed then
+            p:accept_review(false)
+        end
+        return p, v
+    end
+
+    -- `presses` taps of the key from hunk `start` in `open`, each one refused: wherever
+    -- the walk lands, the last refusal is the last thing said
+    for _, case in ipairs({
+        {
+            walk = "wraps within the file",
+            key = "s",
+            open = "a.lua",
+            start = 2,
+            presses = 1,
+            lands = "a.lua",
+        },
+        {
+            walk = "wraps within the file",
+            key = "u",
+            open = "a.lua",
+            start = 1,
+            presses = 1,
+            lands = "a.lua",
+        },
+        {
+            walk = "steps to the next file",
+            key = "s",
+            open = "a.lua",
+            start = 1,
+            presses = 2,
+            passed = true,
+            lands = "b.lua",
+        },
+        {
+            walk = "steps to the next file",
+            key = "u",
+            open = "b.lua",
+            start = 2,
+            presses = 2,
+            lands = "a.lua",
+        },
+        {
+            walk = "wraps to the first file",
+            key = "s",
+            open = "b.lua",
+            start = 1,
+            presses = 2,
+            passed = true,
+            lands = "a.lua",
+        },
+        {
+            walk = "wraps to the first file",
+            key = "u",
+            open = "a.lua",
+            start = 2,
+            presses = 2,
+            lands = "b.lua",
+        },
+        {
+            walk = "stops on local changes",
+            key = "s",
+            open = "a.lua",
+            start = 1,
+            presses = 2,
+            lands = "a.lua",
+        },
+    }) do
+        it(
+            ("keeps a %s refusal the last message when the walk %s"):format(case.key, case.walk),
+            function()
+                local p, v = both_shared(case.open, case.passed)
+                local col = v.columns[#v.columns]
+                vim.api.nvim_set_current_win(col.winid)
+                vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, case.start), 0 })
+                local op = case.key == "s" and "stage_hunk" or "unstage_hunk"
+                for _ = 1, case.presses do
+                    _G.notifs = {}
+                    local at = view_in_origin(p)
+                    at[op](at)
+                end
+                local said = (_G.notifs[#_G.notifs] or {}).msg or ""
+                local landed = view_in_origin(p).model.path
+                p:close()
+                assert.are.equal(case.lands, landed)
+                assert.is_truthy(
+                    said:find("can't be " .. (case.key == "s" and "staged" or "unstaged"), 1, true),
+                    said
+                )
+            end
+        )
+    end
 
     -- repeated lines the pairs line up another way than the union: the index a b b
     -- they make reads as hunk 1 staged and hunk 2 as it was

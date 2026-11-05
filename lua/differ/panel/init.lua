@@ -1263,8 +1263,9 @@ end
 ---@param direction "next"|"prev"
 ---@param staged boolean  -- the pair hunted: false for a file with hunks left to stage
 ---@param keep_focus boolean|nil
+---@param refused boolean|nil  -- a hunk just refused: no wrap notice
 ---@return boolean moved
-function Panel:step_review(direction, staged, keep_focus)
+function Panel:step_review(direction, staged, keep_focus, refused)
     local keys, wrap_at = self:_walk_keys(direction)
     for i, key in ipairs(keys) do
         local row = self:_row_of_key(key)
@@ -1277,7 +1278,7 @@ function Panel:step_review(direction, staged, keep_focus)
             if self:_open(e, keep_focus) then
                 -- the review flow's own wrap notice: `goto_file`'s would claim the first
                 -- file, and this landed on the first one with anything left to do
-                if i >= wrap_at then
+                if i >= wrap_at and not refused then
                     vim.notify(
                         direction == "next" and "differ: wrapped to the first file left to stage"
                             or "differ: wrapped to the last file left to unstage",
