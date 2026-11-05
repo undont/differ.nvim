@@ -391,6 +391,30 @@ describe("git operation runner", function()
         assert.are.equal(head, git_ok(root, "rev-parse", "HEAD"))
     end)
 
+    for _, written in ipairs({ true, false }) do
+        local closed = written and "written" or "unwritten"
+        it("removes the editor's server socket when the message closes " .. closed, function()
+            local root = stopped("merge")
+            resolve_all(root)
+            local res = start(root, "continue")
+            local buf = assert(message_buffer(res), "git never asked for a message")
+            local socket
+            for _, chan in ipairs(vim.api.nvim_list_chans()) do
+                if chan.stream == "socket" then
+                    socket = vim.rpcrequest(chan.id, "nvim_get_vvar", "servername")
+                end
+            end
+            assert.are.equal("socket", assert(vim.uv.fs_stat(socket)).type)
+            if written then
+                reply(buf)
+            else
+                cancel(res)
+            end
+            assert.are.equal(written, finished(res).ok)
+            assert.is_nil(vim.uv.fs_stat(socket))
+        end)
+    end
+
     it("keeps a later reword's original message when it closes unwritten", function()
         local root = todo_rebase("reword")
         resolve_all(root)

@@ -5,7 +5,7 @@
 local addr = vim.env.NVIM
 if not addr or addr == "" then
     io.stderr:write("differ: no nvim to edit the message in\n")
-    os.exit(1)
+    vim.cmd.cquit(1)
 end
 local mode = "pipe"
 if addr:match("^[%w.-]+:%d+$") then
@@ -14,7 +14,7 @@ end
 local ok, chan = pcall(vim.fn.sockconnect, mode, addr, { rpc = true })
 if not ok or chan == 0 then
     io.stderr:write(("differ: can't reach nvim at %s\n"):format(addr))
-    os.exit(1)
+    vim.cmd.cquit(1)
 end
 
 -- set by the parent through nvim_exec_lua once the message buffer closes
@@ -33,10 +33,10 @@ while not _G.differ_closed do
     end)
     -- the socket closes with the parent, and a request on it then fails
     if not _G.differ_closed and not pcall(vim.rpcrequest, chan, "nvim_get_api_info") then
-        os.exit(1)
+        vim.cmd.cquit(1)
     end
 end
 if not _G.differ_written then
-    os.exit(1)
+    vim.cmd.cquit(1)
 end
-os.exit(0)
+vim.cmd.cquit(0)

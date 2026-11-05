@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Every commit, rebase or merge message differ opened through git's editor left a dead nvim socket behind, so the nvim socket directory kept growing and tools that list nvim sockets slowed down; the editor now removes its socket on exit
+
+## [0.2.28] — 2026-11-05
+
 ### Changed
 
 - The panel no longer freezes nvim to refresh after git changes outside differ (the file watcher, returning to nvim, closing a terminal) or on `R`; it refreshes in the background

@@ -41,7 +41,7 @@ while next_spec <= #specs or running > 0 do
 end
 
 if #failed == 0 then
-    os.exit(0)
+    vim.cmd.cquit(0)
 end
 
 table.sort(failed)
@@ -52,4 +52,4 @@ io.stdout:write("\n\27[0;31mfailed:\27[0m\n")
 for _, spec in ipairs(failed) do
     io.stdout:write(("  %s\n"):format(spec))
 end
-os.exit(1)
+vim.cmd.cquit(1)
