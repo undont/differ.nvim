@@ -83,17 +83,17 @@ local LINE_HL = {
 ---@class differ.panel.Actions
 ---@field stage fun(entry: differ.FileEntry): boolean|nil  -- false: refused, nothing moved
 ---@field unstage fun(entry: differ.FileEntry)
----@field stage_drops? fun(entry: differ.FileEntry): boolean  -- staging loses content nothing else holds
+---@field stage_drops? fun(entries: differ.FileEntry[]): table<differ.FileEntry, true>  -- s/S warn on these
 ---@field drop_prompts? differ.panel.DropPrompts  -- what s/S and u/U ask when a drops hook says so
----@field unstage_drops? fun(entry: differ.FileEntry): boolean  -- unstaging loses content nothing else holds
+---@field unstage_drops? fun(entries: differ.FileEntry[]): table<differ.FileEntry, true>  -- u/U warn on these
 ---@field stage_all fun(): boolean|nil  -- false: refused, nothing moved
 ---@field unstage_all fun()
 ---@field discard fun(entry: differ.FileEntry)
 ---@field discard_refusals? fun(entries: differ.FileEntry[]): table<differ.FileEntry, string>  -- X's refusals
 ---@field discard_prompt? fun(entry: differ.FileEntry): string|nil  -- X's confirm where it isn't a discard
--- recompute sections after an op. `listing` (a read the caller already took) and
--- `reads` are opaque here: the chrome sources and on_refresh get `reads` back
----@field reload fun(listing?: any): differ.panel.Section[], any
+-- recompute sections after an op. `reads` is opaque here: the chrome sources and
+-- on_refresh get it back
+---@field reload fun(): differ.panel.Section[], any
 
 ---@class differ.Panel
 ---@field bufnr integer
@@ -769,14 +769,23 @@ end
 -- `on_refresh` (whatever drove it, including the panel's own staging keys), and one that
 -- empties the change set hands over to `on_empty`, which may end the session, so nothing
 -- touches self after it. returns the reload's reads
----@param listing? any -- handed to actions.reload
 ---@return any
-function Panel:refresh(listing)
+function Panel:refresh()
     if not self.actions or not self:is_alive() then
         return nil
     end
+    return self:relist(self.actions.reload())
+end
+
+-- refresh's repaint half, for a listing read elsewhere (a background refresh)
+---@param sections differ.panel.Section[]
+---@param reads any
+---@return any
+function Panel:relist(sections, reads)
+    if not self:is_alive() then
+        return nil
+    end
     local anchor = self:_cursor_anchor()
-    local sections, reads = self.actions.reload(listing)
     self:set_sections(sections, reads)
     if self.on_refresh then
         self.on_refresh(reads)
@@ -862,9 +871,10 @@ function Panel:_drop_confirmed(verb, entries)
     if not drops or not prompts then
         return true
     end
+    local dropping = drops(entries)
     local lost = {} ---@type string[]
     for _, e in ipairs(entries) do
-        if drops(e) then
+        if dropping[e] then
             lost[#lost + 1] = e.path
         end
     end

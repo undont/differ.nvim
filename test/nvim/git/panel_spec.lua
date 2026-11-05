@@ -328,6 +328,7 @@ describe(":Differ panel", function()
             git(root, "checkout", "HEAD", "--", "a.lua") -- only the shown file goes clean
             vim.api.nvim_set_current_win(p.winid) -- reviewing from the sidebar
             p.on_external_change()
+            helpers.settle(p)
 
             assert.are.equal(p, Panel.current()) -- keep.lua survives, so the session does
             assert.are.equal("keep.lua", view_at(p).model.path)
@@ -352,9 +353,100 @@ describe(":Differ panel", function()
         write(root .. "/a.lua", "local x = 2\nreturn x\nlocal y = 3\n") -- edited outside
         vim.api.nvim_set_current_win(p.winid)
         vim.api.nvim_feedkeys("R", "x", false)
+        helpers.settle(p)
 
         assert.are.equal(2, #view_at(p).model.hunks) -- the diff picked the edit up
         p:close()
+    end)
+
+    describe("read-only status", function()
+        local inherited
+        before_each(function()
+            inherited = vim.env.GIT_OPTIONAL_LOCKS -- a shell can export it, hiding the lock
+            vim.env.GIT_OPTIONAL_LOCKS = nil
+        end)
+        after_each(function()
+            vim.env.GIT_OPTIONAL_LOCKS = inherited
+        end)
+
+        -- the env of every `git status` spawned while `fn` runs
+        local function status_envs(fn)
+            local orig, envs = vim.system, {}
+            vim.system = function(cmd, opts, ...)
+                if vim.tbl_contains(cmd, "status") then
+                    envs[#envs + 1] = (opts and opts.env) or {}
+                end
+                return orig(cmd, opts, ...)
+            end
+            local ok, err = pcall(fn)
+            vim.system = orig
+            assert(ok, err)
+            return envs
+        end
+
+        local function index_mtime(root)
+            local st = assert((vim.uv or vim.loop).fs_stat(root .. "/.git/index"))
+            return st.mtime.sec .. "." .. st.mtime.nsec
+        end
+
+        -- a panel on a modified a.lua whose clean b.lua no longer matches the index's
+        -- stat data, which git status refreshes and writes back when it may take the lock
+        local function open_stale()
+            local root = fresh_repo()
+            write(root .. "/b.lua", "clean\n")
+            git(root, "add", "b.lua")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            local past = os.time() - 60
+            assert((vim.uv or vim.loop).fs_utime(root .. "/b.lua", past, past))
+            return root, p
+        end
+
+        it("R leaves the index alone when its stat data is stale", function()
+            local root, p = open_stale()
+            local before = index_mtime(root)
+
+            local envs = status_envs(function()
+                vim.api.nvim_set_current_win(p.winid)
+                vim.api.nvim_feedkeys("R", "x", false)
+                helpers.settle(p)
+            end)
+
+            assert.is_true(#envs > 0)
+            for _, env in ipairs(envs) do
+                assert.are.equal("0", env.GIT_OPTIONAL_LOCKS)
+            end
+            assert.are.equal(before, index_mtime(root))
+            p:close()
+        end)
+
+        it("a refresh that relists leaves the index alone", function()
+            local root, p = open_stale()
+            local before = index_mtime(root)
+            write(root .. "/a.lua", "local x = 3\nreturn x\n") -- moves the signature
+            p.on_external_change()
+            helpers.settle(p)
+
+            assert.are.equal("local x = 3\nreturn x\n", view_at(p).model.new_text) -- relisted
+            assert.are.equal(before, index_mtime(root))
+            p:close()
+        end)
+
+        it("doesn't wake the panel's own watcher", function()
+            local _, p = open_stale()
+            vim.api.nvim_set_current_win(p.winid)
+            vim.api.nvim_feedkeys("R", "x", false)
+            vim.wait(200)
+
+            local envs = status_envs(function()
+                vim.wait(400)
+            end)
+
+            assert.are.same({}, envs)
+            p:close()
+        end)
     end)
 
     -- the panel refreshes on any of these: regaining focus, an in-nvim `:!`, or a
@@ -374,7 +466,7 @@ describe(":Differ panel", function()
             -- scoped to the panel's group so the headless harness's own TermClose
             -- handler stays out of it
             vim.api.nvim_exec_autocmds(ev, { group = p.augroup })
-            vim.wait(200, function() -- the refresh is scheduled, so let it run
+            vim.wait(5000, function() -- the refresh is scheduled, so let it run
                 return file_line(p, "a.lua") == nil
             end)
 
@@ -395,6 +487,132 @@ describe(":Differ panel", function()
         -- bail rather than render into the wiped buffer
         assert.has_no.errors(function()
             p:refresh()
+        end)
+    end)
+
+    describe("background refresh", function()
+        -- every background `git status`, counted. while `held`, each one answers with
+        -- the state it read when spawned, but only once release() runs
+        local function status_spy()
+            local orig = vim.system
+            local spy = { count = 0, held = true, queue = {} }
+            vim.system = function(cmd, opts, on_exit)
+                if not (on_exit and vim.tbl_contains(cmd, "status")) then
+                    return orig(cmd, opts, on_exit)
+                end
+                spy.count = spy.count + 1
+                if not spy.held then
+                    return orig(cmd, opts, on_exit)
+                end
+                local res = orig(cmd, opts):wait()
+                spy.queue[#spy.queue + 1] = function()
+                    on_exit(res)
+                end
+                return { kill = function() end }
+            end
+            function spy.release()
+                spy.held = false
+                for _, answer in ipairs(spy.queue) do
+                    answer()
+                end
+                spy.queue = {}
+            end
+            function spy.restore()
+                vim.system = orig
+            end
+            return spy
+        end
+
+        -- every listing the panel repaints from, in order
+        local function relists(p)
+            local seen = {}
+            p.relist = function(self, sections, reads)
+                seen[#seen + 1] = sections
+                return Panel.relist(self, sections, reads)
+            end
+            return seen
+        end
+
+        local function listed_staged(sections, path)
+            for _, sec in ipairs(sections) do
+                for _, e in ipairs(sec.entries) do
+                    if e.path == path then
+                        return e.y == " "
+                    end
+                end
+            end
+        end
+
+        local function two_edits()
+            local root = fresh_repo()
+            write(root .. "/b.lua", "b\n")
+            git(root, "add", "b.lua")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/a.lua", "local x = 2\nreturn x\n")
+            write(root .. "/b.lua", "b2\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            helpers.settle(p)
+            return root, p
+        end
+
+        it("drops a listing read before a stage that lands after it", function()
+            local root, p = two_edits()
+            local seen = relists(p)
+            local spy = status_spy()
+            write(root .. "/a.lua", "local x = 3\nreturn x\n") -- moves the signature
+            p.on_external_change()
+            vim.api.nvim_set_current_win(p.winid)
+            vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
+            p:stage_op("stage")
+            spy.release()
+            helpers.settle(p)
+            spy.restore()
+
+            assert.is_true(#seen > 0)
+            for _, sections in ipairs(seen) do
+                assert.is_true(listed_staged(sections, "b.lua"))
+            end
+            assert.is_not_nil(file_line(p, "b.lua", true))
+            p:close()
+        end)
+
+        it("lands nothing on a panel closed while it read", function()
+            local root, p = two_edits()
+            local seen = relists(p)
+            local spy = status_spy()
+            write(root .. "/a.lua", "local x = 3\nreturn x\n")
+            p.on_external_change()
+            p:close()
+            spy.release()
+            helpers.settle(p)
+            spy.restore()
+
+            assert.are.same({}, seen)
+        end)
+
+        it("reads once for every fire queued behind a running one", function()
+            -- the write below would wake the watcher, whose fire races the queued calls
+            local watch = require("differ.git.watch")
+            local new = watch.new
+            watch.new = function()
+                return { watch_file = function() end, stop = function() end }
+            end
+            finally(function()
+                watch.new = new
+            end)
+            local root, p = two_edits()
+            local spy = status_spy()
+            write(root .. "/a.lua", "local x = 3\nreturn x\n")
+            p.on_external_change()
+            p.on_external_change()
+            p.on_external_change()
+            spy.release()
+            helpers.settle(p)
+            spy.restore()
+
+            assert.are.equal(2, spy.count) -- the running one, then the last queued
+            p:close()
         end)
     end)
 

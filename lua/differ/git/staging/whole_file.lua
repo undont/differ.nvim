@@ -104,10 +104,25 @@ local function stage_drops(ctx, entry)
     return unheld_blob(ctx, entry)
 end
 
+-- the prompt s and S ask first when staging the row whole drops content now
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@return string|nil
+local function stage_prompt(ctx, entry)
+    local dropping = gitmod().drops_now(ctx.root, { entry }, function(current)
+        return stage_drops(ctx, current)
+    end)
+    if dropping[entry] then
+        return DROP_PROMPTS.stage.one
+    end
+    return nil
+end
+
 return {
     DROP_PROMPTS = DROP_PROMPTS,
     whole_file_revert = whole_file_revert,
     row_state = row_state,
     unheld_blob = unheld_blob,
     stage_drops = stage_drops,
+    stage_prompt = stage_prompt,
 }

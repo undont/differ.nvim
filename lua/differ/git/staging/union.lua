@@ -37,18 +37,46 @@ end
 
 -- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
 -- then put back in the worktree
+---@param modes differ.git.Modes|nil
+---@return boolean
+local function mode_hidden(modes)
+    if not modes then
+        return false
+    end
+    return modes.index ~= modes.head and modes.index ~= modes.worktree
+end
+
+-- the row's modes as git holds them now, nil when either pair has no change left
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@return boolean
-local function mode_hidden(ctx, entry)
+---@return differ.git.Modes|nil
+local function live_modes(ctx, entry)
     local cached = raw_line(ctx.root, { "--cached" }, entry)
     local unstaged = raw_line(ctx.root, {}, entry)
     if not (cached and unstaged) then
+        return nil
+    end
+    local head, index = rev.parse_raw_modes(cached)
+    local _, worktree = rev.parse_raw_modes(unstaged)
+    return { head = head, index = index, worktree = worktree }
+end
+
+-- whether U drops staged content neither HEAD nor the worktree holds, read from git
+-- now: a confirm never trusts the listing a drawn row came from
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param shown? differ.DiffModel -- the row's HEAD↔worktree model, read in this action
+---@return boolean
+local function hides_staged(ctx, entry, shown)
+    if mode_hidden(live_modes(ctx, entry)) then
+        return true
+    end
+    local union, cached, unstaged = union_models(ctx.root, entry, shown)
+    if not (union and cached and unstaged) then
         return false
     end
-    local head_mode, index_mode = rev.parse_raw_modes(cached)
-    local _, work_mode = rev.parse_raw_modes(unstaged)
-    return index_mode ~= head_mode and index_mode ~= work_mode
+    local _, hidden = require("differ.model.stage").marks_of(union, cached, unstaged)
+    return hidden == true
 end
 
 -- why `hunk` can't move on its own, either way naming the view where its change
@@ -606,16 +634,17 @@ end
 ---@return boolean
 local function unheld(source, model, idx)
     local stage = require("differ.model.stage")
-    local ctx, entry, staging = source.ctx, source.entry, source.staging
+    local ctx, entry = source.ctx, source.entry
     if not idx then
-        return staging.hidden == true
-    end
-    if not vim.tbl_contains(staging.hidden_in or {}, idx) then
-        return false
+        return hides_staged(ctx, entry)
     end
     local union, cached, unstaged = op_models(source)
     if not (union and cached and unstaged) then
         return true
+    end
+    local _, _, hidden_in = stage.marks_of(union, cached, unstaged)
+    if not vim.tbl_contains(hidden_in or {}, idx) then
+        return false
     end
     local hunk = model.hunks[idx]
     local text = stage.next_index(union, cached, unstaged, hunk, false)
@@ -636,7 +665,7 @@ end
 ---@return differ.view.Staging
 local function union_staging(ctx, entry, shown)
     local mode_change = false
-    if entry.x ~= " " and entry.y ~= " " and mode_hidden(ctx, entry) then
+    if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry.modes) then
         mode_change = true
     end
     ---@type differ.view.Staging
@@ -644,7 +673,12 @@ local function union_staging(ctx, entry, shown)
     ---@type differ.git.UnionSource
     local source = { ctx = ctx, entry = entry, staging = staging, mode_change = mode_change }
 
-    remark(source, union_models(ctx.root, entry, shown))
+    -- the listing's blob: an op re-reads the live index before writing (op_models)
+    local index ---@type differ.git.Blob|nil
+    if entry.index_sha then
+        index = content_ops.blob(ctx.root, entry.index_sha)
+    end
+    remark(source, union_models(ctx.root, entry, shown, index))
     staging.apply = function(model, hunk, reverse)
         return apply(source, model, hunk, reverse)
     end
@@ -672,4 +706,4 @@ local function union_staging(ctx, entry, shown)
     return staging
 end
 
-return { union_staging = union_staging }
+return { union_staging = union_staging, hides_staged = hides_staged }

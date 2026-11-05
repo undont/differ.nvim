@@ -746,8 +746,34 @@ local function take_ours_and_write(s)
     vim.cmd("silent write")
 end
 
+-- wait until the session's git-dir watcher delivers events. on macOS a new watch goes
+-- live on libuv's FSEvents thread some time after it starts; a change before then is lost
+local function watching(s)
+    local files = require("differ.merge.files")
+    local on_git_change, seen = files.on_git_change, false
+    files.on_git_change = function(this)
+        seen = seen or this == s
+        return on_git_change(this)
+    end
+    local live = false
+    for _ = 1, 30 do
+        -- a write inside the wait's condition wakes the wait again at once, and every
+        -- event restarts the watcher's debounce
+        write(s.root .. "/.git/differ-spec-probe", tostring(vim.uv.hrtime()))
+        live = vim.wait(100, function()
+            return seen
+        end, 10)
+        if live then
+            break
+        end
+    end
+    files.on_git_change = on_git_change
+    assert(live, "the watcher never went live")
+end
+
 -- run `fn`, then wait for the session's git-dir watcher to handle a change
 local function after_git_change(s, fn)
+    watching(s)
     local files = require("differ.merge.files")
     local on_git_change, seen = files.on_git_change, false
     files.on_git_change = function(this)
@@ -1826,7 +1852,9 @@ describe(":Differ mergetool changes outside the session", function()
     local function open_two(root)
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
-        return assert(merge.current())
+        local s = assert(merge.current())
+        watching(s)
+        return s
     end
 
     ---@param msg string
@@ -1872,6 +1900,7 @@ describe(":Differ mergetool changes outside the session", function()
         local root = setext_repo()
         vim.cmd.edit(root .. "/notes.md")
         merge.open({})
+        watching(assert(merge.current()))
         _G.notifs = {}
         write(root .. "/notes.md", "Heading\n=======\n\na\nb\nOURS\n")
         git_ok(root, "add", "notes.md")
@@ -1894,6 +1923,7 @@ describe(":Differ mergetool changes outside the session", function()
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         local s = merge.current()
+        watching(s)
         take_ours_and_write(s)
         _G.notifs = {}
         git_ok(root, "commit", "-q", "--no-edit")

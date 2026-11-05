@@ -1,5 +1,6 @@
 -- spawning git, and telling the user (or a stale buffer) about it. every git module
--- runs through here, so the argv prefix and the message shape sit in one place
+-- runs through here, so the argv prefix and the message shape sit in one place.
+-- M.async and M.submit run git off the main loop without changing call sites
 
 local M = {}
 
@@ -12,17 +13,172 @@ function M.notify(msg, level)
     vim.notify("differ: " .. msg, level or vim.log.levels.INFO)
 end
 
+---@alias differ.GitResult { code: integer, stdout: string|nil, stderr: string|nil }
+
+-- coroutines started by M.async: git yields inside one of these and blocks anywhere else
+---@type table<thread, true>
+local runners = setmetatable({}, { __mode = "k" })
+
+-- whether the running coroutine is one M.async started, where M.await can yield
+---@return boolean
+function M.in_async()
+    local co = coroutine.running()
+    return co ~= nil and runners[co] == true
+end
+
+-- yield the running M.async coroutine until the callback handed to `start` fires (from
+-- any context, at most once counts), returning what it was called with
+---@param start fun(resume: fun(...))
+---@return ...
+function M.await(start)
+    local co = coroutine.running()
+    assert(co and runners[co], "exec.await outside exec.async")
+    local settled = false
+    start(function(...)
+        if settled then
+            return
+        end
+        settled = true
+        local args = vim.F.pack_len(...)
+        vim.schedule(function()
+            local ok, err = coroutine.resume(co, vim.F.unpack_len(args))
+            if not ok then
+                error(err, 0)
+            end
+        end)
+    end)
+    return coroutine.yield()
+end
+
+-- on_exit waits for the pipes to close, so a child outliving git would never fire it;
+-- the guard gives up when wait() would
+---@param cmd string[]
+---@param opts table
+---@return differ.GitResult|nil res, string|nil err
+local function run_yielding(cmd, opts)
+    return M.await(function(resume)
+        local guard = assert(vim.uv.new_timer())
+        local function done(res, err)
+            if not guard:is_closing() then
+                guard:close()
+            end
+            resume(res, err)
+        end
+        local ok, obj = pcall(vim.system, cmd, opts, done)
+        if not ok then
+            return done(nil, tostring(obj))
+        end
+        if opts.timeout then
+            guard:start(2 * opts.timeout, 0, function()
+                pcall(obj.kill, obj, 9)
+                done(nil)
+            end)
+        end
+    end)
+end
+
 -- spawn git and wait. vim.system raises when the process can't start, so that comes
 -- back as `err`; a nil res with no err is wait() answering nothing at all
 ---@param cmd string[]
 ---@param opts table
----@return { code: integer, stdout: string|nil, stderr: string|nil }|nil res, string|nil err
+---@return differ.GitResult|nil res, string|nil err
 local function run(cmd, opts)
+    if M.in_async() then
+        return run_yielding(cmd, opts)
+    end
     local ok, obj = pcall(vim.system, cmd, opts)
     if not ok then
         return nil, tostring(obj)
     end
     return obj:wait()
+end
+
+-- run `fn` in a coroutine where M.git and M.git_raw yield instead of blocking.
+-- `on_done` gets pcall's results, always on a later tick and outside the coroutine
+---@param fn fun(): ...
+---@param on_done fun(ok: boolean, ...)
+function M.async(fn, on_done)
+    local co = coroutine.create(function()
+        local res = vim.F.pack_len(pcall(fn))
+        vim.schedule(function()
+            on_done(vim.F.unpack_len(res))
+        end)
+    end)
+    runners[co] = true
+    local ok, err = coroutine.resume(co)
+    if not ok then
+        error(err, 0)
+    end
+end
+
+---@class differ.GitQueue
+---@field generation integer
+---@field busy boolean
+---@field pending { generation: integer, task: fun(): ..., on_done: fun(ok: boolean, ...) }[]
+
+---@type table<string, differ.GitQueue>
+local queues = {}
+
+---@param root string
+---@return differ.GitQueue
+local function queue_for(root)
+    local q = queues[root]
+    if not q then
+        q = { generation = 0, busy = false, pending = {} }
+        queues[root] = q
+    end
+    return q
+end
+
+---@param q differ.GitQueue
+local function drain(q)
+    local job = table.remove(q.pending, 1)
+    while job and job.generation ~= q.generation do
+        job = table.remove(q.pending, 1)
+    end
+    if not job then
+        q.busy = false
+        return
+    end
+    q.busy = true
+    M.async(job.task, function(...)
+        local ok, err = true, nil
+        if job.generation == q.generation then
+            ok, err = pcall(job.on_done, ...)
+        end
+        drain(q)
+        if not ok then
+            error(err, 0)
+        end
+    end)
+end
+
+-- run `task` (see M.async) once every earlier task on `root` has finished. `on_done` is
+-- dropped when M.supersede ran on `root` after this submit
+---@param root string
+---@param task fun(): ...
+---@param on_done fun(ok: boolean, ...)
+function M.submit(root, task, on_done)
+    local q = queue_for(root)
+    table.insert(q.pending, { generation = q.generation, task = task, on_done = on_done })
+    if not q.busy then
+        drain(q)
+    end
+end
+
+-- drop the result of every task submitted on `root` so far; queued ones never start
+---@param root string
+function M.supersede(root)
+    local q = queue_for(root)
+    q.generation = q.generation + 1
+end
+
+-- nothing submitted on `root` is still running or queued
+---@param root string
+---@return boolean
+function M.idle(root)
+    local q = queues[root]
+    return not (q and q.busy)
 end
 
 -- run git in `cwd`: stdout on success, nil + stderr on failure. `text = true`

@@ -661,6 +661,7 @@ describe(":Differ diff hunk staging", function()
         local before = states()
         stage_behind(root, twelve({ "1x", [6] = "6y" }))
         p.on_external_change()
+        helpers.settle(p)
         local after = states()
         p:close()
         local S, U = "staged", "unstaged"
@@ -676,6 +677,7 @@ describe(":Differ diff hunk staging", function()
         local model = v.model
         git(root, "switch", "-q", "-c", "wip")
         p.on_external_change()
+        helpers.settle(p)
         local kept, badge = v.model == model, v.staging.badge
         p:close()
         assert.is_true(kept)

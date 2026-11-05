@@ -109,6 +109,7 @@ describe(":Differ diff hunk staging", function()
         -- the index write that caused: the watcher fires, and must read it as differ's
         -- own doing rather than re-sourcing a.lua's diff out from under the marks
         p.on_external_change()
+        helpers.settle(p)
 
         assert.are.equal(2, #v.model.hunks) -- still frozen on the same two hunks
         assert.are.equal("staged", v:_hunk_state(1)) -- and hunk 1 is still marked staged
@@ -138,6 +139,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(0, res.code, res.stderr)
         assert.are.equal(helpers.twelve({ "1x", [6] = "6y" }), indexed(root, "a.lua"))
         p.on_external_change()
+        helpers.settle(p)
         local after = mm_states(v)
         p:close()
         assert.are.same({ "staged", "staged", "unstaged" }, after)
@@ -152,6 +154,7 @@ describe(":Differ diff hunk staging", function()
         local staged = mm_states(v)
         helpers.stage_behind(root, helpers.twelve({ "1x" }))
         p.on_external_change()
+        helpers.settle(p)
         local after = mm_states(v)
         p:close()
         assert.are.same({ "staged", "staged", "unstaged" }, staged)
@@ -274,6 +277,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/other.lua", "unrelated\n")
         git(root, "add", "other.lua")
         p:reload()
+        helpers.settle(p)
 
         local msg
         for _, n in ipairs(_G.notifs) do
@@ -298,6 +302,7 @@ describe(":Differ diff hunk staging", function()
         write(root .. "/b.lua", "new\n")
         git(root, "add", "b.lua")
         p:reload()
+        helpers.settle(p)
 
         for _, n in ipairs(_G.notifs) do
             assert.is_nil(tostring(n.msg):find("changed outside differ", 1, true))
@@ -1034,6 +1039,155 @@ func getDownloadSpeed() {
         assert.is_nil(hidden)
     end)
 
+    -- the panel's listing and the drawn marks predate a stage-then-revert outside differ
+    -- that leaves 5x in the index alone: U still asks, from git's state at the keypress
+    describe("after a stage-then-revert outside differ", function()
+        local function drawn_then_hidden()
+            local ten = {}
+            for i = 1, 10 do
+                ten[i] = tostring(i)
+            end
+            local head = lines_of(ten)
+            ten[1] = "1x"
+            local index = lines_of(ten)
+            ten[10] = "10x"
+            local root, p, v = staged_as(head, index, lines_of(ten))
+            assert.is_nil(v.staging.hidden)
+            ten[10], ten[5] = "10", "5x"
+            helpers.index_as(root, "a.lua", lines_of(ten))
+            return root, p, v, index
+        end
+
+        it("U in the view asks first", function()
+            local root, p, v, index = drawn_then_hidden()
+            local held = indexed(root, "a.lua")
+            local prompt = confirming(2, function()
+                v:unstage_all()
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+            assert.are_not.equal(index, written)
+        end)
+
+        it("U in the panel asks first on a row listed with nothing staged", function()
+            local ten = {}
+            for i = 1, 10 do
+                ten[i] = tostring(i)
+            end
+            local root = fresh_repo()
+            write(root .. "/a.lua", lines_of(ten))
+            git(root, "commit", "-q", "-am", "ten")
+            ten[10] = "10x"
+            write(root .. "/a.lua", lines_of(ten))
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            local listed = p.sections[1].entries[1]
+            assert.are.equal(" ", listed.x)
+            ten[10], ten[5] = "10", "5x"
+            helpers.index_as(root, "a.lua", lines_of(ten))
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            local prompt = confirming(2, function()
+                p:stage_op("unstage_all")
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+        end)
+
+        it("S in the panel asks first on a row listed as edited, now staged and deleted", function()
+            local root = fresh_repo()
+            write(root .. "/a.lua", "edited\n")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            local listed = p.sections[1].entries[1]
+            assert.are.same({ " ", "M" }, { listed.x, listed.y })
+            write(root .. "/a.lua", "staged\n")
+            git(root, "add", "a.lua")
+            os.remove(root .. "/a.lua")
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            local prompt = confirming(2, function()
+                p:stage_op("stage_all")
+            end)
+            p:close()
+            assert.is_not_nil(prompt)
+            local written = indexed(root, "a.lua")
+            assert.are.equal("staged\n", held)
+            assert.are.equal(held, written)
+        end)
+
+        it("S in the view asks first on a row listed as edited, now staged and deleted", function()
+            local root = fresh_repo()
+            write(root .. "/b.dat", "\0one")
+            git(root, "add", "b.dat")
+            git(root, "commit", "-q", "-m", "b")
+            write(root .. "/b.dat", "\0two")
+            vim.cmd.edit(root .. "/a.lua")
+            local p = open_panel()
+            assert.is_true(p:goto_path("b.dat", true))
+            local v = view_in_origin(p)
+            assert.is_true(v.staging.whole_file)
+            write(root .. "/b.dat", "\0three")
+            git(root, "add", "b.dat")
+            os.remove(root .. "/b.dat")
+            local prompt = confirming(2, function()
+                v:stage_all()
+            end)
+            local written = indexed(root, "b.dat")
+            p:close()
+            assert.are.equal("Stage the deletion of b.dat? The staged file will be lost.", prompt)
+            assert.are.equal("\0three", written)
+        end)
+
+        it(
+            "s in the local view asks first on a row listed as partly staged, now deleted",
+            function()
+                local root = fresh_repo()
+                write(root .. "/b.dat", "\0one")
+                git(root, "add", "b.dat")
+                git(root, "commit", "-q", "-m", "b")
+                write(root .. "/b.dat", "\0two")
+                git(root, "add", "b.dat")
+                write(root .. "/b.dat", "\0three")
+                vim.cmd.edit(root .. "/a.lua")
+                local p = open_panel()
+                assert.is_true(p:goto_path("b.dat", true))
+                view_in_origin(p).staging.toggle_local()
+                local v = view_in_origin(p)
+                assert.is_not_nil(v.staging.badge)
+                os.remove(root .. "/b.dat")
+                local prompt = confirming(2, function()
+                    v:stage_hunk()
+                end)
+                local written = indexed(root, "b.dat")
+                p:close()
+                assert.are.equal(
+                    "Stage the deletion of b.dat? The staged file will be lost.",
+                    prompt
+                )
+                assert.are.equal("\0two", written)
+            end
+        )
+
+        it("u on the panel row asks first", function()
+            local root, p = drawn_then_hidden()
+            local held = indexed(root, "a.lua")
+            vim.api.nvim_set_current_win(p.winid)
+            vim.api.nvim_win_set_cursor(p.winid, { helpers.file_line(p, "a.lua"), 0 })
+            local prompt = confirming(2, function()
+                p:stage_op("unstage")
+            end)
+            local written = indexed(root, "a.lua")
+            p:close()
+            assert.is_not_nil(prompt)
+            assert.are.equal(held, written)
+        end)
+    end)
+
     -- the file moves on disk after the diff is drawn and before the watcher re-reads it
     for _, case in ipairs({
         {
@@ -1633,6 +1787,7 @@ func getDownloadSpeed() {
         local model = v.model
         helpers.move_upstream(root)
         p.on_external_change()
+        helpers.settle(p)
         local kept = v.model == model
         p:close()
         assert.is_true(kept)
