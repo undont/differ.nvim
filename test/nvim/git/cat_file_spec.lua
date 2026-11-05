@@ -120,6 +120,11 @@ describe("cat_file", function()
     end)
 
     it("reads a path holding a newline", function()
+        local major, minor = vim.fn.system({ "git", "--version" }):match("(%d+)%.(%d+)")
+        if tonumber(major) == 2 and tonumber(minor) < 38 then
+            -- `-z` arrived in git 2.38; the fallback below it is "without -z"
+            return pending("needs git 2.38")
+        end
         local root = helpers.fresh_repo()
         write(root .. "/new\nline.txt", "nl\n")
         write(root .. "/cr.txt\r", "cr\n")
@@ -223,6 +228,25 @@ describe("cat_file", function()
             local answered, object = fresh.read(root, "HEAD:a.lua")
             assert.is_true(answered)
             assert.are.equal(V1, object.text)
+            release()
+        end)
+
+        it("reads a name with a newline through the spawn instead", function()
+            local root = helpers.fresh_repo()
+            write(root .. "/new\nline.txt", "nl\n")
+            git(root, "add", "-A")
+            git(root, "commit", "-q", "-m", "odd name")
+            -- a content module bound to this pre-2.38 cat_file, not the top-level one
+            local loaded = package.loaded["differ.git.content"]
+            package.loaded["differ.git.content"] = nil
+            local fresh_content = require("differ.git.content")
+            finally(function()
+                package.loaded["differ.git.content"] = loaded
+            end)
+            local release = fresh.hold(root)
+            local head = fresh_content.HEAD
+            assert.are.equal("nl\n", fresh_content.read(head, root, "new\nline.txt"))
+            assert.are.equal(V1, fresh_content.read(head, root, "a.lua"))
             release()
         end)
     end)
