@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- When `s` or `u` refused a hunk and the walk then wrapped or stopped on a file with local changes, the walk's own notice replaced the refusal; the refusal now stays on screen
+
+## [0.2.29] — 2026-11-05
+
+### Fixed
+
 - Every commit, rebase or merge message differ opened through git's editor left a dead nvim socket behind, so the nvim socket directory kept growing and tools that list nvim sockets slowed down; the editor now removes its socket on exit
 
 ## [0.2.28] — 2026-11-05
