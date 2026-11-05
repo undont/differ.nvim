@@ -399,7 +399,6 @@ describe(":Differ panel", function()
             write(root .. "/a.lua", "local x = 2\nreturn x\n")
             vim.cmd.edit(root .. "/a.lua")
             local p = open_panel()
-            vim.wait(200) -- the open's own watcher fire
             local past = os.time() - 60
             assert((vim.uv or vim.loop).fs_utime(root .. "/b.lua", past, past))
             return root, p
@@ -553,7 +552,6 @@ describe(":Differ panel", function()
             write(root .. "/b.lua", "b2\n")
             vim.cmd.edit(root .. "/a.lua")
             local p = open_panel()
-            vim.wait(200) -- the open's own watcher fire
             helpers.settle(p)
             return root, p
         end
