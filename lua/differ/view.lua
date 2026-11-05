@@ -1669,8 +1669,9 @@ end
 -- the only source that stages) and the state-aware step only that panel can make
 ---@param direction "next"|"prev"
 ---@param staged boolean
+---@param refused boolean|nil  -- a hunk just refused: no stop or wrap notice
 ---@return boolean handled  -- moved, or stopped on this file
-function View:_step_review_file(direction, staged)
+function View:_step_review_file(direction, staged, refused)
     local panel = require("differ.panel").current()
     if not panel then
         return false
@@ -1678,6 +1679,9 @@ function View:_step_review_file(direction, staged)
     local st = self.staging
     local offers_local = st ~= nil and st.toggle_local ~= nil and st.badge ~= "LOCAL"
     if not staged and offers_local and panel:has_local_work() then
+        if refused then
+            return true
+        end
         local key = require("differ.ui.help").key(self.keymaps, "toggle_local")
         local msg = ("differ: %s has local changes: %s shows them"):format(self.model.path, key)
         vim.notify(msg, vim.log.levels.INFO)
@@ -1686,7 +1690,7 @@ function View:_step_review_file(direction, staged)
     if self:_review_done(staged) then
         panel:accept_review(staged)
     end
-    return panel:step_review(direction, staged, true)
+    return panel:step_review(direction, staged, true, refused)
 end
 
 -- whether no hunk here has anything left for the walk's key: stepping off leaves the
@@ -1755,7 +1759,7 @@ end
 -- wrap lands on a hunk skipped on purpose too, which is what ]f is for. the
 -- announcement only claims there's nothing left once all three have come up empty
 ---@param direction "next"|"prev"
----@param refused boolean|nil  -- the hunk under the cursor just refused, and its message stays the last one
+---@param refused boolean|nil  -- the hunk under the cursor just refused: the walk says nothing of its own
 function View:_step_review(direction, refused)
     local forward = direction == "next"
     local staged = not forward -- s hunts what's unstaged, u what's staged
@@ -1773,6 +1777,9 @@ function View:_step_review(direction, refused)
     local back = (forward and nav.first_hunk or nav.last_hunk)(map, want)
     if back then
         vim.api.nvim_win_set_cursor(win, { back, 0 })
+        if refused then
+            return
+        end
         return vim.notify(
             forward and "differ: wrapped to the first hunk left to stage"
                 or "differ: wrapped to the last hunk left to unstage",
@@ -1780,7 +1787,7 @@ function View:_step_review(direction, refused)
         )
     end
 
-    if self:_step_review_file(direction, staged) then
+    if self:_step_review_file(direction, staged, refused) then
         -- forward opens on the file's first unstaged hunk already; backward has to
         -- reach for the far end so u keeps unstaging through it
         if not forward then
