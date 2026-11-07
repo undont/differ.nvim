@@ -425,6 +425,30 @@ local function refusal(union, m, selection, refused)
     return { kind = "refused", reason = refused }
 end
 
+-- s (`take` true) or u writing `index`, or X writing `index` and the file `work`
+---@param t differ.fuzz.Triple
+---@param union differ.DiffModel
+---@param m differ.model.Marks
+---@param selection differ.model.Selection
+---@param take boolean
+---@param index string
+---@param work string|nil
+---@return differ.fuzz.Outcome
+local function written(t, union, m, selection, take, index, work)
+    local moved_take = take ---@type boolean|nil
+    if work then
+        moved_take = nil
+    end
+    return {
+        kind = "written",
+        index = index,
+        work = work,
+        moves = moves(union, m, selection, moved_take),
+        placed = placed_op(t, union, m, selection, take, index, work),
+        towards = towards_of(union, t.index, take),
+    }
+end
+
 -- s (`take` true) or u, through the selection core apply_lines writes from
 ---@param t differ.fuzz.Triple
 ---@param union differ.DiffModel
@@ -442,13 +466,7 @@ local function stage_op(t, union, cached, unstaged, selection, take)
     if not text then
         return { kind = "unchanged" }
     end
-    return {
-        kind = "written",
-        index = text,
-        moves = moves(union, m, selection, take),
-        placed = placed_op(t, union, m, selection, take, text, nil),
-        towards = towards_of(union, t.index, take),
-    }
+    return written(t, union, m, selection, take, text, nil)
 end
 
 -- X, through the selection core revert_texts writes from
@@ -467,14 +485,7 @@ local function revert_op(t, union, cached, unstaged, selection)
     if not (index and reverted) then
         return { kind = "unchanged" }
     end
-    return {
-        kind = "written",
-        index = index,
-        work = reverted.old_text,
-        moves = moves(union, m, selection, nil),
-        placed = placed_op(t, union, m, selection, false, index, reverted.old_text),
-        towards = towards_of(union, t.index, false),
-    }
+    return written(t, union, m, selection, false, index, reverted.old_text)
 end
 
 -- whether `to` lies on a shortest edit path from `from` to `towards`: an oracle that
@@ -643,6 +654,62 @@ function M.run_op(t, op, selection)
     return stage_op(t, union, cached, unstaged, selection, op == "s")
 end
 
+-- the write the result check refused, as the op builds it before reading it back
+---@param t differ.fuzz.Triple
+---@param op "s"|"u"|"X"
+---@param selection differ.model.Selection
+---@return differ.fuzz.Outcome|nil
+local function unchecked(t, op, selection)
+    local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+    local m = stage.marks_of(union, cached, unstaged)
+    local text = stage.select_index(union, cached, selection, op == "s")
+    if op ~= "X" then
+        if not text then
+            return nil
+        end
+        return written(t, union, m, selection, op == "s", text, nil)
+    end
+    local origins = stage.index_origins(union, cached)
+    local reverted = stage.select_worktree(union, selection, origins)
+    if not reverted then
+        return nil
+    end
+    return written(t, union, m, selection, false, text or cached.new_text, reverted.old_text)
+end
+
+-- why a result-check refusal the oracles call correct was refused: "unplaced" where
+-- the index before holds content no hunk shows, "hidden_after" where only the
+-- read-back does, else "other". nil for any other refusal, or a write the oracles fault
+---@param t differ.fuzz.Triple
+---@param op "s"|"u"|"X"
+---@param selection differ.model.Selection
+---@param outcome differ.fuzz.Outcome  -- a refused one
+---@return string|nil
+function M.refused_correct(t, op, selection, outcome)
+    if not (outcome.reason == "unshown" or outcome.reason:match("^moves_others")) then
+        return nil
+    end
+    local would = unchecked(t, op, selection)
+    if not would then
+        return nil
+    end
+    if not (M.matches(t, would) and M.ending_kept(t, would)) then
+        return nil
+    end
+    if not M.counts_kept(t, op, selection, would) then
+        return nil
+    end
+    if would.placed == nil then
+        return "unplaced"
+    end
+    local work = would.work or t.work
+    local _, hidden = stage.marks_of(content.union_pairs("/", "f", t.head, would.index, work))
+    if hidden then
+        return "hidden_after"
+    end
+    return "other"
+end
+
 -- whether a HEAD↔index hunk changes one of `h`'s old lines or the line either side
 ---@param cached differ.DiffModel
 ---@param h differ.Hunk
@@ -750,6 +817,7 @@ M.HUNK_OPS = { "s", "u" }
 ---@field tried integer
 ---@field unchanged integer
 ---@field refused table<string, integer>
+---@field refused_correct table<string, integer>  -- refused_correct's reason -> count
 ---@field written integer
 ---@field unplaced integer  -- written where placement can't be judged
 ---@field mismatched integer
@@ -816,6 +884,7 @@ function M.run(opts)
             tried = 0,
             unchanged = 0,
             refused = {},
+            refused_correct = {},
             written = 0,
             unplaced = 0,
             mismatched = 0,
@@ -864,6 +933,10 @@ function M.run(opts)
                 counts.unchanged = counts.unchanged + 1
             elseif outcome.kind == "refused" then
                 counts.refused[outcome.reason] = (counts.refused[outcome.reason] or 0) + 1
+                local why = M.refused_correct(t, op, selection, outcome)
+                if why then
+                    counts.refused_correct[why] = (counts.refused_correct[why] or 0) + 1
+                end
             else
                 counts.written = counts.written + 1
                 if outcome.placed == nil then
@@ -916,23 +989,31 @@ local function said(o)
     return o.reason or o.kind
 end
 
+---@param counts table<string, integer>
+---@return integer total, string listed  -- " [a 1, b 2]", or "" where there are none
+local function tallied(counts)
+    local total, listed = 0, {}
+    for what, n in pairs(counts) do
+        total = total + n
+        listed[#listed + 1] = ("%s %d"):format(what, n)
+    end
+    table.sort(listed)
+    if #listed == 0 then
+        return total, ""
+    end
+    return total, " [" .. table.concat(listed, ", ") .. "]"
+end
+
 ---@param report differ.fuzz.Report
 ---@return string
 function M.format(report)
     local out = {}
     for _, op in ipairs(M.OPS) do
         local c = report.ops[op]
-        local refused, reasons = 0, {}
-        for reason, n in pairs(c.refused) do
-            refused = refused + n
-            reasons[#reasons + 1] = ("%s %d"):format(reason, n)
-        end
-        table.sort(reasons)
-        local why = ""
-        if #reasons > 0 then
-            why = " [" .. table.concat(reasons, ", ") .. "]"
-        end
+        local refused, why = tallied(c.refused)
+        local correct, correct_why = tallied(c.refused_correct)
         local line = "%s: tried %d, unchanged %d, refused %d (%.2f%%)%s, "
+            .. "refused but correct %d%s, "
             .. "written %d (unplaced %d), mismatched %d, ending split %d, count bad %d"
         out[#out + 1] = line:format(
             op,
@@ -941,6 +1022,8 @@ function M.format(report)
             refused,
             100 * refused / math.max(c.tried, 1),
             why,
+            correct,
+            correct_why,
             c.written,
             c.unplaced,
             c.mismatched,

@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Visual `s`, `u` and `X` refused some correct changes on files with repeated lines (blank lines, `end`); they now make them
+
+## [0.2.30] — 2026-11-05
+
+### Fixed
+
 - When `s` or `u` refused a hunk and the walk then wrapped or stopped on a file with local changes, the walk's own notice replaced the refusal; the refusal now stays on screen
 
 ## [0.2.29] — 2026-11-05
