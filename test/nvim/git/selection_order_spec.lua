@@ -136,5 +136,49 @@ describe("git.staging.selection", function()
             assert.are.equal("written", outcome.kind, outcome.reason)
             assert.are.equal("x29\nb\nb\nb\nx6\n", outcome.index)
         end)
+
+        it("s on - x36 stages the deletion past a line only the index has", function()
+            local t = {
+                head = "x29\nb\nx36\nb\nb\n",
+                index = "x29\nb\nx36\nb\nh\nb\nx6\n",
+                work = "x29\nx6\nb\nb\nb\nx6\n",
+            }
+            local outcome = fuzz.run_op(t, "s", { old = { [3] = true }, new = {} })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal("x29\nb\nb\nh\nb\nx6\n", outcome.index)
+        end)
+    end)
+
+    -- the read-back pairs a b across hunks with a changed a, kept in the index, between
+    -- the paired b and its hunk's edge
+    describe("on HEAD a b x2 a b b a, index a b a b b b, worktree a b b b b", function()
+        local t = {
+            head = "a\nb\nx2\na\nb\nb\na\n",
+            index = "a\nb\na\nb\nb\nb\n",
+            work = "a\nb\nb\nb\nb\n",
+        }
+
+        it("u on - a - b - a + b unstages in place", function()
+            local selection = { old = { [4] = true, [5] = true, [7] = true }, new = { [4] = true } }
+            local outcome = fuzz.run_op(t, "u", selection)
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal("a\nb\na\nb\nb\na\nb\n", outcome.index)
+            assert.is_true(fuzz.matches(t, outcome))
+        end)
+
+        it("u on - a + b refuses", function()
+            local outcome = fuzz.run_op(t, "u", { old = { [7] = true }, new = { [4] = true } })
+            assert.are.equal("refused", outcome.kind)
+        end)
+    end)
+
+    -- HEAD's unterminated c and the worktree's c are different lines, so the read-back
+    -- can't cancel one against the other
+    describe("on HEAD c c c$, index c d c c$, worktree c d x4 x4", function()
+        it("X on - c - c refuses", function()
+            local t = { head = "c\nc\nc", index = "c\nd\nc\nc", work = "c\nd\nx4\nx4\n" }
+            local outcome = fuzz.run_op(t, "X", { old = { [2] = true, [3] = true }, new = {} })
+            assert.are.equal("refused", outcome.kind)
+        end)
     end)
 end)

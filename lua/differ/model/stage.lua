@@ -856,27 +856,32 @@ function M.reverted(union, m, selection, origins)
     return want
 end
 
--- whether two sides mark the same lines, counted per run of identical adjacent lines: a
--- diff may mark any one of them
+-- whether two sides mark the same lines, counted per run of identical adjacent lines (a
+-- diff may mark any one of them), or per text anywhere on the side (`by_text`)
 ---@param a table<integer, boolean>
 ---@param b table<integer, boolean>
 ---@param lines string[]  -- that side's ended lines
+---@param by_text boolean
 ---@return boolean
-local function same_side(a, b, lines)
-    -- run start -> marked lines and staged lines, a's less b's
-    local runs = {} ---@type table<integer, { marked: integer, staged: integer }>
+local function same_side(a, b, lines, by_text)
+    -- run start or text -> marked lines and staged lines, a's less b's
+    local runs = {} ---@type table<integer|string, { marked: integer, staged: integer }>
     local function count(side, sign)
         for l, staged in pairs(side) do
             local first = l
             while first > 1 and lines[first - 1] == lines[l] do
                 first = first - 1
             end
-            local run = runs[first] or { marked = 0, staged = 0 }
+            local key = first ---@type integer|string
+            if by_text then
+                key = lines[l]
+            end
+            local run = runs[key] or { marked = 0, staged = 0 }
             run.marked = run.marked + sign
             if staged then
                 run.staged = run.staged + sign
             end
-            runs[first] = run
+            runs[key] = run
         end
     end
     count(a, 1)
@@ -971,8 +976,81 @@ local function hidden_dropped(before, selection, union, cached)
     return hidden
 end
 
+---@param h differ.Hunk
+---@return integer first, integer last  -- the old lines either side of `h`'s
+local function old_beside(h)
+    if h.old_count == 0 then
+        return h.old_start, h.old_start + 1
+    end
+    return h.old_start - 1, h.old_start + h.old_count
+end
+
+-- the marked lines of `h` on one side, in order
+---@param side table<integer, boolean>
+---@param start integer
+---@param count integer
+---@return integer[]
+local function marked(side, start, count)
+    local out = {}
+    for l = start, start + count - 1 do
+        if side[l] ~= nil then
+            out[#out + 1] = l
+        end
+    end
+    return out
+end
+
+-- pairs what's left in `out` of `a` with a line of `b` on the other side of the
+-- unchanged lines between them, where those lines all have its text
+---@param out differ.model.LineStates
+---@param a differ.Hunk
+---@param b differ.Hunk
+---@param old_lines string[]
+---@param new_lines string[]
+local function pair_across(out, a, b, old_lines, new_lines)
+    local _, from = old_beside(a)
+    local to = old_beside(b)
+    ---@param x_side table<integer, boolean>
+    ---@param xs integer[]
+    ---@param x_lines string[]
+    ---@param y_side table<integer, boolean>
+    ---@param ys integer[]
+    ---@param y_lines string[]
+    local function pair(x_side, xs, x_lines, y_side, ys, y_lines)
+        for _, x in ipairs(xs) do
+            local through = x_side[x] ~= nil
+            for l = from, to do
+                through = through and old_lines[l] == x_lines[x]
+            end
+            for _, y in ipairs(ys) do
+                if through and y_side[y] == x_side[x] and y_lines[y] == x_lines[x] then
+                    x_side[x], y_side[y] = nil, nil
+                    break
+                end
+            end
+        end
+    end
+    pair(
+        out.old,
+        marked(out.old, a.old_start, a.old_count),
+        old_lines,
+        out.new,
+        marked(out.new, b.new_start, b.new_count),
+        new_lines
+    )
+    pair(
+        out.new,
+        marked(out.new, a.new_start, a.new_count),
+        new_lines,
+        out.old,
+        marked(out.old, b.old_start, b.old_count),
+        old_lines
+    )
+end
+
 -- `states` less each old line and a new line of the same hunk with the same text and
--- state: together they put that line in the index once, as an unchanged line does
+-- state, or of neighbouring hunks with only lines of that text between them: together
+-- they put that line in the index once, as an unchanged line does
 ---@param states differ.model.LineStates
 ---@param hunks differ.Hunk[]
 ---@param old_lines string[]
@@ -999,6 +1077,9 @@ local function paired_out(states, hunks, old_lines, new_lines)
                 end
             end
         end
+    end
+    for i = 2, #hunks do
+        pair_across(out, hunks[i - 1], hunks[i], old_lines, new_lines)
     end
     return out
 end
@@ -1111,10 +1192,11 @@ end
 ---@field edits fun(a: string, b: string): integer, integer  -- lines a minimal diff drops, adds
 ---@field take boolean  -- s, which moves the index towards the worktree; u and X move it towards HEAD
 
--- whether the pairs an op's texts make read back as `want`. a minimal diff from each old
--- text to its new one stays within the lines the op moves (moves_only), so nothing else
--- changes place. each line's count ends off the side the op takes by no more than the
--- unselected rows of that line, or stays put (counts_within). where a reading places
+-- whether the pairs an op's texts make read back as `want`, the marks counted per text
+-- for s and u on an index with nothing hidden, else per run (same_side). a minimal diff
+-- from each old text to its new one stays within the lines the op moves (moves_only), so
+-- nothing else changes place. each line's count ends off the side the op takes by no
+-- more than the unselected rows of that line, or stays put (counts_within). where a reading places
 -- the index, it also moves straight towards the side the op takes (straight). where the
 -- index holds content no hunk shows, the op also drops the hidden lines in the drawn
 -- slices it touches, and nothing else of it (hidden_dropped)
@@ -1140,9 +1222,10 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
     local new_lines = text_util.ended_lines(union.new_text)
     local got = paired_out(line_states(union.hunks, m), union.hunks, old_lines, new_lines)
     local expect = paired_out(want, union.hunks, old_lines, new_lines)
+    local by_text = not (want.work_enter or before.hidden)
     if
-        not same_side(got.old, expect.old, old_lines)
-        or not same_side(got.new, expect.new, new_lines)
+        not same_side(got.old, expect.old, old_lines, by_text)
+        or not same_side(got.new, expect.new, new_lines, by_text)
     then
         return false
     end
@@ -1192,7 +1275,8 @@ function M.file_reads_as(want, work, after, edits)
     local old_lines = text_util.ended_lines(after.old_text)
     local new_lines = text_util.ended_lines(after.new_text)
     if
-        not same_side(got.old, want.old, old_lines) or not same_side(got.new, want.new, new_lines)
+        not same_side(got.old, want.old, old_lines, false)
+        or not same_side(got.new, want.new, new_lines, false)
     then
         return false
     end
