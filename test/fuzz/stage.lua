@@ -8,6 +8,7 @@ local content = require("differ.git.content")
 local stage = require("differ.model.stage")
 local text_util = require("differ.util.text")
 local selected = require("differ.git.staging.selection")
+local layout = require("test.fuzz.layout")
 
 local M = {}
 
@@ -967,109 +968,310 @@ function M.run(opts)
     return report
 end
 
--- a text's lines on one line, `$` on a last line with no newline
----@param text string
----@return string
-function M.shown(text)
-    local lines = text_util.ended_lines(text)
-    for i, line in ipairs(lines) do
-        if line:sub(-1) == text_util.NO_EOL then
-            lines[i] = line:sub(1, -2) .. "$"
+-- what each oracle that must read 0 faults
+local COUNT_BAD = "a line's count is neither where it was nor where the op takes it"
+local WRONG = {
+    { "mismatched", "mismatched", "the write isn't what the drawn marks say it should be" },
+    { "ending_split", "ending split", "a line and its newline change written apart" },
+    { "count_bad", "count bad", COUNT_BAD },
+}
+local HUNK_WRONG = {
+    { "mismatch", "mismatch", "visual over the whole hunk wrote other text than the hunk op" },
+    { "off_path", "off path", "the hunk op's write isn't on the way to the side it takes" },
+    { "count_bad", "count bad", COUNT_BAD },
+}
+
+---@class differ.fuzz.Wrong
+---@field who string  -- the op, or "hunk s"/"hunk u"
+---@field what string
+---@field n integer
+---@field meaning string
+
+-- every oracle that faulted a write
+---@param report differ.fuzz.Report
+---@return differ.fuzz.Wrong[]
+function M.wrong(report)
+    local found = {}
+    for _, op in ipairs(M.OPS) do
+        for _, w in ipairs(WRONG) do
+            local n = report.ops[op][w[1]]
+            if n > 0 then
+                found[#found + 1] = { who = op, what = w[2], n = n, meaning = w[3] }
+            end
         end
     end
-    return table.concat(lines, " ")
+    for _, op in ipairs(M.HUNK_OPS) do
+        for _, w in ipairs(HUNK_WRONG) do
+            local n = report.hunks[op][w[1]] or 0
+            if n > 0 then
+                found[#found + 1] = { who = "hunk " .. op, what = w[2], n = n, meaning = w[3] }
+            end
+        end
+    end
+    return found
+end
+
+---@param counts table<string, integer>[]
+---@return string[]  -- every key, the most common first
+local function kinds(counts)
+    local total = {}
+    for _, c in ipairs(counts) do
+        for k, n in pairs(c) do
+            total[k] = (total[k] or 0) + n
+        end
+    end
+    local keys = vim.tbl_keys(total)
+    table.sort(keys, function(a, b)
+        if total[a] ~= total[b] then
+            return total[a] > total[b]
+        end
+        return a < b
+    end)
+    return keys
+end
+
+---@param counts table<string, integer>
+---@return integer
+local function sum(counts)
+    local n = 0
+    for _, v in pairs(counts) do
+        n = n + v
+    end
+    return n
+end
+
+-- the whole-hunk comparisons each hunk op made, one per hunk
+---@param counts table<string, integer>
+---@return integer
+local function hunks_tried(counts)
+    return sum(counts) - counts.off_path - counts.count_bad
 end
 
 ---@param o differ.fuzz.Outcome
 ---@return string
 local function said(o)
     if o.kind == "written" then
-        return "wrote " .. M.shown(o.index)
+        return layout.text(o.index)
     end
     return o.reason or o.kind
 end
 
----@param counts table<string, integer>
----@return integer total, string listed  -- " [a 1, b 2]", or "" where there are none
-local function tallied(counts)
-    local total, listed = 0, {}
-    for what, n in pairs(counts) do
-        total = total + n
-        listed[#listed + 1] = ("%s %d"):format(what, n)
+---@param r differ.fuzz.Report
+---@param out string[]
+local function examples(r, out)
+    local groups = {
+        { "mismatched", r.mismatches },
+        { "ending split", r.ending_splits },
+        { "count bad", r.count_bads },
+    }
+    for _, g in ipairs(groups) do
+        for i, c in ipairs(g[2]) do
+            local more = { { "new index", layout.text(c.outcome.index) } }
+            if c.outcome.work then
+                more[#more + 1] = { "new file", layout.text(c.outcome.work) }
+            end
+            local title = ("%s %s, example %d of %d, on %s"):format(
+                c.op,
+                g[1],
+                i,
+                #g[2],
+                layout.rows(c.rows)
+            )
+            layout.case(out, title, c.triple, c.rows, more)
+        end
     end
-    table.sort(listed)
-    if #listed == 0 then
-        return total, ""
+    for i, c in ipairs(r.hunk_mismatches) do
+        local title = ("whole hunk %s mismatch, example %d of %d, on hunk %d"):format(
+            c.op,
+            i,
+            #r.hunk_mismatches,
+            c.hunk
+        )
+        layout.case(out, title, c.triple, {}, {
+            { "visual", said(c.visual) },
+            { "hunk op", said(c.by_hunk) },
+        })
     end
-    return total, " [" .. table.concat(listed, ", ") .. "]"
 end
 
----@param report differ.fuzz.Report
----@return string
-function M.format(report)
-    local out = {}
+---@param r differ.fuzz.Report
+---@param out string[]
+local function summary(r, out)
+    local found = M.wrong(r)
+    local tried = r.ops[M.OPS[1]].tried
+    local checked = ("s, u and X on %d selections each, whole-hunk s and u on %d hunks each"):format(
+        tried,
+        hunks_tried(r.hunks[M.HUNK_OPS[1]])
+    )
+    if #found == 0 then
+        layout.heading(out, "wrong writes       none " .. layout.mark(true), checked)
+    else
+        local rows, total = {}, 0
+        for _, w in ipairs(found) do
+            total = total + w.n
+            rows[#rows + 1] = { ("%s %s"):format(w.who, w.what), { w.n }, note = w.meaning }
+        end
+        layout.heading(out, ("wrong writes       %d %s"):format(total, layout.mark(false)), checked)
+        layout.grid(out, { "" }, rows)
+        examples(r, out)
+    end
+    layout.heading(out, "needless refusals", "the op refused, but the write it blocked was right")
+    local rows = {}
     for _, op in ipairs(M.OPS) do
-        local c = report.ops[op]
-        local refused, why = tallied(c.refused)
-        local correct, correct_why = tallied(c.refused_correct)
-        local line = "%s: tried %d, unchanged %d, refused %d (%.2f%%)%s, "
-            .. "refused but correct %d%s, "
-            .. "written %d (unplaced %d), mismatched %d, ending split %d, count bad %d"
-        out[#out + 1] = line:format(
-            op,
-            c.tried,
-            c.unchanged,
-            refused,
-            100 * refused / math.max(c.tried, 1),
-            why,
-            correct,
-            correct_why,
-            c.written,
-            c.unplaced,
-            c.mismatched,
-            c.ending_split,
-            c.count_bad
-        )
+        local n = sum(r.ops[op].refused_correct)
+        rows[#rows + 1] = { op, { n, layout.share(n, r.ops[op].tried) }, note = "of tries" }
     end
-    for _, op in ipairs(M.HUNK_OPS) do
-        local counts, whats = report.hunks[op], {}
-        for what, n in pairs(counts) do
-            whats[#whats + 1] = ("%s %d"):format(what, n)
+    layout.grid(out, { "" }, rows)
+end
+
+---@param r differ.fuzz.Report
+---@param out string[]
+local function detail(r, out)
+    local ops = {}
+    for i, op in ipairs(M.OPS) do
+        ops[i] = r.ops[op]
+    end
+    ---@param f fun(c: differ.fuzz.Counts): integer|string
+    ---@return (integer|string)[]
+    local function per_op(f)
+        local values = {}
+        for i, c in ipairs(ops) do
+            values[i] = f(c)
         end
-        table.sort(whats)
-        out[#out + 1] = ("%s whole hunk vs hunk op: %s"):format(op, table.concat(whats, ", "))
+        return values
     end
-    local cases = {}
-    for _, mm in ipairs(report.mismatches) do
-        cases[#cases + 1] = { what = "mismatch", case = mm }
+    layout.heading(out, "what each op did", "one count per selection tried")
+    layout.grid(out, M.OPS, {
+        { "tried", per_op(function(c)
+            return c.tried
+        end) },
+        { "written", per_op(function(c)
+            return c.written
+        end) },
+        {
+            "placement not judged",
+            per_op(function(c)
+                return c.unplaced
+            end),
+            indent = 1,
+        },
+        { "left the index alone", per_op(function(c)
+            return c.unchanged
+        end) },
+        { "refused", per_op(function(c)
+            return sum(c.refused)
+        end) },
+        {
+            "share of tried",
+            per_op(function(c)
+                return layout.share(sum(c.refused), c.tried)
+            end),
+            indent = 1,
+        },
+    })
+
+    local refused, correct = {}, {}
+    for i, c in ipairs(ops) do
+        refused[i], correct[i] = c.refused, c.refused_correct
     end
-    for _, mm in ipairs(report.ending_splits) do
-        cases[#cases + 1] = { what = "ending split", case = mm }
-    end
-    for _, mm in ipairs(report.count_bads) do
-        cases[#cases + 1] = { what = "count bad", case = mm }
-    end
-    for _, c in ipairs(cases) do
-        local mm, rows = c.case, {}
-        for _, r in ipairs(mm.rows) do
-            rows[#rows + 1] = r.side .. " " .. r.line
+    ---@param counts table<string, integer>[]
+    ---@return differ.fuzz.GridRow[]
+    local function by_kind(counts)
+        local rows = {}
+        for _, k in ipairs(kinds(counts)) do
+            local values = {}
+            for i, c in ipairs(counts) do
+                values[i] = c[k] or 0
+            end
+            rows[#rows + 1] = { k, values }
         end
-        out[#out + 1] = ("\n%s: %s on %s"):format(c.what, mm.op, table.concat(rows, ", "))
-        out[#out + 1] = "  head  " .. M.shown(mm.triple.head)
-        out[#out + 1] = "  index " .. M.shown(mm.triple.index)
-        out[#out + 1] = "  work  " .. M.shown(mm.triple.work)
-        out[#out + 1] = "  wrote index " .. M.shown(mm.outcome.index)
-        if mm.outcome.work then
-            out[#out + 1] = "  wrote work  " .. M.shown(mm.outcome.work)
+        return rows
+    end
+    layout.heading(out, "refusals by kind", "why each op refused, most common first")
+    layout.grid(out, M.OPS, by_kind(refused))
+    layout.heading(
+        out,
+        "needless refusals by kind",
+        "why the blocked write was still checked as right"
+    )
+    layout.grid(out, M.OPS, by_kind(correct))
+
+    local hunks = {}
+    for i, op in ipairs(M.HUNK_OPS) do
+        hunks[i] = r.hunks[op]
+    end
+    ---@param key string
+    ---@return integer[]
+    local function per_hunk_op(key)
+        local values = {}
+        for i, c in ipairs(hunks) do
+            values[i] = c[key] or 0
+        end
+        return values
+    end
+    local rows = {
+        { "hunks", per_hunk_op("") },
+        { "agree", per_hunk_op("agree") },
+        { "both refuse", per_hunk_op("both refuse") },
+    }
+    for i, c in ipairs(hunks) do
+        rows[1][2][i] = hunks_tried(c)
+    end
+    for _, side in ipairs({ "visual", "hunk" }) do
+        local prefix = side .. " refuses: "
+        local keys = {}
+        for _, k in ipairs(kinds(hunks)) do
+            if vim.startswith(k, prefix) then
+                keys[#keys + 1] = k
+            end
+        end
+        if #keys > 0 then
+            rows[#rows + 1] =
+                { side == "visual" and "only visual refuses" or "only the hunk op refuses" }
+            for _, k in ipairs(keys) do
+                rows[#rows + 1] = { k:sub(#prefix + 1), per_hunk_op(k), indent = 1 }
+            end
         end
     end
-    for _, mm in ipairs(report.hunk_mismatches) do
-        out[#out + 1] = ("\nwhole hunk mismatch: %s on hunk %d"):format(mm.op, mm.hunk)
-        out[#out + 1] = "  head  " .. M.shown(mm.triple.head)
-        out[#out + 1] = "  index " .. M.shown(mm.triple.index)
-        out[#out + 1] = "  work  " .. M.shown(mm.triple.work)
-        out[#out + 1] = "  visual " .. said(mm.visual)
-        out[#out + 1] = "  hunk   " .. said(mm.by_hunk)
+    layout.heading(
+        out,
+        "whole hunk vs hunk op",
+        "visual s/u over every row of a hunk, against the hunk op on it"
+    )
+    layout.grid(out, M.HUNK_OPS, rows)
+
+    layout.heading(out, "legend")
+    layout.legend(out, {
+        { "selection", "a run of rows in the union view (HEAD vs worktree), as visual mode picks" },
+        { "placement not judged", "the index before holds a line no row shows, so where each" },
+        { "", "line lands isn't checked; the other checks still run" },
+        { "hidden", "a selected hunk holds an index line neither side has (drawn !)" },
+        { "split_ending", "the op would move a line apart from its newline change" },
+        { "ending, ending_after", "the op would leave a line with no newline above others" },
+        { "unshown", "the index holds a line again where no row shows it" },
+        { "moves_others", "the write would change rows outside the selection; :unequal where" },
+        { "", "a touched hunk has sides of unequal length and a staged row" },
+        { "between", "a file too big to read, or a selection the drawn marks can't take" },
+        { "reaches", "the hunk op's write reaches past the hunk" },
+        { "unplaced", "needless, where the index before holds a line no row shows" },
+        { "hidden_after", "needless, where only the written index holds such a line" },
+        { "x12, w30", "a line whose text is that word; files share a few words on purpose" },
+        { "$", "the last line has no newline" },
+        { "[a]", "a row the example is about" },
+    })
+end
+
+---@param r differ.fuzz.Report
+---@param show_detail? boolean
+---@return string
+function M.format(r, show_detail)
+    local out = {}
+    summary(r, out)
+    if show_detail then
+        detail(r, out)
+    else
+        out[#out + 1] = ""
+        out[#out + 1] = "DETAIL=1 adds refusal kinds, whole-hunk counts and a legend"
     end
     return table.concat(out, "\n")
 end

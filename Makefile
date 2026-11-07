@@ -70,13 +70,14 @@ lua-test-nvim: go-build ## Run headless-nvim tests (needs nlua on PATH)
 	@$(INFO) "Running headless-nvim tests"
 	@eval $$(luarocks --lua-version=5.1 path) && nvim -l test/run-nvim.lua
 
-SEED  ?= 1
-COUNT ?= 2000
-CMP   ?=
+SEED   ?= 1
+COUNT  ?= 2000
+CMP    ?=
+DETAIL ?=
 
-lua-fuzz: ## Fuzz visual s/u/X over random triples (SEED=, COUNT=, CMP=<rev> to compare against lua/ there)
-	@$(INFO) "Fuzzing staging (seed $(SEED), $(COUNT) triples$(if $(CMP), against $(CMP)))"
-	@nvim --clean -l test/fuzz/run.lua $(if $(CMP),--cmp=$(CMP)) $(SEED) $(COUNT)
+lua-fuzz: ## Fuzz visual s/u/X over random triples (SEED=, COUNT=, CMP=<rev> to compare against lua/ there, DETAIL=1 for the breakdown)
+	@$(INFO) "Fuzzing staging$(if $(CMP), against $(CMP))"
+	@nvim --clean -l test/fuzz/run.lua $(if $(CMP),--cmp=$(CMP)) $(if $(DETAIL),--detail) $(SEED) $(COUNT)
 
 lua-lint: lua-luacheck lua-fmt-check ## Luacheck + stylua --check on Lua sources
 
