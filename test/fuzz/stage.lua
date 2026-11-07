@@ -1269,9 +1269,6 @@ function M.format(r, show_detail)
     summary(r, out)
     if show_detail then
         detail(r, out)
-    else
-        out[#out + 1] = ""
-        out[#out + 1] = "DETAIL=1 adds refusal kinds, whole-hunk counts and a legend"
     end
     return table.concat(out, "\n")
 end

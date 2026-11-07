@@ -32,6 +32,15 @@ else
     local report = fuzz.run(opts)
     io.write(fuzz.format(report, detail), "\n")
     failed = #fuzz.wrong(report) > 0
+    local draw = require("test.fuzz.draw")
+    local plain, hidden = draw.run(opts)
+    io.write("\n", draw.format(plain, hidden, detail), "\n")
+    failed = failed or draw.bugs(plain, hidden) > 0
+    if not detail then
+        io.write(
+            "\nDETAIL=1 adds refusal kinds, whole-hunk counts, the draw breakdowns, examples and legends\n"
+        )
+    end
 end
 io.write(("\n%.1fs\n"):format((vim.uv.hrtime() - started) / 1e9))
 if failed then
