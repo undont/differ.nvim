@@ -1185,6 +1185,75 @@ local function counts_within(towards, from, to, below, above)
     return true
 end
 
+-- whether `seg` is `a` and `b` merged, each kept in its own order
+---@param a string[]
+---@param b string[]
+---@param seg string[]
+---@return boolean
+local function interleaves(a, b, seg)
+    if #a + #b ~= #seg then
+        return false
+    end
+    -- ok[i][j]: a's first i lines and b's first j make seg's first i + j
+    local ok = {} ---@type table<integer, table<integer, boolean>>
+    for i = 0, #a do
+        ok[i] = {}
+        for j = 0, #b do
+            local k = i + j
+            if k == 0 then
+                ok[i][j] = true
+            else
+                local from_a = i > 0 and ok[i - 1][j] and a[i] == seg[k]
+                local from_b = j > 0 and ok[i][j - 1] and b[j] == seg[k]
+                ok[i][j] = from_a or from_b
+            end
+        end
+    end
+    return ok[#a][#b]
+end
+
+-- whether HEAD, the index and the worktree hold exactly what `want` marks, whichever
+-- lines a diff of them would mark: HEAD less its marked lines is the worktree less its
+-- marked lines, and between each pair of those unchanged lines the index holds that
+-- gap's unstaged old lines and staged new lines
+---@param want differ.model.LineStates
+---@param union differ.DiffModel  -- HEAD against the worktree
+---@param index string
+---@return boolean
+local function holds_as(want, union, index)
+    local head = text_util.ended_lines(union.old_text)
+    local work = text_util.ended_lines(union.new_text)
+    local held = text_util.ended_lines(index)
+    local h, w, i = 1, 1, 1
+    while true do
+        local kept, added = {}, {}
+        while want.old[h] ~= nil do
+            if not want.old[h] then
+                kept[#kept + 1] = head[h]
+            end
+            h = h + 1
+        end
+        while want.new[w] ~= nil do
+            if want.new[w] then
+                added[#added + 1] = work[w]
+            end
+            w = w + 1
+        end
+        local n = #kept + #added
+        if not interleaves(kept, added, { unpack(held, i, i + n - 1) }) then
+            return false
+        end
+        i = i + n
+        if h > #head or w > #work then
+            return h > #head and w > #work and i > #held
+        end
+        if head[h] ~= work[w] or held[i] ~= head[h] then
+            return false
+        end
+        h, w, i = h + 1, w + 1, i + 1
+    end
+end
+
 ---@class differ.model.Before
 ---@field union differ.DiffModel
 ---@field cached differ.DiffModel
@@ -1199,7 +1268,9 @@ end
 -- more than the unselected rows of that line, or stays put (counts_within). where a reading places
 -- the index, it also moves straight towards the side the op takes (straight). where the
 -- index holds content no hunk shows, the op also drops the hidden lines in the drawn
--- slices it touches, and nothing else of it (hidden_dropped)
+-- slices it touches, and nothing else of it (hidden_dropped). for X from an index with
+-- nothing hidden, a read-back that marks other lines or hides content still passes where
+-- the texts hold exactly what `want` marks (holds_as)
 ---@param want differ.model.LineStates
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
@@ -1215,18 +1286,18 @@ function M.reads_as(want, before, selection, union, cached, unstaged)
         if not dropped then
             return false
         end
-    elseif hidden then
-        return false
     end
     local old_lines = text_util.ended_lines(union.old_text)
     local new_lines = text_util.ended_lines(union.new_text)
     local got = paired_out(line_states(union.hunks, m), union.hunks, old_lines, new_lines)
     local expect = paired_out(want, union.hunks, old_lines, new_lines)
     local by_text = not (want.work_enter or before.hidden)
-    if
-        not same_side(got.old, expect.old, old_lines, by_text)
-        or not same_side(got.new, expect.new, new_lines, by_text)
-    then
+    local hides_more = hidden and not before.hidden
+    local drawn_as = not hides_more
+        and same_side(got.old, expect.old, old_lines, by_text)
+        and same_side(got.new, expect.new, new_lines, by_text)
+    local holds_applies = want.work_enter ~= nil and not before.hidden
+    if not drawn_as and not (holds_applies and holds_as(want, union, cached.new_text)) then
         return false
     end
     local index_from, index_to = before.cached.new_text, cached.new_text

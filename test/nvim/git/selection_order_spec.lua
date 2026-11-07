@@ -172,6 +172,61 @@ describe("git.staging.selection", function()
         end)
     end)
 
+    -- X's written texts hold what reverted() marks, where the read-back marks other lines
+    -- of them or hides content
+    describe("X past a read-back that marks other lines", function()
+        it("drops an added a the read-back marks on another a", function()
+            local t =
+                { head = "b\nc\nb\na\na\na\n", index = "b\nc\nb\na\na\na\n", work = "a\nb\na\na\n" }
+            local outcome = fuzz.run_op(t, "X", { old = {}, new = { [1] = true } })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal(t.index, outcome.index)
+            assert.are.equal("b\na\na\n", outcome.work)
+            assert.is_true(fuzz.matches(t, outcome))
+        end)
+
+        it("brings back a staged deletion the read-back pairs differently", function()
+            local t = { head = "c\nb\nc\na\nc\nb\n", index = "b\nb\nc\nb\n", work = "b\nb\nc\nb\n" }
+            local outcome = fuzz.run_op(t, "X", { old = { [1] = true }, new = {} })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal("c\nb\nb\nc\nb\n", outcome.index)
+            assert.are.equal("c\nb\nb\nc\nb\n", outcome.work)
+            assert.is_true(fuzz.matches(t, outcome))
+        end)
+
+        it("brings back lines where the read-back hides index content", function()
+            local t = {
+                head = "b\nx7\na\nb\nb\nc\na\nc\n",
+                index = "b\nx7\na\nb\nc\nc\n",
+                work = "b\nc\nb\nc\nc\n",
+            }
+            local outcome = fuzz.run_op(t, "X", { old = { [3] = true, [4] = true }, new = {} })
+            assert.are.equal("written", outcome.kind, outcome.reason)
+            assert.are.equal(t.index, outcome.index)
+            assert.are.equal("b\na\nb\nc\nb\nc\nc\n", outcome.work)
+            assert.is_true(fuzz.matches(t, outcome))
+        end)
+
+        it("refuses a worktree that leaves out a line it marks unchanged", function()
+            local t =
+                { head = "b\nc\nb\na\na\na\n", index = "b\nc\nb\na\na\na\n", work = "a\nb\na\na\n" }
+            local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+            local selection = { old = {}, new = { [1] = true } }
+            local stage = require("differ.model.stage")
+            local m = stage.marks_of(union, cached, unstaged)
+            local want = stage.reverted(union, m, selection, stage.index_origins(union, cached))
+            local before = {
+                union = union,
+                cached = cached,
+                hidden = false,
+                edits = require("differ.git.staging.write").edits,
+                take = false,
+            }
+            local after = { content.union_pairs("/", "f", t.head, t.index, "b\na\n") }
+            assert.is_false((stage.reads_as(want, before, selection, unpack(after))))
+        end)
+    end)
+
     -- HEAD's unterminated c and the worktree's c are different lines, so the read-back
     -- can't cancel one against the other
     describe("on HEAD c c c$, index c d c c$, worktree c d x4 x4", function()
