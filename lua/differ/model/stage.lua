@@ -693,12 +693,13 @@ end
 -- a file too big to read that way
 ---@param union differ.DiffModel
 ---@param index string  -- the index's text
+---@param doubt? boolean  -- also find doubt_in
 ---@return differ.model.Reading|nil
-function M.reading(union, index)
+function M.reading(union, index, doubt)
     local ended = apply.ended(union)
     local head_lines, index_lines =
         text_util.ended_lines(union.old_text), text_util.ended_lines(index)
-    return marks.reading(ended.hunks, head_lines, index_lines)
+    return marks.reading(ended.hunks, head_lines, index_lines, doubt)
 end
 
 -- the marks the view draws for the union: the least-cost reading of the index

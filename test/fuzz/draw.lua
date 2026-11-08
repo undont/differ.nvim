@@ -243,6 +243,259 @@ function M.possible(hunks, head, index)
     return possible
 end
 
+-- distinct cheapest readings looked for per file before giving up
+local CAP = 2000
+
+---@class differ.fuzz.Seg
+---@field line? string
+---@field hunk? integer
+---@field h? differ.Hunk
+
+---@param hunks differ.Hunk[]  -- ended
+---@param head string[]        -- ended lines
+---@return differ.fuzz.Seg[]
+local function segs_of(hunks, head)
+    local segs, next_old = {}, 1
+    for k, h in ipairs(hunks) do
+        local first = h.old_count > 0 and h.old_start or h.old_start + 1
+        for l = next_old, first - 1 do
+            segs[#segs + 1] = { line = head[l] }
+        end
+        segs[#segs + 1] = { hunk = k, h = h }
+        next_old = first + h.old_count
+    end
+    for l = next_old, #head do
+        segs[#segs + 1] = { line = head[l] }
+    end
+    return segs
+end
+
+---@class differ.fuzz.Move
+---@field cost integer
+---@field s integer
+---@field i integer
+---@field a integer
+---@field b integer
+---@field inside boolean
+---@field held string[]  -- the index lines it moves past: "h" hidden, else "<seg> <side> <k>"
+
+-- the moves out of one state of marks.reading's walk, over the whole file
+---@param segs differ.fuzz.Seg[]
+---@param index string[]
+---@param big integer
+---@return differ.fuzz.Move[]
+local function moves_from(segs, index, big, s, i, a, b, inside)
+    local out = {}
+    local function move(cost, ts, ti, ta, tb, tin, held)
+        out[#out + 1] = { cost = cost, s = ts, i = ti, a = ta, b = tb, inside = tin, held = held }
+    end
+    local seg = segs[s]
+    if not seg then
+        if i <= #index then
+            move(big, s, i + 1, 0, 0, false, { "h" })
+        end
+        return out
+    end
+    if seg.line then
+        if index[i] == seg.line then
+            move(0, s + 1, i + 1, 0, 0, false, { s .. " line 1" })
+        end
+        move(big, s + 1, i, 0, 0, false, {})
+        if i <= #index then
+            move(big, s, i + 1, 0, 0, false, { "h" })
+        end
+        return out
+    end
+    local h = seg.h --[[@as differ.Hunk]]
+    if not inside then
+        for _, side in ipairs({ "new", "old" }) do
+            local lines, held, fits = h[side .. "_lines"], {}, true
+            for k, line in ipairs(lines) do
+                fits = fits and index[i + k - 1] == line
+                held[k] = ("%d %s %d"):format(s, side, k)
+            end
+            if fits then
+                move(0, s + 1, i + #lines, 0, 0, false, held)
+            end
+        end
+    end
+    if a < h.old_count then
+        if index[i] == h.old_lines[a + 1] then
+            move(0, s, i + 1, a + 1, b, true, { ("%d old %d"):format(s, a + 1) })
+        end
+        move(0, s, i, a + 1, b, true, {})
+    end
+    if b < h.new_count then
+        if index[i] == h.new_lines[b + 1] then
+            move(0, s, i + 1, a, b + 1, true, { ("%d new %d"):format(s, b + 1) })
+        end
+        move(0, s, i, a, b + 1, true, {})
+    end
+    if i <= #index then
+        move(big, s, i + 1, a, b, true, { "h" })
+    end
+    if inside and a == h.old_count and b == h.new_count then
+        move(1, s + 1, i, 0, 0, false, {})
+    end
+    return out
+end
+
+-- every distinct cheapest reading of `index`, costed as marks.reading costs one but over
+-- the whole file, each as what holds each index line ("h" hidden, else "<seg> <side>
+-- <k>"). nil past CAP
+---@param hunks differ.Hunk[]  -- ended
+---@param head string[]        -- ended lines
+---@param index string[]       -- ended lines
+---@return string[][]|nil readings, differ.fuzz.Seg[] segs, integer cost
+function M.cheapest(hunks, head, index)
+    local segs, big = segs_of(hunks, head), #hunks + 1
+    local least, found = {}, {} ---@type table<string, number>, table<string, string[][]|false>
+    local function key(s, i, a, b, inside)
+        return table.concat({ s, i, a, b, inside and 1 or 0 }, ":")
+    end
+    local function cost(s, i, a, b, inside)
+        local k = key(s, i, a, b, inside)
+        if least[k] then
+            return least[k]
+        end
+        local best = (s > #segs and i > #index) and 0 or math.huge
+        for _, m in ipairs(moves_from(segs, index, big, s, i, a, b, inside)) do
+            best = math.min(best, m.cost + cost(m.s, m.i, m.a, m.b, m.inside))
+        end
+        least[k] = best
+        return best
+    end
+    -- the distinct cheapest rests of a reading from a state, false past CAP
+    local function rests(s, i, a, b, inside)
+        local k = key(s, i, a, b, inside)
+        if found[k] ~= nil then
+            return found[k]
+        end
+        local out, seen = {}, {}
+        if s > #segs and i > #index then
+            out[1] = {}
+        end
+        local here = cost(s, i, a, b, inside)
+        for _, m in ipairs(moves_from(segs, index, big, s, i, a, b, inside)) do
+            if m.cost + cost(m.s, m.i, m.a, m.b, m.inside) == here then
+                local after = rests(m.s, m.i, m.a, m.b, m.inside)
+                if not after then
+                    found[k] = false
+                    return false
+                end
+                for _, rest in ipairs(after) do
+                    local whole = vim.list_extend(vim.list_extend({}, m.held), rest)
+                    local id = table.concat(whole, ",")
+                    if not seen[id] then
+                        seen[id] = true
+                        out[#out + 1] = whole
+                        if #out > CAP then
+                            found[k] = false
+                            return false
+                        end
+                    end
+                end
+            end
+        end
+        found[k] = out
+        return out
+    end
+    local all = rests(1, 1, 0, 0, false)
+    return all or nil, segs, cost(1, 1, 0, 0, false)
+end
+
+-- one cheapest reading as marks.reading finishes one: hidden lines owned by the hunk of
+-- the held line before, else the first hunk up to the held line after, and each hunk
+-- with nothing hidden reading its slice as of_blocks does where that holds every line
+---@param segs differ.fuzz.Seg[]
+---@param index string[]
+---@param held string[]
+---@return differ.model.Marks marks, table<integer, true> hides
+---@return table<integer, true> shared  -- hunks sharing a hidden line's gap
+function M.finish(segs, index, held)
+    local m = { old = {}, new = {} }
+    for _, seg in ipairs(segs) do
+        local h = seg.h
+        if h then
+            for l = h.old_start, h.old_start + h.old_count - 1 do
+                m.old[l] = true
+            end
+            for l = h.new_start, h.new_start + h.new_count - 1 do
+                m.new[l] = false
+            end
+        end
+    end
+    local seg_of = {} ---@type table<integer, integer>
+    for l, what in ipairs(held) do
+        local s, side, k = what:match("^(%d+) (%a+) (%d+)$")
+        if s then
+            seg_of[l] = tonumber(s)
+            local h = segs[seg_of[l]].h
+            if h then
+                local at = h[side .. "_start"] + tonumber(k) - 1
+                m[side][at] = side == "new"
+            end
+        end
+    end
+    local owner, hides, shared, prev = {}, {}, {}, 0
+    for l = 1, #index do
+        local upto = #segs
+        for later = l + 1, #index do
+            if seg_of[later] then
+                upto = seg_of[later]
+                break
+            end
+        end
+        if not seg_of[l] then
+            local first, gap = prev + 1, {}
+            if segs[prev] and segs[prev].h then
+                first = prev
+            end
+            for s = first, upto do
+                gap[#gap + 1] = segs[s].hunk
+            end
+            if #gap > 1 then
+                for _, k in ipairs(gap) do
+                    shared[k] = true
+                end
+            end
+        end
+        if seg_of[l] then
+            prev = seg_of[l]
+            owner[l] = prev
+        elseif segs[prev] and segs[prev].h then
+            owner[l], hides[segs[prev].hunk] = prev, true
+        else
+            for s = prev + 1, upto do
+                if segs[s].h then
+                    owner[l], hides[segs[s].hunk] = s, true
+                    break
+                end
+            end
+            owner[l] = owner[l] or prev
+        end
+    end
+    for s, seg in ipairs(segs) do
+        if seg.h and not hides[seg.hunk] then
+            local slice = {}
+            for l = 1, #index do
+                if owner[l] == s then
+                    slice[#slice + 1] = index[l]
+                end
+            end
+            local own, hidden = marks.of_blocks({ seg.h }, { slice })
+            if own and #hidden == 0 then
+                for _, side in ipairs({ "old", "new" }) do
+                    for l, v in pairs(own[side]) do
+                        m[side][l] = v
+                    end
+                end
+            end
+        end
+    end
+    return m, hides, shared
+end
+
 ---@class differ.fuzz.WrongRow: differ.fuzz.Row
 ---@field staged boolean  -- as drawn
 
@@ -268,6 +521,11 @@ end
 ---@field doubtful_rows integer
 ---@field wrong_rows integer
 ---@field wrong_sure_rows integer  -- wrong rows only one mark fits: a reading bug
+---@field flagged integer         -- unclean draws with some hunk in doubt_in
+---@field flagged_right integer   -- of those, drawn right
+---@field copies_flagged integer  -- another-copy wrong draws whose wrong rows all sit in a `!` or doubtful hunk
+---@field ties_flagged integer    -- the same for other ties
+---@field doubt differ.fuzz.DoubtReport
 ---@field cases differ.fuzz.DrawCase[]
 ---@field kept table<string, integer>  -- case kind -> seen
 
@@ -282,31 +540,6 @@ local function keep_of(m)
             return m.new[l] == true
         end,
     }
-end
-
--- whether `a` and `b` stage the same texts on each side of each hunk, differing only
--- in which copy of a repeated line they mark
----@param hunks differ.Hunk[]  -- ended
----@param a differ.model.Marks
----@param b differ.model.Marks
----@return boolean
-local function copies_only(hunks, a, b)
-    for _, h in ipairs(hunks) do
-        for _, side in ipairs({ "old", "new" }) do
-            local count = {} ---@type table<string, integer>
-            for k, line in ipairs(h[side .. "_lines"]) do
-                local l = h[side .. "_start"] + k - 1
-                local n = (a[side][l] == true and 1 or 0) - (b[side][l] == true and 1 or 0)
-                count[line] = (count[line] or 0) + n
-            end
-            for _, n in pairs(count) do
-                if n ~= 0 then
-                    return false
-                end
-            end
-        end
-    end
-    return true
 end
 
 -- the first `keep` cases of each kind
@@ -329,6 +562,204 @@ local function keep_case(report, keep, what, t, rows, kind)
         return a.line < b.line
     end)
     report.cases[#report.cases + 1] = { what = what, triple = t, rows = rows }
+end
+
+-- whether `a` and `b` stage the same texts on each side of `h`, differing at most in
+-- which copy of a repeated line they mark
+---@param h differ.Hunk  -- ended
+---@param a differ.model.Marks
+---@param b differ.model.Marks
+---@return boolean
+local function same_staged(h, a, b)
+    for _, side in ipairs({ "old", "new" }) do
+        local count = {} ---@type table<string, integer>
+        for k, line in ipairs(h[side .. "_lines"]) do
+            local l = h[side .. "_start"] + k - 1
+            local n = (a[side][l] == true and 1 or 0) - (b[side][l] == true and 1 or 0)
+            count[line] = (count[line] or 0) + n
+        end
+        for _, n in pairs(count) do
+            if n ~= 0 then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+---@param hunks differ.Hunk[]  -- ended
+---@param a differ.model.Marks
+---@param b differ.model.Marks
+---@return boolean
+local function copies_only(hunks, a, b)
+    for _, h in ipairs(hunks) do
+        if not same_staged(h, a, b) then
+            return false
+        end
+    end
+    return true
+end
+
+-- whether `a` and `b` mark every row of `h` alike
+---@param h differ.Hunk  -- ended
+---@param a differ.model.Marks
+---@param b differ.model.Marks
+---@return boolean
+local function same_rows(h, a, b)
+    for _, side in ipairs({ "old", "new" }) do
+        for k = 1, h[side .. "_count"] do
+            local l = h[side .. "_start"] + k - 1
+            if (a[side][l] == true) ~= (b[side][l] == true) then
+                return false
+            end
+        end
+    end
+    return true
+end
+
+---@class differ.fuzz.DoubtReport
+---@field files integer     -- drawn from a reading
+---@field capped integer    -- too many cheapest readings to list
+---@field off integer       -- the drawn reading isn't among the whole file's cheapest
+---@field hunks integer     -- hunks in the files compared
+---@field doubtful integer  -- hunks some cheapest reading reads otherwise
+---@field flagged integer   -- hunks in doubt_in
+---@field missed integer    -- doubtful hunks not flagged nor drawn `!`
+---@field missed_shown integer  -- doubtful hunks not flagged but drawn `!`
+---@field needless integer  -- flagged hunks no cheapest reading reads otherwise
+
+---@return differ.fuzz.DoubtReport
+local function doubt_report()
+    return {
+        files = 0,
+        capped = 0,
+        off = 0,
+        hunks = 0,
+        doubtful = 0,
+        flagged = 0,
+        missed = 0,
+        missed_shown = 0,
+        needless = 0,
+    }
+end
+
+-- the reading the view draws `index` from, nil where it draws from clean blocks or
+-- the file is too big to read
+---@param union differ.DiffModel
+---@param ended differ.DiffModel
+---@param index string
+---@return differ.model.Reading|nil
+local function drawn_reading(union, ended, index)
+    local blocks = stage.index_blocks(union, index)
+    if blocks then
+        local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
+        if held and #hidden_in == 0 then
+            return nil
+        end
+    end
+    return stage.reading(union, index, true)
+end
+
+-- scores `read`'s doubt_in against every cheapest reading of the index
+---@param report differ.fuzz.DrawReport|differ.fuzz.HiddenReport
+---@param ended differ.DiffModel
+---@param read differ.model.Reading
+---@param t differ.fuzz.Triple
+---@param keep integer
+local function score_doubt(report, ended, read, t, keep)
+    local d = report.doubt
+    d.files = d.files + 1
+    local head, index = text_util.ended_lines(t.head), text_util.ended_lines(t.index)
+    local all, segs = M.cheapest(ended.hunks, head, index)
+    if not all then
+        d.capped = d.capped + 1
+        return
+    end
+    local hides, flagged = {}, {} ---@type table<integer, true>, table<integer, true>
+    for _, k in ipairs(read.hidden_in) do
+        hides[k] = true
+    end
+    for _, k in ipairs(read.doubt_in) do
+        flagged[k] = true
+    end
+    local doubtful, among = {}, false ---@type table<integer, true>, boolean
+    for _, held in ipairs(all) do
+        local m, other_hides, shared = M.finish(segs, index, held)
+        local alike = true
+        for k, h in ipairs(ended.hunks) do
+            local same_hide = (other_hides[k] == true) == (hides[k] == true)
+            if shared[k] or not (same_hide and same_staged(h, m, read.marks)) then
+                doubtful[k] = true
+            end
+            alike = alike and same_hide and same_rows(h, m, read.marks)
+        end
+        among = among or alike
+    end
+    if not among then
+        d.off = d.off + 1
+        return
+    end
+    local missed, needless = {}, {}
+    for k in ipairs(ended.hunks) do
+        d.hunks = d.hunks + 1
+        d.doubtful = d.doubtful + (doubtful[k] and 1 or 0)
+        d.flagged = d.flagged + (flagged[k] and 1 or 0)
+        if doubtful[k] and not flagged[k] and hides[k] then
+            d.missed_shown = d.missed_shown + 1
+        elseif doubtful[k] and not flagged[k] then
+            d.missed = d.missed + 1
+            missed[#missed + 1] = k
+        elseif flagged[k] and not doubtful[k] then
+            d.needless = d.needless + 1
+            needless[#needless + 1] = k
+        end
+    end
+    if #needless > 0 then
+        local what = ("needless doubt in hunk %s"):format(table.concat(needless, ", "))
+        keep_case(report, keep, what, t, {}, "doubt needless")
+    end
+    if #missed > 0 then
+        local what = ("doubt missed in hunk %s"):format(table.concat(missed, ", "))
+        keep_case(report, keep, what, t, {}, "doubt missed")
+    end
+end
+
+-- the hunks holding some row in `rows`
+---@param ended differ.DiffModel
+---@param rows differ.fuzz.WrongRow[]
+---@return differ.Hunk[]
+local function touched(ended, rows)
+    local out = {}
+    for _, h in ipairs(ended.hunks) do
+        for _, r in ipairs(rows) do
+            local start = h[r.side .. "_start"]
+            if r.line >= start and r.line < start + h[r.side .. "_count"] then
+                out[#out + 1] = h
+                break
+            end
+        end
+    end
+    return out
+end
+
+-- whether every row in `rows` sits in a hunk in `hunks`
+---@param ended differ.DiffModel
+---@param rows differ.fuzz.WrongRow[]
+---@param hunks integer[]
+---@return boolean
+local function within(ended, rows, hunks)
+    for _, r in ipairs(rows) do
+        local inside = false
+        for _, k in ipairs(hunks) do
+            local h = ended.hunks[k]
+            local start = h[r.side .. "_start"]
+            inside = inside or (r.line >= start and r.line < start + h[r.side .. "_count"])
+        end
+        if not inside then
+            return false
+        end
+    end
+    return true
 end
 
 -- scores one HEAD / worktree pair with a random truth into `report`
@@ -360,6 +791,17 @@ function M.score(report, head, work, keep)
     if unread then
         report.unread = report.unread + 1
     end
+    local t = { head = head, index = truth.index, work = work }
+    local read = drawn_reading(union, ended, truth.index)
+    local doubt_in, shown = {}, {} ---@type integer[], integer[]
+    if read then
+        score_doubt(report, ended, read, t, keep)
+        doubt_in = read.doubt_in
+        shown = vim.list_extend(vim.list_extend({}, doubt_in), read.hidden_in)
+    end
+    if #doubt_in > 0 then
+        report.flagged = report.flagged + 1
+    end
     local possible = M.possible(
         ended.hunks,
         text_util.ended_lines(union.old_text),
@@ -390,6 +832,9 @@ function M.score(report, head, work, keep)
         if doubtful then
             report.doubtful_right = report.doubtful_right + 1
         end
+        if #doubt_in > 0 then
+            report.flagged_right = report.flagged_right + 1
+        end
         return
     end
     report.wrong = report.wrong + 1
@@ -400,11 +845,15 @@ function M.score(report, head, work, keep)
         what = "unplaced"
     end
     report[what] = report[what] + 1
+    local covered = within(ended, wrong_rows, shown)
     if what == "ambiguous" and copies_only(ended.hunks, truth.marks, drawn) then
         report.copies = report.copies + 1
+        report.copies_flagged = report.copies_flagged + (covered and 1 or 0)
         what = "another copy"
+    elseif what == "ambiguous" then
+        report.ties_flagged = report.ties_flagged + (covered and 1 or 0)
     end
-    keep_case(report, keep, what, { head = head, index = truth.index, work = work }, wrong_rows)
+    keep_case(report, keep, what, t, wrong_rows)
 end
 
 ---@return differ.fuzz.DrawReport
@@ -427,9 +876,14 @@ function M.report()
         "doubtful_rows",
         "wrong_rows",
         "wrong_sure_rows",
+        "flagged",
+        "flagged_right",
+        "copies_flagged",
+        "ties_flagged",
     }) do
         report[k] = 0
     end
+    report.doubt = doubt_report()
     return report
 end
 
@@ -446,6 +900,10 @@ end
 ---@field rows integer
 ---@field wrong_rows integer
 ---@field wrong_bare_rows integer
+---@field away_flagged integer  -- read-away wrong draws whose bare rows all sit in a doubtful hunk
+---@field tie_copies integer    -- equal-cost ones staging the same lines as the truth, on another copy
+---@field ties_flagged integer  -- the other equal-cost ones whose bare rows all sit in a doubtful hunk
+---@field doubt differ.fuzz.DoubtReport
 ---@field cases differ.fuzz.DrawCase[]
 ---@field kept table<string, integer>
 
@@ -465,9 +923,13 @@ function M.hidden_report()
         "rows",
         "wrong_rows",
         "wrong_bare_rows",
+        "away_flagged",
+        "tie_copies",
+        "ties_flagged",
     }) do
         report[k] = 0
     end
+    report.doubt = doubt_report()
     return report
 end
 
@@ -487,6 +949,13 @@ function M.score_hidden(report, head, work, keep)
     end
     local _, cached, unstaged = content.union_pairs("/", "f", head, truth.index, work)
     local drawn, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
+    local t = { head = head, index = truth.index, work = work }
+    local read = drawn_reading(union, ended, truth.index)
+    local doubt_in = {} ---@type integer[]
+    if read then
+        score_doubt(report, ended, read, t, keep)
+        doubt_in = read.doubt_in
+    end
     local flagged = {} ---@type table<integer, true>
     for _, i in ipairs(hidden_in) do
         flagged[i] = true
@@ -519,16 +988,25 @@ function M.score_hidden(report, head, work, keep)
     end
     report.wrong_bare = report.wrong_bare + 1
     local what = "read away"
+    local covered = within(ended, bare, doubt_in)
     if not hidden then
         report.wrong_bare_away = report.wrong_bare_away + 1
+        report.away_flagged = report.away_flagged + (covered and 1 or 0)
     elseif stage.reading(union, truth.index).cost <= 1 then
         report.wrong_bare_tie = report.wrong_bare_tie + 1
         what = "! on another hunk, equal cost"
+        if copies_only(touched(ended, bare), truth.marks, drawn) then
+            report.tie_copies = report.tie_copies + 1
+            what = "another copy"
+        elseif covered then
+            report.ties_flagged = report.ties_flagged + 1
+        else
+            what = "tie not flagged"
+        end
     else
         report.wrong_bare_dearer = report.wrong_bare_dearer + 1
         what = "reading bug"
     end
-    local t = { head = head, index = truth.index, work = work }
     keep_case(
         report,
         keep,
@@ -601,10 +1079,16 @@ local function summary(p, h, out)
         ("wrong draws        %s guessed files"):format(of(p.wrong, p.unclean)),
         "the index doesn't cut into blocks, so the view reads each row's state; truth known"
     )
-    layout.grid(out, { "" }, {
-        { "another copy", { p.copies }, note = "same staged lines, marked on another copy" },
-        { "other tie", { p.ambiguous - p.copies }, note = "another reading at the same cost" },
+    local ties = p.ambiguous - p.copies
+    layout.grid(out, { "", "flagged" }, {
+        {
+            "another copy",
+            { p.copies, p.copies_flagged },
+            note = "same staged lines, marked on another copy",
+        },
+        { "other tie", { ties, p.ties_flagged }, note = "another reading at the same cost" },
         { "reading bug", { p.hidden + p.unplaced }, zero = true },
+        { "tie not flagged", { ties - p.ties_flagged }, zero = true },
     })
     local drawn = h.triples - h.skipped
     layout.heading(
@@ -612,10 +1096,62 @@ local function summary(p, h, out)
         ("stray line         %s files with a wrong row and no !"):format(of(h.wrong_bare, drawn)),
         "the index also holds one line no row shows, in a known hunk"
     )
-    layout.grid(out, { "" }, {
-        { "read away", { h.wrong_bare_away }, note = "a reading with no stray explains the index" },
-        { "! on another hunk", { h.wrong_bare_tie }, note = "at the same cost as the truth" },
+    layout.grid(out, { "", "flagged" }, {
+        {
+            "read away",
+            { h.wrong_bare_away, h.away_flagged },
+            note = "a reading with no stray explains the index",
+        },
+        {
+            "! on another hunk",
+            { h.wrong_bare_tie },
+            note = "hiding as many lines as the truth",
+        },
+        {
+            "another copy",
+            { h.tie_copies },
+            indent = 1,
+            note = "same staged lines, marked on another copy",
+        },
+        { "other tie", { h.wrong_bare_tie - h.tie_copies, h.ties_flagged }, indent = 1 },
+        {
+            "not flagged",
+            { h.wrong_bare_tie - h.tie_copies - h.ties_flagged },
+            indent = 2,
+            note = "the truth may cost more: a hunk read line by line",
+        },
         { "reading bug", { h.wrong_bare_dearer }, zero = true },
+    })
+    local pd, hd = p.doubt, h.doubt
+    layout.heading(
+        out,
+        ("doubt check        %d files drawn from a reading"):format(pd.files + hd.files),
+        "doubt_in against every cheapest reading of the whole file, per hunk"
+    )
+    layout.grid(out, { "", "plain", "stray" }, {
+        {
+            "doubtful hunks",
+            { pd.doubtful, hd.doubtful },
+            note = "some cheapest reading stages other lines or hides otherwise",
+        },
+        { "flagged", { pd.flagged, hd.flagged } },
+        { "missed", { pd.missed, hd.missed }, zero = true },
+        {
+            "missed, drawn !",
+            { pd.missed_shown, hd.missed_shown },
+            note = "already drawn as doubt is",
+        },
+        {
+            "needless",
+            { pd.needless, hd.needless },
+            note = "flagged, but no cheapest reading differs",
+        },
+        { "files flagged, drawn right", { p.flagged_right, "" } },
+        {
+            "files not compared",
+            { pd.capped + pd.off, hd.capped + hd.off },
+            note = "too many readings, or drawn off the whole file's cheapest",
+        },
     })
 end
 
@@ -658,6 +1194,20 @@ local function detail(p, h, out)
         { "drawn wrong", { h.wrong_rows }, indent = 1 },
         { "no ! on it", { h.wrong_bare_rows }, indent = 2 },
     })
+    layout.heading(out, "doubt check", "files drawn from a reading")
+    layout.grid(out, { "", "plain", "stray" }, {
+        { "files", { p.doubt.files, h.doubt.files } },
+        { "too many cheapest readings", { p.doubt.capped, h.doubt.capped }, indent = 1 },
+        { "drawn off the cheapest", { p.doubt.off, h.doubt.off }, indent = 1 },
+        { "flagged", { p.flagged, "" }, indent = 1 },
+        { "drawn right", { p.flagged_right, "" }, indent = 2 },
+        { "hunks compared", { p.doubt.hunks, h.doubt.hunks } },
+        { "doubtful", { p.doubt.doubtful, h.doubt.doubtful }, indent = 1 },
+        { "flagged", { p.doubt.flagged, h.doubt.flagged }, indent = 1 },
+        { "missed", { p.doubt.missed, h.doubt.missed }, indent = 1, zero = true },
+        { "missed, drawn !", { p.doubt.missed_shown, h.doubt.missed_shown }, indent = 1 },
+        { "needless", { p.doubt.needless, h.doubt.needless }, indent = 1 },
+    })
     if #p.cases + #h.cases > 0 then
         layout.heading(out, "example wrong draws", "the wrong rows bracketed")
         list_cases(out, p.cases)
@@ -673,6 +1223,10 @@ local function detail(p, h, out)
         { "stray line", "an index line no row shows, as a line staged then undone leaves" },
         { "read away", "a reading with no hidden line explains the index: nothing can see it" },
         { "!", "a hunk drawn hidden: the index holds something there no row shows" },
+        { "flagged", "in doubt_in: a reading of the same cost stages other lines there, or" },
+        { "", "only one of the two hides a line there" },
+        { "cheapest", "every reading at marks.reading's least cost, listed over the whole file" },
+        { "missed", "a hunk some cheapest reading reads otherwise, not flagged" },
     })
 end
 
