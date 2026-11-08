@@ -702,10 +702,28 @@ function M.reading(union, index, doubt)
     return marks.reading(ended.hunks, head_lines, index_lines, doubt)
 end
 
+---@param a integer[]
+---@param b integer[]
+---@return integer[]  -- the hunks in either, ascending
+local function merged(a, b)
+    local seen, out = {}, {}
+    for _, list in ipairs({ a, b }) do
+        for _, i in ipairs(list) do
+            if not seen[i] then
+                seen[i] = true
+                out[#out + 1] = i
+            end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
 -- the marks the view draws for the union: the least-cost reading of the index
 -- (marks.reading), or its blocks where they cut with nothing hidden, which read the
 -- same. `hidden` is index content no hunk shows, and `hidden_in` the hunks holding some
--- of it. `unread` is a file too big to read, drawn from its blocks or the two pairs
+-- of it, or that a reading of the same cost puts it in or stages other lines in.
+-- `unread` is a file too big to read, drawn from its blocks or the two pairs
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
@@ -719,9 +737,9 @@ function M.marks_of(union, cached, unstaged)
             return held, false, hidden_in, false
         end
     end
-    local read = M.reading(union, cached.new_text)
+    local read = M.reading(union, cached.new_text, true)
     if read then
-        return read.marks, read.cost > 0, read.hidden_in, false
+        return read.marks, read.cost > 0, merged(read.hidden_in, read.doubt_in or {}), false
     end
     if held then
         return held, true, hidden_in, true

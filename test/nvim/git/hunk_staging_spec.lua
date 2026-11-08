@@ -1745,6 +1745,25 @@ func getDownloadSpeed() {
         assert.is_truthy(local_gutter:find("!", 1, true)) -- the local hunk that rewrote it
     end)
 
+    -- the index's a can be HEAD's or the worktree's, so the z staged then undone reads
+    -- as hidden in either hunk at the same cost
+    it("marks ! on every hunk a hidden line could be in", function()
+        local _, p, v = staged_as("b\na\na\n", "b\na\nz\na\n", "b\nc\na\nb\na\n")
+        local text = winbar_of(v)
+        local gutters, states = {}, {}
+        for n = 1, #v.model.hunks do
+            gutters[n] = gutter_of(v, hunk_line(v, n)):find("!", 1, true) ~= nil
+            states[n] = v:_hunk_state(n)
+        end
+        v:toggle_local()
+        local shown = vim.api.nvim_buf_get_lines(v.columns[#v.columns].bufnr, 0, -1, false)
+        p:close()
+        assert.are.same({ true, true }, gutters)
+        assert.are.same({ "unstaged", "unstaged" }, states)
+        assert.is_truthy(text:find("2 hidden (dw)", 1, true))
+        assert.is_truthy(vim.tbl_contains(shown, "z"))
+    end)
+
     it("says in the winbar when a staged mode change isn't on screen", function()
         local root = fresh_repo()
         vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")

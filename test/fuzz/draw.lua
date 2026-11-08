@@ -1135,7 +1135,7 @@ local function summary(p, h, out)
             note = "some cheapest reading stages other lines or hides otherwise",
         },
         { "flagged", { pd.flagged, hd.flagged } },
-        { "missed", { pd.missed, hd.missed }, zero = true },
+        { "missed", { pd.missed, hd.missed } },
         {
             "missed, drawn !",
             { pd.missed_shown, hd.missed_shown },
@@ -1204,7 +1204,7 @@ local function detail(p, h, out)
         { "hunks compared", { p.doubt.hunks, h.doubt.hunks } },
         { "doubtful", { p.doubt.doubtful, h.doubt.doubtful }, indent = 1 },
         { "flagged", { p.doubt.flagged, h.doubt.flagged }, indent = 1 },
-        { "missed", { p.doubt.missed, h.doubt.missed }, indent = 1, zero = true },
+        { "missed", { p.doubt.missed, h.doubt.missed }, indent = 1 },
         { "missed, drawn !", { p.doubt.missed_shown, h.doubt.missed_shown }, indent = 1 },
         { "needless", { p.doubt.needless, h.doubt.needless }, indent = 1 },
     })
