@@ -926,6 +926,26 @@ func getDownloadSpeed() {
         assert.are.equal("100755", mode)
     end)
 
+    -- the index dropped M.b between the hunks: both draw !, but u on either keeps the drop
+    it("u on a ! hunk doesn't ask when the hidden change stays staged", function()
+        local head = lines_of({ "local M = {}", "M.a = 1", "M.b = 2", "M.c = 3", "return M" })
+        local index = lines_of({ "local M = {}", "M.a = 10", "M.c = 3", "return M, nil" })
+        local work = lines_of({ "local M = {}", "M.a = 10", "M.b = 2", "M.c = 3", "return M, nil" })
+        local root, p, v = staged_as(head, index, work)
+        local bangs = v.staging.hidden_in
+        local win = v.columns[#v.columns].winid
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_cursor(win, { hunk_line(v, 2), 0 })
+        local prompt = confirming(2, function()
+            v:unstage_hunk()
+        end)
+        local written = indexed(root, "a.lua")
+        p:close()
+        assert.are.same({ 1, 2 }, bangs)
+        assert.is_nil(prompt)
+        assert.are.equal(lines_of({ "local M = {}", "M.a = 10", "M.c = 3", "return M" }), written)
+    end)
+
     it("u on a staged edit whose file was deleted asks before dropping it", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "edited\n")

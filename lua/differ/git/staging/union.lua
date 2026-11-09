@@ -627,7 +627,8 @@ local function set_all(source, model, staged)
 end
 
 -- the `!` hunks hold staged content neither side shows, and U takes all of it. a
--- hunk u that refuses drops nothing: its refusal needs no prompt first
+-- hunk u that refuses drops nothing: its refusal needs no prompt first. a `!` hunk's u
+-- drops some of it only where the reading after costs less
 ---@param source differ.git.UnionSource
 ---@param model differ.DiffModel
 ---@param idx integer|nil
@@ -652,8 +653,16 @@ local function unheld(source, model, idx)
         return false
     end
     local selection = stage.hunk_selection(hunk)
-    return selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, false, text)
-        ~= nil
+    local after =
+        selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, false, text)
+    if not after then
+        return false
+    end
+    local read, now = stage.reading(union, cached.new_text), stage.reading(union, text)
+    if not (read and now) then
+        return true
+    end
+    return now.cost < read.cost
 end
 
 -- staging for a row shown as HEAD↔worktree. staging a hunk gives the index the
