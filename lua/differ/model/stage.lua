@@ -722,8 +722,9 @@ end
 -- the marks the view draws for the union: the least-cost reading of the index
 -- (marks.reading), or its blocks where they cut with nothing hidden, which read the
 -- same. `hidden` is index content no hunk shows, and `hidden_in` the hunks holding some
--- of it, or that a reading of the same cost puts it in or stages other lines in.
--- `unread` is a file too big to read, drawn from its blocks or the two pairs
+-- of it, or that a reading of the same cost puts it in or stages other lines in, or
+-- nearest each side of what it hides outside every hunk. `unread` is a file too big to
+-- read, drawn from its blocks or the two pairs
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
@@ -739,7 +740,8 @@ function M.marks_of(union, cached, unstaged)
     end
     local read = M.reading(union, cached.new_text, true)
     if read then
-        return read.marks, read.cost > 0, merged(read.hidden_in, read.doubt_in or {}), false
+        local shown = merged(read.hidden_in, merged(read.doubt_in or {}, read.unowned_in or {}))
+        return read.marks, read.cost > 0, shown, false
     end
     if held then
         return held, true, hidden_in, true
