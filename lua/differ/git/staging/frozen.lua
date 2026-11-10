@@ -386,21 +386,21 @@ local function drop_index(ctx, entry, model, staging, idx, index)
             moved[#moved + 1] = h
         end
     end
-    local _, cached = three_models(ctx.root, entry, nil, index)
-    if not cached then
+    local _, head_index = three_models(ctx.root, entry, nil, index)
+    if not head_index then
         return nil, nil, "unreadable"
     end
-    if cached.new_text ~= splice(model, applied) then
+    if head_index.new_text ~= splice(model, applied) then
         return nil, nil, "changed"
     end
     local hunk = model.hunks[idx]
     local placed = vim.tbl_extend("force", hunk, {
         old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
     })
-    local meets = stage.select_hunks(cached.hunks, "new", placed, "old", true)
+    local meets = stage.select_hunks(head_index.hunks, "new", placed, "old", true)
     local first, last = placed.old_start, placed.old_start + placed.old_count - 1
     local met, lo, hi = {}, math.huge, -math.huge ---@type integer[], number, number
-    for i, c in ipairs(cached.hunks) do
+    for i, c in ipairs(head_index.hunks) do
         if meets[i] then
             met[#met + 1] = i
             if c.new_count > 0 then
@@ -408,7 +408,7 @@ local function drop_index(ctx, entry, model, staging, idx, index)
             end
         end
     end
-    local c = #met == 1 and cached.hunks[met[1]] or nil
+    local c = #met == 1 and head_index.hunks[met[1]] or nil
     if
         c
         and placed.old_count > 0
@@ -416,10 +416,10 @@ local function drop_index(ctx, entry, model, staging, idx, index)
         and first >= c.new_start
         and last <= c.new_start + c.new_count - 1
     then
-        return stage.drop_lines(cached, met[1], first, last)
+        return stage.drop_lines(head_index, met[1], first, last)
     end
-    local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
-    local text = splice(cached, keep)
+    local keep = stage.select_hunks(head_index.hunks, "new", placed, "old", false)
+    local text = splice(head_index, keep)
     if lo >= first and hi <= last then
         return text
     end
@@ -511,10 +511,11 @@ end
 local function for_local(ctx, entry, model, reopen)
     if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
         local staging = frozen_staging(ctx, entry, model, false, reopen)
-        local _, cached = three_models(ctx.root, entry)
+        local _, head_index = three_models(ctx.root, entry)
         -- an add has no HEAD lines for a rewritten line to go back to
-        if cached and entry.x ~= "A" then
-            staging.hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
+        if head_index and entry.x ~= "A" then
+            staging.hidden_in =
+                require("differ.model.marks").restaged(model.hunks, head_index.hunks)
         end
         staging.unstage_hidden = function(idx)
             return drop_hidden(ctx, entry, model, staging, idx, reopen)

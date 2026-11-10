@@ -454,14 +454,15 @@ end
 -- s (`take` true) or u, through the selection core apply_lines writes from
 ---@param t differ.fuzz.Triple
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function stage_op(t, head_work, cached, unstaged, selection, take)
-    local m = stage.marks_of(head_work, cached, unstaged)
-    local text, _, refused = selected.stage("/", "f", head_work, cached, unstaged, selection, take)
+local function stage_op(t, head_work, head_index, index_work, selection, take)
+    local m = stage.marks_of(head_work, head_index, index_work)
+    local text, _, refused =
+        selected.stage("/", "f", head_work, head_index, index_work, selection, take)
     if refused then
         return refusal(head_work, m, selection, refused)
     end
@@ -474,14 +475,14 @@ end
 -- X, through the selection core revert_texts writes from
 ---@param t differ.fuzz.Triple
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome
-local function revert_op(t, head_work, cached, unstaged, selection)
-    local m = stage.marks_of(head_work, cached, unstaged)
+local function revert_op(t, head_work, head_index, index_work, selection)
+    local m = stage.marks_of(head_work, head_index, index_work)
     local index, reverted, refused =
-        selected.revert("/", "f", head_work, cached, unstaged, selection)
+        selected.revert("/", "f", head_work, head_index, index_work, selection)
     if refused then
         return refusal(head_work, m, selection, refused)
     end
@@ -652,11 +653,11 @@ M.OPS = { "s", "u", "X" }
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome
 function M.run_op(t, op, selection)
-    local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
+    local head_work, head_index, index_work = content.three_diffs("/", "f", t.head, t.index, t.work)
     if op == "X" then
-        return revert_op(t, head_work, cached, unstaged, selection)
+        return revert_op(t, head_work, head_index, index_work, selection)
     end
-    return stage_op(t, head_work, cached, unstaged, selection, op == "s")
+    return stage_op(t, head_work, head_index, index_work, selection, op == "s")
 end
 
 -- the write the result check refused, as the op builds it before reading it back
@@ -665,21 +666,29 @@ end
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome|nil
 local function unchecked(t, op, selection)
-    local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
-    local m = stage.marks_of(head_work, cached, unstaged)
-    local text = stage.select_index(head_work, cached, selection, op == "s")
+    local head_work, head_index, index_work = content.three_diffs("/", "f", t.head, t.index, t.work)
+    local m = stage.marks_of(head_work, head_index, index_work)
+    local text = stage.select_index(head_work, head_index, selection, op == "s")
     if op ~= "X" then
         if not text then
             return nil
         end
         return written(t, head_work, m, selection, op == "s", text, nil)
     end
-    local origins = stage.index_origins(head_work, cached)
+    local origins = stage.index_origins(head_work, head_index)
     local reverted = stage.select_worktree(head_work, selection, origins)
     if not reverted then
         return nil
     end
-    return written(t, head_work, m, selection, false, text or cached.new_text, reverted.old_text)
+    return written(
+        t,
+        head_work,
+        m,
+        selection,
+        false,
+        text or head_index.new_text,
+        reverted.old_text
+    )
 end
 
 -- why a result-check refusal the oracles call correct was refused: "unplaced" where
@@ -716,15 +725,15 @@ function M.refused_correct(t, op, selection, outcome)
 end
 
 -- whether a HEAD↔index hunk changes one of `h`'s old lines or the line either side
----@param cached differ.DiffModel
+---@param head_index differ.DiffModel
 ---@param h differ.Hunk
 ---@return boolean
-local function staged_beside(cached, h)
+local function staged_beside(head_index, h)
     local first, last = h.old_start - 1, h.old_start + h.old_count
     if h.old_count == 0 then
         first, last = h.old_start, h.old_start + 1
     end
-    for _, c in ipairs(cached.hunks) do
+    for _, c in ipairs(head_index.hunks) do
         local c_first, c_last = c.old_start, c.old_start + c.old_count - 1
         if c.old_count == 0 then
             c_first, c_last = c.old_start, c.old_start + 1
@@ -738,13 +747,13 @@ end
 
 -- s (`take`) or u on `hunk` as the hunk op runs it: next_index, then the result check
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function hunk_op(head_work, cached, unstaged, hunk, take)
-    local text, reaches = stage.next_index(head_work, cached, unstaged, hunk, take)
+local function hunk_op(head_work, head_index, index_work, hunk, take)
+    local text, reaches = stage.next_index(head_work, head_index, index_work, hunk, take)
     if reaches then
         return { kind = "refused", reason = "reaches" }
     end
@@ -753,27 +762,32 @@ local function hunk_op(head_work, cached, unstaged, hunk, take)
     end
     local selection = stage.hunk_selection(hunk)
     local after, refused =
-        selected.checked("/", "f", head_work, cached, unstaged, selection, take, text)
+        selected.checked("/", "f", head_work, head_index, index_work, selection, take, text)
     if not after then
         return { kind = "refused", reason = refused }
     end
-    return { kind = "written", index = text, towards = towards_of(head_work, cached.new_text, take) }
+    return {
+        kind = "written",
+        index = text,
+        towards = towards_of(head_work, head_index.new_text, take),
+    }
 end
 
 -- visual s (`take`) or u over every line of `hunk`
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function visual_op(head_work, cached, unstaged, hunk, take)
+local function visual_op(head_work, head_index, index_work, hunk, take)
     local selection = stage.hunk_selection(hunk)
-    local text, _, refused = selected.stage("/", "f", head_work, cached, unstaged, selection, take)
+    local text, _, refused =
+        selected.stage("/", "f", head_work, head_index, index_work, selection, take)
     if refused then
         return { kind = "refused", reason = refused }
     end
-    if not text or text == cached.new_text then
+    if not text or text == head_index.new_text then
         return { kind = "unchanged" }
     end
     return { kind = "written", index = text }
@@ -902,17 +916,18 @@ function M.run(opts)
     end
     ---@param t differ.fuzz.Triple
     local function whole(t)
-        local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
+        local head_work, head_index, index_work =
+            content.three_diffs("/", "f", t.head, t.index, t.work)
         for i, h in ipairs(head_work.hunks) do
             for _, op in ipairs(M.HUNK_OPS) do
-                local visual = visual_op(head_work, cached, unstaged, h, op == "s")
-                local by_hunk = hunk_op(head_work, cached, unstaged, h, op == "s")
-                local what = agreement(visual, by_hunk, staged_beside(cached, h))
+                local visual = visual_op(head_work, head_index, index_work, h, op == "s")
+                local by_hunk = hunk_op(head_work, head_index, index_work, h, op == "s")
+                local what = agreement(visual, by_hunk, staged_beside(head_index, h))
                 local counts = report.hunks[op]
                 counts[what] = (counts[what] or 0) + 1
                 if
                     by_hunk.towards
-                    and not M.straight(by_hunk.towards, cached.new_text, by_hunk.index)
+                    and not M.straight(by_hunk.towards, head_index.new_text, by_hunk.index)
                 then
                     counts.off_path = counts.off_path + 1
                 end

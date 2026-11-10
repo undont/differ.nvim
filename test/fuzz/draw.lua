@@ -780,7 +780,7 @@ function M.score(report, head, work, keep)
         fuzz.placed(head_work, truth.index, keep_of(truth.marks)),
         "truth doesn't place its index"
     )
-    local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
+    local _, head_index, index_work = content.three_diffs("/", "f", head, truth.index, work)
     local blocks = stage.index_blocks(head_work, truth.index)
     if blocks then
         local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
@@ -790,7 +790,7 @@ function M.score(report, head, work, keep)
         end
     end
     report.unclean = report.unclean + 1
-    local drawn, hidden, _, unread = stage.marks_of(head_work, cached, unstaged)
+    local drawn, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
     if unread then
         report.unread = report.unread + 1
     end
@@ -950,8 +950,8 @@ function M.score_hidden(report, head, work, keep)
         report.skipped = report.skipped + 1
         return
     end
-    local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
-    local drawn, hidden, hidden_in = stage.marks_of(head_work, cached, unstaged)
+    local _, head_index, index_work = content.three_diffs("/", "f", head, truth.index, work)
+    local drawn, hidden, hidden_in = stage.marks_of(head_work, head_index, index_work)
     local t = { head = head, index = truth.index, work = work }
     local read = drawn_reading(head_work, ended, truth.index)
     local doubt_in = {} ---@type integer[]

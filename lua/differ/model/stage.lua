@@ -111,18 +111,18 @@ end
 -- on the side that pair shares. `reaches` names another HEAD↔worktree hunk such a pair
 -- hunk covers too, and then there is no text
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return string|nil text, integer|nil reaches
-local function drawn_index(head_work, cached, unstaged, hunk, take)
-    local blocks, ended = M.index_blocks(head_work, cached.new_text)
+local function drawn_index(head_work, head_index, index_work, hunk, take)
+    local blocks, ended = M.index_blocks(head_work, head_index.new_text)
     local i = hunk_index(head_work, hunk)
     if blocks and i then
         local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
         if not held or #hidden_in > 0 then
-            local text = by_reading(head_work, cached.new_text, i, take)
+            local text = by_reading(head_work, head_index.new_text, i, take)
             if text then
                 return text
             end
@@ -130,15 +130,15 @@ local function drawn_index(head_work, cached, unstaged, hunk, take)
         blocks[i] = taken(ended.hunks[i], take)
         return apply.join(ended, blocks)
     end
-    local from, side = unstaged, "new"
+    local from, side = index_work, "new"
     if not take then
-        from, side = cached, "old"
+        from, side = head_index, "old"
     end
     local reaches = marks.shared_with(head_work.hunks, hunk, from.hunks, side)
     if reaches then
         return nil, reaches
     end
-    local text = i and by_reading(head_work, cached.new_text, i, take)
+    local text = i and by_reading(head_work, head_index.new_text, i, take)
     if text then
         return text
     end
@@ -149,18 +149,18 @@ end
 -- draws it (drawn_index). no text and no `reaches` is a hunk the drawn reading already
 -- has where the op puts it, or one the pair the op reads for lines up under a
 -- different HEAD↔worktree hunk, leaving the index where it is
----@param head_work differ.DiffModel  -- HEAD↔worktree
----@param cached differ.DiffModel     -- HEAD↔index
----@param unstaged differ.DiffModel   -- index↔worktree
+---@param head_work differ.DiffModel   -- HEAD↔worktree
+---@param head_index differ.DiffModel  -- HEAD↔index
+---@param index_work differ.DiffModel  -- index↔worktree
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return string|nil text, integer|nil reaches
-function M.next_index(head_work, cached, unstaged, hunk, take)
-    local text, reaches = drawn_index(head_work, cached, unstaged, hunk, take)
+function M.next_index(head_work, head_index, index_work, hunk, take)
+    local text, reaches = drawn_index(head_work, head_index, index_work, hunk, take)
     if reaches then
         return nil, reaches
     end
-    if text == cached.new_text then
+    if text == head_index.new_text then
         return nil -- the op has nothing of this hunk to move on its own
     end
     return text
@@ -454,19 +454,19 @@ end
 
 -- the index's block at every HEAD↔worktree hunk where the index cuts into blocks, else
 -- its slice in the drawn reading (marks.reading). nil for a file too big to read
----@param head_work differ.DiffModel  -- HEAD↔worktree
----@param cached differ.DiffModel     -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD↔worktree
+---@param head_index differ.DiffModel  -- HEAD↔index
 ---@return differ.model.IndexCut|nil
-local function index_cut(head_work, cached)
-    local blocks, ended = M.index_blocks(head_work, cached.new_text)
+local function index_cut(head_work, head_index)
+    local blocks, ended = M.index_blocks(head_work, head_index.new_text)
     if blocks then
         return { ended = ended, blocks = blocks }
     end
-    local read = M.reading(head_work, cached.new_text)
+    local read = M.reading(head_work, head_index.new_text)
     if not read then
         return nil
     end
-    local index = text_util.ended_lines(cached.new_text)
+    local index = text_util.ended_lines(head_index.new_text)
     local slices = {}
     blocks = {}
     for i, slice in ipairs(read.slices) do
@@ -506,11 +506,11 @@ end
 
 -- the index's block at each HEAD↔worktree hunk index_cut places, line by line; none for a
 -- hunk whose block holds a line neither side has
----@param head_work differ.DiffModel  -- HEAD↔worktree
----@param cached differ.DiffModel     -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD↔worktree
+---@param head_index differ.DiffModel  -- HEAD↔index
 ---@return table<integer, differ.model.Origin[]>|nil
-function M.index_origins(head_work, cached)
-    local cut = index_cut(head_work, cached)
+function M.index_origins(head_work, head_index)
+    local cut = index_cut(head_work, head_index)
     if not cut then
         return nil
     end
@@ -524,13 +524,13 @@ end
 -- the text the index takes when the selected HEAD↔worktree lines are staged (`take`) or
 -- unstaged. only the hunks the selection touches are rebuilt; every other line stays
 -- as the index has it. nil text with no refusal is a selection with nothing to move
----@param head_work differ.DiffModel  -- HEAD↔worktree
----@param cached differ.DiffModel     -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD↔worktree
+---@param head_index differ.DiffModel  -- HEAD↔index
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return string|nil text, differ.model.SelectRefusal|nil refusal
-function M.select_index(head_work, cached, selection, take)
-    local cut = index_cut(head_work, cached)
+function M.select_index(head_work, head_index, selection, take)
+    local cut = index_cut(head_work, head_index)
     if not cut then
         if touches_any(head_work.hunks, selection) then
             return nil, "between"
@@ -566,8 +566,8 @@ function M.select_index(head_work, cached, selection, take)
     if inside then
         return nil, inside
     end
-    local text = cut_text(cut, cached.new_text)
-    if text == cached.new_text then
+    local text = cut_text(cut, head_index.new_text)
+    if text == head_index.new_text then
         return nil
     end
     return text
@@ -643,12 +643,12 @@ end
 -- the index text with its lines `first`..`last` back to HEAD's, where they sit inside
 -- HEAD↔index hunk `ci` and that hunk's two sides are the same length, so each index line
 -- has one HEAD line at the same place in it. every other hunk stays applied
----@param cached differ.DiffModel  -- HEAD↔index
+---@param head_index differ.DiffModel  -- HEAD↔index
 ---@param ci integer
----@param first integer  -- index lines
+---@param first integer                -- index lines
 ---@param last integer
 ---@return string
-function M.drop_lines(cached, ci, first, last)
+function M.drop_lines(head_index, ci, first, last)
     local hunks, applied = {}, {} ---@type differ.Hunk[], table<integer, boolean>
     local function slice(lines, from, count)
         local out = {}
@@ -657,7 +657,7 @@ function M.drop_lines(cached, ci, first, last)
         end
         return out
     end
-    for i, h in ipairs(cached.hunks) do
+    for i, h in ipairs(head_index.hunks) do
         if i ~= ci then
             hunks[#hunks + 1] = h
             applied[#hunks] = true
@@ -685,7 +685,7 @@ function M.drop_lines(cached, ci, first, last)
             piece(last + 1, h.new_start + h.new_count - 1, true)
         end
     end
-    local split = { old_text = cached.old_text, new_text = cached.new_text, hunks = hunks }
+    local split = { old_text = head_index.old_text, new_text = head_index.new_text, hunks = hunks }
     return apply.splice(split --[[@as differ.DiffModel]], applied)
 end
 
@@ -725,12 +725,12 @@ end
 -- of it, or that a reading of the same cost puts it in or stages other lines in, or
 -- nearest each side of what it hides outside every hunk. `unread` is a file too big to
 -- read, drawn from its blocks or the two pairs
----@param head_work differ.DiffModel  -- HEAD↔worktree
----@param cached differ.DiffModel     -- HEAD↔index
----@param unstaged differ.DiffModel   -- index↔worktree
+---@param head_work differ.DiffModel   -- HEAD↔worktree
+---@param head_index differ.DiffModel  -- HEAD↔index
+---@param index_work differ.DiffModel  -- index↔worktree
 ---@return differ.model.Marks marks, boolean hidden, integer[] hidden_in, boolean unread
-function M.marks_of(head_work, cached, unstaged)
-    local blocks, ended = M.index_blocks(head_work, cached.new_text)
+function M.marks_of(head_work, head_index, index_work)
+    local blocks, ended = M.index_blocks(head_work, head_index.new_text)
     local held, hidden_in = nil, {}
     if blocks then
         held, hidden_in = marks.of_blocks(ended.hunks, blocks)
@@ -738,7 +738,7 @@ function M.marks_of(head_work, cached, unstaged)
             return held, false, hidden_in, false
         end
     end
-    local read = M.reading(head_work, cached.new_text, true)
+    local read = M.reading(head_work, head_index.new_text, true)
     if read then
         local shown = merged(read.hidden_in, merged(read.doubt_in or {}, read.unowned_in or {}))
         return read.marks, read.cost > 0, shown, false
@@ -746,12 +746,12 @@ function M.marks_of(head_work, cached, unstaged)
     if held then
         return held, true, hidden_in, true
     end
-    held = marks.classify(head_work.hunks, cached.hunks, unstaged.hunks)
-    if marks.complete(head_work.hunks, cached.hunks, unstaged.hunks) then
+    held = marks.classify(head_work.hunks, head_index.hunks, index_work.hunks)
+    if marks.complete(head_work.hunks, head_index.hunks, index_work.hunks) then
         return held, false, {}, true
     end
     local head = text_util.to_lines(head_work.old_text)
-    return held, true, marks.hidden_in(head, head_work.hunks, cached.hunks, held), true
+    return held, true, marks.hidden_in(head, head_work.hunks, head_index.hunks, held), true
 end
 
 ---@class differ.model.LineStates
@@ -978,11 +978,11 @@ end
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
 ---@param head_work differ.DiffModel   -- read from the op's texts
----@param cached differ.DiffModel
+---@param head_index differ.DiffModel
 ---@return integer|nil
-local function hidden_dropped(before, selection, head_work, cached)
-    local read = M.reading(before.head_work, before.cached.new_text)
-    local now = M.reading(head_work, cached.new_text)
+local function hidden_dropped(before, selection, head_work, head_index)
+    local read = M.reading(before.head_work, before.head_index.new_text)
+    local now = M.reading(head_work, head_index.new_text)
     if not (read and now) then
         return nil
     end
@@ -990,8 +990,8 @@ local function hidden_dropped(before, selection, head_work, cached)
     if now.cost ~= read.cost - hidden then
         return nil
     end
-    local from = text_util.ended_lines(before.cached.new_text)
-    if not outside_kept(from, text_util.ended_lines(cached.new_text), first, after) then
+    local from = text_util.ended_lines(before.head_index.new_text)
+    if not outside_kept(from, text_util.ended_lines(head_index.new_text), first, after) then
         return nil
     end
     return hidden
@@ -1277,7 +1277,7 @@ end
 
 ---@class differ.model.Before
 ---@field head_work differ.DiffModel
----@field cached differ.DiffModel
+---@field head_index differ.DiffModel
 ---@field hidden boolean
 ---@field edits fun(a: string, b: string): integer, integer  -- lines a minimal diff drops, adds
 ---@field take boolean  -- s, which moves the index towards the worktree; u and X move it towards HEAD
@@ -1296,14 +1296,14 @@ end
 ---@param before differ.model.Before
 ---@param selection differ.model.Selection
 ---@param head_work differ.DiffModel     -- read from the op's texts
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@return boolean, "unshown"|nil
-function M.reads_as(want, before, selection, head_work, cached, unstaged)
-    local m, hidden = M.marks_of(head_work, cached, unstaged)
+function M.reads_as(want, before, selection, head_work, head_index, index_work)
+    local m, hidden = M.marks_of(head_work, head_index, index_work)
     local dropped = 0 ---@type integer|nil
     if before.hidden then
-        dropped = hidden_dropped(before, selection, head_work, cached)
+        dropped = hidden_dropped(before, selection, head_work, head_index)
         if not dropped then
             return false
         end
@@ -1318,10 +1318,10 @@ function M.reads_as(want, before, selection, head_work, cached, unstaged)
         and same_side(got.old, expect.old, old_lines, by_text)
         and same_side(got.new, expect.new, new_lines, by_text)
     local holds_applies = want.work_enter ~= nil and not before.hidden
-    if not drawn_as and not (holds_applies and holds_as(want, head_work, cached.new_text)) then
+    if not drawn_as and not (holds_applies and holds_as(want, head_work, head_index.new_text)) then
         return false
     end
-    local index_from, index_to = before.cached.new_text, cached.new_text
+    local index_from, index_to = before.head_index.new_text, head_index.new_text
     if not moves_only(before.edits, index_from, index_to, want.leave + dropped, want.enter) then
         return false
     end

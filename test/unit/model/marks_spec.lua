@@ -90,26 +90,26 @@ describe("HEAD↔worktree marks", function()
         -- worktree then dropped reaches neither side of a HEAD↔worktree diff
         it("catches a line only the index holds", function()
             local head_work = { hl(1, { "x" }, 1, { "X" }) }
-            local cached = { hl(1, {}, 2, { "ghost" }) }
-            local unstaged = { hl(1, { "x", "ghost" }, 1, { "X" }) }
-            assert.is_false(marks.complete(head_work, cached, unstaged))
+            local head_index = { hl(1, {}, 2, { "ghost" }) }
+            local index_work = { hl(1, { "x", "ghost" }, 1, { "X" }) }
+            assert.is_false(marks.complete(head_work, head_index, index_work))
         end)
 
         -- the pair diffs can align repeated lines differently from HEAD↔worktree: here
         -- the worktree drops a HEAD line HEAD↔worktree still shows as context
         it("catches a replaced line HEAD↔worktree shows as context", function()
             local head_work = { h(1, 1, 1, 1) }
-            local unstaged = { h(5, 1, 4, 0) }
-            assert.is_false(marks.complete(head_work, {}, unstaged))
+            local index_work = { h(5, 1, 4, 0) }
+            assert.is_false(marks.complete(head_work, {}, index_work))
         end)
 
         -- stage an edit, then edit the same line again: the index's version is replaced
         -- in the worktree, so it reaches neither side of a HEAD↔worktree diff
         it("catches a staged line edited again in the worktree", function()
             local head_work = { hl(1, { "foo" }, 1, { "FOOD" }) }
-            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
-            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
-            assert.is_false(marks.complete(head_work, cached, unstaged))
+            local head_index = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local index_work = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            assert.is_false(marks.complete(head_work, head_index, index_work))
         end)
 
         -- HEAD a,a,a,b; index a,a,c,b; worktree b,a,c,b. every range check passes, but
@@ -117,15 +117,15 @@ describe("HEAD↔worktree marks", function()
         -- where there are four
         it("catches marks that count a line twice", function()
             local head_work = { hl(1, { "a", "a", "a" }, 1, { "b", "a", "c" }) }
-            local cached = { hl(3, { "a" }, 3, { "c" }) }
-            local unstaged = { hl(1, { "a" }, 1, { "b" }) }
-            assert.is_false(marks.complete(head_work, cached, unstaged))
+            local head_index = { hl(3, { "a" }, 3, { "c" }) }
+            local index_work = { hl(1, { "a" }, 1, { "b" }) }
+            assert.is_false(marks.complete(head_work, head_index, index_work))
         end)
 
         it("allows a deletion of a line HEAD held too", function()
             local head_work = { hl(7, { "gone" }, 7, {}) }
-            local unstaged = { hl(7, { "gone" }, 7, {}) }
-            assert.is_true(marks.complete(head_work, {}, unstaged))
+            local index_work = { hl(7, { "gone" }, 7, {}) }
+            assert.is_true(marks.complete(head_work, {}, index_work))
         end)
     end)
 
@@ -134,40 +134,40 @@ describe("HEAD↔worktree marks", function()
 
         it("names the hunk whose staged line was edited again", function()
             local head_work = { hl(1, { "foo" }, 1, { "FOOD" }) }
-            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
-            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
-            local m = marks.classify(head_work, cached, unstaged)
-            assert.are.same({ 1 }, marks.hidden_in({ "foo" }, head_work, cached, m))
+            local head_index = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local index_work = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            local m = marks.classify(head_work, head_index, index_work)
+            assert.are.same({ 1 }, marks.hidden_in({ "foo" }, head_work, head_index, m))
         end)
 
         -- HEAD 1..5, line 3 staged as 3x, then 4 edited on top in the worktree
         it("names nothing when the view holds what the index does", function()
             local head_work = { hl(3, { "3", "4" }, 3, { "3x", "4y" }) }
-            local cached = { hl(3, { "3" }, 3, { "3x" }) }
-            local unstaged = { hl(4, { "4" }, 4, { "4y" }) }
-            local m = marks.classify(head_work, cached, unstaged)
-            assert.are.same({}, marks.hidden_in(head, head_work, cached, m))
+            local head_index = { hl(3, { "3" }, 3, { "3x" }) }
+            local index_work = { hl(4, { "4" }, 4, { "4y" }) }
+            local m = marks.classify(head_work, head_index, index_work)
+            assert.are.same({}, marks.hidden_in(head, head_work, head_index, m))
         end)
     end)
 
     describe("local hunks over staged content", function()
         it("names a local hunk rewriting a line the index added", function()
-            local cached = { hl(1, { "foo" }, 1, { "FOO" }) }
-            local unstaged = { hl(1, { "FOO" }, 1, { "FOOD" }) }
-            assert.are.same({ 1 }, marks.restaged(unstaged, cached))
+            local head_index = { hl(1, { "foo" }, 1, { "FOO" }) }
+            local index_work = { hl(1, { "FOO" }, 1, { "FOOD" }) }
+            assert.are.same({ 1 }, marks.restaged(index_work, head_index))
         end)
 
         it("names a local hunk putting back a line the index deleted", function()
-            local cached = { hl(3, { "3" }, 2, {}) }
-            local unstaged = { hl(2, {}, 3, { "3" }) }
-            assert.are.same({ 1 }, marks.restaged(unstaged, cached))
+            local head_index = { hl(3, { "3" }, 2, {}) }
+            local index_work = { hl(2, {}, 3, { "3" }) }
+            assert.are.same({ 1 }, marks.restaged(index_work, head_index))
         end)
 
         it("leaves out local hunks on lines the index left alone", function()
-            local cached = { hl(3, { "3" }, 3, { "3x" }) }
+            local head_index = { hl(3, { "3" }, 3, { "3x" }) }
             local beside = hl(3, {}, 4, { "new" }) -- an insertion after the staged line
             local apart = hl(5, { "5" }, 6, { "5y" })
-            assert.are.same({}, marks.restaged({ beside, apart }, cached))
+            assert.are.same({}, marks.restaged({ beside, apart }, head_index))
         end)
     end)
 

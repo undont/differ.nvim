@@ -8,21 +8,22 @@ local selected = require("differ.git.staging.selection")
 describe("git.staging.selection", function()
     it("refuses to bring back an unterminated line with a staged line after it", function()
         -- HEAD's unterminated b and the worktree's terminated b are one token
-        local head_work, cached, unstaged = content.three_diffs("/", "f", "b", "b\ne\n", "b\ne\n")
+        local head_work, head_index, index_work =
+            content.three_diffs("/", "f", "b", "b\ne\n", "b\ne\n")
         local selection = { old = { [1] = true }, new = { [1] = true } }
         local text, after, refusal =
-            selected.stage("/", "f", head_work, cached, unstaged, selection, false)
+            selected.stage("/", "f", head_work, head_index, index_work, selection, false)
         assert.is_nil(text)
         assert.is_nil(after)
         assert.are.equal("ending_after", refusal)
     end)
 
     it("unstages a deletion the read-back marks on another line of its run", function()
-        local head_work, cached, unstaged =
+        local head_work, head_index, index_work =
             content.three_diffs("/", "f", "a\na\na\n", "a\nx9\na\n", "x9\na")
         local selection = { old = { [3] = true }, new = { [1] = true, [2] = true } }
         local text, after, refusal =
-            selected.stage("/", "f", head_work, cached, unstaged, selection, false)
+            selected.stage("/", "f", head_work, head_index, index_work, selection, false)
         assert.is_nil(refusal)
         assert.is_not_nil(after)
         assert.are.equal("a\na\n", text)
@@ -65,17 +66,25 @@ describe("git.staging.selection", function()
         end
 
         it("hunk u refuses rather than guess where b went", function()
-            local head_work, cached, unstaged =
+            local head_work, head_index, index_work =
                 content.three_diffs("/", "f", t.head, t.index, t.work)
             local text = require("differ.model.stage").next_index(
                 head_work,
-                cached,
-                unstaged,
+                head_index,
+                index_work,
                 head_work.hunks[1],
                 false
             )
-            local after, refusal =
-                selected.checked("/", "f", head_work, cached, unstaged, selection, false, text)
+            local after, refusal = selected.checked(
+                "/",
+                "f",
+                head_work,
+                head_index,
+                index_work,
+                selection,
+                false,
+                text
+            )
             assert.is_nil(after)
             assert.are.equal("unshown", refusal)
         end)
@@ -99,16 +108,17 @@ describe("git.staging.selection", function()
         local selection = { old = { [3] = true }, new = { [2] = true, [3] = true } }
 
         it("stages new lines after the index's d", function()
-            local head_work, cached, unstaged = c_pairs()
-            local text = selected.stage("/", "f", head_work, cached, unstaged, selection, true)
+            local head_work, head_index, index_work = c_pairs()
+            local text =
+                selected.stage("/", "f", head_work, head_index, index_work, selection, true)
             assert.are.equal("c\nd\nc\nx4\n", text)
         end)
 
         it("refuses an index with the d moved below a c", function()
-            local head_work, cached, unstaged = c_pairs()
+            local head_work, head_index, index_work = c_pairs()
             local text = "c\nc\nd\nx4\n"
             local after, refusal =
-                selected.checked("/", "f", head_work, cached, unstaged, selection, true, text)
+                selected.checked("/", "f", head_work, head_index, index_work, selection, true, text)
             assert.is_nil(after)
             assert.are.equal("moves_others", refusal)
         end)
@@ -211,16 +221,16 @@ describe("git.staging.selection", function()
         it("refuses a worktree that leaves out a line it marks unchanged", function()
             local t =
                 { head = "b\nc\nb\na\na\na\n", index = "b\nc\nb\na\na\na\n", work = "a\nb\na\na\n" }
-            local head_work, cached, unstaged =
+            local head_work, head_index, index_work =
                 content.three_diffs("/", "f", t.head, t.index, t.work)
             local selection = { old = {}, new = { [1] = true } }
             local stage = require("differ.model.stage")
-            local m = stage.marks_of(head_work, cached, unstaged)
+            local m = stage.marks_of(head_work, head_index, index_work)
             local want =
-                stage.reverted(head_work, m, selection, stage.index_origins(head_work, cached))
+                stage.reverted(head_work, m, selection, stage.index_origins(head_work, head_index))
             local before = {
                 head_work = head_work,
-                cached = cached,
+                head_index = head_index,
                 hidden = false,
                 edits = require("differ.git.staging.write").edits,
                 take = false,

@@ -13,17 +13,22 @@ local M = {}
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
+---@param head_index differ.DiffModel
 ---@param hidden boolean  -- stage.marks_of's
 ---@param selection differ.model.Selection
 ---@param want differ.model.LineStates
 ---@param take boolean
 ---@param text string
 ---@return differ.DiffModel[]|nil after, "moves_others"|"unshown"|nil refusal
-local function read_back(root, path, head_work, cached, hidden, selection, want, take, text)
+local function read_back(root, path, head_work, head_index, hidden, selection, want, take, text)
     local after = { content.three_diffs(root, path, head_work.old_text, text, head_work.new_text) }
-    local before =
-        { head_work = head_work, cached = cached, hidden = hidden, edits = edits, take = take }
+    local before = {
+        head_work = head_work,
+        head_index = head_index,
+        hidden = hidden,
+        edits = edits,
+        take = take,
+    }
     local ok, unshown =
         require("differ.model.stage").reads_as(want, before, selection, unpack(after))
     if not ok then
@@ -37,20 +42,20 @@ end
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param text string
 ---@return differ.DiffModel[]|nil after, "unread"|"moves_others"|"unshown"|nil refusal
-function M.checked(root, path, head_work, cached, unstaged, selection, take, text)
+function M.checked(root, path, head_work, head_index, index_work, selection, take, text)
     local stage = require("differ.model.stage")
-    local m, hidden, _, unread = stage.marks_of(head_work, cached, unstaged)
+    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
     if unread then
         return nil, "unread"
     end
     local want = stage.flipped(head_work, m, selection, take)
-    return read_back(root, path, head_work, cached, hidden, selection, want, take, text)
+    return read_back(root, path, head_work, head_index, hidden, selection, want, take, text)
 end
 
 -- the index s (`take`) or u on `selection` writes and the pairs it makes. nil and why
@@ -59,18 +64,18 @@ end
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return string|nil text, differ.DiffModel[]|nil after, differ.git.SelectionRefusal|nil refusal
-function M.stage(root, path, head_work, cached, unstaged, selection, take)
+function M.stage(root, path, head_work, head_index, index_work, selection, take)
     local stage = require("differ.model.stage")
-    local text, refused = stage.select_index(head_work, cached, selection, take)
+    local text, refused = stage.select_index(head_work, head_index, selection, take)
     if refused then
         return nil, nil, refused
     end
-    local m, hidden, _, unread = stage.marks_of(head_work, cached, unstaged)
+    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
     local want = stage.flipped(head_work, m, selection, take)
     if want.enter == 0 and want.leave == 0 then
         return nil
@@ -83,7 +88,7 @@ function M.stage(root, path, head_work, cached, unstaged, selection, take)
         return nil, nil, "unread"
     end
     local after, refusal =
-        read_back(root, path, head_work, cached, hidden, selection, want, take, text)
+        read_back(root, path, head_work, head_index, hidden, selection, want, take, text)
     if not after then
         return nil, nil, refusal
     end
@@ -95,17 +100,17 @@ end
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return string|nil index_text, differ.DiffModel|nil reverted, differ.git.SelectionRefusal|nil refusal
-function M.revert(root, path, head_work, cached, unstaged, selection)
+function M.revert(root, path, head_work, head_index, index_work, selection)
     local stage = require("differ.model.stage")
-    local text, refused = stage.select_index(head_work, cached, selection, false)
+    local text, refused = stage.select_index(head_work, head_index, selection, false)
     if refused then
         return nil, nil, refused
     end
-    local origins = stage.index_origins(head_work, cached)
+    local origins = stage.index_origins(head_work, head_index)
     local reverted, refusal = stage.select_worktree(head_work, selection, origins)
     if refusal then
         return nil, nil, refusal
@@ -113,14 +118,14 @@ function M.revert(root, path, head_work, cached, unstaged, selection)
     if not reverted then
         return nil
     end
-    local index_text = text or cached.new_text
-    local m, hidden = stage.marks_of(head_work, cached, unstaged)
+    local index_text = text or head_index.new_text
+    local m, hidden = stage.marks_of(head_work, head_index, index_work)
     local want = stage.reverted(head_work, m, selection, origins)
     local after =
         { content.three_diffs(root, path, head_work.old_text, index_text, reverted.old_text) }
     local before = {
         head_work = head_work,
-        cached = cached,
+        head_index = head_index,
         hidden = hidden,
         edits = edits,
         take = false,

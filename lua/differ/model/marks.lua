@@ -31,13 +31,13 @@ end
 -- deletes is staged when HEAD↔index deletes it too (the index has already dropped it);
 -- a worktree line HEAD↔worktree adds is staged unless index↔worktree adds it (anything
 -- that pair leaves as context is in the index already)
----@param head_work differ.Hunk[]  -- HEAD↔worktree
----@param cached differ.Hunk[]     -- HEAD↔index
----@param unstaged differ.Hunk[]   -- index↔worktree
+---@param head_work differ.Hunk[]   -- HEAD↔worktree
+---@param head_index differ.Hunk[]  -- HEAD↔index
+---@param index_work differ.Hunk[]  -- index↔worktree
 ---@return differ.model.Marks
-function M.classify(head_work, cached, unstaged)
-    local dropped = covered(cached, "old")
-    local fresh = covered(unstaged, "new")
+function M.classify(head_work, head_index, index_work)
+    local dropped = covered(head_index, "old")
+    local fresh = covered(index_work, "new")
     local marks = { old = {}, new = {} }
     for _, h in ipairs(head_work) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -1353,12 +1353,12 @@ function M.shared_with(head_work, anchor, pair, side)
 end
 
 -- the HEAD↔index hunks that touch a HEAD↔worktree hunk
----@param h differ.Hunk        -- HEAD↔worktree
----@param cached differ.Hunk[] -- HEAD↔index
+---@param h differ.Hunk             -- HEAD↔worktree
+---@param head_index differ.Hunk[]  -- HEAD↔index
 ---@return differ.Hunk[]
-local function touching(h, cached)
+local function touching(h, head_index)
     local out = {}
-    for _, c in ipairs(cached) do
+    for _, c in ipairs(head_index) do
         if M.meets(h, "old", c, "old") then
             out[#out + 1] = c
         end
@@ -1375,24 +1375,24 @@ end
 
 -- the HEAD↔worktree hunks whose lines, read as the marks say, don't hold what the index
 -- does there. by content, so a hunk whose index lines differ only in order isn't counted
----@param head string[]            -- HEAD's lines
----@param head_work differ.Hunk[]  -- HEAD↔worktree
----@param cached differ.Hunk[]     -- HEAD↔index
+---@param head string[]             -- HEAD's lines
+---@param head_work differ.Hunk[]   -- HEAD↔worktree
+---@param head_index differ.Hunk[]  -- HEAD↔index
 ---@param marks differ.model.Marks
 ---@return integer[]
-function M.hidden_in(head, head_work, cached, marks)
+function M.hidden_in(head, head_work, head_index, marks)
     local out = {}
     for i, h in ipairs(head_work) do
-        local in_head_work, in_cached, region = {}, {}, {}
+        local in_head_work, in_head_index, region = {}, {}, {}
         local ua, ub = span(h, "old")
         for l = ua, ub - 1 do
             in_head_work[l], region[l] = true, true
         end
         local actual = {}
-        for _, c in ipairs(touching(h, cached)) do
+        for _, c in ipairs(touching(h, head_index)) do
             local ca, cb = span(c, "old")
             for l = ca, cb - 1 do
-                in_cached[l], region[l] = true, true
+                in_head_index[l], region[l] = true, true
             end
             for _, line in ipairs(c.new_lines or {}) do
                 actual[#actual + 1] = line
@@ -1400,7 +1400,7 @@ function M.hidden_in(head, head_work, cached, marks)
         end
         local implied = {}
         for l in pairs(region) do
-            if not in_cached[l] then
+            if not in_head_index[l] then
                 actual[#actual + 1] = head[l]
             end
             if not in_head_work[l] or not marks.old[l] then
@@ -1434,18 +1434,18 @@ end
 -- the index↔worktree hunks that change staged content again: one that rewrites or drops
 -- a line the index added, or puts back lines the index deleted. what they undo is
 -- staged content the HEAD↔worktree diff can't show
----@param unstaged differ.Hunk[]  -- index↔worktree
----@param cached differ.Hunk[]    -- HEAD↔index
+---@param index_work differ.Hunk[]  -- index↔worktree
+---@param head_index differ.Hunk[]  -- HEAD↔index
 ---@return integer[]
-function M.restaged(unstaged, cached)
-    local added = covered(cached, "new")
+function M.restaged(index_work, head_index)
+    local added = covered(head_index, "new")
     local out = {}
-    for i, h in ipairs(unstaged) do
+    for i, h in ipairs(index_work) do
         local hit = false
         for l = h.old_start, h.old_start + h.old_count - 1 do
             hit = hit or added[l] == true
         end
-        for _, c in ipairs(cached) do
+        for _, c in ipairs(head_index) do
             hit = hit or puts_back(h, c)
         end
         if hit then
@@ -1476,11 +1476,11 @@ function M.shift(hunks, lnum, from)
 end
 
 -- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
----@param cached differ.Hunk[]  -- HEAD↔index
----@param lnum integer          -- index line
+---@param head_index differ.Hunk[]  -- HEAD↔index
+---@param lnum integer              -- index line
 ---@return integer
-local function head_line(cached, lnum)
-    return lnum + M.shift(cached, lnum, "new")
+local function head_line(head_index, lnum)
+    return lnum + M.shift(head_index, lnum, "new")
 end
 
 -- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot
@@ -1489,17 +1489,17 @@ end
 -- lines differently, and the change is real but off-screen. a false puts the note on
 -- the winbar, which says how many hunks hold some of it rather than why
 ---@param head_work differ.Hunk[]
----@param cached differ.Hunk[]
----@param unstaged differ.Hunk[]
+---@param head_index differ.Hunk[]
+---@param index_work differ.Hunk[]
 ---@return boolean
-function M.complete(head_work, cached, unstaged)
+function M.complete(head_work, head_index, index_work)
     -- the index differs from HEAD and the worktree matches it
-    if #head_work == 0 and (#cached > 0 or #unstaged > 0) then
+    if #head_work == 0 and (#head_index > 0 or #index_work > 0) then
         return false
     end
     -- unstaged or staged content sitting outside every hunk
     local shows_new = covered(head_work, "new")
-    for _, h in ipairs(unstaged) do
+    for _, h in ipairs(index_work) do
         for l = h.new_start, h.new_start + h.new_count - 1 do
             if not shows_new[l] then
                 return false
@@ -1507,7 +1507,7 @@ function M.complete(head_work, cached, unstaged)
         end
     end
     local shows_old = covered(head_work, "old")
-    for _, h in ipairs(cached) do
+    for _, h in ipairs(head_index) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if not shows_old[l] then
                 return false
@@ -1517,13 +1517,13 @@ function M.complete(head_work, cached, unstaged)
     -- an index line the worktree replaces shows only as the HEAD line it still is: one
     -- the index added (or rewrote) reaches neither side, and one whose HEAD line the
     -- HEAD↔worktree leaves as context is shown as committed
-    local added = covered(cached, "new")
-    for _, h in ipairs(unstaged) do
+    local added = covered(head_index, "new")
+    for _, h in ipairs(index_work) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if added[l] then
                 return false -- a line only the index holds
             end
-            if not shows_old[head_line(cached, l)] then
+            if not shows_old[head_line(head_index, l)] then
                 return false -- a line the worktree replaced, outside every hunk
             end
         end
@@ -1532,7 +1532,7 @@ function M.complete(head_work, cached, unstaged)
     -- cancels out of comparing that with HEAD↔index's net change, so the counts check
     -- from hunks alone; a mismatch is a line the two pairs align differently
     local shown, net = 0, 0
-    local m = M.classify(head_work, cached, unstaged)
+    local m = M.classify(head_work, head_index, index_work)
     for _, h in ipairs(head_work) do
         shown = shown - h.old_count
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -1546,7 +1546,7 @@ function M.complete(head_work, cached, unstaged)
             end
         end
     end
-    for _, h in ipairs(cached) do
+    for _, h in ipairs(head_index) do
         net = net + h.new_count - h.old_count
     end
     if shown ~= net then
