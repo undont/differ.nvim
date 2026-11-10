@@ -1,7 +1,7 @@
--- a seeded fuzz of the union view's drawn marks where the index doesn't cut cleanly into
--- blocks. each index is HEAD with a random staged state per union row, built straight
--- from the union hunks, so the true marks are known. a wrong draw is ambiguous where the
--- drawn marks also place the index at cost 0, else a reading bug. needs vim.text.diff
+-- a seeded fuzz of the diff view's drawn marks where the index doesn't cut cleanly into
+-- blocks. each index is HEAD with a random staged state per HEAD↔worktree row, built
+-- straight from its hunks, so the true marks are known. a wrong draw is ambiguous where
+-- the drawn marks also place the index at cost 0, else a reading bug. needs vim.text.diff
 
 local apply = require("differ.model.apply")
 local content = require("differ.git.content")
@@ -645,19 +645,19 @@ end
 
 -- the reading the view draws `index` from, nil where it draws from clean blocks or
 -- the file is too big to read
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param ended differ.DiffModel
 ---@param index string
 ---@return differ.model.Reading|nil
-local function drawn_reading(union, ended, index)
-    local blocks = stage.index_blocks(union, index)
+local function drawn_reading(head_work, ended, index)
+    local blocks = stage.index_blocks(head_work, index)
     if blocks then
         local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
         if held and #hidden_in == 0 then
             return nil
         end
     end
-    return stage.reading(union, index, true)
+    return stage.reading(head_work, index, true)
 end
 
 -- scores `read`'s doubt_in against every cheapest reading of the index
@@ -769,16 +769,19 @@ end
 ---@param keep integer  -- cases kept
 function M.score(report, head, work, keep)
     report.triples = report.triples + 1
-    local union = content.three_diffs("/", "f", head, head, work)
-    local ended = apply.ended(union)
+    local head_work = content.three_diffs("/", "f", head, head, work)
+    local ended = apply.ended(head_work)
     local truth = truth_of(ended)
     if not truth then
         report.skipped = report.skipped + 1
         return
     end
-    assert(fuzz.placed(union, truth.index, keep_of(truth.marks)), "truth doesn't place its index")
+    assert(
+        fuzz.placed(head_work, truth.index, keep_of(truth.marks)),
+        "truth doesn't place its index"
+    )
     local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
-    local blocks = stage.index_blocks(union, truth.index)
+    local blocks = stage.index_blocks(head_work, truth.index)
     if blocks then
         local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
         if held and #hidden_in == 0 then
@@ -787,12 +790,12 @@ function M.score(report, head, work, keep)
         end
     end
     report.unclean = report.unclean + 1
-    local drawn, hidden, _, unread = stage.marks_of(union, cached, unstaged)
+    local drawn, hidden, _, unread = stage.marks_of(head_work, cached, unstaged)
     if unread then
         report.unread = report.unread + 1
     end
     local t = { head = head, index = truth.index, work = work }
-    local read = drawn_reading(union, ended, truth.index)
+    local read = drawn_reading(head_work, ended, truth.index)
     local doubt_in, shown = {}, {} ---@type integer[], integer[]
     if read then
         score_doubt(report, ended, read, t, keep)
@@ -804,7 +807,7 @@ function M.score(report, head, work, keep)
     end
     local possible = M.possible(
         ended.hunks,
-        text_util.ended_lines(union.old_text),
+        text_util.ended_lines(head_work.old_text),
         text_util.ended_lines(truth.index)
     )
     local wrong_rows, doubtful = {}, false
@@ -841,7 +844,7 @@ function M.score(report, head, work, keep)
     local what = "ambiguous"
     if hidden then
         what = "hidden"
-    elseif not fuzz.placed(union, truth.index, keep_of(drawn)) then
+    elseif not fuzz.placed(head_work, truth.index, keep_of(drawn)) then
         what = "unplaced"
     end
     report[what] = report[what] + 1
@@ -940,17 +943,17 @@ end
 ---@param keep integer  -- cases kept
 function M.score_hidden(report, head, work, keep)
     report.triples = report.triples + 1
-    local union = content.three_diffs("/", "f", head, head, work)
-    local ended = apply.ended(union)
-    local truth = truth_of(ended, text_util.ended_lines(union.old_text))
+    local head_work = content.three_diffs("/", "f", head, head, work)
+    local ended = apply.ended(head_work)
+    local truth = truth_of(ended, text_util.ended_lines(head_work.old_text))
     if not truth or not truth.hidden_in then
         report.skipped = report.skipped + 1
         return
     end
     local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
-    local drawn, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
+    local drawn, hidden, hidden_in = stage.marks_of(head_work, cached, unstaged)
     local t = { head = head, index = truth.index, work = work }
-    local read = drawn_reading(union, ended, truth.index)
+    local read = drawn_reading(head_work, ended, truth.index)
     local doubt_in = {} ---@type integer[]
     if read then
         score_doubt(report, ended, read, t, keep)
@@ -992,7 +995,7 @@ function M.score_hidden(report, head, work, keep)
     if not hidden then
         report.wrong_bare_away = report.wrong_bare_away + 1
         report.away_flagged = report.away_flagged + (covered and 1 or 0)
-    elseif stage.reading(union, truth.index).cost <= 1 then
+    elseif stage.reading(head_work, truth.index).cost <= 1 then
         report.wrong_bare_tie = report.wrong_bare_tie + 1
         what = "! on another hunk, equal cost"
         if copies_only(touched(ended, bare), truth.marks, drawn) then
@@ -1159,7 +1162,7 @@ end
 ---@param h differ.fuzz.HiddenReport
 ---@param out string[]
 local function detail(p, h, out)
-    layout.heading(out, "draws, every row from the union", "one count per file")
+    layout.heading(out, "draws, every row from HEAD↔worktree", "one count per file")
     layout.grid(out, { "" }, {
         { "files", { p.triples } },
         { "no index holds the chosen states", { p.skipped }, indent = 1 },

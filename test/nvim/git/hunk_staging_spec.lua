@@ -379,9 +379,9 @@ describe(":Differ diff hunk staging", function()
     end)
 
     -- an "MM" file takes one row diffing HEAD↔worktree. the origin line is a worktree
-    -- line, and the union pair's new side is the worktree, so it lands exactly rather
-    -- than being read in index coordinates and snapping to a stray hunk
-    it("opens an MM file on its union pair, holding the exact origin line", function()
+    -- line, and the HEAD↔worktree pair's new side is the worktree, so it lands exactly
+    -- rather than being read in index coordinates and snapping to a stray hunk
+    it("opens an MM file on its HEAD↔worktree pair, holding the exact origin line", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
         git(root, "commit", "-q", "-am", "ten lines")
@@ -1349,7 +1349,7 @@ func getDownloadSpeed() {
     end)
 
     -- the worktree deletes line 3, just above the staged 4x: index↔worktree holds the
-    -- deletion as an insertion point that sits before the union hunk's first line
+    -- deletion as an insertion point that sits before the HEAD↔worktree hunk's first line
     it("stages a deletion just above a staged edit", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
@@ -1549,7 +1549,7 @@ func getDownloadSpeed() {
         )
     end
 
-    -- repeated lines the pairs line up another way than the union: the index a b b
+    -- repeated lines the pairs line up another way than HEAD↔worktree: the index a b b
     -- they make reads as hunk 1 staged and hunk 2 as it was
     it("stages a hunk next to repeated lines the pairs line up differently", function()
         local root, p, v = staged_as("b\nb\nb\n", "b\nb\n", "a\nb\nx\n")

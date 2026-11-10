@@ -19,9 +19,9 @@ describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
 
     -- on a two-row file X refuses a staged hunk, since reverting only the worktree copy
-    -- would leave index and worktree differing the opposite way round. a union row has
-    -- both sides in one diff, so it takes them both and the refusal doesn't apply
-    it("X on a staged union hunk drops it from the index and the worktree", function()
+    -- would leave index and worktree differing the opposite way round. a HEAD↔worktree
+    -- row has both sides in one diff, so it takes them both and the refusal doesn't apply
+    it("X on a staged HEAD↔worktree hunk drops it from the index and the worktree", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
         git(root, "commit", "-q", "-am", "ten lines")
@@ -239,7 +239,7 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- repeated lines the pairs line up another way than the union: X follows the drawn
+    -- repeated lines the pairs line up unlike HEAD↔worktree: X follows the drawn
     -- reading, hunk 1's b dropped and hunk 2's x held, and leaves the other hunk as drawn
     for idx, want in ipairs({
         { index = "b\nx\nx\na\n", work = "b\nx\nx\n" },

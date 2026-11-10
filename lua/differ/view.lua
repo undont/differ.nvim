@@ -96,8 +96,8 @@ local armed_view = nil
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field no_revert_lines? string  -- why X on a selection does nothing here
 ---@field refresh fun()
----@field marks? differ.model.Marks  -- union source: which lines the index holds, kept current by the source
----@field hidden? boolean  -- union source: some staged content isn't on screen
+---@field marks? differ.model.Marks  -- HEAD↔worktree source: which lines the index holds, kept current by the source
+---@field hidden? boolean  -- HEAD↔worktree source: some staged content isn't on screen
 ---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
 ---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
 ---@field no_local? string  -- why dw does nothing here, in place of the default
@@ -1432,8 +1432,8 @@ function View:_line_staged(line)
     return false
 end
 
--- a slot's staged state. only a union source has a middle: a hunk git merged out of a
--- change staged and another made after it holds some lines the index has and some it
+-- a slot's staged state. only a HEAD↔worktree source has a middle: a hunk git merged out
+-- of a change staged and another made after it holds some lines the index has and some it
 -- doesn't, and s and u both have work to do on it
 ---@param idx integer
 ---@return differ.model.HunkState

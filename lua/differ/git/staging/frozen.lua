@@ -240,8 +240,8 @@ local function for_index(ctx, entry, model, preview)
         ---@param m differ.DiffModel
         ---@return differ.Hunk[]|nil drift, string|nil work
         local function drift_of(m)
-            local union = three_models(ctx.root, entry)
-            if not union then
+            local head_work = three_models(ctx.root, entry)
+            if not head_work then
                 return nil
             end
             local drift = require("differ.model.diff").build({
@@ -249,9 +249,9 @@ local function for_index(ctx, entry, model, preview)
                 old_rev = "INDEX",
                 new_rev = "WORKTREE",
                 old_text = m.new_text,
-                new_text = union.new_text,
+                new_text = head_work.new_text,
             }).hunks
-            return drift, union.new_text
+            return drift, head_work.new_text
         end
         -- a staged hunk whose index lines the file doesn't hold goes with u
         staging.unheld = function(m, idx)

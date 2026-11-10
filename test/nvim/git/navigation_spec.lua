@@ -684,11 +684,11 @@ describe(":Differ diff hunk staging", function()
         p2:close()
     end)
 
-    -- HEAD's "x x" pair loses one line in the worktree, which the union shows under the
-    -- first hunk. the index's x x reads as hunk 1's x held and hunk 2's dropped, so s on
-    -- either takes the worktree's lines there and keeps the other as drawn
+    -- HEAD's "x x" pair loses one line in the worktree, which HEAD↔worktree shows under
+    -- the first hunk. the index's x x reads as hunk 1's x held and hunk 2's dropped, so s
+    -- on either takes the worktree's lines there and keeps the other as drawn
     for idx, want in ipairs({ "1\n2x\nx\nx\n5x\n", "1\nx\n5x\n" }) do
-        it(("stages hunk %d next to a pair the union lines up differently"):format(idx), function()
+        it(("stages hunk %d near a pair HEAD↔worktree aligns otherwise"):format(idx), function()
             local root = fresh_repo()
             write(root .. "/a.lua", "1\n2\nx\nx\n5\n")
             git(root, "commit", "-q", "-am", "five")

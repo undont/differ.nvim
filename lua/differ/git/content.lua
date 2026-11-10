@@ -184,7 +184,7 @@ end
 ---@param head string
 ---@param index string
 ---@param work string
----@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
+---@return differ.DiffModel head_work, differ.DiffModel cached, differ.DiffModel unstaged
 function M.three_diffs(root, path, head, index, work)
     local build = require("differ.model.diff").build
     local function pair(old_rev, new_rev, old_text, new_text)
@@ -256,7 +256,7 @@ end
 ---@param entry differ.FileEntry
 ---@param shown differ.DiffModel|nil -- the row's HEAD↔worktree model, read in this action
 ---@param index differ.git.Blob|nil  -- the index entry's blob, identified in this action
----@return differ.DiffModel|nil union
+---@return differ.DiffModel|nil head_work
 ---@return differ.DiffModel|nil cached
 ---@return differ.DiffModel|nil unstaged
 ---@return differ.git.Blob|nil index
@@ -272,8 +272,8 @@ function M.three_models(root, entry, shown, index)
         head = M.read(HEAD, root, entry.previous_path or entry.path) or ""
         work = M.read(WORKTREE, root, entry.path) or ""
     end
-    local union, cached, unstaged = M.three_diffs(root, entry.path, head, index.text, work)
-    return union, cached, unstaged, index
+    local head_work, cached, unstaged = M.three_diffs(root, entry.path, head, index.text, work)
+    return head_work, cached, unstaged, index
 end
 
 return M

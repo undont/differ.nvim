@@ -1,7 +1,7 @@
 -- which lines of a HEAD↔worktree diff the index already holds.
--- each real pair shares one side with the union (HEAD↔index shares HEAD, index↔worktree
--- shares the worktree), so a displayed line is classified by whichever pair shares its
--- side and the two never have to be composed. pure lua, no nvim API
+-- each real pair shares one side with HEAD↔worktree (HEAD↔index shares HEAD,
+-- index↔worktree shares the worktree), so a displayed line is classified by whichever
+-- pair shares its side and the two never have to be composed. pure lua, no nvim API
 
 local M = {}
 
@@ -27,19 +27,19 @@ local function covered(hunks, side)
     return out
 end
 
--- classify every line of a HEAD↔worktree diff as staged or not. a HEAD line the union
+-- classify every line of a HEAD↔worktree diff as staged or not. a HEAD line HEAD↔worktree
 -- deletes is staged when HEAD↔index deletes it too (the index has already dropped it);
--- a worktree line the union adds is staged unless index↔worktree adds it (anything
+-- a worktree line HEAD↔worktree adds is staged unless index↔worktree adds it (anything
 -- that pair leaves as context is in the index already)
----@param union differ.Hunk[]     -- HEAD↔worktree
----@param cached differ.Hunk[]    -- HEAD↔index
----@param unstaged differ.Hunk[]  -- index↔worktree
+---@param head_work differ.Hunk[]  -- HEAD↔worktree
+---@param cached differ.Hunk[]     -- HEAD↔index
+---@param unstaged differ.Hunk[]   -- index↔worktree
 ---@return differ.model.Marks
-function M.classify(union, cached, unstaged)
+function M.classify(head_work, cached, unstaged)
     local dropped = covered(cached, "old")
     local fresh = covered(unstaged, "new")
     local marks = { old = {}, new = {} }
-    for _, h in ipairs(union) do
+    for _, h in ipairs(head_work) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             marks.old[l] = dropped[l] or false
         end
@@ -80,7 +80,7 @@ function M.state(marks, h)
     return "partial"
 end
 
--- the HEAD line a union hunk's lines start at, and the first HEAD line after them
+-- the HEAD line a HEAD↔worktree hunk's lines start at, and the first HEAD line after them
 ---@param h differ.Hunk
 ---@return integer first, integer after
 local function old_bounds(h)
@@ -149,15 +149,15 @@ end
 -- mostly repeated lines leaves any_lengths a length to try at nearly every line
 local MAX_STEPS = 1e6
 
--- the ways to cut the index into a block per union hunk, with HEAD's unchanged lines
--- between them: the cut when there is only one, and how many there are (0, 1, or 2 for
--- two or more, or for a search past MAX_STEPS)
----@param union differ.Hunk[]
+-- the ways to cut the index into a block per HEAD↔worktree hunk, with HEAD's unchanged
+-- lines between them: the cut when there is only one, and how many there are (0, 1, or 2
+-- for two or more, or for a search past MAX_STEPS)
+---@param head_work differ.Hunk[]
 ---@param head string[]
 ---@param index string[]
 ---@param lengths differ.model.BlockLengths
 ---@return string[][] cut, integer ways
-local function cut(union, head, index, lengths)
+local function cut(head_work, head, index, lengths)
     local ways = {} ---@type table<string, integer>  -- "hunk:index line" -> ways through
     local picks = {} ---@type table<string, integer[]>  -- "hunk:index line" -> first block's {at, n}
     local where = {} ---@type table<string, integer[]>
@@ -166,7 +166,7 @@ local function cut(union, head, index, lengths)
         table.insert(where[line], l)
     end
     local steps = 0
-    ---@param i integer     -- the next union hunk
+    ---@param i integer     -- the next HEAD↔worktree hunk
     ---@param from integer  -- the next HEAD line
     ---@param at integer    -- the next index line
     ---@return integer
@@ -175,7 +175,7 @@ local function cut(union, head, index, lengths)
         if ways[key] then
             return ways[key]
         end
-        local h = union[i]
+        local h = head_work[i]
         local first, after = #head + 1, #head + 1
         if h then
             first, after = old_bounds(h)
@@ -224,7 +224,7 @@ local function cut(union, head, index, lengths)
     if total ~= 1 then
         return out, total -- a cut that isn't the only one is never read
     end
-    for i in ipairs(union) do
+    for i in ipairs(head_work) do
         local pick = picks[i .. ":" .. at]
         local block = {}
         for l = pick[1], pick[1] + pick[2] - 1 do
@@ -236,16 +236,16 @@ local function cut(union, head, index, lengths)
     return out, total
 end
 
--- the index's lines at each union hunk, when the index holds every unchanged line
+-- the index's lines at each HEAD↔worktree hunk, when the index holds every unchanged line
 -- between them. a cut where every block is one of its hunk's sides wins; nil when the
 -- index can't be cut, or can be cut more than one way
----@param union differ.Hunk[]  -- HEAD↔worktree
----@param head string[]        -- HEAD's lines
----@param index string[]       -- the index's lines
+---@param head_work differ.Hunk[]  -- HEAD↔worktree
+---@param head string[]            -- HEAD's lines
+---@param index string[]           -- the index's lines
 ---@return string[][]|nil
-function M.blocks(union, head, index)
+function M.blocks(head_work, head, index)
     for _, lengths in ipairs({ whole_lengths, any_lengths }) do
-        local found, ways = cut(union, head, index, lengths)
+        local found, ways = cut(head_work, head, index, lengths)
         if ways == 1 then
             return found
         end
@@ -407,16 +407,16 @@ local function mark_block(h, block, marks)
     return true, mark_origins(h, origins, marks)
 end
 
--- marks for the union hunks from the index's block at each, the hunks whose block
+-- marks for the HEAD↔worktree hunks from the index's block at each, the hunks whose block
 -- holds a line neither side has, and where each block's lines come from. nil when a
 -- hunk is too big to compare
----@param union differ.Hunk[]
+---@param head_work differ.Hunk[]
 ---@param blocks string[][]
 ---@return differ.model.Marks|nil marks, integer[] hidden, (differ.model.Origin|false)[][] origins
-function M.of_blocks(union, blocks)
+function M.of_blocks(head_work, blocks)
     local marks = { old = {}, new = {} }
     local hidden, all = {}, {}
-    for i, h in ipairs(union) do
+    for i, h in ipairs(head_work) do
         local origins = M.origins(h, blocks[i])
         if not origins then
             return nil, {}, {}
@@ -430,12 +430,12 @@ function M.of_blocks(union, blocks)
 end
 
 ---@class differ.model.Segment
----@field line? string     -- a HEAD line the union leaves unchanged
----@field hunk? integer    -- else a union hunk
+---@field line? string     -- a HEAD line HEAD↔worktree leaves unchanged
+---@field hunk? integer    -- else a HEAD↔worktree hunk
 ---@field olds? string[]
 ---@field news? string[]
 
--- the union as rows in file order: each unchanged line, and each hunk as one segment
+-- HEAD↔worktree as rows in file order: each unchanged line, and each hunk as one segment
 ---@param hunks differ.Hunk[]
 ---@param head string[]
 ---@return differ.model.Segment[]
@@ -1264,7 +1264,7 @@ local function unowned_in(segs, walks)
     return out
 end
 
--- the index read against the union's rows: unchanged lines held or missing, each
+-- the index read against HEAD↔worktree's rows: unchanged lines held or missing, each
 -- hunk's old lines kept or dropped and new lines held or not in any interleaving,
 -- other index lines hidden. unchanged lines are first matched line for line
 -- (matched_runs); in each window between, the cheapest reading hides fewest lines,
@@ -1331,18 +1331,18 @@ function M.meets(a, a_side, b, b_side)
     return bs >= as - 1 and bs <= as + an - 1
 end
 
--- another union hunk that a pair hunk meeting `anchor` also meets, or nil. staging
--- takes pair hunks whole, so one of these would carry the op into that hunk too.
--- union hunks never meet each other, so the one `anchor` meets is itself
----@param union differ.Hunk[]
+-- another HEAD↔worktree hunk that a pair hunk meeting `anchor` also meets, or nil.
+-- staging takes pair hunks whole, so one of these would carry the op into that hunk too.
+-- HEAD↔worktree hunks never meet each other, so the one `anchor` meets is itself
+---@param head_work differ.Hunk[]
 ---@param anchor differ.Hunk
 ---@param pair differ.Hunk[]
----@param side "old"|"new"  -- the side union and pair share
+---@param side "old"|"new"  -- the side HEAD↔worktree and the pair share
 ---@return integer|nil
-function M.shared_with(union, anchor, pair, side)
+function M.shared_with(head_work, anchor, pair, side)
     for _, p in ipairs(pair) do
         if M.meets(p, side, anchor, side) then
-            for j, u in ipairs(union) do
+            for j, u in ipairs(head_work) do
                 if M.meets(p, side, u, side) and not M.meets(u, side, anchor, side) then
                     return j
                 end
@@ -1375,18 +1375,18 @@ end
 
 -- the HEAD↔worktree hunks whose lines, read as the marks say, don't hold what the index
 -- does there. by content, so a hunk whose index lines differ only in order isn't counted
----@param head string[]           -- HEAD's lines
----@param union differ.Hunk[]     -- HEAD↔worktree
----@param cached differ.Hunk[]    -- HEAD↔index
+---@param head string[]            -- HEAD's lines
+---@param head_work differ.Hunk[]  -- HEAD↔worktree
+---@param cached differ.Hunk[]     -- HEAD↔index
 ---@param marks differ.model.Marks
 ---@return integer[]
-function M.hidden_in(head, union, cached, marks)
+function M.hidden_in(head, head_work, cached, marks)
     local out = {}
-    for i, h in ipairs(union) do
-        local in_union, in_cached, region = {}, {}, {}
+    for i, h in ipairs(head_work) do
+        local in_head_work, in_cached, region = {}, {}, {}
         local ua, ub = span(h, "old")
         for l = ua, ub - 1 do
-            in_union[l], region[l] = true, true
+            in_head_work[l], region[l] = true, true
         end
         local actual = {}
         for _, c in ipairs(touching(h, cached)) do
@@ -1403,7 +1403,7 @@ function M.hidden_in(head, union, cached, marks)
             if not in_cached[l] then
                 actual[#actual + 1] = head[l]
             end
-            if not in_union[l] or not marks.old[l] then
+            if not in_head_work[l] or not marks.old[l] then
                 implied[#implied + 1] = head[l]
             end
         end
@@ -1488,17 +1488,17 @@ end
 -- put the worktree back or edit it again, or let the two diffs align a run of repeated
 -- lines differently, and the change is real but off-screen. a false puts the note on
 -- the winbar, which says how many hunks hold some of it rather than why
----@param union differ.Hunk[]
+---@param head_work differ.Hunk[]
 ---@param cached differ.Hunk[]
 ---@param unstaged differ.Hunk[]
 ---@return boolean
-function M.complete(union, cached, unstaged)
+function M.complete(head_work, cached, unstaged)
     -- the index differs from HEAD and the worktree matches it
-    if #union == 0 and (#cached > 0 or #unstaged > 0) then
+    if #head_work == 0 and (#cached > 0 or #unstaged > 0) then
         return false
     end
     -- unstaged or staged content sitting outside every hunk
-    local shows_new = covered(union, "new")
+    local shows_new = covered(head_work, "new")
     for _, h in ipairs(unstaged) do
         for l = h.new_start, h.new_start + h.new_count - 1 do
             if not shows_new[l] then
@@ -1506,7 +1506,7 @@ function M.complete(union, cached, unstaged)
             end
         end
     end
-    local shows_old = covered(union, "old")
+    local shows_old = covered(head_work, "old")
     for _, h in ipairs(cached) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if not shows_old[l] then
@@ -1516,7 +1516,7 @@ function M.complete(union, cached, unstaged)
     end
     -- an index line the worktree replaces shows only as the HEAD line it still is: one
     -- the index added (or rewrote) reaches neither side, and one whose HEAD line the
-    -- union leaves as context is shown as committed
+    -- HEAD↔worktree leaves as context is shown as committed
     local added = covered(cached, "new")
     for _, h in ipairs(unstaged) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -1532,8 +1532,8 @@ function M.complete(union, cached, unstaged)
     -- cancels out of comparing that with HEAD↔index's net change, so the counts check
     -- from hunks alone; a mismatch is a line the two pairs align differently
     local shown, net = 0, 0
-    local m = M.classify(union, cached, unstaged)
-    for _, h in ipairs(union) do
+    local m = M.classify(head_work, cached, unstaged)
+    for _, h in ipairs(head_work) do
         shown = shown - h.old_count
         for l = h.old_start, h.old_start + h.old_count - 1 do
             if not m.old[l] then

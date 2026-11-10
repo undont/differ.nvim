@@ -84,12 +84,12 @@ end
 ---@field side "old"|"new"
 ---@field line integer
 
--- the union's changed lines in stacked order: each hunk's old lines, then its new
----@param union differ.DiffModel
+-- HEAD↔worktree's changed lines in stacked order: each hunk's old lines, then its new
+---@param head_work differ.DiffModel
 ---@return differ.fuzz.Row[]
-function M.rows(union)
+function M.rows(head_work)
     local rows = {}
-    for _, h in ipairs(union.hunks) do
+    for _, h in ipairs(head_work.hunks) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
             rows[#rows + 1] = { side = "old", line = l }
         end
@@ -169,14 +169,14 @@ end
 
 -- the texts the op moves in or out of the index and the file, from the drawn marks.
 -- `take` nil is X
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
 ---@param take boolean|nil
 ---@return differ.fuzz.Moves
-local function moves(union, m, selection, take)
-    local old_lines = text_util.ended_lines(union.old_text)
-    local new_lines = text_util.ended_lines(union.new_text)
+local function moves(head_work, m, selection, take)
+    local old_lines = text_util.ended_lines(head_work.old_text)
+    local new_lines = text_util.ended_lines(head_work.new_text)
     local out = { index_leave = {}, index_enter = {}, work_leave = {}, work_enter = {} }
     local function push(list, line)
         list[#list + 1] = line
@@ -229,12 +229,12 @@ end
 
 -- the result check's refusal, by whether a touched hunk has sides of unequal length
 -- and a staged line, the shape select_block puts in "old then new" order
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
 ---@return string
-local function moves_others(union, m, selection)
-    for _, h in ipairs(union.hunks) do
+local function moves_others(head_work, m, selection)
+    for _, h in ipairs(head_work.hunks) do
         if h.old_count ~= h.new_count and touches(h, selection) then
             for l = h.old_start, h.old_start + h.old_count - 1 do
                 if m.old[l] then
@@ -276,17 +276,18 @@ local function interleaves(lines, at, a, b)
 end
 
 ---@class differ.fuzz.Keep
----@field old fun(l: integer): boolean  -- the text holds union old line `l`
+---@field old fun(l: integer): boolean  -- the text holds HEAD↔worktree old line `l`
 ---@field new fun(l: integer): boolean
 
--- whether `text` reads as the union's rows: every unchanged line where it is, and at
+-- whether `text` reads as HEAD↔worktree's rows: every unchanged line where it is, and at
 -- each hunk the old and new lines `keep` holds, each side in its order
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param text string
 ---@param keep differ.fuzz.Keep
 ---@return boolean
-function M.placed(union, text, keep)
-    local old, new = text_util.ended_lines(union.old_text), text_util.ended_lines(union.new_text)
+function M.placed(head_work, text, keep)
+    local old, new =
+        text_util.ended_lines(head_work.old_text), text_util.ended_lines(head_work.new_text)
     local lines = text_util.ended_lines(text)
     local at, next_old = 1, 1
     ---@param to integer  -- the old line after the unchanged run
@@ -300,7 +301,7 @@ function M.placed(union, text, keep)
         end
         return true
     end
-    for _, h in ipairs(union.hunks) do
+    for _, h in ipairs(head_work.hunks) do
         local first = h.old_start
         if h.old_count == 0 then
             first = first + 1
@@ -353,28 +354,28 @@ local function index_keep(m, selection, take)
     }
 end
 
--- whether the written index reads as the union's rows with the op's staged state, and
+-- whether the written index reads as HEAD↔worktree's rows with the op's staged state, and
 -- for X the file as them with the selection reverted. nil where the index before the op
 -- doesn't read as the rows (content no hunk shows), so placement can't be judged
 ---@param t differ.fuzz.Triple
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param index string
 ---@param work string|nil  -- X's file text
 ---@return boolean|nil
-local function placed_op(t, union, m, selection, take, index, work)
-    if not M.placed(union, t.index, index_keep(m, selection, nil)) then
+local function placed_op(t, head_work, m, selection, take, index, work)
+    if not M.placed(head_work, t.index, index_keep(m, selection, nil)) then
         return nil
     end
-    if not M.placed(union, index, index_keep(m, selection, take)) then
+    if not M.placed(head_work, index, index_keep(m, selection, take)) then
         return false
     end
     if work == nil then
         return true
     end
-    return M.placed(union, work, {
+    return M.placed(head_work, work, {
         old = function(l)
             return selection.old[l] == true
         end,
@@ -386,12 +387,12 @@ end
 
 -- the text s (`take`), u or X moves the index towards, where a reading places the
 -- index: nil where it cuts into blocks with nothing hidden
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param index string
 ---@param take boolean
 ---@return string|nil
-local function towards_of(union, index, take)
-    local blocks, ended = stage.index_blocks(union, index)
+local function towards_of(head_work, index, take)
+    local blocks, ended = stage.index_blocks(head_work, index)
     if blocks then
         local held, hidden_in = require("differ.model.marks").of_blocks(ended.hunks, blocks)
         if held and #hidden_in == 0 then
@@ -399,9 +400,9 @@ local function towards_of(union, index, take)
         end
     end
     if take then
-        return union.new_text
+        return head_work.new_text
     end
-    return union.old_text
+    return head_work.old_text
 end
 
 ---@class differ.fuzz.Outcome
@@ -414,28 +415,28 @@ end
 ---@field towards? string     -- written where a reading places the index: the text it moves towards
 
 -- the op's refusal, with the result check's split by moves_others
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
 ---@param refused differ.git.SelectionRefusal
 ---@return differ.fuzz.Outcome
-local function refusal(union, m, selection, refused)
+local function refusal(head_work, m, selection, refused)
     if refused == "moves_others" then
-        return { kind = "refused", reason = moves_others(union, m, selection) }
+        return { kind = "refused", reason = moves_others(head_work, m, selection) }
     end
     return { kind = "refused", reason = refused }
 end
 
 -- s (`take` true) or u writing `index`, or X writing `index` and the file `work`
 ---@param t differ.fuzz.Triple
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param m differ.model.Marks
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@param index string
 ---@param work string|nil
 ---@return differ.fuzz.Outcome
-local function written(t, union, m, selection, take, index, work)
+local function written(t, head_work, m, selection, take, index, work)
     local moved_take = take ---@type boolean|nil
     if work then
         moved_take = nil
@@ -444,49 +445,50 @@ local function written(t, union, m, selection, take, index, work)
         kind = "written",
         index = index,
         work = work,
-        moves = moves(union, m, selection, moved_take),
-        placed = placed_op(t, union, m, selection, take, index, work),
-        towards = towards_of(union, t.index, take),
+        moves = moves(head_work, m, selection, moved_take),
+        placed = placed_op(t, head_work, m, selection, take, index, work),
+        towards = towards_of(head_work, t.index, take),
     }
 end
 
 -- s (`take` true) or u, through the selection core apply_lines writes from
 ---@param t differ.fuzz.Triple
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function stage_op(t, union, cached, unstaged, selection, take)
-    local m = stage.marks_of(union, cached, unstaged)
-    local text, _, refused = selected.stage("/", "f", union, cached, unstaged, selection, take)
+local function stage_op(t, head_work, cached, unstaged, selection, take)
+    local m = stage.marks_of(head_work, cached, unstaged)
+    local text, _, refused = selected.stage("/", "f", head_work, cached, unstaged, selection, take)
     if refused then
-        return refusal(union, m, selection, refused)
+        return refusal(head_work, m, selection, refused)
     end
     if not text then
         return { kind = "unchanged" }
     end
-    return written(t, union, m, selection, take, text, nil)
+    return written(t, head_work, m, selection, take, text, nil)
 end
 
 -- X, through the selection core revert_texts writes from
 ---@param t differ.fuzz.Triple
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome
-local function revert_op(t, union, cached, unstaged, selection)
-    local m = stage.marks_of(union, cached, unstaged)
-    local index, reverted, refused = selected.revert("/", "f", union, cached, unstaged, selection)
+local function revert_op(t, head_work, cached, unstaged, selection)
+    local m = stage.marks_of(head_work, cached, unstaged)
+    local index, reverted, refused =
+        selected.revert("/", "f", head_work, cached, unstaged, selection)
     if refused then
-        return refusal(union, m, selection, refused)
+        return refusal(head_work, m, selection, refused)
     end
     if not (index and reverted) then
         return { kind = "unchanged" }
     end
-    return written(t, union, m, selection, false, index, reverted.old_text)
+    return written(t, head_work, m, selection, false, index, reverted.old_text)
 end
 
 -- whether `to` lies on a shortest edit path from `from` to `towards`: an oracle that
@@ -595,20 +597,22 @@ local function within(towards, from, to, below, above)
 end
 
 -- whether a write leaves each line's count where it was, or where the side the op takes
--- has it off by at most the union rows of that line the selection leaves out: the index
--- towards the worktree for s, HEAD for u and X, and X's file towards HEAD. an oracle
--- that reads no diff of the written text and no marks
+-- has it off by at most the HEAD↔worktree rows of that line the selection leaves out: the
+-- index towards the worktree for s, HEAD for u and X, and X's file towards HEAD. an
+-- oracle that reads no diff of the written text and no marks
 ---@param t differ.fuzz.Triple
 ---@param op "s"|"u"|"X"
 ---@param selection differ.model.Selection
 ---@param outcome differ.fuzz.Outcome  -- a written one
 ---@return boolean
 function M.counts_kept(t, op, selection, outcome)
-    local union = content.three_diffs("/", "f", t.head, t.index, t.work)
-    local sides =
-        { old = text_util.ended_lines(union.old_text), new = text_util.ended_lines(union.new_text) }
+    local head_work = content.three_diffs("/", "f", t.head, t.index, t.work)
+    local sides = {
+        old = text_util.ended_lines(head_work.old_text),
+        new = text_util.ended_lines(head_work.new_text),
+    }
     local out = { old = {}, new = {} }
-    for _, r in ipairs(M.rows(union)) do
+    for _, r in ipairs(M.rows(head_work)) do
         if not selection[r.side][r.line] then
             local line = bare(sides[r.side][r.line])
             out[r.side][line] = (out[r.side][line] or 0) + 1
@@ -648,11 +652,11 @@ M.OPS = { "s", "u", "X" }
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome
 function M.run_op(t, op, selection)
-    local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
+    local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
     if op == "X" then
-        return revert_op(t, union, cached, unstaged, selection)
+        return revert_op(t, head_work, cached, unstaged, selection)
     end
-    return stage_op(t, union, cached, unstaged, selection, op == "s")
+    return stage_op(t, head_work, cached, unstaged, selection, op == "s")
 end
 
 -- the write the result check refused, as the op builds it before reading it back
@@ -661,21 +665,21 @@ end
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome|nil
 local function unchecked(t, op, selection)
-    local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
-    local m = stage.marks_of(union, cached, unstaged)
-    local text = stage.select_index(union, cached, selection, op == "s")
+    local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
+    local m = stage.marks_of(head_work, cached, unstaged)
+    local text = stage.select_index(head_work, cached, selection, op == "s")
     if op ~= "X" then
         if not text then
             return nil
         end
-        return written(t, union, m, selection, op == "s", text, nil)
+        return written(t, head_work, m, selection, op == "s", text, nil)
     end
-    local origins = stage.index_origins(union, cached)
-    local reverted = stage.select_worktree(union, selection, origins)
+    local origins = stage.index_origins(head_work, cached)
+    local reverted = stage.select_worktree(head_work, selection, origins)
     if not reverted then
         return nil
     end
-    return written(t, union, m, selection, false, text or cached.new_text, reverted.old_text)
+    return written(t, head_work, m, selection, false, text or cached.new_text, reverted.old_text)
 end
 
 -- why a result-check refusal the oracles call correct was refused: "unplaced" where
@@ -733,14 +737,14 @@ local function staged_beside(cached, h)
 end
 
 -- s (`take`) or u on `hunk` as the hunk op runs it: next_index, then the result check
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function hunk_op(union, cached, unstaged, hunk, take)
-    local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+local function hunk_op(head_work, cached, unstaged, hunk, take)
+    local text, reaches = stage.next_index(head_work, cached, unstaged, hunk, take)
     if reaches then
         return { kind = "refused", reason = "reaches" }
     end
@@ -749,23 +753,23 @@ local function hunk_op(union, cached, unstaged, hunk, take)
     end
     local selection = stage.hunk_selection(hunk)
     local after, refused =
-        selected.checked("/", "f", union, cached, unstaged, selection, take, text)
+        selected.checked("/", "f", head_work, cached, unstaged, selection, take, text)
     if not after then
         return { kind = "refused", reason = refused }
     end
-    return { kind = "written", index = text, towards = towards_of(union, cached.new_text, take) }
+    return { kind = "written", index = text, towards = towards_of(head_work, cached.new_text, take) }
 end
 
 -- visual s (`take`) or u over every line of `hunk`
----@param union differ.DiffModel
+---@param head_work differ.DiffModel
 ---@param cached differ.DiffModel
 ---@param unstaged differ.DiffModel
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return differ.fuzz.Outcome
-local function visual_op(union, cached, unstaged, hunk, take)
+local function visual_op(head_work, cached, unstaged, hunk, take)
     local selection = stage.hunk_selection(hunk)
-    local text, _, refused = selected.stage("/", "f", union, cached, unstaged, selection, take)
+    local text, _, refused = selected.stage("/", "f", head_work, cached, unstaged, selection, take)
     if refused then
         return { kind = "refused", reason = refused }
     end
@@ -898,11 +902,11 @@ function M.run(opts)
     end
     ---@param t differ.fuzz.Triple
     local function whole(t)
-        local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
-        for i, h in ipairs(union.hunks) do
+        local head_work, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
+        for i, h in ipairs(head_work.hunks) do
             for _, op in ipairs(M.HUNK_OPS) do
-                local visual = visual_op(union, cached, unstaged, h, op == "s")
-                local by_hunk = hunk_op(union, cached, unstaged, h, op == "s")
+                local visual = visual_op(head_work, cached, unstaged, h, op == "s")
+                local by_hunk = hunk_op(head_work, cached, unstaged, h, op == "s")
                 local what = agreement(visual, by_hunk, staged_beside(cached, h))
                 local counts = report.hunks[op]
                 counts[what] = (counts[what] or 0) + 1
@@ -1242,7 +1246,7 @@ local function detail(r, out)
 
     layout.heading(out, "legend")
     layout.legend(out, {
-        { "selection", "a run of rows in the union view (HEAD vs worktree), as visual mode picks" },
+        { "selection", "a run of rows in the diff view (HEAD vs worktree), as visual mode picks" },
         { "placement not judged", "the index before holds a line no row shows, so where each" },
         { "", "line lands isn't checked; the other checks still run" },
         { "hidden", "a selected hunk holds an index line neither side has (drawn !)" },
