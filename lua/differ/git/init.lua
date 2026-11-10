@@ -212,6 +212,28 @@ function M.has_stage(root, relpath, stage)
     return vim.system({ "git", "cat-file", "-e", spec }, { cwd = root }):wait().code == 0
 end
 
+-- each present index stage's file mode and object id for `relpath`, by stage number
+---@param root string
+---@param relpath string
+---@return table<integer, { mode: string, oid: string }>
+function M.stages(root, relpath)
+    local listed = git({ "ls-files", "-s", "--", relpath }, root) or ""
+    local entries = {}
+    for mode, oid, stage in listed:gmatch("(%d+) (%x+) (%d)\t") do
+        entries[tonumber(stage)] = { mode = mode, oid = oid }
+    end
+    return entries
+end
+
+-- whether the worktree holds `relpath` as a symlink
+---@param root string
+---@param relpath string
+---@return boolean
+function M.is_symlink(root, relpath)
+    local st = vim.uv.fs_lstat(root .. "/" .. relpath)
+    return st ~= nil and st.type == "link"
+end
+
 -- re-merge the three stage texts and return the result in diff3 conflict style (a base
 -- slab between ||||||| and =======), whatever the user's merge.conflictStyle is. used to
 -- recover base slabs when the worktree markers omit them (the default `merge` style).
