@@ -568,6 +568,55 @@ describe("union marks", function()
             local union = { hl(1100, { "l" }, 1100, { "z" }) }
             assert.is_nil(marks.reading(union, head, index))
         end)
+
+        describe("doubt", function()
+            it("flags a hunk another reading of the same cost stages other lines in", function()
+                -- HEAD a b c, worktree a b q b c: the index's q is hidden, or held with b missing
+                local union = { hl(2, {}, 3, { "q", "b" }) }
+                local read = marks.reading(union, { "a", "b", "c" }, { "a", "q", "b", "c" }, true)
+                assert.are.same({ 1 }, read and read.doubt_in)
+            end)
+
+            it("flags the hunk a repeated line could be hidden in", function()
+                -- HEAD f( end) g( end), worktree f( x end) g( y end), a second end) in the index
+                local union = { hl(1, {}, 2, { "x" }), hl(3, {}, 5, { "y" }) }
+                local head = { "f(", "end)", "g(", "end)" }
+                local read =
+                    marks.reading(union, head, { "f(", "end)", "end)", "g(", "end)" }, true)
+                assert.are.same({}, read and read.hidden_in)
+                assert.are.same({ 1 }, read and read.doubt_in)
+            end)
+
+            it("flags every hunk between the held lines either side of a hidden line", function()
+                -- HEAD 1-7, worktree 1 A2 3 4 D2 E2 7: nothing between 1 and 7 is held
+                local union =
+                    { hl(2, { "2" }, 2, { "A2" }), hl(5, { "5", "6" }, 5, { "D2", "E2" }) }
+                local head = { "1", "2", "3", "4", "5", "6", "7" }
+                local read = marks.reading(union, head, { "1", "A", "B", "C", "D", "E", "7" }, true)
+                assert.are.same({ 1 }, read and read.hidden_in)
+                assert.are.same({ 1, 2 }, read and read.doubt_in)
+            end)
+
+            it("doesn't flag the same lines marked on another copy", function()
+                -- HEAD a c, worktree a x y x c, the index holds one x
+                local union = { hl(1, {}, 2, { "x", "y", "x" }) }
+                local read = marks.reading(union, { "a", "c" }, { "a", "x", "c" }, true)
+                assert.are.same({}, read and read.doubt_in)
+            end)
+
+            it("doesn't flag a hidden line only one hunk can hold", function()
+                local union = { hl(2, { "b" }, 2, { "y" }) }
+                local read = marks.reading(union, { "a", "b", "c" }, { "a", "x", "c" }, true)
+                assert.are.same({ 1 }, read and read.hidden_in)
+                assert.are.same({}, read and read.doubt_in)
+            end)
+
+            it("doesn't flag a reading only one walk fits", function()
+                local union = { hl(2, {}, 3, { "q", "b" }) }
+                local read = marks.reading(union, { "a", "b", "c" }, { "a", "b", "q", "c" }, true)
+                assert.are.same({}, read and read.doubt_in)
+            end)
+        end)
     end)
 
     describe("shift", function()

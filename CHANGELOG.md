@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Where staged content the diff can't show could belong to more than one hunk, or to none, the view drew `!` on at most one of them and the rest as confidently staged or unstaged; every hunk it could belong to now carries a `!`
+
+## [0.2.31] — 2026-11-07
+
+### Fixed
+
 - Visual `s`, `u` and `X` refused some correct changes on files with repeated lines (blank lines, `end`); they now make them
 
 ## [0.2.30] — 2026-11-05

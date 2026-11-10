@@ -1,11 +1,13 @@
--- nvim --clean -l test/fuzz/run.lua [--cmp=<rev>] [seed] [count] [selections] [staged] [edited] [alphabet]
+-- nvim --clean -l test/fuzz/run.lua [--cmp=<rev>] [--detail] [seed] [count] [selections] [staged] [edited] [alphabet]
 package.path = "./lua/?.lua;./lua/?/init.lua;./?.lua;" .. package.path
 
-local args, rev = {}, nil
+local args, rev, detail = {}, nil, false
 for _, a in ipairs(arg) do
     local named = a:match("^%-%-cmp=(.+)$")
     if named then
         rev = named
+    elseif a == "--detail" then
+        detail = true
     else
         args[#args + 1] = a
     end
@@ -20,12 +22,27 @@ local opts = {
     alphabet = tonumber(args[6]),
 }
 local started = vim.uv.hrtime()
-print(("seed %d, %d triples"):format(opts.seed, opts.count))
+io.write(("seed %d, %d random HEAD / index / worktree files\n\n"):format(opts.seed, opts.count))
+local failed = false
 if rev then
     local cmp = require("test.fuzz.cmp")
-    print(cmp.format(cmp.run(opts, rev)))
+    io.write(cmp.format(cmp.run(opts, rev)), "\n")
 else
     local fuzz = require("test.fuzz.stage")
-    print(fuzz.format(fuzz.run(opts)))
+    local report = fuzz.run(opts)
+    io.write(fuzz.format(report, detail), "\n")
+    failed = #fuzz.wrong(report) > 0
+    local draw = require("test.fuzz.draw")
+    local plain, hidden = draw.run(opts)
+    io.write("\n", draw.format(plain, hidden, detail), "\n")
+    failed = failed or draw.bugs(plain, hidden) > 0
+    if not detail then
+        io.write(
+            "\nDETAIL=1 adds refusal kinds, whole-hunk counts, the draw breakdowns, examples and legends\n"
+        )
+    end
 end
-print(("%.1fs"):format((vim.uv.hrtime() - started) / 1e9))
+io.write(("\n%.1fs\n"):format((vim.uv.hrtime() - started) / 1e9))
+if failed then
+    os.exit(1)
+end

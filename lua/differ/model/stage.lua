@@ -693,18 +693,38 @@ end
 -- a file too big to read that way
 ---@param union differ.DiffModel
 ---@param index string  -- the index's text
+---@param doubt? boolean  -- also find doubt_in
 ---@return differ.model.Reading|nil
-function M.reading(union, index)
+function M.reading(union, index, doubt)
     local ended = apply.ended(union)
     local head_lines, index_lines =
         text_util.ended_lines(union.old_text), text_util.ended_lines(index)
-    return marks.reading(ended.hunks, head_lines, index_lines)
+    return marks.reading(ended.hunks, head_lines, index_lines, doubt)
+end
+
+---@param a integer[]
+---@param b integer[]
+---@return integer[]  -- the hunks in either, ascending
+local function merged(a, b)
+    local seen, out = {}, {}
+    for _, list in ipairs({ a, b }) do
+        for _, i in ipairs(list) do
+            if not seen[i] then
+                seen[i] = true
+                out[#out + 1] = i
+            end
+        end
+    end
+    table.sort(out)
+    return out
 end
 
 -- the marks the view draws for the union: the least-cost reading of the index
 -- (marks.reading), or its blocks where they cut with nothing hidden, which read the
 -- same. `hidden` is index content no hunk shows, and `hidden_in` the hunks holding some
--- of it. `unread` is a file too big to read, drawn from its blocks or the two pairs
+-- of it, or that a reading of the same cost puts it in or stages other lines in, or
+-- nearest each side of what it hides outside every hunk. `unread` is a file too big to
+-- read, drawn from its blocks or the two pairs
 ---@param union differ.DiffModel     -- HEAD↔worktree
 ---@param cached differ.DiffModel    -- HEAD↔index
 ---@param unstaged differ.DiffModel  -- index↔worktree
@@ -718,9 +738,10 @@ function M.marks_of(union, cached, unstaged)
             return held, false, hidden_in, false
         end
     end
-    local read = M.reading(union, cached.new_text)
+    local read = M.reading(union, cached.new_text, true)
     if read then
-        return read.marks, read.cost > 0, read.hidden_in, false
+        local shown = merged(read.hidden_in, merged(read.doubt_in or {}, read.unowned_in or {}))
+        return read.marks, read.cost > 0, shown, false
     end
     if held then
         return held, true, hidden_in, true

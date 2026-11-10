@@ -926,6 +926,26 @@ func getDownloadSpeed() {
         assert.are.equal("100755", mode)
     end)
 
+    -- the index dropped M.b between the hunks: both draw !, but u on either keeps the drop
+    it("u on a ! hunk doesn't ask when the hidden change stays staged", function()
+        local head = lines_of({ "local M = {}", "M.a = 1", "M.b = 2", "M.c = 3", "return M" })
+        local index = lines_of({ "local M = {}", "M.a = 10", "M.c = 3", "return M, nil" })
+        local work = lines_of({ "local M = {}", "M.a = 10", "M.b = 2", "M.c = 3", "return M, nil" })
+        local root, p, v = staged_as(head, index, work)
+        local bangs = v.staging.hidden_in
+        local win = v.columns[#v.columns].winid
+        vim.api.nvim_set_current_win(win)
+        vim.api.nvim_win_set_cursor(win, { hunk_line(v, 2), 0 })
+        local prompt = confirming(2, function()
+            v:unstage_hunk()
+        end)
+        local written = indexed(root, "a.lua")
+        p:close()
+        assert.are.same({ 1, 2 }, bangs)
+        assert.is_nil(prompt)
+        assert.are.equal(lines_of({ "local M = {}", "M.a = 10", "M.c = 3", "return M" }), written)
+    end)
+
     it("u on a staged edit whose file was deleted asks before dropping it", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "edited\n")
@@ -1743,6 +1763,25 @@ func getDownloadSpeed() {
         assert.is_truthy(text:find("1 hidden (dw)", 1, true))
         assert.is_truthy(gutter:find("!", 1, true)) -- the hunk it's hidden in
         assert.is_truthy(local_gutter:find("!", 1, true)) -- the local hunk that rewrote it
+    end)
+
+    -- the index's a can be HEAD's or the worktree's, so the z staged then undone reads
+    -- as hidden in either hunk at the same cost
+    it("marks ! on every hunk a hidden line could be in", function()
+        local _, p, v = staged_as("b\na\na\n", "b\na\nz\na\n", "b\nc\na\nb\na\n")
+        local text = winbar_of(v)
+        local gutters, states = {}, {}
+        for n = 1, #v.model.hunks do
+            gutters[n] = gutter_of(v, hunk_line(v, n)):find("!", 1, true) ~= nil
+            states[n] = v:_hunk_state(n)
+        end
+        v:toggle_local()
+        local shown = vim.api.nvim_buf_get_lines(v.columns[#v.columns].bufnr, 0, -1, false)
+        p:close()
+        assert.are.same({ true, true }, gutters)
+        assert.are.same({ "unstaged", "unstaged" }, states)
+        assert.is_truthy(text:find("2 hidden (dw)", 1, true))
+        assert.is_truthy(vim.tbl_contains(shown, "z"))
     end)
 
     it("says in the winbar when a staged mode change isn't on screen", function()

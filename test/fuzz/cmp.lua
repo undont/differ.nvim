@@ -3,6 +3,8 @@
 -- side gets its own differ.* modules and its own copy of the harness, swapped in
 -- package.loaded around every op, since the op core requires some modules lazily
 
+local layout = require("test.fuzz.layout")
+
 local M = {}
 
 ---@class differ.fuzz.Side
@@ -186,61 +188,72 @@ function M.run(opts, rev)
     return report
 end
 
----@param counts table<string, integer>
----@param op string
----@param out string[]
-local function tally(counts, op, out)
-    local keys = vim.tbl_keys(counts)
-    table.sort(keys)
-    for _, k in ipairs(keys) do
-        out[#out + 1] = ("%s  %-46s %d"):format(op, k, counts[k])
+---@param counts table<string, table<string, integer>>  -- op -> what -> count
+---@param order string[]
+---@return differ.fuzz.GridRow[] rows, integer total
+local function by_op(counts, order)
+    local rows, total = {}, 0
+    for _, op in ipairs(order) do
+        local keys = vim.tbl_keys(counts[op])
+        table.sort(keys)
+        for _, k in ipairs(keys) do
+            rows[#rows + 1] = { ("%s  %s"):format(op, k), { counts[op][k] } }
+            total = total + counts[op][k]
+        end
     end
+    return rows, total
 end
 
 ---@param o differ.fuzz.Outcome
----@param shown fun(text: string): string
----@return string
-local function wrote(o, shown)
+---@param label string
+---@return string[][]
+local function wrote(o, label)
     if o.kind ~= "written" then
-        return kind(o)
+        return { { label, kind(o) } }
     end
-    local line = "index " .. shown(o.index)
+    local lines = { { label, "index " .. layout.text(o.index) } }
     if o.work then
-        line = line .. " | work " .. shown(o.work)
+        lines[#lines + 1] = { "", "file  " .. layout.text(o.work) }
     end
-    return line
+    return lines
 end
 
 ---@param report differ.fuzz.Cmp
 ---@return string
 function M.format(report)
-    local shown = require("test.fuzz.stage").shown
-    local out = { ("cmp %s (%s) -> working tree"):format(report.rev, report.sha:sub(1, 7)) }
-    local regressed = {}
-    for _, op in ipairs(report.order) do
-        tally(report.regressions[op], op, regressed)
+    local against = report.rev
+    if not vim.startswith(report.sha, report.rev) then
+        against = ("%s (%s)"):format(report.rev, report.sha:sub(1, 7))
     end
-    if #regressed == 0 then
-        out[#out + 1] = "regressions: none"
+    local out = { "compared with " .. against }
+    local regressed, n = by_op(report.regressions, report.order)
+    local about = ("an op that refuses where %s wrote or left the index alone, or a new wrong write"):format(
+        report.rev
+    )
+    if n == 0 then
+        layout.heading(out, "regressions        none " .. layout.mark(true), about)
     else
-        out[#out + 1] = "REGRESSIONS"
-        vim.list_extend(out, regressed)
+        layout.heading(out, ("regressions        %d %s"):format(n, layout.mark(false)), about)
+        layout.grid(out, { "" }, regressed)
     end
-    out[#out + 1] = ""
-    for _, op in ipairs(report.order) do
-        tally(report.ops[op], op, out)
+    local changed, m = by_op(report.ops, report.order)
+    about = ("each op whose outcome differs from %s, as before -> now"):format(report.rev)
+    if m == 0 then
+        layout.heading(out, "changes            none", about)
+    else
+        layout.heading(out, ("changes            %d"):format(m), about)
+        layout.grid(out, { "" }, changed)
     end
     for _, c in ipairs(report.shown) do
-        local rows = {}
-        for _, r in ipairs(c.rows) do
-            rows[#rows + 1] = r.side .. " " .. r.line
-        end
-        out[#out + 1] = ("\n%s on %s: %s"):format(c.op, table.concat(rows, ", "), c.what)
-        out[#out + 1] = "  head  " .. shown(c.triple.head)
-        out[#out + 1] = "  index " .. shown(c.triple.index)
-        out[#out + 1] = "  work  " .. shown(c.triple.work)
-        out[#out + 1] = "  old   " .. wrote(c.old, shown)
-        out[#out + 1] = "  new   " .. wrote(c.new, shown)
+        local more = wrote(c.old, report.rev)
+        vim.list_extend(more, wrote(c.new, "now"))
+        layout.case(
+            out,
+            ("%s %s, on %s"):format(c.op, c.what, layout.rows(c.rows)),
+            c.triple,
+            c.rows,
+            more
+        )
     end
     return table.concat(out, "\n")
 end
