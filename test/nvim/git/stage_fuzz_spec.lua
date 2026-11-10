@@ -17,7 +17,7 @@ describe("stage fuzz", function()
     it("reads an entering line outside its hunk as wrong", function()
         local content = require("differ.git.content")
         local union =
-            content.union_pairs("/", "f", text("a d d"), text("a x3 d"), text("a x3 c x5"))
+            content.three_diffs("/", "f", text("a d d"), text("a x3 d"), text("a x3 c x5"))
         -- one of HEAD's d's and every worktree line
         local keep = {
             old = function(l)

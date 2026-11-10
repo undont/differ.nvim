@@ -604,7 +604,7 @@ end
 ---@param outcome differ.fuzz.Outcome  -- a written one
 ---@return boolean
 function M.counts_kept(t, op, selection, outcome)
-    local union = content.union_pairs("/", "f", t.head, t.index, t.work)
+    local union = content.three_diffs("/", "f", t.head, t.index, t.work)
     local sides =
         { old = text_util.ended_lines(union.old_text), new = text_util.ended_lines(union.new_text) }
     local out = { old = {}, new = {} }
@@ -648,7 +648,7 @@ M.OPS = { "s", "u", "X" }
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome
 function M.run_op(t, op, selection)
-    local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+    local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
     if op == "X" then
         return revert_op(t, union, cached, unstaged, selection)
     end
@@ -661,7 +661,7 @@ end
 ---@param selection differ.model.Selection
 ---@return differ.fuzz.Outcome|nil
 local function unchecked(t, op, selection)
-    local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+    local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
     local m = stage.marks_of(union, cached, unstaged)
     local text = stage.select_index(union, cached, selection, op == "s")
     if op ~= "X" then
@@ -704,7 +704,7 @@ function M.refused_correct(t, op, selection, outcome)
         return "unplaced"
     end
     local work = would.work or t.work
-    local _, hidden = stage.marks_of(content.union_pairs("/", "f", t.head, would.index, work))
+    local _, hidden = stage.marks_of(content.three_diffs("/", "f", t.head, would.index, work))
     if hidden then
         return "hidden_after"
     end
@@ -854,7 +854,7 @@ function M.cases(opts, each, whole)
         if whole then
             whole(t)
         end
-        local rows = M.rows((content.union_pairs("/", "f", t.head, t.index, t.work)))
+        local rows = M.rows((content.three_diffs("/", "f", t.head, t.index, t.work)))
         local ranges = {}
         for first = 1, #rows do
             for last = first, #rows do
@@ -898,7 +898,7 @@ function M.run(opts)
     end
     ---@param t differ.fuzz.Triple
     local function whole(t)
-        local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+        local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
         for i, h in ipairs(union.hunks) do
             for _, op in ipairs(M.HUNK_OPS) do
                 local visual = visual_op(union, cached, unstaged, h, op == "s")

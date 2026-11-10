@@ -185,7 +185,7 @@ end
 ---@param index string
 ---@param work string
 ---@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
-function M.union_pairs(root, path, head, index, work)
+function M.three_diffs(root, path, head, index, work)
     local build = require("differ.model.diff").build
     local function pair(old_rev, new_rev, old_text, new_text)
         return build({
@@ -260,7 +260,7 @@ end
 ---@return differ.DiffModel|nil cached
 ---@return differ.DiffModel|nil unstaged
 ---@return differ.git.Blob|nil index
-function M.union_models(root, entry, shown, index)
+function M.three_models(root, entry, shown, index)
     index = index or index_blob(root, index_path(entry))
     if not index then
         return nil
@@ -272,7 +272,7 @@ function M.union_models(root, entry, shown, index)
         head = M.read(HEAD, root, entry.previous_path or entry.path) or ""
         work = M.read(WORKTREE, root, entry.path) or ""
     end
-    local union, cached, unstaged = M.union_pairs(root, entry.path, head, index.text, work)
+    local union, cached, unstaged = M.three_diffs(root, entry.path, head, index.text, work)
     return union, cached, unstaged, index
 end
 

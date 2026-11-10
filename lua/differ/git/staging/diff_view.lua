@@ -7,7 +7,7 @@ local patch = require("differ.git.patch")
 local notify = exec.notify
 local content_ops = require("differ.git.content")
 local raw_line = content_ops.raw_line
-local union_models, union_pairs = content_ops.union_models, content_ops.union_pairs
+local three_models, three_diffs = content_ops.three_models, content_ops.three_diffs
 local index_ops = require("differ.git.index")
 local write = require("differ.git.staging.write")
 local edits, MOVES_OTHERS = write.edits, write.MOVES_OTHERS
@@ -71,7 +71,7 @@ local function hides_staged(ctx, entry, shown)
     if mode_hidden(live_modes(ctx, entry)) then
         return true
     end
-    local union, cached, unstaged = union_models(ctx.root, entry, shown)
+    local union, cached, unstaged = three_models(ctx.root, entry, shown)
     if not (union and cached and unstaged) then
         return false
     end
@@ -313,7 +313,7 @@ local function op_models(source)
         return nil
     end
     source.index = index
-    local union, cached, unstaged = union_models(ctx.root, entry, nil, index)
+    local union, cached, unstaged = three_models(ctx.root, entry, nil, index)
     return union, cached, unstaged, mode
 end
 
@@ -460,7 +460,7 @@ local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged
         edits = edits,
         take = false,
     }
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
+    local after = { three_diffs(ctx.root, entry.path, union.old_text, index_text, work_text) }
     if unread then
         return nil, nil, "this hunk can't be reverted on its own here"
     end
@@ -527,10 +527,10 @@ local function revert(source, model, idx)
         return index_text == cached.new_text or put(source, index_text, mode)
     end)
     if not ok then
-        remark(source, union_models(ctx.root, entry))
+        remark(source, three_models(ctx.root, entry))
         return false
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text))
+    remark(source, three_diffs(ctx.root, entry.path, union.old_text, index_text, work_text))
     return true
 end
 
@@ -591,10 +591,10 @@ local function revert_lines(source, model, selection)
         return index_text == cached.new_text or put(source, index_text, mode)
     end)
     if not ok then
-        remark(source, union_models(ctx.root, entry))
+        remark(source, three_models(ctx.root, entry))
         return false
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text))
+    remark(source, three_diffs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text))
     return true, nil, reverted
 end
 
@@ -622,7 +622,7 @@ local function set_all(source, model, staged)
     if not put(source, text, mode or held) then
         return false, true
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text))
+    remark(source, three_diffs(ctx.root, entry.path, union.old_text, text, union.new_text))
     return true
 end
 
@@ -672,7 +672,7 @@ end
 ---@param entry differ.FileEntry
 ---@param shown differ.DiffModel -- the row's HEAD↔worktree model, just built
 ---@return differ.view.Staging
-local function union_staging(ctx, entry, shown)
+local function diff_view_staging(ctx, entry, shown)
     local mode_change = false
     if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry.modes) then
         mode_change = true
@@ -687,7 +687,7 @@ local function union_staging(ctx, entry, shown)
     if entry.index_sha then
         index = content_ops.blob(ctx.root, entry.index_sha)
     end
-    remark(source, union_models(ctx.root, entry, shown, index))
+    remark(source, three_models(ctx.root, entry, shown, index))
     staging.apply = function(model, hunk, reverse)
         return apply(source, model, hunk, reverse)
     end
@@ -715,4 +715,4 @@ local function union_staging(ctx, entry, shown)
     return staging
 end
 
-return { union_staging = union_staging, hides_staged = hides_staged }
+return { diff_view_staging = diff_view_staging, hides_staged = hides_staged }

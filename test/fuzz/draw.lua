@@ -769,7 +769,7 @@ end
 ---@param keep integer  -- cases kept
 function M.score(report, head, work, keep)
     report.triples = report.triples + 1
-    local union = content.union_pairs("/", "f", head, head, work)
+    local union = content.three_diffs("/", "f", head, head, work)
     local ended = apply.ended(union)
     local truth = truth_of(ended)
     if not truth then
@@ -777,7 +777,7 @@ function M.score(report, head, work, keep)
         return
     end
     assert(fuzz.placed(union, truth.index, keep_of(truth.marks)), "truth doesn't place its index")
-    local _, cached, unstaged = content.union_pairs("/", "f", head, truth.index, work)
+    local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
     local blocks = stage.index_blocks(union, truth.index)
     if blocks then
         local held, hidden_in = marks.of_blocks(ended.hunks, blocks)
@@ -940,14 +940,14 @@ end
 ---@param keep integer  -- cases kept
 function M.score_hidden(report, head, work, keep)
     report.triples = report.triples + 1
-    local union = content.union_pairs("/", "f", head, head, work)
+    local union = content.three_diffs("/", "f", head, head, work)
     local ended = apply.ended(union)
     local truth = truth_of(ended, text_util.ended_lines(union.old_text))
     if not truth or not truth.hidden_in then
         report.skipped = report.skipped + 1
         return
     end
-    local _, cached, unstaged = content.union_pairs("/", "f", head, truth.index, work)
+    local _, cached, unstaged = content.three_diffs("/", "f", head, truth.index, work)
     local drawn, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
     local t = { head = head, index = truth.index, work = work }
     local read = drawn_reading(union, ended, truth.index)

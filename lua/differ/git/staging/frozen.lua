@@ -11,7 +11,7 @@ local entry_paths = index_ops.entry_paths
 local set_staged, index_path = index_ops.set_staged, index_ops.index_path
 local content_ops = require("differ.git.content")
 local read, raw_line = content_ops.read, content_ops.raw_line
-local union_models, INDEX = content_ops.union_models, content_ops.INDEX
+local three_models, INDEX = content_ops.three_models, content_ops.INDEX
 local write = require("differ.git.staging.write")
 local gitmod, put_index = write.gitmod, write.put_index
 local index_unreadable, revert_worktree = write.index_unreadable, write.revert_worktree
@@ -240,7 +240,7 @@ local function for_index(ctx, entry, model, preview)
         ---@param m differ.DiffModel
         ---@return differ.Hunk[]|nil drift, string|nil work
         local function drift_of(m)
-            local union = union_models(ctx.root, entry)
+            local union = three_models(ctx.root, entry)
             if not union then
                 return nil
             end
@@ -386,7 +386,7 @@ local function drop_index(ctx, entry, model, staging, idx, index)
             moved[#moved + 1] = h
         end
     end
-    local _, cached = union_models(ctx.root, entry, nil, index)
+    local _, cached = three_models(ctx.root, entry, nil, index)
     if not cached then
         return nil, nil, "unreadable"
     end
@@ -511,7 +511,7 @@ end
 local function for_local(ctx, entry, model, reopen)
     if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
         local staging = frozen_staging(ctx, entry, model, false, reopen)
-        local _, cached = union_models(ctx.root, entry)
+        local _, cached = three_models(ctx.root, entry)
         -- an add has no HEAD lines for a rewritten line to go back to
         if cached and entry.x ~= "A" then
             staging.hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)

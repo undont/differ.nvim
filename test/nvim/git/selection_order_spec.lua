@@ -8,7 +8,7 @@ local selected = require("differ.git.staging.selection")
 describe("git.staging.selection", function()
     it("refuses to bring back an unterminated line with a staged line after it", function()
         -- HEAD's unterminated b and the worktree's terminated b are one token
-        local union, cached, unstaged = content.union_pairs("/", "f", "b", "b\ne\n", "b\ne\n")
+        local union, cached, unstaged = content.three_diffs("/", "f", "b", "b\ne\n", "b\ne\n")
         local selection = { old = { [1] = true }, new = { [1] = true } }
         local text, after, refusal =
             selected.stage("/", "f", union, cached, unstaged, selection, false)
@@ -19,7 +19,7 @@ describe("git.staging.selection", function()
 
     it("unstages a deletion the read-back marks on another line of its run", function()
         local union, cached, unstaged =
-            content.union_pairs("/", "f", "a\na\na\n", "a\nx9\na\n", "x9\na")
+            content.three_diffs("/", "f", "a\na\na\n", "a\nx9\na\n", "x9\na")
         local selection = { old = { [3] = true }, new = { [1] = true, [2] = true } }
         local text, after, refusal =
             selected.stage("/", "f", union, cached, unstaged, selection, false)
@@ -30,7 +30,7 @@ describe("git.staging.selection", function()
 
     it("writes every selection on a hunk of identical lines in order, or refuses", function()
         local t = { head = "c\nc\nc\n", index = "c\nd\nc\nc\n", work = "c\nd\nx4\nx4\n" }
-        local rows = fuzz.rows((content.union_pairs("/", "f", t.head, t.index, t.work)))
+        local rows = fuzz.rows((content.three_diffs("/", "f", t.head, t.index, t.work)))
         local written = 0
         for first = 1, #rows do
             for last = first, #rows do
@@ -65,7 +65,7 @@ describe("git.staging.selection", function()
         end
 
         it("hunk u refuses rather than guess where b went", function()
-            local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+            local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
             local text = require("differ.model.stage").next_index(
                 union,
                 cached,
@@ -93,7 +93,7 @@ describe("git.staging.selection", function()
 
     describe("on HEAD c c c, index c d c c, worktree c d x4 x4", function()
         local function c_pairs()
-            return content.union_pairs("/", "f", "c\nc\nc\n", "c\nd\nc\nc\n", "c\nd\nx4\nx4\n")
+            return content.three_diffs("/", "f", "c\nc\nc\n", "c\nd\nc\nc\n", "c\nd\nx4\nx4\n")
         end
         local selection = { old = { [3] = true }, new = { [2] = true, [3] = true } }
 
@@ -210,7 +210,7 @@ describe("git.staging.selection", function()
         it("refuses a worktree that leaves out a line it marks unchanged", function()
             local t =
                 { head = "b\nc\nb\na\na\na\n", index = "b\nc\nb\na\na\na\n", work = "a\nb\na\na\n" }
-            local union, cached, unstaged = content.union_pairs("/", "f", t.head, t.index, t.work)
+            local union, cached, unstaged = content.three_diffs("/", "f", t.head, t.index, t.work)
             local selection = { old = {}, new = { [1] = true } }
             local stage = require("differ.model.stage")
             local m = stage.marks_of(union, cached, unstaged)
@@ -222,7 +222,7 @@ describe("git.staging.selection", function()
                 edits = require("differ.git.staging.write").edits,
                 take = false,
             }
-            local after = { content.union_pairs("/", "f", t.head, t.index, "b\na\n") }
+            local after = { content.three_diffs("/", "f", t.head, t.index, "b\na\n") }
             assert.is_false((stage.reads_as(want, before, selection, unpack(after))))
         end)
     end)

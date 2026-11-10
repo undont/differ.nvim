@@ -21,7 +21,7 @@ local M = {}
 ---@param text string
 ---@return differ.DiffModel[]|nil after, "moves_others"|"unshown"|nil refusal
 local function read_back(root, path, union, cached, hidden, selection, want, take, text)
-    local after = { content.union_pairs(root, path, union.old_text, text, union.new_text) }
+    local after = { content.three_diffs(root, path, union.old_text, text, union.new_text) }
     local before = { union = union, cached = cached, hidden = hidden, edits = edits, take = take }
     local ok, unshown =
         require("differ.model.stage").reads_as(want, before, selection, unpack(after))
@@ -114,7 +114,7 @@ function M.revert(root, path, union, cached, unstaged, selection)
     local index_text = text or cached.new_text
     local m, hidden = stage.marks_of(union, cached, unstaged)
     local want = stage.reverted(union, m, selection, origins)
-    local after = { content.union_pairs(root, path, union.old_text, index_text, reverted.old_text) }
+    local after = { content.three_diffs(root, path, union.old_text, index_text, reverted.old_text) }
     local before = {
         union = union,
         cached = cached,
