@@ -1,4 +1,5 @@
--- the diff view's staging for a row shown as HEAD↔worktree: s, u, S, U and X on its hunks and lines
+-- the diff view's staging for a row shown as HEAD<->worktree: s, u, S, U and X on its hunks
+-- and lines
 
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
@@ -7,7 +8,7 @@ local patch = require("differ.git.patch")
 local notify = exec.notify
 local content_ops = require("differ.git.content")
 local raw_line = content_ops.raw_line
-local union_models, union_pairs = content_ops.union_models, content_ops.union_pairs
+local three_models, three_diffs = content_ops.three_models, content_ops.three_diffs
 local index_ops = require("differ.git.index")
 local write = require("differ.git.staging.write")
 local edits, MOVES_OTHERS = write.edits, write.MOVES_OTHERS
@@ -35,7 +36,7 @@ local function side_mode(ctx, entry, staged)
     return want
 end
 
--- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
+-- whether the index holds a mode change the HEAD<->worktree diff can't show: staged,
 -- then put back in the worktree
 ---@param modes differ.git.Modes|nil
 ---@return boolean
@@ -51,13 +52,13 @@ end
 ---@param entry differ.FileEntry
 ---@return differ.git.Modes|nil
 local function live_modes(ctx, entry)
-    local cached = raw_line(ctx.root, { "--cached" }, entry)
-    local unstaged = raw_line(ctx.root, {}, entry)
-    if not (cached and unstaged) then
+    local head_index = raw_line(ctx.root, { "--cached" }, entry)
+    local index_work = raw_line(ctx.root, {}, entry)
+    if not (head_index and index_work) then
         return nil
     end
-    local head, index = rev.parse_raw_modes(cached)
-    local _, worktree = rev.parse_raw_modes(unstaged)
+    local head, index = rev.parse_raw_modes(head_index)
+    local _, worktree = rev.parse_raw_modes(index_work)
     return { head = head, index = index, worktree = worktree }
 end
 
@@ -65,22 +66,22 @@ end
 -- now: a confirm never trusts the listing a drawn row came from
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param shown? differ.DiffModel -- the row's HEAD↔worktree model, read in this action
+---@param shown? differ.DiffModel -- the row's HEAD<->worktree model, read in this action
 ---@return boolean
 local function hides_staged(ctx, entry, shown)
     if mode_hidden(live_modes(ctx, entry)) then
         return true
     end
-    local union, cached, unstaged = union_models(ctx.root, entry, shown)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work = three_models(ctx.root, entry, shown)
+    if not (head_work and head_index and index_work) then
         return false
     end
-    local _, hidden = require("differ.model.stage").marks_of(union, cached, unstaged)
+    local _, hidden = require("differ.model.stage").marks_of(head_work, head_index, index_work)
     return hidden == true
 end
 
 -- why `hunk` can't move on its own, either way naming the view where its change
--- is a hunk of its own and can be taken whole. `reaches` names another union
+-- is a hunk of its own and can be taken whole. `reaches` names another HEAD<->worktree
 -- hunk a pair hunk would carry the op into; without one the two pairs line this
 -- hunk's change up under a different one, leaving nothing here to write
 ---@param keys differ.KeymapSet
@@ -199,19 +200,19 @@ local function select_refusal(keys, refused, op)
 end
 
 -- X's refusal for a selection. an index that can't be cut holds a change the
--- union can't show, or only repeats lines the cut can't place
+-- HEAD<->worktree can't show, or only repeats lines the cut can't place
 ---@param keys differ.KeymapSet
 ---@param refused differ.model.SelectRefusal
----@param union differ.DiffModel     -- HEAD↔worktree
----@param cached differ.DiffModel    -- HEAD↔index
----@param unstaged differ.DiffModel  -- index↔worktree
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
+---@param index_work differ.DiffModel  -- index<->worktree
 ---@return string
-local function revert_refusal(keys, refused, union, cached, unstaged)
+local function revert_refusal(keys, refused, head_work, head_index, index_work)
     local marks = require("differ.model.marks")
     if refused ~= "between" then
         return select_refusal(keys, refused, "revert")
     end
-    if not marks.complete(union.hunks, cached.hunks, unstaged.hunks) then
+    if not marks.complete(head_work.hunks, head_index.hunks, index_work.hunks) then
         local msg = "blocked by a staged change only %s shows (the ! hunk)"
         return msg:format(help.key(keys, "toggle_local"))
     end
@@ -221,11 +222,11 @@ end
 -- whether the diff still shows the file as it is. one drawn before the file or
 -- HEAD moved would place an op by stale line numbers, so it refuses and re-reads
 ---@param ctx differ.git.StagingCtx
----@param model differ.DiffModel  -- the view's
----@param union differ.DiffModel  -- read fresh
+---@param model differ.DiffModel      -- the view's
+---@param head_work differ.DiffModel  -- read fresh
 ---@return boolean
-local function drawn_current(ctx, model, union)
-    if model.old_text == union.old_text and model.new_text == union.new_text then
+local function drawn_current(ctx, model, head_work)
+    if model.old_text == head_work.old_text and model.new_text == head_work.new_text then
         return true
     end
     notify("the file changed since the diff was drawn: re-reading", vim.log.levels.WARN)
@@ -237,26 +238,26 @@ end
 -- and why where it refuses; nil alone where it touches no hunk
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_work differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return string|nil index_text, differ.DiffModel|nil reverted, string|nil why
-local function revert_texts(ctx, entry, union, cached, unstaged, selection)
+local function revert_texts(ctx, entry, head_work, head_index, index_work, selection)
     local index_text, reverted, refused =
-        selected.revert(ctx.root, entry.path, union, cached, unstaged, selection)
+        selected.revert(ctx.root, entry.path, head_work, head_index, index_work, selection)
     if refused == "moves_others" then
         return nil, nil, MOVES_OTHERS
     end
     if refused then
         ---@cast refused differ.model.SelectRefusal
-        return nil, nil, revert_refusal(ctx.keys, refused, union, cached, unstaged)
+        return nil, nil, revert_refusal(ctx.keys, refused, head_work, head_index, index_work)
     end
     return index_text, reverted
 end
 
--- one HEAD↔worktree row's staging and what its ops read from it
----@class differ.git.UnionSource
+-- one HEAD<->worktree row's staging and what its ops read from it
+---@class differ.git.HeadWorkSource
 ---@field ctx differ.git.StagingCtx
 ---@field entry differ.FileEntry
 ---@field staging differ.view.Staging
@@ -266,21 +267,21 @@ end
 -- the view keeps staging.marks, so a re-mark writes through it. marks come from
 -- the index's own lines at each hunk, and from the two pairs only when the index
 -- changes a line between hunks
----@param source differ.git.UnionSource
----@param union differ.DiffModel|nil  -- nil keeps the marks there are
----@param cached differ.DiffModel|nil
----@param unstaged differ.DiffModel|nil
----@param index differ.git.Blob|nil  -- the blob `cached` was read from, when read here
-local function remark(source, union, cached, unstaged, index)
+---@param source differ.git.HeadWorkSource
+---@param head_work differ.DiffModel|nil  -- nil keeps the marks there are
+---@param head_index differ.DiffModel|nil
+---@param index_work differ.DiffModel|nil
+---@param index differ.git.Blob|nil       -- the blob `head_index` was read from, when read here
+local function remark(source, head_work, head_index, index_work, index)
     local stage = require("differ.model.stage")
     local staging = source.staging
-    if not (union and cached and unstaged) then
+    if not (head_work and head_index and index_work) then
         return
     end
     if index then
         source.index = index
     end
-    local m, hidden, hidden_in = stage.marks_of(union, cached, unstaged)
+    local m, hidden, hidden_in = stage.marks_of(head_work, head_index, index_work)
     staging.marks.old, staging.marks.new = m.old, m.new
     staging.hidden, staging.hidden_in = nil, nil
     if source.mode_change then
@@ -294,10 +295,10 @@ end
 -- an op's three diffs, nil when the index has no entry to read. one listing gives
 -- the index blob's id and the mode a write takes; the blob's bytes are read only when
 -- the id isn't the one last read or written
----@param source differ.git.UnionSource
----@return differ.DiffModel|nil union
----@return differ.DiffModel|nil cached
----@return differ.DiffModel|nil unstaged
+---@param source differ.git.HeadWorkSource
+---@return differ.DiffModel|nil head_work
+---@return differ.DiffModel|nil head_index
+---@return differ.DiffModel|nil index_work
 ---@return string|nil mode  -- the mode entry.path holds
 local function op_models(source)
     local ctx, entry = source.ctx, source.entry
@@ -313,12 +314,12 @@ local function op_models(source)
         return nil
     end
     source.index = index
-    local union, cached, unstaged = union_models(ctx.root, entry, nil, index)
-    return union, cached, unstaged, mode
+    local head_work, head_index, index_work = three_models(ctx.root, entry, nil, index)
+    return head_work, head_index, index_work, mode
 end
 
 -- put_index, keeping the blob written as the one the next op's listing is checked against
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param text string
 ---@param mode string|nil
 ---@return boolean
@@ -335,7 +336,7 @@ local function put(source, text, mode)
     return true
 end
 
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param hunk differ.Hunk|nil
 ---@param reverse boolean
@@ -346,20 +347,28 @@ local function apply(source, model, hunk, reverse)
     if not hunk then
         return false
     end
-    local union, cached, unstaged, mode = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work, mode = op_models(source)
+    if not (head_work and head_index and index_work) then
         return index_unreadable(entry)
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return false
     end
     local take = not reverse
-    local text, reaches = stage.next_index(union, cached, unstaged, hunk, take)
+    local text, reaches = stage.next_index(head_work, head_index, index_work, hunk, take)
     local after, refused
     if text then
         local selection = stage.hunk_selection(hunk)
-        after, refused =
-            selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, take, text)
+        after, refused = selected.checked(
+            ctx.root,
+            entry.path,
+            head_work,
+            head_index,
+            index_work,
+            selection,
+            take,
+            text
+        )
     end
     if refused == "unshown" then
         local op = "unstage"
@@ -384,23 +393,23 @@ end
 
 -- s and u on a visual selection: those lines alone move. lines already where the
 -- op would put them leave the index as it is
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param selection differ.model.Selection
 ---@param reverse boolean
 ---@return boolean, boolean?
 local function apply_lines(source, model, selection, reverse)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged, mode = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work, mode = op_models(source)
+    if not (head_work and head_index and index_work) then
         return index_unreadable(entry)
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return false
     end
     local take = not reverse
     local text, after, refused =
-        selected.stage(ctx.root, entry.path, union, cached, unstaged, selection, take)
+        selected.stage(ctx.root, entry.path, head_work, head_index, index_work, selection, take)
     if refused == "unread" or refused == "moves_others" then
         notify(MOVES_OTHERS, vim.log.levels.WARN)
         return false, true
@@ -435,32 +444,32 @@ end
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel
 ---@param idx integer
----@param union differ.DiffModel
----@param cached differ.DiffModel
----@param unstaged differ.DiffModel
+---@param head_work differ.DiffModel
+---@param head_index differ.DiffModel
+---@param index_work differ.DiffModel
 ---@return string|nil index_text, string|nil work_text, string|nil why
-local function revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+local function revert_hunk_texts(ctx, entry, model, idx, head_work, head_index, index_work)
     local stage = require("differ.model.stage")
     local hunk = model.hunks[idx]
-    local text, reaches = stage.next_index(union, cached, unstaged, hunk, false)
+    local text, reaches = stage.next_index(head_work, head_index, index_work, hunk, false)
     if reaches then
         return nil, nil, ("this hunk can't be reverted without hunk %d"):format(reaches)
     end
     -- a hunk the index holds nothing of on its own leaves the index where it is,
     -- and the worktree still has the whole change to give back
-    local index_text = text or cached.new_text
+    local index_text = text or head_index.new_text
     local work_text = require("differ.model.diff").revert_hunk(model, idx).new_text
-    local m, hidden, _, unread = stage.marks_of(union, cached, unstaged)
+    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
     local selection = stage.hunk_selection(hunk)
-    local want = stage.reverted(union, m, selection)
+    local want = stage.reverted(head_work, m, selection)
     local before = {
-        union = union,
-        cached = cached,
+        head_work = head_work,
+        head_index = head_index,
         hidden = hidden,
         edits = edits,
         take = false,
     }
-    local after = { union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text) }
+    local after = { three_diffs(ctx.root, entry.path, head_work.old_text, index_text, work_text) }
     if unread then
         return nil, nil, "this hunk can't be reverted on its own here"
     end
@@ -476,21 +485,21 @@ end
 
 -- X's refusals on a hunk, said before the prompt, which says as much itself: a
 -- drawing the file has moved on from, and any revert_hunk_texts gives
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param idx integer
 ---@return boolean
 local function refuses_revert(source, model, idx)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work = op_models(source)
+    if not (head_work and head_index and index_work) then
         index_unreadable(entry)
         return true
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return true
     end
-    local _, _, why = revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+    local _, _, why = revert_hunk_texts(ctx, entry, model, idx, head_work, head_index, index_work)
     if why then
         notify(why, vim.log.levels.WARN)
         return true
@@ -500,21 +509,21 @@ end
 
 -- X throws the hunk away on both sides at once: the index gives up whatever of
 -- it it holds and the worktree gives up the rest
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param idx integer
 ---@return boolean
 local function revert(source, model, idx)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged, mode = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work, mode = op_models(source)
+    if not (head_work and head_index and index_work) then
         return index_unreadable(entry)
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return false
     end
     local index_text, work_text, why =
-        revert_hunk_texts(ctx, entry, model, idx, union, cached, unstaged)
+        revert_hunk_texts(ctx, entry, model, idx, head_work, head_index, index_work)
     if why then
         notify(why, vim.log.levels.WARN)
         return false
@@ -524,32 +533,32 @@ local function revert(source, model, idx)
     end
     local p = patch.hunk(model.path, model.hunks[idx], model.old_text, model.new_text, 0, "new")
     local ok = revert_worktree(ctx, entry, p, function()
-        return index_text == cached.new_text or put(source, index_text, mode)
+        return index_text == head_index.new_text or put(source, index_text, mode)
     end)
     if not ok then
-        remark(source, union_models(ctx.root, entry))
+        remark(source, three_models(ctx.root, entry))
         return false
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, work_text))
+    remark(source, three_diffs(ctx.root, entry.path, head_work.old_text, index_text, work_text))
     return true
 end
 
 -- the selection's revert_lines refusals, said before X's prompt
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return boolean
 local function refuses_revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work = op_models(source)
+    if not (head_work and head_index and index_work) then
         index_unreadable(entry)
         return true
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return true
     end
-    local _, _, why = revert_texts(ctx, entry, union, cached, unstaged, selection)
+    local _, _, why = revert_texts(ctx, entry, head_work, head_index, index_work, selection)
     if why then
         notify(why, vim.log.levels.WARN)
         return true
@@ -559,20 +568,21 @@ end
 
 -- X on a visual selection: those lines go back to HEAD in the index and the file
 -- at once. an index already without them stays as it is
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return boolean, boolean?, differ.DiffModel?
 local function revert_lines(source, model, selection)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, unstaged, mode = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work, mode = op_models(source)
+    if not (head_work and head_index and index_work) then
         return index_unreadable(entry)
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return false
     end
-    local index_text, reverted, why = revert_texts(ctx, entry, union, cached, unstaged, selection)
+    local index_text, reverted, why =
+        revert_texts(ctx, entry, head_work, head_index, index_work, selection)
     if why then
         notify(why, vim.log.levels.WARN)
         return false, true
@@ -588,48 +598,51 @@ local function revert_lines(source, model, selection)
             patch.hunk(model.path, h, reverted.old_text, reverted.new_text, 0, "new")
     end
     local ok = revert_worktree(ctx, entry, table.concat(patches), function()
-        return index_text == cached.new_text or put(source, index_text, mode)
+        return index_text == head_index.new_text or put(source, index_text, mode)
     end)
     if not ok then
-        remark(source, union_models(ctx.root, entry))
+        remark(source, three_models(ctx.root, entry))
         return false
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, index_text, reverted.old_text))
+    remark(
+        source,
+        three_diffs(ctx.root, entry.path, head_work.old_text, index_text, reverted.old_text)
+    )
     return true, nil, reverted
 end
 
 -- S and U: the index takes the worktree's or HEAD's side of the file whole,
 -- staged content no hunk shows and the mode included. the move a rename made
 -- stays staged either way; the panel row's keys own that
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param staged boolean
 ---@return boolean, boolean?
 local function set_all(source, model, staged)
     local ctx, entry = source.ctx, source.entry
-    local union, cached, _, held = op_models(source)
-    if not (union and cached) then
+    local head_work, head_index, _, held = op_models(source)
+    if not (head_work and head_index) then
         return index_unreadable(entry), true
     end
-    if not drawn_current(ctx, model, union) then
+    if not drawn_current(ctx, model, head_work) then
         return false, true
     end
-    local text = staged and union.new_text or union.old_text
+    local text = staged and head_work.new_text or head_work.old_text
     local mode = side_mode(ctx, entry, staged)
-    if text == cached.new_text and not mode then
+    if text == head_index.new_text and not mode then
         return false
     end
     if not put(source, text, mode or held) then
         return false, true
     end
-    remark(source, union_pairs(ctx.root, entry.path, union.old_text, text, union.new_text))
+    remark(source, three_diffs(ctx.root, entry.path, head_work.old_text, text, head_work.new_text))
     return true
 end
 
 -- the `!` hunks hold staged content neither side shows, and U takes all of it. a
 -- hunk u that refuses drops nothing: its refusal needs no prompt first. a `!` hunk's u
 -- drops some of it only where the reading after costs less
----@param source differ.git.UnionSource
+---@param source differ.git.HeadWorkSource
 ---@param model differ.DiffModel
 ---@param idx integer|nil
 ---@return boolean
@@ -639,47 +652,55 @@ local function unheld(source, model, idx)
     if not idx then
         return hides_staged(ctx, entry)
     end
-    local union, cached, unstaged = op_models(source)
-    if not (union and cached and unstaged) then
+    local head_work, head_index, index_work = op_models(source)
+    if not (head_work and head_index and index_work) then
         return true
     end
-    local _, _, hidden_in = stage.marks_of(union, cached, unstaged)
+    local _, _, hidden_in = stage.marks_of(head_work, head_index, index_work)
     if not vim.tbl_contains(hidden_in or {}, idx) then
         return false
     end
     local hunk = model.hunks[idx]
-    local text = stage.next_index(union, cached, unstaged, hunk, false)
+    local text = stage.next_index(head_work, head_index, index_work, hunk, false)
     if not text then
         return false
     end
     local selection = stage.hunk_selection(hunk)
-    local after =
-        selected.checked(ctx.root, entry.path, union, cached, unstaged, selection, false, text)
+    local after = selected.checked(
+        ctx.root,
+        entry.path,
+        head_work,
+        head_index,
+        index_work,
+        selection,
+        false,
+        text
+    )
     if not after then
         return false
     end
-    local read, now = stage.reading(union, cached.new_text), stage.reading(union, text)
+    local read, now = stage.reading(head_work, head_index.new_text), stage.reading(head_work, text)
     if not (read and now) then
         return true
     end
     return now.cost < read.cost
 end
 
--- staging for a row shown as HEAD↔worktree. staging a hunk gives the index the
+-- staging for a row shown as HEAD<->worktree. staging a hunk gives the index the
 -- worktree's version of its lines, unstaging keeps every staged change except those;
 -- each op reads the pairs once and re-marks from the text it wrote
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param shown differ.DiffModel -- the row's HEAD↔worktree model, just built
+---@param shown differ.DiffModel -- the row's HEAD<->worktree model, just built
 ---@return differ.view.Staging
-local function union_staging(ctx, entry, shown)
+local function diff_view_staging(ctx, entry, shown)
     local mode_change = false
     if entry.x ~= " " and entry.y ~= " " and mode_hidden(entry.modes) then
         mode_change = true
     end
     ---@type differ.view.Staging
     local staging = { marks = { old = {}, new = {} }, refresh = ctx.refresh }
-    ---@type differ.git.UnionSource
+    ---@type differ.git.HeadWorkSource
     local source = { ctx = ctx, entry = entry, staging = staging, mode_change = mode_change }
 
     -- the listing's blob: an op re-reads the live index before writing (op_models)
@@ -687,7 +708,7 @@ local function union_staging(ctx, entry, shown)
     if entry.index_sha then
         index = content_ops.blob(ctx.root, entry.index_sha)
     end
-    remark(source, union_models(ctx.root, entry, shown, index))
+    remark(source, three_models(ctx.root, entry, shown, index))
     staging.apply = function(model, hunk, reverse)
         return apply(source, model, hunk, reverse)
     end
@@ -715,4 +736,4 @@ local function union_staging(ctx, entry, shown)
     return staging
 end
 
-return { union_staging = union_staging, hides_staged = hides_staged }
+return { diff_view_staging = diff_view_staging, hides_staged = hides_staged }

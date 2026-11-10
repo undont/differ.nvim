@@ -156,7 +156,7 @@ function M.rows(rows)
 end
 
 -- an example file: a title, then labelled lines, the HEAD and worktree lines in `rows`
--- bracketed (the union's old side is HEAD, its new side the worktree)
+-- bracketed (HEAD<->worktree's old side is HEAD, its new side the worktree)
 ---@param out string[]
 ---@param title string
 ---@param t differ.fuzz.Triple

@@ -11,7 +11,7 @@ local entry_paths = index_ops.entry_paths
 local set_staged, index_path = index_ops.set_staged, index_ops.index_path
 local content_ops = require("differ.git.content")
 local read, raw_line = content_ops.read, content_ops.raw_line
-local union_models, INDEX = content_ops.union_models, content_ops.INDEX
+local three_models, INDEX = content_ops.three_models, content_ops.INDEX
 local write = require("differ.git.staging.write")
 local gitmod, put_index = write.gitmod, write.put_index
 local index_unreadable, revert_worktree = write.index_unreadable, write.revert_worktree
@@ -188,7 +188,7 @@ local function revert_frozen(ctx, entry, model, staging, idx, offset, reopen, in
     return true
 end
 
--- where the file stands on hunk `h` of a HEAD↔index model, from `drift`, the index's
+-- where the file stands on hunk `h` of a HEAD<->index model, from `drift`, the index's
 -- lines against the file's: "put_back" when a drift hunk replaces exactly h's index
 -- lines with its HEAD lines, "touched" when one overlaps them otherwise, nil when the
 -- file leaves them alone. a zero-line side sits between two lines
@@ -221,12 +221,12 @@ local function placed_on(drift, m, h, work)
     return nil
 end
 
--- staging for a row drawn HEAD↔index, in the commit preview or where that is the
+-- staging for a row drawn HEAD<->index, in the commit preview or where that is the
 -- only diff the row has. an add or a deletion is one unit whose index entry comes
 -- and goes, so it stages as a file
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- HEAD↔index
+---@param model differ.DiffModel  -- HEAD<->index
 ---@param preview boolean  -- the row comes from the commit preview's listing
 ---@return differ.view.Staging
 local function for_index(ctx, entry, model, preview)
@@ -240,8 +240,8 @@ local function for_index(ctx, entry, model, preview)
         ---@param m differ.DiffModel
         ---@return differ.Hunk[]|nil drift, string|nil work
         local function drift_of(m)
-            local union = union_models(ctx.root, entry)
-            if not union then
+            local head_work = three_models(ctx.root, entry)
+            if not head_work then
                 return nil
             end
             local drift = require("differ.model.diff").build({
@@ -249,9 +249,9 @@ local function for_index(ctx, entry, model, preview)
                 old_rev = "INDEX",
                 new_rev = "WORKTREE",
                 old_text = m.new_text,
-                new_text = union.new_text,
+                new_text = head_work.new_text,
             }).hunks
-            return drift, union.new_text
+            return drift, head_work.new_text
         end
         -- a staged hunk whose index lines the file doesn't hold goes with u
         staging.unheld = function(m, idx)
@@ -340,10 +340,10 @@ local function for_index(ctx, entry, model, preview)
     return staging
 end
 
--- staging for a commit-preview row: the HEAD↔index keys, plus the way back out
+-- staging for a commit-preview row: the HEAD<->index keys, plus the way back out
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- HEAD↔index
+---@param model differ.DiffModel  -- HEAD<->index
 ---@return differ.view.Staging
 local function for_preview(ctx, entry, model)
     local staging = for_index(ctx, entry, model, true)
@@ -370,7 +370,7 @@ end
 -- the index can't be read or has changed outside differ
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree, as the view opened on it
+---@param model differ.DiffModel  -- index<->worktree, as the view opened on it
 ---@param staging differ.view.Staging
 ---@param idx integer
 ---@param index? differ.git.Blob  -- the index blob, identified in this op
@@ -386,21 +386,21 @@ local function drop_index(ctx, entry, model, staging, idx, index)
             moved[#moved + 1] = h
         end
     end
-    local _, cached = union_models(ctx.root, entry, nil, index)
-    if not cached then
+    local _, head_index = three_models(ctx.root, entry, nil, index)
+    if not head_index then
         return nil, nil, "unreadable"
     end
-    if cached.new_text ~= splice(model, applied) then
+    if head_index.new_text ~= splice(model, applied) then
         return nil, nil, "changed"
     end
     local hunk = model.hunks[idx]
     local placed = vim.tbl_extend("force", hunk, {
         old_start = hunk.old_start + marks.shift(moved, hunk.old_start, "old"),
     })
-    local meets = stage.select_hunks(cached.hunks, "new", placed, "old", true)
+    local meets = stage.select_hunks(head_index.hunks, "new", placed, "old", true)
     local first, last = placed.old_start, placed.old_start + placed.old_count - 1
     local met, lo, hi = {}, math.huge, -math.huge ---@type integer[], number, number
-    for i, c in ipairs(cached.hunks) do
+    for i, c in ipairs(head_index.hunks) do
         if meets[i] then
             met[#met + 1] = i
             if c.new_count > 0 then
@@ -408,7 +408,7 @@ local function drop_index(ctx, entry, model, staging, idx, index)
             end
         end
     end
-    local c = #met == 1 and cached.hunks[met[1]] or nil
+    local c = #met == 1 and head_index.hunks[met[1]] or nil
     if
         c
         and placed.old_count > 0
@@ -416,10 +416,10 @@ local function drop_index(ctx, entry, model, staging, idx, index)
         and first >= c.new_start
         and last <= c.new_start + c.new_count - 1
     then
-        return stage.drop_lines(cached, met[1], first, last)
+        return stage.drop_lines(head_index, met[1], first, last)
     end
-    local keep = stage.select_hunks(cached.hunks, "new", placed, "old", false)
-    local text = splice(cached, keep)
+    local keep = stage.select_hunks(head_index.hunks, "new", placed, "old", false)
+    local text = splice(head_index, keep)
     if lo >= first and hi <= last then
         return text
     end
@@ -470,7 +470,7 @@ end
 -- keeping the staged content. nil when the index holds nothing of the kind
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree
+---@param model differ.DiffModel  -- index<->worktree
 ---@return (fun(): boolean)|nil
 local function local_file_unstage(ctx, entry, model)
     if entry.x == "A" or model.binary then
@@ -502,19 +502,20 @@ local function local_file_revert(ctx, entry)
     return true
 end
 
--- the local view's staging, index↔worktree
+-- the local view's staging, index<->worktree
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree
+---@param model differ.DiffModel  -- index<->worktree
 ---@param reopen fun()
 ---@return differ.view.Staging
 local function for_local(ctx, entry, model, reopen)
     if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
         local staging = frozen_staging(ctx, entry, model, false, reopen)
-        local _, cached = union_models(ctx.root, entry)
+        local _, head_index = three_models(ctx.root, entry)
         -- an add has no HEAD lines for a rewritten line to go back to
-        if cached and entry.x ~= "A" then
-            staging.hidden_in = require("differ.model.marks").restaged(model.hunks, cached.hunks)
+        if head_index and entry.x ~= "A" then
+            staging.hidden_in =
+                require("differ.model.marks").restaged(model.hunks, head_index.hunks)
         end
         staging.unstage_hidden = function(idx)
             return drop_hidden(ctx, entry, model, staging, idx, reopen)

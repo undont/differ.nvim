@@ -40,7 +40,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_panel()
-        assert.are.equal("unstaged", v:_hunk_state(1)) -- index↔worktree opens unstaged
+        assert.are.equal("unstaged", v:_hunk_state(1)) -- index<->worktree opens unstaged
         assert.are.equal(2, #v.model.hunks) -- two distinct hunks (lines 1 and 8)
         local before = vim.api.nvim_buf_get_lines(v.columns[1].bufnr, 0, -1, false)
 
@@ -168,7 +168,7 @@ describe(":Differ diff hunk staging", function()
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_panel()
-        assert.are.equal("staged", v:_hunk_state(1)) -- a staged (HEAD↔index) diff
+        assert.are.equal("staged", v:_hunk_state(1)) -- a staged (HEAD<->index) diff
         assert.are.equal("staged", v:_hunk_state(1)) -- opens marked staged
         assert.are.equal("local x = 2\nreturn x\n", indexed(root, "a.lua"))
 
@@ -324,7 +324,7 @@ describe(":Differ diff hunk staging", function()
         p:stage_op("stage_all") -- S on the panel row, not in the diff
 
         local v = view_in_origin(p)
-        assert.are.equal("WORKTREE", v.model.new_rev) -- still HEAD↔worktree
+        assert.are.equal("WORKTREE", v.model.new_rev) -- still HEAD<->worktree
         assert.are.equal("staged", v:_hunk_state(1))
         -- differ's own doing, so it isn't reported the way an outside change is
         for _, n in ipairs(_G.notifs) do
@@ -378,10 +378,10 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- an "MM" file takes one row diffing HEAD↔worktree. the origin line is a worktree
-    -- line, and the union pair's new side is the worktree, so it lands exactly rather
-    -- than being read in index coordinates and snapping to a stray hunk
-    it("opens an MM file on its union pair, holding the exact origin line", function()
+    -- an "MM" file takes one row diffing HEAD<->worktree. the origin line is a worktree
+    -- line, and the HEAD<->worktree pair's new side is the worktree, so it lands exactly
+    -- rather than being read in index coordinates and snapping to a stray hunk
+    it("opens an MM file on its HEAD<->worktree pair, holding the exact origin line", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
         git(root, "commit", "-q", "-am", "ten lines")
@@ -394,7 +394,7 @@ describe(":Differ diff hunk staging", function()
 
         local p, v = open_panel()
 
-        -- HEAD↔worktree, carrying both the staged hunk at line 1 and the unstaged one
+        -- HEAD<->worktree, carrying both the staged hunk at line 1 and the unstaged one
         assert.are.equal(committed(root, "a.lua"), v.model.old_text)
         assert.are.equal(worktree(root, "a.lua"), v.model.new_text)
         assert.are.equal(2, #v.model.hunks)
@@ -409,7 +409,7 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- a file staged outright has a worktree equal to its index, so its HEAD↔worktree
+    -- a file staged outright has a worktree equal to its index, so its HEAD<->worktree
     -- diff is the staged change, every hunk marked
     it("opens a fully staged origin file with its hunks marked staged", function()
         local root = fresh_repo()
@@ -466,7 +466,7 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- staging a file's last unstaged hunk moves only the marks: HEAD↔worktree doesn't
+    -- staging a file's last unstaged hunk moves only the marks: HEAD<->worktree doesn't
     -- change under staging, so the diff and the reviewer's line stay put
     it("stays on the same diff when the last unstaged hunk is staged", function()
         local root = fresh_repo()
@@ -511,7 +511,7 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- an "MM" file diffs HEAD↔worktree, so staging moves the marks and leaves the diff
+    -- an "MM" file diffs HEAD<->worktree, so staging moves the marks and leaves the diff
     -- alone: no pair to empty, nothing to follow, and s/u round-trip on the same buffer
     it("stages and unstages an MM file's hunks without swapping the diff", function()
         local root = fresh_repo()
@@ -683,9 +683,9 @@ func getDownloadSpeed() {
 }
 ]==]
 
-    -- with hunks 1-4 staged, HEAD↔index keeps `ctx` in place and moves the Printf, where
-    -- HEAD↔worktree keeps the Printf and moves `ctx`: the index still holds whole hunks
-    it("stages and unstages hunk by hunk where HEAD↔index pairs lines differently", function()
+    -- with hunks 1-4 staged, HEAD<->index keeps `ctx` in place and moves the Printf, where
+    -- HEAD<->worktree keeps the Printf and moves `ctx`: the index still holds whole hunks
+    it("stages and unstages hunk by hunk where HEAD<->index pairs lines differently", function()
         local root = fresh_repo()
         write(root .. "/a.go", ACME_HEAD)
         git(root, "add", "a.go")
@@ -1253,7 +1253,7 @@ func getDownloadSpeed() {
     end
 
     -- a change staged and then edited again within a few lines merges into one
-    -- HEAD↔worktree hunk holding both. it reads as partial, and per line the marks still
+    -- HEAD<->worktree hunk holding both. it reads as partial, and per line the marks still
     -- say which of it the index has
     it("marks a merged hunk partial and stages the rest with s", function()
         local root = fresh_repo()
@@ -1348,8 +1348,8 @@ func getDownloadSpeed() {
         assert.are.equal(committed(root, "a.lua"), index)
     end)
 
-    -- the worktree deletes line 3, just above the staged 4x: index↔worktree holds the
-    -- deletion as an insertion point that sits before the union hunk's first line
+    -- the worktree deletes line 3, just above the staged 4x: index<->worktree holds the
+    -- deletion as an insertion point that sits before the HEAD<->worktree hunk's first line
     it("stages a deletion just above a staged edit", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
@@ -1549,7 +1549,7 @@ func getDownloadSpeed() {
         )
     end
 
-    -- repeated lines the pairs line up another way than the union: the index a b b
+    -- repeated lines the pairs line up another way than HEAD<->worktree: the index a b b
     -- they make reads as hunk 1 staged and hunk 2 as it was
     it("stages a hunk next to repeated lines the pairs line up differently", function()
         local root, p, v = staged_as("b\nb\nb\n", "b\nb\n", "a\nb\nx\n")
@@ -1868,7 +1868,7 @@ func getDownloadSpeed() {
     it("unstages and re-stages a fully staged file in place", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
-        git(root, "add", "a.lua") -- staged outright: the diff opens on HEAD↔index
+        git(root, "add", "a.lua") -- staged outright: the diff opens on HEAD<->index
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_panel()

@@ -58,8 +58,8 @@ describe("git.read / changed_files", function()
         write(root .. "/" .. name, "work\n")
         local content = require("differ.git.content")
         local entry = { path = name, x = "A", y = "M" }
-        local _, cached, _, index = content.union_models(root, entry)
-        assert.are.equal("staged\r\n", cached.new_text)
+        local _, head_index, _, index = content.three_models(root, entry)
+        assert.are.equal("staged\r\n", head_index.new_text)
         assert.are.equal(vim.trim(git(root, "rev-parse", ":0:" .. name)), index.sha)
     end)
 
@@ -72,8 +72,8 @@ describe("git.read / changed_files", function()
         write(root .. "/" .. name, "work\n")
         local content = require("differ.git.content")
         local entry = { path = name, x = "A", y = "M" }
-        local _, cached, _, index = content.union_models(root, entry)
-        assert.are.equal("staged\n", cached.new_text)
+        local _, head_index, _, index = content.three_models(root, entry)
+        assert.are.equal("staged\n", head_index.new_text)
         assert.are.equal(vim.trim(git(root, "rev-parse", ":0:" .. name)), index.sha)
     end)
 
@@ -434,7 +434,7 @@ describe("git.revert_patch", function()
     end
 
     -- the index-vs-worktree model, whose hunks are the ones the diff view holds frozen
-    local function unstaged_model(root)
+    local function index_work_model(root)
         return git_src.model({ old = INDEX, new = WT }, root, { path = "f.txt" })
     end
 
@@ -447,7 +447,7 @@ describe("git.revert_patch", function()
 
     it("reverses one hunk in the worktree and leaves the index alone", function()
         local root = two_hunk_repo()
-        local model = unstaged_model(root)
+        local model = index_work_model(root)
         assert.are.equal(2, #model.hunks)
 
         assert.is_true(git_src.revert_patch(root, hunk_patch(model, 2)))
@@ -460,7 +460,7 @@ describe("git.revert_patch", function()
     -- located against content the user may have edited since; it must fail whole
     it("fails without writing when the worktree no longer holds the hunk's content", function()
         local root = two_hunk_repo()
-        local model = unstaged_model(root)
+        local model = index_work_model(root)
         write(root .. "/f.txt", "a\nB\nc\nZZZ\ne\n") -- the D line was rewritten since
 
         local ok, err = git_src.revert_patch(root, hunk_patch(model, 2))
@@ -473,7 +473,7 @@ describe("git.revert_patch", function()
     -- desynchronises them; `--unidiff-zero` relocates by content instead
     it("relocates a zero-context hunk when lines shifted above it", function()
         local root = two_hunk_repo()
-        local model = unstaged_model(root)
+        local model = index_work_model(root)
         write(root .. "/f.txt", "x1\nx2\nx3\na\nB\nc\nD\ne\n") -- D moves from line 4 to 7
 
         assert.is_true(git_src.revert_patch(root, hunk_patch(model, 2)))

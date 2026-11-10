@@ -7,8 +7,8 @@ local help = require("differ.ui.help")
 local index_ops = require("differ.git.index")
 local set_staged = index_ops.set_staged
 local raw_line = require("differ.git.content").raw_line
-local union = require("differ.git.staging.union")
-local union_staging, hides_staged = union.union_staging, union.hides_staged
+local diff_view = require("differ.git.staging.diff_view")
+local diff_view_staging, hides_staged = diff_view.diff_view_staging, diff_view.hides_staged
 local file_lines = require("differ.git.staging.write").file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, row_state = whole_file.whole_file_revert, whole_file.row_state
@@ -62,17 +62,17 @@ local function no_lines(ctx, what, does)
     return msg
 end
 
--- staging for a row's HEAD↔worktree diff: by hunk through union_staging, else the file as one unit
+-- staging for a row's HEAD<->worktree diff: by hunk through diff_view_staging, else the file as one unit
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param diff differ.DiffModel  -- the entry's built model; its hunk count and binary flag are read
 ---@return differ.view.Staging|nil
-local function for_union(ctx, entry, diff)
+local function for_head_work(ctx, entry, diff)
     if not ctx.stageable then
         return nil
     end
     if by_line(entry) and #diff.hunks > 0 then
-        local staging = union_staging(ctx, entry, diff)
+        local staging = diff_view_staging(ctx, entry, diff)
         if entry.x == "A" then
             -- throwing away an add is deleting the file, not reverting a hunk of it
             staging.revert, staging.revert_label, staging.no_revert =
@@ -157,7 +157,7 @@ end
 -- in the row's diff view confirms on
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param work_model fun(): differ.DiffModel  -- HEAD↔worktree, built only when read
+---@param work_model fun(): differ.DiffModel  -- HEAD<->worktree, built only when read
 ---@return boolean
 local function unstage_drops(ctx, entry, work_model)
     if entry.x == " " or entry.x == "?" then
@@ -172,7 +172,7 @@ end
 
 -- a row with a staged change and more on top of it: the one kind with a local view.
 -- of the rows whose file is then deleted, only an add has one: the others stage the
--- deletion from their whole change, and an add's whole change is HEAD↔index
+-- deletion from their whole change, and an add's whole change is HEAD<->index
 ---@param entry differ.FileEntry
 ---@return boolean
 local function partly_staged(entry)
@@ -192,8 +192,8 @@ end
 ---@return table
 function M.new(ctx)
     return {
-        for_union = function(entry, diff)
-            return for_union(ctx, entry, diff)
+        for_head_work = function(entry, diff)
+            return for_head_work(ctx, entry, diff)
         end,
         for_local = function(entry, model, reopen)
             return for_local(ctx, entry, model, reopen)

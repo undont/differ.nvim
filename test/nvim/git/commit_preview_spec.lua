@@ -142,7 +142,7 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("a\nx1\nx2\nx3\nb\nc\nd\ne\np\nf\ng\nq\ni\n", work)
     end)
 
-    -- the index drops c and d; the file still has them, so the row opens on HEAD↔index
+    -- the index drops c and d; the file still has them, so the row opens on HEAD<->index
     it("X on a deletion the file already put back moves only the index", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "a\nb\nc\nd\ne\nf\n")

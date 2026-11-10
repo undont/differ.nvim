@@ -323,8 +323,8 @@ submodules have no lines to select, so they only act whole.
 Certain changes can’t be displayed in that span, e.g. a change staged and
 then put back on disk, or a staged and then further modified hunk. Those hunks
 carry a `!` in the gutter and the winbar says how many exist in the current
-file. `dw` opens a view to show what changed since staging, where they show as
-hunks of their own. `ds` opens a view of **only** the files with staged
+file. `dw` opens the local view of what changed since staging, where they show
+as hunks of their own. `ds` opens a view of **only** the files with staged
 changes, each diffed against the index, i.e. what is about to be committed,
 where `u` takes one back out.
 

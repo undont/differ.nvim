@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Internal names for the diff view, local view and commit preview are now consistent; no outward facing change in behaviour
+
+## [0.2.32] — 2026-11-10
+
 ### Fixed
 
 - Where staged content the diff can't show could belong to more than one hunk, or to none, the view drew `!` on at most one of them and the rest as confidently staged or unstaged; every hunk it could belong to now carries a `!`

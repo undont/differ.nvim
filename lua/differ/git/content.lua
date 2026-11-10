@@ -11,8 +11,8 @@ local chomp, git, git_raw = exec.chomp, exec.git, exec.git_raw
 
 local M = {}
 
--- the three working-tree side refs (slice B). staged diffs read HEAD↔index,
--- unstaged diffs read index↔worktree; an untracked file is absent from the index
+-- the three working-tree side refs (slice B). staged diffs read HEAD<->index,
+-- unstaged diffs read index<->worktree; an untracked file is absent from the index
 -- so its index read returns nil and the diff renders as a pure add
 local HEAD = { kind = "rev", rev = "HEAD", label = "HEAD" }
 local INDEX = { kind = "index", label = "INDEX" }
@@ -177,15 +177,15 @@ function M.raw_line(root, args, entry)
     return out
 end
 
--- a file's three diffs over texts already read: HEAD↔worktree to show, and the two
+-- a file's three diffs over texts already read: HEAD<->worktree to show, and the two
 -- real pairs its marks come from
 ---@param root string
 ---@param path string
 ---@param head string
 ---@param index string
 ---@param work string
----@return differ.DiffModel union, differ.DiffModel cached, differ.DiffModel unstaged
-function M.union_pairs(root, path, head, index, work)
+---@return differ.DiffModel head_work, differ.DiffModel head_index, differ.DiffModel index_work
+function M.three_diffs(root, path, head, index, work)
     local build = require("differ.model.diff").build
     local function pair(old_rev, new_rev, old_text, new_text)
         return build({
@@ -254,13 +254,13 @@ end
 -- the index from `index` when given
 ---@param root string
 ---@param entry differ.FileEntry
----@param shown differ.DiffModel|nil -- the row's HEAD↔worktree model, read in this action
+---@param shown differ.DiffModel|nil -- the row's HEAD<->worktree model, read in this action
 ---@param index differ.git.Blob|nil  -- the index entry's blob, identified in this action
----@return differ.DiffModel|nil union
----@return differ.DiffModel|nil cached
----@return differ.DiffModel|nil unstaged
+---@return differ.DiffModel|nil head_work
+---@return differ.DiffModel|nil head_index
+---@return differ.DiffModel|nil index_work
 ---@return differ.git.Blob|nil index
-function M.union_models(root, entry, shown, index)
+function M.three_models(root, entry, shown, index)
     index = index or index_blob(root, index_path(entry))
     if not index then
         return nil
@@ -272,8 +272,9 @@ function M.union_models(root, entry, shown, index)
         head = M.read(HEAD, root, entry.previous_path or entry.path) or ""
         work = M.read(WORKTREE, root, entry.path) or ""
     end
-    local union, cached, unstaged = M.union_pairs(root, entry.path, head, index.text, work)
-    return union, cached, unstaged, index
+    local head_work, head_index, index_work =
+        M.three_diffs(root, entry.path, head, index.text, work)
+    return head_work, head_index, index_work, index
 end
 
 return M

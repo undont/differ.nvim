@@ -538,7 +538,7 @@ local function numstat(args, root)
     return rev.parse_numstat(git(full, root) or "")
 end
 
--- HEAD↔worktree counts through diff-index, which never writes the index (see
+-- HEAD<->worktree counts through diff-index, which never writes the index (see
 -- M.conflicted). plumbing ignores diff.renames, so `renames` carries it
 ---@param root string
 ---@param renames boolean
@@ -604,7 +604,7 @@ end
 
 -- a porcelain entry's section and the letter its row shows. the section comes from
 -- which of the index (X) and the worktree (Y) hold a change; the letter is the change
--- the row's HEAD↔worktree diff shows
+-- the row's HEAD<->worktree diff shows
 ---@param s { x: string, y: string }
 ---@return string section, string status
 local function row_of(s)
@@ -925,7 +925,7 @@ local function empty_notice(root, entry, model, args)
     local out = raw_line(root, args, entry)
     if not out then
         -- a row changed on both sides whose worktree is back to HEAD: the staged change
-        -- is real, it just has no HEAD↔worktree diff to show
+        -- is real, it just has no HEAD<->worktree diff to show
         if entry.x ~= " " and entry.y ~= " " and raw_line(root, { "--cached" }, entry) then
             return "Staged changes the worktree has put back"
         end
@@ -976,7 +976,7 @@ local function restores_staged(entry)
     return entry.y == "D" and (entry.x == "M" or entry.x == "R")
 end
 
--- every path of a submodule HEAD↔worktree changes, both sides of a rename. no
+-- every path of a submodule HEAD<->worktree changes, both sides of a rename. no
 -- pathspec, which would split rename pairs
 ---@param root string
 ---@return table<string, true>
@@ -993,7 +993,7 @@ local function gitlink_paths(root)
     return paths
 end
 
--- whether `entry` is a submodule HEAD↔worktree changes, looked up in `gitlinks` when
+-- whether `entry` is a submodule HEAD<->worktree changes, looked up in `gitlinks` when
 -- given, else read with its own diff
 ---@param root string
 ---@param entry differ.FileEntry
@@ -1295,8 +1295,8 @@ function M.panel(opts)
     end
 
     -- model_for picks the (old, new) pair per entry: a working-tree row diffs
-    -- HEAD↔worktree, which staging never moves, while a rev-pair list diffs every entry
-    -- against the one resolved source. a staged deletion diffs HEAD↔index, since its
+    -- HEAD<->worktree, which staging never moves, while a rev-pair list diffs every entry
+    -- against the one resolved source. a staged deletion diffs HEAD<->index, since its
     -- worktree copy is a row of its own. `actions` (file-level staging) is only
     -- meaningful for the worktree-status source
     local preview = false -- ds: the panel lists only what a commit would take
@@ -1519,7 +1519,7 @@ function M.panel(opts)
         has_local = function(entry)
             return staging_ops.partly_staged(entry)
         end,
-        -- the paths index↔worktree lists, in one read for the whole list. a row left
+        -- the paths index<->worktree lists, in one read for the whole list. a row left
         -- with only a move isn't listed, so dw opens empty on it
         local_paths = function()
             local out = {}
@@ -1579,7 +1579,7 @@ function M.panel(opts)
 
     local show_local ---@type fun(entry: differ.FileEntry)
 
-    -- swap the open view onto `entry`'s local view, index↔worktree. back goes through
+    -- swap the open view onto `entry`'s local view, index<->worktree. back goes through
     -- retarget_view, which re-reads the row, since staging here can move it to another
     -- section
     ---@param entry differ.FileEntry
@@ -1622,7 +1622,7 @@ function M.panel(opts)
     end
 
     -- a row whose staged change the worktree has put back, or a staged add whose file is
-    -- gone: HEAD↔worktree is empty, so the row draws HEAD↔index instead, where the
+    -- gone: HEAD<->worktree is empty, so the row draws HEAD<->index instead, where the
     -- change it still has is
     ---@param entry differ.FileEntry
     ---@param branch string|nil
@@ -1692,7 +1692,7 @@ function M.panel(opts)
         elseif staged_only then
             staging = staging_ops.for_index(entry, model, false)
         else
-            staging = staging_ops.for_union(entry, model)
+            staging = staging_ops.for_head_work(entry, model)
         end
         if staging and not preview then
             if staging_ops.partly_staged(entry) then

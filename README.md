@@ -245,7 +245,7 @@ Every changed path takes only one row. Its diff spans `HEAD` to the worktree, wi
 
 In visual mode, `s`, `u` and `X` stage, unstage and discard only the selected lines. In split-view, a selection takes whole rows, so a modified line moves with both its halves. In stacked-view, the old and new lines are rows of their own, so you can take one side alone. Deleted, binary and mode-change files and submodules have no lines to select, so they only act whole.
 
-Certain changes can't be displayed in that span, e.g. a change staged and then put back on disk, or a staged and then further modified hunk. Those hunks carry a `!` in the gutter and the winbar says how many exist in the current file. `dw` opens a view to show what changed since staging, where they show as hunks of their own. `ds` opens a view of **only** the files with staged changes, each diffed against the index, i.e. what is about to be committed, where `u` takes one back out.
+Certain changes can't be displayed in that span, e.g. a change staged and then put back on disk, or a staged and then further modified hunk. Those hunks carry a `!` in the gutter and the winbar says how many exist in the current file. `dw` opens the local view of what changed since staging, where they show as hunks of their own. `ds` opens a view of **only** the files with staged changes, each diffed against the index, i.e. what is about to be committed, where `u` takes one back out.
 
 A hunk on a file's last line whose final newline differs between the two sides carries a `¬` in the gutter on the side that ends without one, since the two lines otherwise read the same.
 

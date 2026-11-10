@@ -100,7 +100,7 @@ describe(":Differ diff hunk staging", function()
         return p, v
     end
 
-    -- 1x staged and then put back on disk: HEAD↔worktree is empty, so the row draws the
+    -- 1x staged and then put back on disk: HEAD<->worktree is empty, so the row draws the
     -- staged change it still has rather than a notice
     it("opens a staged change the worktree put back on its HEAD-to-index hunks", function()
         local root = staged_then(twelve({}))

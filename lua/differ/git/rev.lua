@@ -233,8 +233,8 @@ local function status_letter(c)
     return c
 end
 
--- parse `git status --porcelain=v2 --branch -z -uall`. X is the staged (HEAD↔index)
--- state, Y the unstaged (index↔worktree) state. untracked
+-- parse `git status --porcelain=v2 --branch -z -uall`. X is the staged (HEAD<->index)
+-- state, Y the unstaged (index<->worktree) state. untracked
 -- and ignored records take their kind for both letters. the HEAD commit is nil on an
 -- unborn branch and the branch nil on a detached HEAD
 ---@param out string

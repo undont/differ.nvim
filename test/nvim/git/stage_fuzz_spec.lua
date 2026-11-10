@@ -16,8 +16,8 @@ describe("stage fuzz", function()
 
     it("reads an entering line outside its hunk as wrong", function()
         local content = require("differ.git.content")
-        local union =
-            content.union_pairs("/", "f", text("a d d"), text("a x3 d"), text("a x3 c x5"))
+        local head_work =
+            content.three_diffs("/", "f", text("a d d"), text("a x3 d"), text("a x3 c x5"))
         -- one of HEAD's d's and every worktree line
         local keep = {
             old = function(l)
@@ -27,8 +27,8 @@ describe("stage fuzz", function()
                 return true
             end,
         }
-        assert.is_true(fuzz.placed(union, text("a x3 d c x5"), keep))
-        assert.is_false(fuzz.placed(union, text("c a x3 d x5"), keep))
+        assert.is_true(fuzz.placed(head_work, text("a x3 d c x5"), keep))
+        assert.is_false(fuzz.placed(head_work, text("c a x3 d x5"), keep))
     end)
 
     local report
