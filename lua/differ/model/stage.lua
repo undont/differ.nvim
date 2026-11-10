@@ -1,4 +1,4 @@
--- what the index should hold after a hunk of a HEAD↔worktree diff is staged or
+-- what the index should hold after a hunk of a HEAD<->worktree diff is staged or
 -- unstaged. the index's lines at each hunk are their slice in the reading the view
 -- draws (marks.reading), or its blocks where they cut with nothing hidden.
 -- pure lua, no vim API
@@ -9,10 +9,10 @@ local text_util = require("differ.util.text")
 
 local M = {}
 
--- the index's lines at each HEAD↔worktree hunk, and HEAD↔worktree with a last line and
+-- the index's lines at each HEAD<->worktree hunk, and HEAD<->worktree with a last line and
 -- its ending read as one (apply.ended). the blocks are nil unless the index holds every
 -- unchanged line between the hunks and rejoins to exactly its own text
----@param head_work differ.DiffModel  -- HEAD↔worktree
+---@param head_work differ.DiffModel  -- HEAD<->worktree
 ---@param index string                -- the index's text
 ---@return string[][]|nil blocks, differ.DiffModel ended
 function M.index_blocks(head_work, index)
@@ -41,7 +41,7 @@ function M.select_hunks(hunks, side, anchor, anchor_side, want)
     return applied
 end
 
--- where `hunk` sits in a fresh read of HEAD↔worktree, by its line ranges
+-- where `hunk` sits in a fresh read of HEAD<->worktree, by its line ranges
 ---@param head_work differ.DiffModel
 ---@param hunk differ.Hunk
 ---@return integer|nil
@@ -89,7 +89,7 @@ local function resliced(index, slice, lines)
     return text_util.ended_text(out)
 end
 
--- the index's text with HEAD↔worktree hunk `i`'s lines in the drawn reading replaced by
+-- the index's text with HEAD<->worktree hunk `i`'s lines in the drawn reading replaced by
 -- the side the op takes, or nil past the reading
 ---@param head_work differ.DiffModel
 ---@param index string  -- the index's text
@@ -108,7 +108,7 @@ end
 -- the index's text with `hunk`'s lines in the drawn reading replaced by the side the
 -- op takes: its block where the index cuts into blocks with nothing hidden, else its
 -- slice in marks.reading. past the reading, its block, else the pair hunks meeting it
--- on the side that pair shares. `reaches` names another HEAD↔worktree hunk such a pair
+-- on the side that pair shares. `reaches` names another HEAD<->worktree hunk such a pair
 -- hunk covers too, and then there is no text
 ---@param head_work differ.DiffModel
 ---@param head_index differ.DiffModel
@@ -148,10 +148,10 @@ end
 -- the text the index takes when `hunk` is staged (`take`) or unstaged, as the view
 -- draws it (drawn_index). no text and no `reaches` is a hunk the drawn reading already
 -- has where the op puts it, or one the pair the op reads for lines up under a
--- different HEAD↔worktree hunk, leaving the index where it is
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
----@param index_work differ.DiffModel  -- index↔worktree
+-- different HEAD<->worktree hunk, leaving the index where it is
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
+---@param index_work differ.DiffModel  -- index<->worktree
 ---@param hunk differ.Hunk
 ---@param take boolean
 ---@return string|nil text, integer|nil reaches
@@ -167,8 +167,8 @@ function M.next_index(head_work, head_index, index_work, hunk, take)
 end
 
 ---@class differ.model.Selection
----@field old table<integer, boolean>  -- HEAD↔worktree old lnums
----@field new table<integer, boolean>  -- HEAD↔worktree new lnums
+---@field old table<integer, boolean>  -- HEAD<->worktree old lnums
+---@field new table<integer, boolean>  -- HEAD<->worktree new lnums
 
 ---@alias differ.model.SelectRefusal
 ---| "between"  -- a file too big to read, or a selection the drawn marks need moved that the cut has in place
@@ -448,14 +448,14 @@ local function touches_any(hunks, selection)
 end
 
 ---@class differ.model.IndexCut
----@field ended differ.DiffModel  -- HEAD↔worktree, apply.ended
----@field blocks string[][]  -- the index's lines at each HEAD↔worktree hunk
+---@field ended differ.DiffModel  -- HEAD<->worktree, apply.ended
+---@field blocks string[][]  -- the index's lines at each HEAD<->worktree hunk
 ---@field slices? integer[][]  -- each block's {index line, length}, nil for a whole-file cut
 
--- the index's block at every HEAD↔worktree hunk where the index cuts into blocks, else
+-- the index's block at every HEAD<->worktree hunk where the index cuts into blocks, else
 -- its slice in the drawn reading (marks.reading). nil for a file too big to read
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
 ---@return differ.model.IndexCut|nil
 local function index_cut(head_work, head_index)
     local blocks, ended = M.index_blocks(head_work, head_index.new_text)
@@ -504,10 +504,10 @@ local function cut_text(cut, index)
     return text_util.ended_text(out)
 end
 
--- the index's block at each HEAD↔worktree hunk index_cut places, line by line; none for a
+-- the index's block at each HEAD<->worktree hunk index_cut places, line by line; none for a
 -- hunk whose block holds a line neither side has
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
 ---@return table<integer, differ.model.Origin[]>|nil
 function M.index_origins(head_work, head_index)
     local cut = index_cut(head_work, head_index)
@@ -521,11 +521,11 @@ function M.index_origins(head_work, head_index)
     return origins --[[@as table<integer, differ.model.Origin[]>]]
 end
 
--- the text the index takes when the selected HEAD↔worktree lines are staged (`take`) or
+-- the text the index takes when the selected HEAD<->worktree lines are staged (`take`) or
 -- unstaged. only the hunks the selection touches are rebuilt; every other line stays
 -- as the index has it. nil text with no refusal is a selection with nothing to move
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
 ---@param selection differ.model.Selection
 ---@param take boolean
 ---@return string|nil text, differ.model.SelectRefusal|nil refusal
@@ -586,11 +586,11 @@ local function unended(lines)
     return out
 end
 
--- the worktree with the selected HEAD↔worktree lines reverted, as a diff from that text
--- to the worktree: one hunk per touched HEAD↔worktree hunk, its old side the lines the
+-- the worktree with the selected HEAD<->worktree lines reverted, as a diff from that text
+-- to the worktree: one hunk per touched HEAD<->worktree hunk, its old side the lines the
 -- revert leaves there and its new side the worktree's own. nil and why where it refuses;
 -- nil alone is a selection that touches no hunk
----@param head_work differ.DiffModel  -- HEAD↔worktree
+---@param head_work differ.DiffModel  -- HEAD<->worktree
 ---@param selection differ.model.Selection
 ---@param origins? table<integer, differ.model.Origin[]>  -- index_origins
 ---@return differ.DiffModel|nil reverted, "ending"|"ending_after"|"split_ending"|nil refusal
@@ -641,9 +641,9 @@ function M.select_worktree(head_work, selection, origins)
 end
 
 -- the index text with its lines `first`..`last` back to HEAD's, where they sit inside
--- HEAD↔index hunk `ci` and that hunk's two sides are the same length, so each index line
+-- HEAD<->index hunk `ci` and that hunk's two sides are the same length, so each index line
 -- has one HEAD line at the same place in it. every other hunk stays applied
----@param head_index differ.DiffModel  -- HEAD↔index
+---@param head_index differ.DiffModel  -- HEAD<->index
 ---@param ci integer
 ---@param first integer                -- index lines
 ---@param last integer
@@ -689,7 +689,7 @@ function M.drop_lines(head_index, ci, first, last)
     return apply.splice(split --[[@as differ.DiffModel]], applied)
 end
 
--- the index read against HEAD↔worktree's rows at the least cost (marks.reading), or nil
+-- the index read against HEAD<->worktree's rows at the least cost (marks.reading), or nil
 -- for a file too big to read that way
 ---@param head_work differ.DiffModel
 ---@param index string  -- the index's text
@@ -719,15 +719,15 @@ local function merged(a, b)
     return out
 end
 
--- the marks the view draws for HEAD↔worktree: the least-cost reading of the index
+-- the marks the view draws for HEAD<->worktree: the least-cost reading of the index
 -- (marks.reading), or its blocks where they cut with nothing hidden, which read the
 -- same. `hidden` is index content no hunk shows, and `hidden_in` the hunks holding some
 -- of it, or that a reading of the same cost puts it in or stages other lines in, or
 -- nearest each side of what it hides outside every hunk. `unread` is a file too big to
 -- read, drawn from its blocks or the two pairs
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
----@param index_work differ.DiffModel  -- index↔worktree
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
+---@param index_work differ.DiffModel  -- index<->worktree
 ---@return differ.model.Marks marks, boolean hidden, integer[] hidden_in, boolean unread
 function M.marks_of(head_work, head_index, index_work)
     local blocks, ended = M.index_blocks(head_work, head_index.new_text)
@@ -755,7 +755,7 @@ function M.marks_of(head_work, head_index, index_work)
 end
 
 ---@class differ.model.LineStates
----@field old table<integer, boolean>  -- every changed HEAD↔worktree old line, staged or not
+---@field old table<integer, boolean>  -- every changed HEAD<->worktree old line, staged or not
 ---@field new table<integer, boolean>
 ---@field enter integer  -- lines the op brings into the index
 ---@field leave integer  -- lines it takes out
@@ -1106,7 +1106,7 @@ local function paired_out(states, hunks, old_lines, new_lines)
 end
 
 -- whether a minimal diff from `from` to `to` drops at most `leave` lines and adds at most
--- `enter`, changing the length by as much. HEAD↔worktree's own pairing may take more
+-- `enter`, changing the length by as much. HEAD<->worktree's own pairing may take more
 -- lines than a minimal one, never fewer
 ---@param edits fun(a: string, b: string): integer, integer
 ---@param from string
@@ -1134,7 +1134,7 @@ local function cuts_clean(head_work, index)
 end
 
 -- whether `to` lies on a shortest edit path from `from` to `towards`, by minimal diffs.
--- the HEAD↔worktree diff pairs by histogram, so a write the drawn rows place exactly
+-- the HEAD<->worktree diff pairs by histogram, so a write the drawn rows place exactly
 -- can still fall off this path
 ---@param edits fun(a: string, b: string): integer, integer
 ---@param towards string
@@ -1159,7 +1159,7 @@ local function counts(text)
     return n
 end
 
--- HEAD↔worktree's old and new lines outside `selection`, counted per line
+-- HEAD<->worktree's old and new lines outside `selection`, counted per line
 ---@param head_work differ.DiffModel
 ---@param selection differ.model.Selection
 ---@return table<string, integer> old, table<string, integer> new

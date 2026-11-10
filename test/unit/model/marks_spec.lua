@@ -10,7 +10,7 @@ local function h(old_start, old_count, new_start, new_count)
     }
 end
 
--- each HEAD↔worktree hunk's rolled-up state
+-- each HEAD<->worktree hunk's rolled-up state
 local function states(m, head_work)
     local out = {}
     for i, u in ipairs(head_work) do
@@ -19,7 +19,7 @@ local function states(m, head_work)
     return out
 end
 
-describe("HEAD↔worktree marks", function()
+describe("HEAD<->worktree marks", function()
     it("calls every hunk unstaged when the index holds nothing", function()
         local head_work = { h(2, 1, 2, 1), h(9, 1, 9, 1) }
         local m = marks.classify(head_work, {}, { h(2, 1, 2, 1), h(9, 1, 9, 1) })
@@ -45,7 +45,7 @@ describe("HEAD↔worktree marks", function()
     end)
 
     -- the ticket's repro: a hunk staged, then two more edits inside the region it
-    -- covers, so HEAD↔worktree collapses all three into one hunk. that hunk is partial,
+    -- covers, so HEAD<->worktree collapses all three into one hunk. that hunk is partial,
     -- and the per-line marks still say which line of it the index already has
     it("marks a hunk partial when later edits land inside a staged one", function()
         local head_work = { h(3, 3, 3, 3) }
@@ -73,7 +73,7 @@ describe("HEAD↔worktree marks", function()
         end)
 
         -- stage an edit, then put the worktree back: git still calls the file MM, both
-        -- pairs hold a change, and HEAD↔worktree is empty
+        -- pairs hold a change, and HEAD<->worktree is empty
         it("catches an edit staged and then undone in the worktree", function()
             assert.is_false(marks.complete({}, { h(2, 1, 2, 1) }, { h(2, 1, 2, 1) }))
         end)
@@ -87,7 +87,7 @@ describe("HEAD↔worktree marks", function()
         end)
 
         -- HEAD x,y; index x,ghost,y; worktree X,y. the line the index added and the
-        -- worktree then dropped reaches neither side of a HEAD↔worktree diff
+        -- worktree then dropped reaches neither side of a HEAD<->worktree diff
         it("catches a line only the index holds", function()
             local head_work = { hl(1, { "x" }, 1, { "X" }) }
             local head_index = { hl(1, {}, 2, { "ghost" }) }
@@ -95,16 +95,16 @@ describe("HEAD↔worktree marks", function()
             assert.is_false(marks.complete(head_work, head_index, index_work))
         end)
 
-        -- the pair diffs can align repeated lines differently from HEAD↔worktree: here
-        -- the worktree drops a HEAD line HEAD↔worktree still shows as context
-        it("catches a replaced line HEAD↔worktree shows as context", function()
+        -- the pair diffs can align repeated lines differently from HEAD<->worktree: here
+        -- the worktree drops a HEAD line HEAD<->worktree still shows as context
+        it("catches a replaced line HEAD<->worktree shows as context", function()
             local head_work = { h(1, 1, 1, 1) }
             local index_work = { h(5, 1, 4, 0) }
             assert.is_false(marks.complete(head_work, {}, index_work))
         end)
 
         -- stage an edit, then edit the same line again: the index's version is replaced
-        -- in the worktree, so it reaches neither side of a HEAD↔worktree diff
+        -- in the worktree, so it reaches neither side of a HEAD<->worktree diff
         it("catches a staged line edited again in the worktree", function()
             local head_work = { hl(1, { "foo" }, 1, { "FOOD" }) }
             local head_index = { hl(1, { "foo" }, 1, { "FOO" }) }
@@ -191,8 +191,8 @@ describe("HEAD↔worktree marks", function()
         end)
 
         -- HEAD 1..7, index 1 A B C D E 7, worktree 1 A2 3 4 D2 E2 7: one pair hunk each
-        -- way spans both HEAD↔worktree hunks, through the B C only the index holds
-        it("names the other HEAD↔worktree hunk a pair hunk reaches", function()
+        -- way spans both HEAD<->worktree hunks, through the B C only the index holds
+        it("names the other HEAD<->worktree hunk a pair hunk reaches", function()
             local head_work = { h(2, 1, 2, 1), h(5, 2, 5, 2) }
             local pair = { h(2, 5, 2, 5) }
             assert.are.equal(2, marks.shared_with(head_work, head_work[1], pair, "new"))
@@ -207,7 +207,7 @@ describe("HEAD↔worktree marks", function()
         end)
 
         it("compares the sides it's given", function()
-            -- index↔worktree deletes index line 3; HEAD↔index changes it
+            -- index<->worktree deletes index line 3; HEAD<->index changes it
             assert.is_true(marks.meets(h(3, 1, 2, 0), "old", h(3, 1, 3, 1), "new"))
         end)
     end)

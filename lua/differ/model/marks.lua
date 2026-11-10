@@ -1,6 +1,6 @@
--- which lines of a HEAD↔worktree diff the index already holds.
--- each real pair shares one side with HEAD↔worktree (HEAD↔index shares HEAD,
--- index↔worktree shares the worktree), so a displayed line is classified by whichever
+-- which lines of a HEAD<->worktree diff the index already holds.
+-- each real pair shares one side with HEAD<->worktree (HEAD<->index shares HEAD,
+-- index<->worktree shares the worktree), so a displayed line is classified by whichever
 -- pair shares its side and the two never have to be composed. pure lua, no nvim API
 
 local M = {}
@@ -27,13 +27,13 @@ local function covered(hunks, side)
     return out
 end
 
--- classify every line of a HEAD↔worktree diff as staged or not. a HEAD line HEAD↔worktree
--- deletes is staged when HEAD↔index deletes it too (the index has already dropped it);
--- a worktree line HEAD↔worktree adds is staged unless index↔worktree adds it (anything
+-- classify every line of a HEAD<->worktree diff as staged or not. a HEAD line HEAD<->worktree
+-- deletes is staged when HEAD<->index deletes it too (the index has already dropped it);
+-- a worktree line HEAD<->worktree adds is staged unless index<->worktree adds it (anything
 -- that pair leaves as context is in the index already)
----@param head_work differ.Hunk[]   -- HEAD↔worktree
----@param head_index differ.Hunk[]  -- HEAD↔index
----@param index_work differ.Hunk[]  -- index↔worktree
+---@param head_work differ.Hunk[]   -- HEAD<->worktree
+---@param head_index differ.Hunk[]  -- HEAD<->index
+---@param index_work differ.Hunk[]  -- index<->worktree
 ---@return differ.model.Marks
 function M.classify(head_work, head_index, index_work)
     local dropped = covered(head_index, "old")
@@ -80,7 +80,7 @@ function M.state(marks, h)
     return "partial"
 end
 
--- the HEAD line a HEAD↔worktree hunk's lines start at, and the first HEAD line after them
+-- the HEAD line a HEAD<->worktree hunk's lines start at, and the first HEAD line after them
 ---@param h differ.Hunk
 ---@return integer first, integer after
 local function old_bounds(h)
@@ -149,7 +149,7 @@ end
 -- mostly repeated lines leaves any_lengths a length to try at nearly every line
 local MAX_STEPS = 1e6
 
--- the ways to cut the index into a block per HEAD↔worktree hunk, with HEAD's unchanged
+-- the ways to cut the index into a block per HEAD<->worktree hunk, with HEAD's unchanged
 -- lines between them: the cut when there is only one, and how many there are (0, 1, or 2
 -- for two or more, or for a search past MAX_STEPS)
 ---@param head_work differ.Hunk[]
@@ -166,7 +166,7 @@ local function cut(head_work, head, index, lengths)
         table.insert(where[line], l)
     end
     local steps = 0
-    ---@param i integer     -- the next HEAD↔worktree hunk
+    ---@param i integer     -- the next HEAD<->worktree hunk
     ---@param from integer  -- the next HEAD line
     ---@param at integer    -- the next index line
     ---@return integer
@@ -236,10 +236,10 @@ local function cut(head_work, head, index, lengths)
     return out, total
 end
 
--- the index's lines at each HEAD↔worktree hunk, when the index holds every unchanged line
+-- the index's lines at each HEAD<->worktree hunk, when the index holds every unchanged line
 -- between them. a cut where every block is one of its hunk's sides wins; nil when the
 -- index can't be cut, or can be cut more than one way
----@param head_work differ.Hunk[]  -- HEAD↔worktree
+---@param head_work differ.Hunk[]  -- HEAD<->worktree
 ---@param head string[]            -- HEAD's lines
 ---@param index string[]           -- the index's lines
 ---@return string[][]|nil
@@ -407,7 +407,7 @@ local function mark_block(h, block, marks)
     return true, mark_origins(h, origins, marks)
 end
 
--- marks for the HEAD↔worktree hunks from the index's block at each, the hunks whose block
+-- marks for the HEAD<->worktree hunks from the index's block at each, the hunks whose block
 -- holds a line neither side has, and where each block's lines come from. nil when a
 -- hunk is too big to compare
 ---@param head_work differ.Hunk[]
@@ -430,12 +430,12 @@ function M.of_blocks(head_work, blocks)
 end
 
 ---@class differ.model.Segment
----@field line? string     -- a HEAD line HEAD↔worktree leaves unchanged
----@field hunk? integer    -- else a HEAD↔worktree hunk
+---@field line? string     -- a HEAD line HEAD<->worktree leaves unchanged
+---@field hunk? integer    -- else a HEAD<->worktree hunk
 ---@field olds? string[]
 ---@field news? string[]
 
--- HEAD↔worktree as rows in file order: each unchanged line, and each hunk as one segment
+-- HEAD<->worktree as rows in file order: each unchanged line, and each hunk as one segment
 ---@param hunks differ.Hunk[]
 ---@param head string[]
 ---@return differ.model.Segment[]
@@ -1264,7 +1264,7 @@ local function unowned_in(segs, walks)
     return out
 end
 
--- the index read against HEAD↔worktree's rows: unchanged lines held or missing, each
+-- the index read against HEAD<->worktree's rows: unchanged lines held or missing, each
 -- hunk's old lines kept or dropped and new lines held or not in any interleaving,
 -- other index lines hidden. unchanged lines are first matched line for line
 -- (matched_runs); in each window between, the cheapest reading hides fewest lines,
@@ -1331,13 +1331,13 @@ function M.meets(a, a_side, b, b_side)
     return bs >= as - 1 and bs <= as + an - 1
 end
 
--- another HEAD↔worktree hunk that a pair hunk meeting `anchor` also meets, or nil.
+-- another HEAD<->worktree hunk that a pair hunk meeting `anchor` also meets, or nil.
 -- staging takes pair hunks whole, so one of these would carry the op into that hunk too.
--- HEAD↔worktree hunks never meet each other, so the one `anchor` meets is itself
+-- HEAD<->worktree hunks never meet each other, so the one `anchor` meets is itself
 ---@param head_work differ.Hunk[]
 ---@param anchor differ.Hunk
 ---@param pair differ.Hunk[]
----@param side "old"|"new"  -- the side HEAD↔worktree and the pair share
+---@param side "old"|"new"  -- the side HEAD<->worktree and the pair share
 ---@return integer|nil
 function M.shared_with(head_work, anchor, pair, side)
     for _, p in ipairs(pair) do
@@ -1352,9 +1352,9 @@ function M.shared_with(head_work, anchor, pair, side)
     return nil
 end
 
--- the HEAD↔index hunks that touch a HEAD↔worktree hunk
----@param h differ.Hunk             -- HEAD↔worktree
----@param head_index differ.Hunk[]  -- HEAD↔index
+-- the HEAD<->index hunks that touch a HEAD<->worktree hunk
+---@param h differ.Hunk             -- HEAD<->worktree
+---@param head_index differ.Hunk[]  -- HEAD<->index
 ---@return differ.Hunk[]
 local function touching(h, head_index)
     local out = {}
@@ -1373,11 +1373,11 @@ local function bag(lines)
     return table.concat(lines, "\n")
 end
 
--- the HEAD↔worktree hunks whose lines, read as the marks say, don't hold what the index
+-- the HEAD<->worktree hunks whose lines, read as the marks say, don't hold what the index
 -- does there. by content, so a hunk whose index lines differ only in order isn't counted
 ---@param head string[]             -- HEAD's lines
----@param head_work differ.Hunk[]   -- HEAD↔worktree
----@param head_index differ.Hunk[]  -- HEAD↔index
+---@param head_work differ.Hunk[]   -- HEAD<->worktree
+---@param head_index differ.Hunk[]  -- HEAD<->index
 ---@param marks differ.model.Marks
 ---@return integer[]
 function M.hidden_in(head, head_work, head_index, marks)
@@ -1420,9 +1420,9 @@ function M.hidden_in(head, head_work, head_index, marks)
     return out
 end
 
--- whether index↔worktree hunk `h` puts back lines HEAD↔index hunk `c` deleted outright
----@param h differ.Hunk  -- index↔worktree
----@param c differ.Hunk  -- HEAD↔index
+-- whether index<->worktree hunk `h` puts back lines HEAD<->index hunk `c` deleted outright
+---@param h differ.Hunk  -- index<->worktree
+---@param c differ.Hunk  -- HEAD<->index
 ---@return boolean
 local function puts_back(h, c)
     if not (h.old_count == 0 and c.new_count == 0 and h.old_start == c.new_start) then
@@ -1431,11 +1431,11 @@ local function puts_back(h, c)
     return table.concat(h.new_lines or {}, "\n") == table.concat(c.old_lines or {}, "\n")
 end
 
--- the index↔worktree hunks that change staged content again: one that rewrites or drops
+-- the index<->worktree hunks that change staged content again: one that rewrites or drops
 -- a line the index added, or puts back lines the index deleted. what they undo is
--- staged content the HEAD↔worktree diff can't show
----@param index_work differ.Hunk[]  -- index↔worktree
----@param head_index differ.Hunk[]  -- HEAD↔index
+-- staged content the HEAD<->worktree diff can't show
+---@param index_work differ.Hunk[]  -- index<->worktree
+---@param head_index differ.Hunk[]  -- HEAD<->index
 ---@return integer[]
 function M.restaged(index_work, head_index)
     local added = covered(head_index, "new")
@@ -1475,15 +1475,15 @@ function M.shift(hunks, lnum, from)
     return out
 end
 
--- the HEAD line an index line sits at, for a line HEAD↔index leaves alone
----@param head_index differ.Hunk[]  -- HEAD↔index
+-- the HEAD line an index line sits at, for a line HEAD<->index leaves alone
+---@param head_index differ.Hunk[]  -- HEAD<->index
 ---@param lnum integer              -- index line
 ---@return integer
 local function head_line(head_index, lnum)
     return lnum + M.shift(head_index, lnum, "new")
 end
 
--- whether a HEAD↔worktree diff shows all of a file's half-staged content. it cannot
+-- whether a HEAD<->worktree diff shows all of a file's half-staged content. it cannot
 -- show index content that differs from HEAD and worktree both: stage a change and then
 -- put the worktree back or edit it again, or let the two diffs align a run of repeated
 -- lines differently, and the change is real but off-screen. a false puts the note on
@@ -1516,7 +1516,7 @@ function M.complete(head_work, head_index, index_work)
     end
     -- an index line the worktree replaces shows only as the HEAD line it still is: one
     -- the index added (or rewrote) reaches neither side, and one whose HEAD line the
-    -- HEAD↔worktree leaves as context is shown as committed
+    -- HEAD<->worktree leaves as context is shown as committed
     local added = covered(head_index, "new")
     for _, h in ipairs(index_work) do
         for l = h.old_start, h.old_start + h.old_count - 1 do
@@ -1529,7 +1529,7 @@ function M.complete(head_work, head_index, index_work)
         end
     end
     -- the view implies an index of HEAD's context plus the marked lines. HEAD's length
-    -- cancels out of comparing that with HEAD↔index's net change, so the counts check
+    -- cancels out of comparing that with HEAD<->index's net change, so the counts check
     -- from hunks alone; a mismatch is a line the two pairs align differently
     local shown, net = 0, 0
     local m = M.classify(head_work, head_index, index_work)

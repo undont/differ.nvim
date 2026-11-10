@@ -11,8 +11,8 @@ local chomp, git, git_raw = exec.chomp, exec.git, exec.git_raw
 
 local M = {}
 
--- the three working-tree side refs (slice B). staged diffs read HEAD↔index,
--- unstaged diffs read index↔worktree; an untracked file is absent from the index
+-- the three working-tree side refs (slice B). staged diffs read HEAD<->index,
+-- unstaged diffs read index<->worktree; an untracked file is absent from the index
 -- so its index read returns nil and the diff renders as a pure add
 local HEAD = { kind = "rev", rev = "HEAD", label = "HEAD" }
 local INDEX = { kind = "index", label = "INDEX" }
@@ -177,7 +177,7 @@ function M.raw_line(root, args, entry)
     return out
 end
 
--- a file's three diffs over texts already read: HEAD↔worktree to show, and the two
+-- a file's three diffs over texts already read: HEAD<->worktree to show, and the two
 -- real pairs its marks come from
 ---@param root string
 ---@param path string
@@ -254,7 +254,7 @@ end
 -- the index from `index` when given
 ---@param root string
 ---@param entry differ.FileEntry
----@param shown differ.DiffModel|nil -- the row's HEAD↔worktree model, read in this action
+---@param shown differ.DiffModel|nil -- the row's HEAD<->worktree model, read in this action
 ---@param index differ.git.Blob|nil  -- the index entry's blob, identified in this action
 ---@return differ.DiffModel|nil head_work
 ---@return differ.DiffModel|nil head_index

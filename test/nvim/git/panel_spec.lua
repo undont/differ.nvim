@@ -710,7 +710,7 @@ describe(":Differ panel", function()
         require("differ.git").close()
     end)
 
-    it("diffs a staged entry HEAD↔index and an unstaged entry index↔worktree", function()
+    it("diffs a staged entry HEAD<->index and an unstaged entry index<->worktree", function()
         local root = fresh_repo()
         write(root .. "/b.lua", "one\n")
         git(root, "add", "b.lua")
@@ -737,8 +737,8 @@ describe(":Differ panel", function()
     end)
 
     -- a file modified in the index and again in the worktree takes one row, not two,
-    -- and that row diffs HEAD↔worktree so the whole change reads at once
-    it("gives an MM file one Partial row diffing HEAD↔worktree", function()
+    -- and that row diffs HEAD<->worktree so the whole change reads at once
+    it("gives an MM file one Partial row diffing HEAD<->worktree", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         git(root, "add", "a.lua")

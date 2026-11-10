@@ -364,7 +364,7 @@ describe(":Differ diff hunk staging", function()
         git(root, "commit", "-q", "-am", "two files")
         write(root .. "/a.lua", "1x\n2\n3\n4\n5\n6\n7\n8x\n") -- a.lua: two hunks
         write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
-        git(root, "add", "a.lua", "z.lua") -- stage both: a staged (HEAD↔index) review
+        git(root, "add", "a.lua", "z.lua") -- stage both: a staged (HEAD<->index) review
         vim.cmd.edit(root .. "/a.lua")
 
         local p, v = open_panel()
@@ -661,17 +661,17 @@ describe(":Differ diff hunk staging", function()
         p2:close()
     end)
 
-    it("binds df only on a worktree-vs-base source, not a `<rev>↔worktree` open", function()
+    it("binds df only on a worktree-vs-base source, not a `<rev><->worktree` open", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         vim.cmd.edit(root .. "/a.lua")
 
-        -- default `:Differ` is HEAD↔worktree (uncommitted): df is bound
+        -- default `:Differ` is HEAD<->worktree (uncommitted): df is bound
         local p = open_panel()
         assert.is_true(keymaps(view_in_origin(p).columns[1].bufnr)["df"])
         p:close()
 
-        -- commit so the worktree is clean, then `:Differ HEAD~1` is <rev>↔worktree:
+        -- commit so the worktree is clean, then `:Differ HEAD~1` is <rev><->worktree:
         -- it folds in committed history, so edit-in-review must be off (df unbound)
         git(root, "commit", "-q", "-am", "edit")
         git_src.panel({ rev = "HEAD~1", open_first = true })
@@ -684,11 +684,11 @@ describe(":Differ diff hunk staging", function()
         p2:close()
     end)
 
-    -- HEAD's "x x" pair loses one line in the worktree, which HEAD↔worktree shows under
+    -- HEAD's "x x" pair loses one line in the worktree, which HEAD<->worktree shows under
     -- the first hunk. the index's x x reads as hunk 1's x held and hunk 2's dropped, so s
     -- on either takes the worktree's lines there and keeps the other as drawn
     for idx, want in ipairs({ "1\n2x\nx\nx\n5x\n", "1\nx\n5x\n" }) do
-        it(("stages hunk %d near a pair HEAD↔worktree aligns otherwise"):format(idx), function()
+        it(("stages hunk %d near a pair HEAD<->worktree aligns otherwise"):format(idx), function()
             local root = fresh_repo()
             write(root .. "/a.lua", "1\n2\nx\nx\n5\n")
             git(root, "commit", "-q", "-am", "five")
@@ -957,7 +957,7 @@ describe(":Differ diff hunk staging", function()
         assert.is_truthy(notice:find("^Mode changed"), notice)
     end)
 
-    -- an AD: the whole change is HEAD↔index, which can't show the file being deleted
+    -- an AD: the whole change is HEAD<->index, which can't show the file being deleted
     it("stages a staged add's deletion from its local view", function()
         local root = fresh_repo()
         write(root .. "/c.lua", "one\n")

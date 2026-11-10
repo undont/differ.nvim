@@ -127,8 +127,8 @@ end
 ---@return differ.DiffModel
 function M.revert_hunk(model, idx)
     assert(model.hunks[idx], "revert_hunk: no hunk at index " .. tostring(idx))
-    -- only the new side moves: the worktree on an index↔worktree diff, the index on a
-    -- HEAD↔index one
+    -- only the new side moves: the worktree on an index<->worktree diff, the index on a
+    -- HEAD<->index one
     local applied = {}
     for i in ipairs(model.hunks) do
         applied[i] = i ~= idx

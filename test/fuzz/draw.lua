@@ -1,5 +1,5 @@
 -- a seeded fuzz of the diff view's drawn marks where the index doesn't cut cleanly into
--- blocks. each index is HEAD with a random staged state per HEAD↔worktree row, built
+-- blocks. each index is HEAD with a random staged state per HEAD<->worktree row, built
 -- straight from its hunks, so the true marks are known. a wrong draw is ambiguous where
 -- the drawn marks also place the index at cost 0, else a reading bug. needs vim.text.diff
 
@@ -1162,7 +1162,7 @@ end
 ---@param h differ.fuzz.HiddenReport
 ---@param out string[]
 local function detail(p, h, out)
-    layout.heading(out, "draws, every row from HEAD↔worktree", "one count per file")
+    layout.heading(out, "draws, every row from HEAD<->worktree", "one count per file")
     layout.grid(out, { "" }, {
         { "files", { p.triples } },
         { "no index holds the chosen states", { p.skipped }, indent = 1 },

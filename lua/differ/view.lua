@@ -96,8 +96,8 @@ local armed_view = nil
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field no_revert_lines? string  -- why X on a selection does nothing here
 ---@field refresh fun()
----@field marks? differ.model.Marks  -- HEAD↔worktree source: which lines the index holds, kept current by the source
----@field hidden? boolean  -- HEAD↔worktree source: some staged content isn't on screen
+---@field marks? differ.model.Marks  -- HEAD<->worktree source: which lines the index holds, kept current by the source
+---@field hidden? boolean  -- HEAD<->worktree source: some staged content isn't on screen
 ---@field hidden_in? integer[]  -- the hunks marked `!`: they touch staged content the whole change can't show
 ---@field toggle_local? fun()  -- a partly staged file: swap between the whole change and its local view
 ---@field no_local? string  -- why dw does nothing here, in place of the default
@@ -831,8 +831,8 @@ function View:toggle_layout()
     self:set_layout(self.layout == "stacked" and "split" or "stacked")
 end
 
--- dw: swap a partly staged file between its whole change (HEAD↔worktree) and what
--- changed since staging (index↔worktree)
+-- dw: swap a partly staged file between its whole change (HEAD<->worktree) and what
+-- changed since staging (index<->worktree)
 -- ds: the same flip the panel's key does. the session owns the listing, so the view
 -- only asks for it
 function View:toggle_commit_preview()
@@ -1432,7 +1432,7 @@ function View:_line_staged(line)
     return false
 end
 
--- a slot's staged state. only a HEAD↔worktree source has a middle: a hunk git merged out
+-- a slot's staged state. only a HEAD<->worktree source has a middle: a hunk git merged out
 -- of a change staged and another made after it holds some lines the index has and some it
 -- doesn't, and s and u both have work to do on it
 ---@param idx integer
@@ -2169,10 +2169,10 @@ end
 
 -- whether edit-in-review applies: the diff is the working tree (or index) against its
 -- immediate committed/staged base, so every shown hunk is an uncommitted change and the
--- file on disk is the editable target. the daily staging sources qualify (HEAD↔worktree,
--- INDEX↔worktree, HEAD↔index); a `<rev>↔worktree` open (`:Differ HEAD~1`, `main...`)
+-- file on disk is the editable target. the daily staging sources qualify (HEAD<->worktree,
+-- INDEX<->worktree, HEAD<->index); a `<rev><->worktree` open (`:Differ HEAD~1`, `main...`)
 -- does not, since it folds in committed history you can't edit in place, and committed
--- sources (rev↔rev, history, PR) never do
+-- sources (rev<->rev, history, PR) never do
 ---@return boolean
 function View:_editable_source()
     return require("differ.git.rev").editable(self.model.old_rev, self.model.new_rev)

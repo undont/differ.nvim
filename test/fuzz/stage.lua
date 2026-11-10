@@ -84,7 +84,7 @@ end
 ---@field side "old"|"new"
 ---@field line integer
 
--- HEAD↔worktree's changed lines in stacked order: each hunk's old lines, then its new
+-- HEAD<->worktree's changed lines in stacked order: each hunk's old lines, then its new
 ---@param head_work differ.DiffModel
 ---@return differ.fuzz.Row[]
 function M.rows(head_work)
@@ -276,10 +276,10 @@ local function interleaves(lines, at, a, b)
 end
 
 ---@class differ.fuzz.Keep
----@field old fun(l: integer): boolean  -- the text holds HEAD↔worktree old line `l`
+---@field old fun(l: integer): boolean  -- the text holds HEAD<->worktree old line `l`
 ---@field new fun(l: integer): boolean
 
--- whether `text` reads as HEAD↔worktree's rows: every unchanged line where it is, and at
+-- whether `text` reads as HEAD<->worktree's rows: every unchanged line where it is, and at
 -- each hunk the old and new lines `keep` holds, each side in its order
 ---@param head_work differ.DiffModel
 ---@param text string
@@ -354,7 +354,7 @@ local function index_keep(m, selection, take)
     }
 end
 
--- whether the written index reads as HEAD↔worktree's rows with the op's staged state, and
+-- whether the written index reads as HEAD<->worktree's rows with the op's staged state, and
 -- for X the file as them with the selection reverted. nil where the index before the op
 -- doesn't read as the rows (content no hunk shows), so placement can't be judged
 ---@param t differ.fuzz.Triple
@@ -598,7 +598,7 @@ local function within(towards, from, to, below, above)
 end
 
 -- whether a write leaves each line's count where it was, or where the side the op takes
--- has it off by at most the HEAD↔worktree rows of that line the selection leaves out: the
+-- has it off by at most the HEAD<->worktree rows of that line the selection leaves out: the
 -- index towards the worktree for s, HEAD for u and X, and X's file towards HEAD. an
 -- oracle that reads no diff of the written text and no marks
 ---@param t differ.fuzz.Triple
@@ -724,7 +724,7 @@ function M.refused_correct(t, op, selection, outcome)
     return "other"
 end
 
--- whether a HEAD↔index hunk changes one of `h`'s old lines or the line either side
+-- whether a HEAD<->index hunk changes one of `h`'s old lines or the line either side
 ---@param head_index differ.DiffModel
 ---@param h differ.Hunk
 ---@return boolean

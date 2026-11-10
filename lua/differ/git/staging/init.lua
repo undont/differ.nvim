@@ -62,7 +62,7 @@ local function no_lines(ctx, what, does)
     return msg
 end
 
--- staging for a row's HEAD↔worktree diff: by hunk through diff_view_staging, else the file as one unit
+-- staging for a row's HEAD<->worktree diff: by hunk through diff_view_staging, else the file as one unit
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param diff differ.DiffModel  -- the entry's built model; its hunk count and binary flag are read
@@ -157,7 +157,7 @@ end
 -- in the row's diff view confirms on
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param work_model fun(): differ.DiffModel  -- HEAD↔worktree, built only when read
+---@param work_model fun(): differ.DiffModel  -- HEAD<->worktree, built only when read
 ---@return boolean
 local function unstage_drops(ctx, entry, work_model)
     if entry.x == " " or entry.x == "?" then
@@ -172,7 +172,7 @@ end
 
 -- a row with a staged change and more on top of it: the one kind with a local view.
 -- of the rows whose file is then deleted, only an add has one: the others stage the
--- deletion from their whole change, and an add's whole change is HEAD↔index
+-- deletion from their whole change, and an add's whole change is HEAD<->index
 ---@param entry differ.FileEntry
 ---@return boolean
 local function partly_staged(entry)

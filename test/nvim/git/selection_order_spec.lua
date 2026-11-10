@@ -52,7 +52,7 @@ describe("git.staging.selection", function()
         assert.is_true(written > 0)
     end)
 
-    -- the index holds HEAD's b where HEAD↔worktree shows it deleted
+    -- the index holds HEAD's b where HEAD<->worktree shows it deleted
     describe("on HEAD a b, index b a, worktree a", function()
         local t = { head = "a\nb\n", index = "b\na\n", work = "a\n" }
         local selection = { old = { [2] = true }, new = {} }

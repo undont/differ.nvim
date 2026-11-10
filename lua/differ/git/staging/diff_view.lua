@@ -1,4 +1,5 @@
--- the diff view's staging for a row shown as HEAD↔worktree: s, u, S, U and X on its hunks and lines
+-- the diff view's staging for a row shown as HEAD<->worktree: s, u, S, U and X on its hunks
+-- and lines
 
 local rev = require("differ.git.rev")
 local exec = require("differ.git.exec")
@@ -35,7 +36,7 @@ local function side_mode(ctx, entry, staged)
     return want
 end
 
--- whether the index holds a mode change the HEAD↔worktree diff can't show: staged,
+-- whether the index holds a mode change the HEAD<->worktree diff can't show: staged,
 -- then put back in the worktree
 ---@param modes differ.git.Modes|nil
 ---@return boolean
@@ -65,7 +66,7 @@ end
 -- now: a confirm never trusts the listing a drawn row came from
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param shown? differ.DiffModel -- the row's HEAD↔worktree model, read in this action
+---@param shown? differ.DiffModel -- the row's HEAD<->worktree model, read in this action
 ---@return boolean
 local function hides_staged(ctx, entry, shown)
     if mode_hidden(live_modes(ctx, entry)) then
@@ -80,7 +81,7 @@ local function hides_staged(ctx, entry, shown)
 end
 
 -- why `hunk` can't move on its own, either way naming the view where its change
--- is a hunk of its own and can be taken whole. `reaches` names another HEAD↔worktree
+-- is a hunk of its own and can be taken whole. `reaches` names another HEAD<->worktree
 -- hunk a pair hunk would carry the op into; without one the two pairs line this
 -- hunk's change up under a different one, leaving nothing here to write
 ---@param keys differ.KeymapSet
@@ -199,12 +200,12 @@ local function select_refusal(keys, refused, op)
 end
 
 -- X's refusal for a selection. an index that can't be cut holds a change the
--- HEAD↔worktree can't show, or only repeats lines the cut can't place
+-- HEAD<->worktree can't show, or only repeats lines the cut can't place
 ---@param keys differ.KeymapSet
 ---@param refused differ.model.SelectRefusal
----@param head_work differ.DiffModel   -- HEAD↔worktree
----@param head_index differ.DiffModel  -- HEAD↔index
----@param index_work differ.DiffModel  -- index↔worktree
+---@param head_work differ.DiffModel   -- HEAD<->worktree
+---@param head_index differ.DiffModel  -- HEAD<->index
+---@param index_work differ.DiffModel  -- index<->worktree
 ---@return string
 local function revert_refusal(keys, refused, head_work, head_index, index_work)
     local marks = require("differ.model.marks")
@@ -255,7 +256,7 @@ local function revert_texts(ctx, entry, head_work, head_index, index_work, selec
     return index_text, reverted
 end
 
--- one HEAD↔worktree row's staging and what its ops read from it
+-- one HEAD<->worktree row's staging and what its ops read from it
 ---@class differ.git.HeadWorkSource
 ---@field ctx differ.git.StagingCtx
 ---@field entry differ.FileEntry
@@ -685,12 +686,12 @@ local function unheld(source, model, idx)
     return now.cost < read.cost
 end
 
--- staging for a row shown as HEAD↔worktree. staging a hunk gives the index the
+-- staging for a row shown as HEAD<->worktree. staging a hunk gives the index the
 -- worktree's version of its lines, unstaging keeps every staged change except those;
 -- each op reads the pairs once and re-marks from the text it wrote
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param shown differ.DiffModel -- the row's HEAD↔worktree model, just built
+---@param shown differ.DiffModel -- the row's HEAD<->worktree model, just built
 ---@return differ.view.Staging
 local function diff_view_staging(ctx, entry, shown)
     local mode_change = false

@@ -188,7 +188,7 @@ local function revert_frozen(ctx, entry, model, staging, idx, offset, reopen, in
     return true
 end
 
--- where the file stands on hunk `h` of a HEAD↔index model, from `drift`, the index's
+-- where the file stands on hunk `h` of a HEAD<->index model, from `drift`, the index's
 -- lines against the file's: "put_back" when a drift hunk replaces exactly h's index
 -- lines with its HEAD lines, "touched" when one overlaps them otherwise, nil when the
 -- file leaves them alone. a zero-line side sits between two lines
@@ -221,12 +221,12 @@ local function placed_on(drift, m, h, work)
     return nil
 end
 
--- staging for a row drawn HEAD↔index, in the commit preview or where that is the
+-- staging for a row drawn HEAD<->index, in the commit preview or where that is the
 -- only diff the row has. an add or a deletion is one unit whose index entry comes
 -- and goes, so it stages as a file
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- HEAD↔index
+---@param model differ.DiffModel  -- HEAD<->index
 ---@param preview boolean  -- the row comes from the commit preview's listing
 ---@return differ.view.Staging
 local function for_index(ctx, entry, model, preview)
@@ -340,10 +340,10 @@ local function for_index(ctx, entry, model, preview)
     return staging
 end
 
--- staging for a commit-preview row: the HEAD↔index keys, plus the way back out
+-- staging for a commit-preview row: the HEAD<->index keys, plus the way back out
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- HEAD↔index
+---@param model differ.DiffModel  -- HEAD<->index
 ---@return differ.view.Staging
 local function for_preview(ctx, entry, model)
     local staging = for_index(ctx, entry, model, true)
@@ -370,7 +370,7 @@ end
 -- the index can't be read or has changed outside differ
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree, as the view opened on it
+---@param model differ.DiffModel  -- index<->worktree, as the view opened on it
 ---@param staging differ.view.Staging
 ---@param idx integer
 ---@param index? differ.git.Blob  -- the index blob, identified in this op
@@ -470,7 +470,7 @@ end
 -- keeping the staged content. nil when the index holds nothing of the kind
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree
+---@param model differ.DiffModel  -- index<->worktree
 ---@return (fun(): boolean)|nil
 local function local_file_unstage(ctx, entry, model)
     if entry.x == "A" or model.binary then
@@ -502,10 +502,10 @@ local function local_file_revert(ctx, entry)
     return true
 end
 
--- the local view's staging, index↔worktree
+-- the local view's staging, index<->worktree
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
----@param model differ.DiffModel  -- index↔worktree
+---@param model differ.DiffModel  -- index<->worktree
 ---@param reopen fun()
 ---@return differ.view.Staging
 local function for_local(ctx, entry, model, reopen)

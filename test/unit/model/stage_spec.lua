@@ -160,7 +160,7 @@ describe("next_index", function()
     end)
 
     -- HEAD 1..7, index 1 A B C D E 7, worktree 1 A2 3 4 D2 E2 7: the index's B and C
-    -- sit between the two HEAD↔worktree hunks, so one HEAD↔index hunk covers both
+    -- sit between the two HEAD<->worktree hunks, so one HEAD<->index hunk covers both
     it("names the other hunk a pair hunk would carry the op into", function()
         local head = "1\n2\n3\n4\n5\n6\n7\n"
         local index = "1\nA\nB\nC\nD\nE\n7\n"
@@ -211,7 +211,7 @@ describe("next_index", function()
         )
     end)
 
-    -- HEAD a b c, index a q b c, worktree a b q b c: HEAD↔worktree inserts q b after b,
+    -- HEAD a b c, index a q b c, worktree a b q b c: HEAD<->worktree inserts q b after b,
     -- and the index's only b is HEAD's, with q hidden before it
     it("keeps HEAD's unchanged line the index holds beside an inserted hunk", function()
         local head_work = model("a\nb\nc\n", "a\nb\nq\nb\nc\n", { h(2, {}, 3, { "q", "b" }) })

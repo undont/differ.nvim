@@ -1,4 +1,4 @@
--- the texts s, u and X on a HEAD↔worktree selection write, read back before anything
+-- the texts s, u and X on a HEAD<->worktree selection write, read back before anything
 -- is: over the three texts already read, with no git
 
 local content = require("differ.git.content")
