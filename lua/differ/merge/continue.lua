@@ -138,7 +138,7 @@ local function conflicts_left(root)
     local left = #vim.tbl_filter(function(p)
         return p ~= s.path
     end, conflicted)
-    if #s.conflicts > 0 or #s.orphans > 0 or ((s.deleted or s.binary) and not s.staged) then
+    if #s.conflicts > 0 or #s.orphans > 0 or ((s.deleted or s.binary) and not s.resolved) then
         left = left + 1
     end
     return left
@@ -253,7 +253,7 @@ local function show(root, op, left)
 end
 
 -- conflicts with no operation (stash pop, checkout -m) have nothing to continue, skip or
--- abort: stage the open result and say what's left
+-- abort: settle the open result and say what's left
 ---@param root string
 local function settle_without_operation(root)
     local merge = require("differ.merge")
@@ -272,7 +272,7 @@ local function settle_without_operation(root)
     if left > 0 then
         return notify(("%s left"):format(plural(left, "conflicted file")), vim.log.levels.WARN)
     end
-    notify("conflicts resolved and staged")
+    notify("conflicts resolved")
     merge.close()
     git.panel({ root = root, open_first = true, supersede = true })
 end

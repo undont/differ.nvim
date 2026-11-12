@@ -93,7 +93,7 @@ local INPUT_HL = {
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
 ---@field file_index integer            -- this file's position in files
 ---@field left integer                  -- conflicted files still unstaged (for the winbar)
----@field staged boolean                -- this file has been staged this session
+---@field resolved boolean              -- this file's conflict was cleared this session
 ---@field removed boolean|nil           -- a modify/delete file deleted this session
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
 ---@field operation string|nil          -- the in-progress operation at session start
@@ -1015,13 +1015,13 @@ end
 local function result_winbar(s)
     local file = ("RESULT · file %d/%d"):format(s.file_index, #s.files)
     local remaining = #s.conflicts
-    if s.deleted and not s.staged then
+    if s.deleted and not s.resolved then
         return ("%s · %s"):format(file, tint("deleted in " .. s.deleted, "differMergeUnstaged"))
     end
-    if s.binary and not s.staged then
+    if s.binary and not s.resolved then
         return ("%s · binary · %s"):format(file, tint("not staged", "differMergeUnstaged"))
     end
-    if remaining == 0 and s.staged then
+    if remaining == 0 and s.resolved then
         local done = tint(s.removed and "deleted" or "staged", "differMergeStaged")
         if s.left == 0 and s.operation then
             local hint = require("differ.merge.continue").hint(s.keymaps)
@@ -1270,16 +1270,20 @@ local function side_labels(model)
     return labels
 end
 
--- git add the marker-free result. the winbar shows it staged; only the file's first stage
--- reports progress, since an auto-save re-stages it on every later edit
+-- git add the marker-free result. only the file's first stage reports progress, since an
+-- auto-save re-stages it on every later edit; with no operation the first one unstages
+-- it again and later edits stay in the worktree
 local function stage_result()
     local s = assert(session)
-    -- a failed add has already notified; the file stays unstaged so a later write retries
+    if s.resolved and not s.operation then
+        return
+    end
+    -- a failed add has already notified; the file stays conflicted so a later write retries
     if not require("differ.git").stage(s.root, s.path) then
         return
     end
-    if not s.staged then
-        merge_files.mark_staged(s)
+    if not s.resolved then
+        merge_files.mark_resolved(s)
     end
 end
 
@@ -1367,7 +1371,7 @@ local function settle_result()
     -- on_write warns about a reformatting formatter once; a later refusal has to say why
     local warned = s.autoformat_warned
     -- an untouched modify/delete or binary file waits for a take; stepping past isn't one
-    if (s.deleted or s.binary) and not s.staged and not vim.bo[s.result_buf].modified then
+    if (s.deleted or s.binary) and not s.resolved and not vim.bo[s.result_buf].modified then
         return true
     end
     if vim.bo[s.result_buf].modified then
@@ -1378,10 +1382,10 @@ local function settle_result()
             notify(tostring(err), vim.log.levels.ERROR)
             return false
         end
-    elseif #s.regions == 0 and not s.staged then
+    elseif #s.regions == 0 and not s.resolved then
         on_write() -- written but never staged, e.g. after a failed add
     end
-    if #s.regions > 0 or s.staged then
+    if #s.regions > 0 or s.resolved then
         return true
     end
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
@@ -1543,7 +1547,7 @@ local function lay_out(root, relpath, model, layout, files)
         files = files,
         file_index = assert(file_index, "merge: " .. relpath .. " is not in the file list"),
         left = #git.conflicted(root),
-        staged = false,
+        resolved = false,
         head = git.head_sha(root),
         operation = git.operation(root),
         result_win = result_win,
