@@ -351,6 +351,47 @@ local conflict_repo_symlink = fixture.cached(function(files)
     return root
 end)
 
+-- a repo where merging `feature` leaves a.lnk modify/delete: `deleter` deletes the link,
+-- the other side points it at target.txt instead of f.txt. sorted before a content
+-- conflict in each of `files`
+---@param files string[]
+---@param deleter "ours"|"theirs"
+local conflict_repo_symlink_modify_delete = fixture.cached(function(files, deleter)
+    local root = vim.fn.tempname()
+    local function change_link(side)
+        if side == deleter then
+            git_ok(root, "rm", "-q", "a.lnk")
+        else
+            vim.fn.delete(root .. "/a.lnk")
+            vim.uv.fs_symlink("target.txt", root .. "/a.lnk")
+            git_ok(root, "add", "a.lnk")
+        end
+    end
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/target.txt", "target\n")
+    vim.uv.fs_symlink("f.txt", root .. "/a.lnk")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nb\nc\n")
+    end
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    change_link("theirs")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nTHEIRS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    change_link("ours")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nOURS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end)
+
 -- a repo where merging `feature` conflicts on a.bin, a binary file git writes no markers
 -- into, sorted before a content conflict in f.txt. `kind` "add" adds a.bin on both sides
 -- (no base), "delete" deletes it on theirs
@@ -2896,6 +2937,38 @@ describe(":Differ mergetool modify/delete", function()
         local s = open_at(root, "f.txt")
         fire(s.result_buf, "differ: next conflicted file")
         assert.are.equal("a.txt", merge.current().path)
+    end)
+
+    for _, deleter in ipairs({ "theirs", "ours" }) do
+        it(("refuses a symlink %s deleted, opening nothing"):format(deleter), function()
+            local root = conflict_repo_symlink_modify_delete({ "f.txt" }, deleter)
+            assert.are.same({ "a.lnk", "f.txt" }, require("differ.git").conflicted(root))
+            vim.cmd.edit(root .. "/f.txt")
+            local buf = vim.api.nvim_get_current_buf()
+            _G.notifs = {}
+            merge.open({ path = root .. "/a.lnk" })
+            assert.is_nil(merge.current())
+            assert.are.equal(buf, vim.api.nvim_get_current_buf())
+            assert.are.equal(
+                "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
+                _G.notifs[1].msg
+            )
+        end)
+    end
+
+    it("skips a modify/delete symlink with ]f and [f", function()
+        local root = conflict_repo_symlink_modify_delete({ "f.txt", "g.txt" }, "theirs")
+        vim.cmd.edit(root .. "/f.txt")
+        merge.open({})
+        local s = assert(merge.current())
+        assert.are.equal("f.txt", s.path)
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        -- forward from g wraps past a.lnk to f, back from f wraps past it to g
+        fire(merge.current().result_buf, "differ: next conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
+        fire(merge.current().result_buf, "differ: previous conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
     end)
 
     it("keeps the file on taking the side that modified it, staying put", function()

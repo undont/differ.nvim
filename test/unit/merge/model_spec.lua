@@ -120,6 +120,13 @@ local function fake_git(opts)
             end
             return opts.has_stage ~= false
         end,
+        -- index entries by stage: none by default
+        stages = function()
+            return opts.modes or {}
+        end,
+        is_symlink = function()
+            return opts.worktree_link == true
+        end,
     }
 end
 
@@ -202,6 +209,28 @@ describe("merge.model.build", function()
     it("leaves deleted unset on a content conflict", function()
         package.loaded["differ.git"] = fake_git()
         assert.is_nil(model.build("/repo", "a.txt", nil).deleted)
+    end)
+
+    it("refuses a modify/delete file a stage holds as a symlink", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "target.txt",
+            stages = { [1] = "f.txt", [2] = "target.txt" },
+            has_stage = { [1] = true, [2] = true },
+            modes = {
+                [1] = { mode = "120000", oid = "a1" },
+                [2] = { mode = "120000", oid = "b2" },
+            },
+        })
+        local m, err = model.build("/repo", "a.lnk", nil)
+        assert.is_nil(m)
+        assert.is_string(err)
+    end)
+
+    it("refuses a conflicted path the worktree holds as a symlink", function()
+        package.loaded["differ.git"] = fake_git({ worktree_link = true })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m)
+        assert.is_string(err)
     end)
 end)
 

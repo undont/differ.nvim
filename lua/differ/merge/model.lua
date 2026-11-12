@@ -343,34 +343,49 @@ local function deleted_side(root, relpath)
     return "ours"
 end
 
-local STAGE_SIDES = { ["1"] = "base", ["2"] = "ours", ["3"] = "theirs" }
+local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
 
 -- each present stage's object id and size, by side
----@param root string
----@param relpath string
+---@param stages table<integer, { mode: string, oid: string }>
 ---@param texts table<"ours"|"base"|"theirs", string>
 ---@return table<"ours"|"base"|"theirs", differ.merge.Blob>
-local function stage_blobs(root, relpath, texts)
-    local listed = require("differ.git.exec").git({ "ls-files", "-s", "--", relpath }, root)
+local function stage_blobs(stages, texts)
     local blobs = {}
-    for oid, stage in (listed or ""):gmatch("%d+ (%x+) (%d)\t") do
-        local side = STAGE_SIDES[stage]
-        if side then
-            blobs[side] = { oid = oid, size = #texts[side] }
+    for stage, side in pairs(STAGE_SIDES) do
+        if stages[stage] then
+            blobs[side] = { oid = stages[stage].oid, size = #texts[side] }
         end
     end
     return blobs
 end
 
+-- whether a stage or the worktree holds `relpath` as a symlink
+---@param root string
+---@param relpath string
+---@param stages table<integer, { mode: string, oid: string }>
+---@return boolean
+local function is_symlink(root, relpath, stages)
+    for stage in pairs(STAGE_SIDES) do
+        if stages[stage] and stages[stage].mode == "120000" then
+            return true
+        end
+    end
+    return require("differ.git").is_symlink(root, relpath)
+end
+
 -- build a MergeModel for a conflicted `relpath`. returns nil + a reason when the file
--- isn't on disk, or carries no conflict marker lines and is neither binary nor a
--- modify/delete conflict
+-- is a symlink, isn't on disk, or carries no conflict marker lines and is neither binary
+-- nor a modify/delete conflict
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
 ---@return differ.MergeModel|nil, string|nil err
 function M.build(root, relpath, head)
     local git = require("differ.git")
+    local stages = git.stages(root, relpath)
+    if is_symlink(root, relpath, stages) then
+        return nil, relpath .. " is a symlink"
+    end
     local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
         return nil, relpath .. " is not in the working tree"
@@ -397,7 +412,7 @@ function M.build(root, relpath, head)
             head = head,
             no_ancestor = no_ancestor,
             deleted = deleted_side(root, relpath),
-            binary = stage_blobs(root, relpath, texts),
+            binary = stage_blobs(stages, texts),
         }
     end
     local marker_size = git.marker_size(root, relpath)

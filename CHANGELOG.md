@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Internal names for the diff view, local view and commit preview are now consistent; no outward facing change in behaviour
 
+### Fixed
+
+- The merge tool opened a conflicted symlink that one side deleted and the other changed, editing whatever the link pointed to; it now refuses it like any other symlink conflict
+
 ## [0.2.32] — 2026-11-10
 
 ### Fixed
