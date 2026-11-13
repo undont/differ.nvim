@@ -1,4 +1,4 @@
--- the merge tool's conflicted files: progress as they are staged, ]f/[f between them, and
+-- the merge tool's conflicted files: progress as they are resolved, ]f/[f between them, and
 -- closing the session once git moves on without it
 
 local notify = require("differ.git.exec").notify
@@ -33,11 +33,16 @@ end
 
 -- mark this file resolved in the same tick as the index write, so the git-dir watcher
 -- doesn't read it as resolved outside the session, and name the conflicts left that only
--- git add/rm can resolve
+-- git add/rm can resolve. with no operation the resolution stays unstaged: the reset puts
+-- the index entry back to HEAD's, leaving the worktree file as the resolution
 ---@param s differ.MergeSession
-function M.mark_staged(s)
-    s.staged = true
-    local conflicted = require("differ.git").conflicted(s.root)
+function M.mark_resolved(s)
+    s.resolved = true
+    local git = require("differ.git")
+    if not s.operation then
+        git.unstage(s.root, s.path)
+    end
+    local conflicted = git.conflicted(s.root)
     s.left = #conflicted
     if #conflicted > 0 and not M.first_openable(s.root, conflicted) then
         M.report_unopenable(conflicted)
@@ -115,7 +120,7 @@ local function stale_reason(s, conflicted)
     if git.head_sha(s.root) ~= s.head or git.operation(s.root) ~= s.operation then
         return "git moved on outside the merge tool", vim.log.levels.INFO
     end
-    if s.staged or vim.tbl_contains(conflicted, s.path) then
+    if s.resolved or vim.tbl_contains(conflicted, s.path) then
         return nil, nil
     end
     -- what git staged is the file on disk, which the buffer may not match
