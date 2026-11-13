@@ -201,18 +201,6 @@ function M.read_stage(root, relpath, stage)
     return git_raw({ "show", (":%d:"):format(stage) .. relpath }, root) or ""
 end
 
--- whether `relpath` has a stage N entry at all. read_stage folds an absent stage into "",
--- which a genuinely empty one also reads as, and the two want opposite handling: an add/add
--- conflict has no `:1:` and so no base to take, while an empty ancestor has one to take
----@param root string
----@param relpath string
----@param stage 1|2|3
----@return boolean
-function M.has_stage(root, relpath, stage)
-    local spec = (":%d:"):format(stage) .. relpath
-    return vim.system({ "git", "cat-file", "-e", spec }, { cwd = root }):wait().code == 0
-end
-
 -- each present index stage's file mode and object id for `relpath`, by stage number
 ---@param root string
 ---@param relpath string

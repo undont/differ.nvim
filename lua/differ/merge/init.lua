@@ -21,6 +21,7 @@ local keymap = require("differ.util.keymap")
 local tab_util = require("differ.util.tab")
 local plural = require("differ.util.text").plural
 local merge_files = require("differ.merge.files")
+local merge_deleted = require("differ.merge.deleted")
 local whole = require("differ.merge.whole")
 local conflict = require("differ.git.conflict")
 local find_run = require("differ.util.lines").find_run
@@ -88,7 +89,7 @@ local INPUT_HL = {
 ---@field active_index integer|nil        -- index of the conflict under the cursor
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
----@field deleted "ours"|"theirs"|nil     -- modify/delete: the side that deleted the file
+---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version (MergeModel.deleted)
 ---@field whole "binary"|"symlink"|"text"|nil -- taken whole: the result is a scratch notice, not the file
 ---@field layout "default"|"diff4"  -- the chosen layout, reused when stepping to another file
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
@@ -1041,7 +1042,7 @@ local function result_winbar(s)
     end
     local remaining = #s.conflicts
     if s.deleted and not s.resolved then
-        local state = tint("deleted in " .. s.deleted, "differMergeUnstaged")
+        local state = tint(merge_deleted.state(s.deleted, s.no_ancestor), "differMergeUnstaged")
         return ("%s · %s%s"):format(file, state, left)
     end
     if s.whole and not s.resolved then
@@ -1237,7 +1238,12 @@ local function show_help()
     local rows = { row(km.next_conflict, km.prev_conflict, "%s conflict", "next", "previous") }
     local deleted = session.deleted
     local in_result = vim.api.nvim_get_current_buf() == session.result_buf and not session.removed
-    if in_result and deleted then
+    if in_result and deleted == "both" then
+        vim.list_extend(rows, {
+            { fmt(km.choose_ours), "delete the file" },
+            { fmt(km.choose_theirs), "delete the file" },
+        })
+    elseif in_result and deleted then
         vim.list_extend(rows, {
             { fmt(km.choose_ours), deleted == "ours" and "delete the file" or "keep the file" },
             { fmt(km.choose_theirs), deleted == "theirs" and "delete the file" or "keep the file" },
@@ -1270,8 +1276,9 @@ local function show_help()
     help.show(help.lines(rows), { title = " Differ: merge ", dismiss = dismiss })
 end
 
--- the input pane labels, named by the first conflict's markers. a modify/delete or whole
--- file has none: HEAD is ours under every operation, and theirs is named from git's state
+-- the input pane labels, named by the first conflict's markers. a file with a side missing
+-- or taken whole has none: HEAD is ours under every operation, and theirs is named from
+-- git's state
 ---@param model differ.MergeModel
 ---@return table<string, string>
 local function side_labels(model)
@@ -1286,7 +1293,16 @@ local function side_labels(model)
             labels.theirs = ("THEIRS (%s)"):format(theirs)
         end
     end
-    if model.deleted then
+    if model.deleted == "both" then
+        labels.ours = labels.ours .. " · deleted"
+        labels.theirs = labels.theirs .. " · deleted"
+    elseif model.deleted and model.no_ancestor then
+        local added = "ours"
+        if model.deleted == "ours" then
+            added = "theirs"
+        end
+        labels[added] = labels[added] .. " · added"
+    elseif model.deleted then
         labels[model.deleted] = labels[model.deleted] .. " · deleted"
     end
     return labels
@@ -1523,14 +1539,17 @@ local function lay_out(root, relpath, model, layout, files)
     end
     for _, inp in ipairs(inputs) do
         local buf = vim.api.nvim_win_get_buf(inp.win)
-        if inp.side == model.deleted then
-            show_notice(inp.win, buf, "deleted in " .. inp.side)
+        local absent = merge_deleted.absent(model.deleted, model.no_ancestor, inp.side)
+        if absent then
+            show_notice(inp.win, buf, absent)
         elseif model.whole and model.whole.sides[inp.side] then
             show_notice(inp.win, buf, whole.describe(model.whole.sides[inp.side]))
         end
     end
     dress(result_win)
-    if model.whole then
+    if model.deleted == "both" then
+        show_notice(result_win, result_buf, "deleted by both: take ours or theirs to delete it")
+    elseif model.whole then
         show_notice(result_win, result_buf, whole.noun(model.whole.kind) .. ": take ours or theirs")
     end
 
@@ -1682,6 +1701,9 @@ local function lay_out(root, relpath, model, layout, files)
     })
     if model.whole then
         local msg = ("%s is a %s: nothing to write"):format(relpath, whole.noun(model.whole.kind))
+        if model.deleted == "both" then
+            msg = relpath .. " was deleted by both: nothing to write"
+        end
         vim.api.nvim_create_autocmd("BufWriteCmd", {
             buffer = result_buf,
             group = aug,
@@ -1844,7 +1866,8 @@ function M.open(opts)
     end
 
     if opts.path and opts.path ~= "" then
-        local full = vim.fn.fnamemodify(opts.path, ":p")
+        -- :p ends a directory in a slash, and a submodule is checked out as one
+        local full = vim.fn.fnamemodify(opts.path, ":p"):gsub("/$", "")
         -- the directory only: git lists a conflicted symlink by its own path, not its target
         local abs = vim.fn.resolve(vim.fn.fnamemodify(full, ":h"))
             .. "/"

@@ -95,6 +95,13 @@ local SYNTH_FOREIGN = file(diff3_block({ "zzz" }, { "base" }, { "qqq" }))
 
 local function fake_git(opts)
     opts = opts or {}
+    -- stage presence: present by default, `false` for none, or a per-stage table
+    local function present(stage)
+        if type(opts.has_stage) == "table" then
+            return opts.has_stage[stage] == true
+        end
+        return opts.has_stage ~= false
+    end
     return {
         read = function()
             if opts.worktree == nil then
@@ -113,16 +120,18 @@ local function fake_git(opts)
         marker_size = function()
             return opts.marker_size or 7
         end,
-        -- stage presence: present by default, `false` for none, or a per-stage table
-        has_stage = function(_, _, stage)
-            if type(opts.has_stage) == "table" then
-                return opts.has_stage[stage] == true
-            end
-            return opts.has_stage ~= false
-        end,
-        -- index entries by stage: none by default
+        -- index entries by stage: `modes`, else a regular file for each present stage
         stages = function()
-            return opts.modes or {}
+            if opts.modes then
+                return opts.modes
+            end
+            local entries = {}
+            for stage = 1, 3 do
+                if present(stage) then
+                    entries[stage] = { mode = "100644", oid = "oid" .. stage }
+                end
+            end
+            return entries
         end,
         is_symlink = function()
             return opts.worktree_link == true
@@ -198,15 +207,33 @@ describe("merge.model.build", function()
         assert.are.equal("ours", model.build("/repo", "a.txt", nil).deleted)
     end)
 
-    it("refuses a file with no markers that one side added", function()
+    it("builds a file one side added, naming the side without it", function()
         package.loaded["differ.git"] = fake_git({
             worktree = "added\n",
             stages = { [2] = "added\n" },
             has_stage = { [2] = true },
         })
         local m, err = model.build("/repo", "a.txt", nil)
-        assert.is_nil(m)
-        assert.is_string(err)
+        assert.is_nil(err)
+        assert.are.equal("theirs", m.deleted)
+        assert.is_true(m.no_ancestor)
+        assert.are.same({}, m.regions)
+    end)
+
+    it("builds a file deleted by both whole, from the base stage alone", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = false,
+            stages = { [1] = "base\n" },
+            has_stage = { [1] = true },
+            modes = { [1] = { mode = "100644", oid = "a1" } },
+        })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(err)
+        assert.are.equal("both", m.deleted)
+        assert.is_false(m.no_ancestor)
+        assert.are.equal("text", m.whole.kind)
+        assert.are.same({ kind = "text", oid = "a1", size = 5 }, m.whole.sides.base)
+        assert.is_nil(m.whole.sides.ours)
     end)
 
     it("leaves deleted unset on a content conflict", function()
@@ -265,15 +292,17 @@ describe("merge.model.build", function()
         assert.are.equal("symlink", m.whole.kind)
     end)
 
-    it("refuses a symlink only one side added", function()
+    it("builds a symlink only one side added whole", function()
         package.loaded["differ.git"] = fake_git({
             stages = { [3] = "f.txt" },
             has_stage = { [3] = true },
             modes = { [3] = { mode = "120000", oid = "c3" } },
         })
         local m, err = model.build("/repo", "a.txt", nil)
-        assert.is_nil(m)
-        assert.are.equal("a.txt has no version on one side", err)
+        assert.is_nil(err)
+        assert.are.equal("symlink", m.whole.kind)
+        assert.are.equal("ours", m.deleted)
+        assert.is_true(m.no_ancestor)
     end)
 
     it("builds a binary stage whole, beside a text one", function()

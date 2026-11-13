@@ -23,7 +23,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
----@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
+---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version, no regions (no_ancestor: an add)
 ---@field whole differ.merge.Whole|nil -- resolved by taking a stage whole: no regions, empty texts
 
 ---@class differ.merge.Conflict
@@ -329,24 +329,22 @@ local function is_conflict(c, lines, orphans, content, remerged)
     return #conflict.markers(lines, inside, {}, content) > 0
 end
 
--- the side that deleted a modify/delete file: the ancestor and exactly one side's stage
--- are in the index. git leaves the other side's file on disk with no markers
----@param root string
----@param relpath string
----@return "ours"|"theirs"|nil
-local function deleted_side(root, relpath)
-    local git = require("differ.git")
-    if not git.has_stage(root, relpath, 1) then
+-- the side with no version of the file, "both" when only the ancestor is left. a
+-- modify/delete or added-by-one-side file is on disk as the other side left it, with no
+-- markers; a deleted-by-both one isn't on disk
+---@param stages table<integer, { mode: string, oid: string }>
+---@return "ours"|"theirs"|"both"|nil
+local function missing_side(stages)
+    if stages[2] and stages[3] then
         return nil
     end
-    local has_ours = git.has_stage(root, relpath, 2)
-    if has_ours == git.has_stage(root, relpath, 3) then
-        return nil
-    end
-    if has_ours then
+    if stages[2] then
         return "theirs"
     end
-    return "ours"
+    if stages[3] then
+        return "ours"
+    end
+    return "both"
 end
 
 local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
@@ -406,7 +404,7 @@ end
 ---@param relpath string
 ---@param head string|nil
 ---@param no_ancestor boolean
----@param deleted "ours"|"theirs"|nil
+---@param deleted "ours"|"theirs"|"both"|nil
 ---@param kind "binary"|"symlink"|"text"
 ---@param sides table<"ours"|"base"|"theirs", differ.merge.Side>
 ---@return differ.MergeModel
@@ -431,9 +429,8 @@ local function whole_model(root, relpath, head, no_ancestor, deleted, kind, side
 end
 
 -- build a MergeModel for a conflicted `relpath`. returns nil + a reason when a stage is a
--- submodule commit, a binary or symlink has neither both sides nor a modify/delete's
--- base and one side, or a text file isn't on disk or carries no conflict marker lines and is
--- neither a modify/delete conflict nor set not to merge
+-- submodule commit, or a text file isn't on disk or carries no conflict marker lines and is
+-- neither missing on a side nor set not to merge
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -450,20 +447,19 @@ function M.build(root, relpath, head)
     local base_text = git.read_stage(root, relpath, 1)
     local theirs_text = git.read_stage(root, relpath, 3)
     local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
-    -- only ambiguous when the stage read back empty, so the extra call sits inside that
-    local no_ancestor = base_text == "" and not git.has_stage(root, relpath, 1)
+    local no_ancestor = stages[1] == nil
     local sides = whole_sides(stages, texts)
     local linked = git.is_symlink(root, relpath)
     local kind = whole_kind(sides, linked)
     if kind ~= "text" then
-        local deleted = deleted_side(root, relpath)
-        if not deleted and not (sides.ours and sides.theirs) then
-            return nil, relpath .. " has no version on one side"
-        end
+        local deleted = missing_side(stages)
         return whole_model(root, relpath, head, no_ancestor, deleted, kind, sides)
     end
     local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
+        if missing_side(stages) == "both" then
+            return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
+        end
         return nil, relpath .. " is not in the working tree"
     end
     local marker_size = git.marker_size(root, relpath)
@@ -490,7 +486,10 @@ function M.build(root, relpath, head)
     end
     local deleted = nil
     if #conflicts == 0 then
-        deleted = deleted_side(root, relpath)
+        deleted = missing_side(stages)
+        if deleted == "both" then
+            return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
+        end
         if not deleted and sides.ours and sides.theirs and git.merges_whole(root, relpath) then
             return whole_model(root, relpath, head, no_ancestor, nil, kind, sides)
         end
