@@ -127,6 +127,9 @@ local function fake_git(opts)
         is_symlink = function()
             return opts.worktree_link == true
         end,
+        merges_whole = function()
+            return opts.merges_whole == true
+        end,
     }
 end
 
@@ -211,9 +214,9 @@ describe("merge.model.build", function()
         assert.is_nil(model.build("/repo", "a.txt", nil).deleted)
     end)
 
-    it("refuses a modify/delete file a stage holds as a symlink", function()
+    it("builds a symlink modify/delete whole, each side by its target", function()
         package.loaded["differ.git"] = fake_git({
-            worktree = "target.txt",
+            worktree = false, -- a dangling link reads as absent
             stages = { [1] = "f.txt", [2] = "target.txt" },
             has_stage = { [1] = true, [2] = true },
             modes = {
@@ -222,15 +225,119 @@ describe("merge.model.build", function()
             },
         })
         local m, err = model.build("/repo", "a.lnk", nil)
+        assert.is_nil(err)
+        assert.are.equal("symlink", m.whole.kind)
+        assert.are.equal("theirs", m.deleted)
+        assert.are.same(
+            { kind = "symlink", oid = "b2", size = 10, target = "target.txt" },
+            m.whole.sides.ours
+        )
+        assert.is_nil(m.whole.sides.theirs)
+        assert.are.same({}, m.conflicts)
+    end)
+
+    it("builds a file vs symlink conflict whole, each side by its own kind", function()
+        package.loaded["differ.git"] = fake_git({
+            stages = { [1] = "base\n", [2] = "ours\n", [3] = "f.txt" },
+            modes = {
+                [1] = { mode = "100644", oid = "a1" },
+                [2] = { mode = "100644", oid = "b2" },
+                [3] = { mode = "120000", oid = "c3" },
+            },
+        })
+        local m = assert(model.build("/repo", "a.txt", nil))
+        assert.are.equal("symlink", m.whole.kind)
+        assert.are.equal("text", m.whole.sides.ours.kind)
+        assert.are.equal("symlink", m.whole.sides.theirs.kind)
+        assert.are.equal("f.txt", m.whole.sides.theirs.target)
+    end)
+
+    it("builds a conflicted path the worktree holds as a symlink whole", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree_link = true,
+            modes = {
+                [1] = { mode = "100644", oid = "a1" },
+                [2] = { mode = "100644", oid = "b2" },
+                [3] = { mode = "100644", oid = "c3" },
+            },
+        })
+        local m = assert(model.build("/repo", "a.txt", nil))
+        assert.are.equal("symlink", m.whole.kind)
+    end)
+
+    it("refuses a symlink only one side added", function()
+        package.loaded["differ.git"] = fake_git({
+            stages = { [3] = "f.txt" },
+            has_stage = { [3] = true },
+            modes = { [3] = { mode = "120000", oid = "c3" } },
+        })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m)
+        assert.are.equal("a.txt has no version on one side", err)
+    end)
+
+    it("builds a binary stage whole, beside a text one", function()
+        package.loaded["differ.git"] = fake_git({
+            stages = { [1] = "base\n", [2] = "ours\0", [3] = "theirs\n" },
+            modes = {
+                [1] = { mode = "100644", oid = "a1" },
+                [2] = { mode = "100644", oid = "b2" },
+                [3] = { mode = "100644", oid = "c3" },
+            },
+        })
+        local m = assert(model.build("/repo", "a.bin", nil))
+        assert.are.equal("binary", m.whole.kind)
+        assert.are.same({ kind = "binary", oid = "b2", size = 5 }, m.whole.sides.ours)
+        assert.are.equal("text", m.whole.sides.theirs.kind)
+        assert.are.equal("", m.ours_text)
+    end)
+
+    it("builds a marker-free text file set not to merge whole", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "ours\n",
+            merges_whole = true,
+            modes = {
+                [1] = { mode = "100644", oid = "a1" },
+                [2] = { mode = "100644", oid = "b2" },
+                [3] = { mode = "100644", oid = "c3" },
+            },
+        })
+        local m = assert(model.build("/repo", "a.txt", nil))
+        assert.are.equal("text", m.whole.kind)
+        assert.is_nil(m.deleted)
+        assert.are.equal("c3", m.whole.sides.theirs.oid)
+    end)
+
+    it("refuses a marker-free text file git would merge", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = "ours\n",
+            modes = {
+                [1] = { mode = "100644", oid = "a1" },
+                [2] = { mode = "100644", oid = "b2" },
+                [3] = { mode = "100644", oid = "c3" },
+            },
+        })
+        local m, err = model.build("/repo", "a.txt", nil)
         assert.is_nil(m)
         assert.is_string(err)
     end)
 
-    it("refuses a conflicted path the worktree holds as a symlink", function()
-        package.loaded["differ.git"] = fake_git({ worktree_link = true })
-        local m, err = model.build("/repo", "a.txt", nil)
+    it("refuses a submodule stage, naming it", function()
+        package.loaded["differ.git"] = fake_git({
+            modes = {
+                [1] = { mode = "160000", oid = "a1" },
+                [2] = { mode = "160000", oid = "b2" },
+                [3] = { mode = "160000", oid = "c3" },
+            },
+        })
+        local m, err = model.build("/repo", "sub", nil)
         assert.is_nil(m)
-        assert.is_string(err)
+        assert.are.equal("sub is a submodule", err)
+    end)
+
+    it("leaves whole unset on a content conflict", function()
+        package.loaded["differ.git"] = fake_git()
+        assert.is_nil(model.build("/repo", "a.txt", nil).whole)
     end)
 end)
 

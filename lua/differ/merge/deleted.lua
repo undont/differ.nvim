@@ -5,16 +5,17 @@ local notify = require("differ.git.exec").notify
 
 local M = {}
 
--- keep the file: write it as it stands, which resolves it like any write. a binary file is
--- resolved from disk instead, since a write from nvim can change its bytes
+-- keep the file: write it as it stands, which resolves it like any write. a whole-file one
+-- is taken from the index instead: a write from nvim can change a binary's bytes, and
+-- would write through a symlink to its target
 ---@param s differ.MergeSession
 local function keep_file(s)
-    if s.binary then
+    if s.whole then
         local surviving = "ours"
         if s.deleted == "ours" then
             surviving = "theirs"
         end
-        return require("differ.merge.binary").take(s, surviving)
+        return require("differ.merge.whole").take(s, surviving)
     end
     local ok, err = pcall(vim.api.nvim_buf_call, s.result_buf, function()
         vim.cmd("silent write")

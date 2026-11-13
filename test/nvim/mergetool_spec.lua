@@ -318,8 +318,41 @@ local conflict_repo_modify_delete = fixture.cached(function(files, deleter)
     return root
 end)
 
--- a repo where merging `feature` conflicts on a.lnk, a symlink the merge tool can't open
--- (its targets don't exist), sorted before a content conflict in each of `files`
+-- a repo where merging `feature` renames a.txt on both sides, a-ours.txt and a-theirs.txt,
+-- leaving them AU and UA and a.txt DD, which the merge tool can't open. sorted before a
+-- content conflict in each of `files`
+---@param files string[]
+local conflict_repo_renamed = fixture.cached(function(files)
+    local root = vim.fn.tempname()
+    vim.fn.mkdir(root, "p")
+    git_ok(root, "init", "-q")
+    write(root .. "/a.txt", "renamed\n")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nb\nc\n")
+    end
+    git_ok(root, "add", ".")
+    git_ok(root, "commit", "-q", "-m", "base")
+    git_ok(root, "checkout", "-q", "-b", "feature")
+    git_ok(root, "mv", "a.txt", "a-theirs.txt")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nTHEIRS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "theirs")
+    git_ok(root, "checkout", "-q", "main")
+    git_ok(root, "mv", "a.txt", "a-ours.txt")
+    for _, f in ipairs(files) do
+        write(root .. "/" .. f, "a\nOURS\nc\n")
+    end
+    git_ok(root, "commit", "-q", "-am", "ours")
+    git(root, "merge", "feature")
+    return root
+end)
+
+local RENAMED_UNOPENABLE =
+    "differ: a-ours.txt, a-theirs.txt, a.txt can't be opened in the merge tool: resolve with git add/rm"
+
+-- a repo where merging `feature` conflicts on a.lnk, a symlink to ours-target, base-target
+-- or theirs-target (none exist), sorted before a content conflict in each of `files`
 ---@param files string[]
 local conflict_repo_symlink = fixture.cached(function(files)
     local root = vim.fn.tempname()
@@ -923,7 +956,7 @@ describe(":Differ mergetool resolution", function()
     end)
 
     it("names the conflicts it can't open once only those remain, staying open", function()
-        local root = conflict_repo_symlink({ "f.txt" })
+        local root = conflict_repo_renamed({ "f.txt" })
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         local s = merge.current()
@@ -931,43 +964,37 @@ describe(":Differ mergetool resolution", function()
         take_ours_and_write(s)
         assert.are.equal(s, merge.current())
         local last = _G.notifs[#_G.notifs]
-        assert.are.equal(
-            "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
-            last.msg
-        )
+        assert.are.equal(RENAMED_UNOPENABLE, last.msg)
         for _, n in ipairs(_G.notifs) do
             assert.is_nil(n.msg:find("continue", 1, true))
         end
     end)
 
     it("closes, naming them, when an operation stops only on conflicts it can't open", function()
-        local root = conflict_repo_symlink({ "f.txt" })
+        local root = conflict_repo_renamed({ "f.txt" })
         vim.cmd.edit(root .. "/f.txt")
         merge.open({})
         git_ok(root, "add", "f.txt")
         _G.notifs = {}
         merge.after_operation(root)
         assert.is_nil(merge.current())
-        assert.are.equal(
-            "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.are.equal(RENAMED_UNOPENABLE, _G.notifs[#_G.notifs].msg)
     end)
 
     it("says why when asked to open a conflict it can't", function()
-        local root = conflict_repo_symlink({ "f.txt" })
+        local root = conflict_repo_renamed({ "f.txt" })
         vim.cmd.edit(root .. "/f.txt")
         _G.notifs = {}
-        merge.open({ path = root .. "/a.lnk" })
+        merge.open({ path = root .. "/a-ours.txt" })
         assert.is_nil(merge.current())
         assert.are.equal(
-            "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
+            "differ: a-ours.txt can't be opened in the merge tool: resolve with git add/rm",
             _G.notifs[1].msg
         )
         assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
     end)
 
-    it("says why when asked to open a conflicted symlink, not its target", function()
+    it("opens a conflicted symlink asked for by path, not its target", function()
         local root = conflict_repo_modify_delete({ "f.txt" })
         git_ok(root, "merge", "--abort")
         git_ok(root, "checkout", "-q", "feature")
@@ -981,13 +1008,10 @@ describe(":Differ mergetool resolution", function()
         git(root, "merge", "feature")
         assert.is_true(vim.tbl_contains(require("differ.git").conflicted(root), "link.txt"))
         vim.cmd.edit(root .. "/f.txt")
-        _G.notifs = {}
         merge.open({ path = root .. "/link.txt" })
-        assert.is_nil(merge.current())
-        assert.are.equal(
-            "differ: link.txt can't be opened in the merge tool: resolve with git add/rm",
-            _G.notifs[1].msg
-        )
+        local s = assert(merge.current())
+        assert.are.equal("link.txt", s.path)
+        assert.are.equal("symlink", s.whole)
     end)
 
     it("does not stage while conflicts remain on write", function()
@@ -1809,15 +1833,18 @@ describe(":Differ mergetool file stepping", function()
     end)
 
     it("skips staged files and ones it can't open", function()
-        local root = conflict_repo_symlink({ "f.txt", "g.txt", "h.txt" })
+        local root = conflict_repo_renamed({ "f.txt", "g.txt", "h.txt" })
         local s = open_at(root, "f.txt")
-        assert.are.same({ "a.lnk", "f.txt", "g.txt", "h.txt" }, s.files)
+        assert.are.same(
+            { "a-ours.txt", "a-theirs.txt", "a.txt", "f.txt", "g.txt", "h.txt" },
+            s.files
+        )
         fire(s.result_buf, "differ: next conflicted file") -- f -> g
         local g = merge.current()
         fire(g.result_buf, "differ: take ours")
         fire(g.result_buf, "differ: next conflicted file") -- g staged -> h
         assert.are.equal("h.txt", merge.current().path)
-        -- forward from h wraps past a.lnk (unopenable) to f, back skips g (staged)
+        -- forward from h wraps past the renames (unopenable) to f, back skips g (staged)
         fire(merge.current().result_buf, "differ: next conflicted file")
         assert.are.equal("f.txt", merge.current().path)
         fire(merge.current().result_buf, "differ: previous conflicted file")
@@ -1825,15 +1852,12 @@ describe(":Differ mergetool file stepping", function()
     end)
 
     it("names what's left when no other file can be opened", function()
-        local root = conflict_repo_symlink({ "f.txt" })
+        local root = conflict_repo_renamed({ "f.txt" })
         local s = open_at(root, "f.txt")
         _G.notifs = {}
         fire(s.result_buf, "differ: next conflicted file")
         assert.are.equal(s, merge.current())
-        assert.are.equal(
-            "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
-            _G.notifs[#_G.notifs].msg
-        )
+        assert.are.equal(RENAMED_UNOPENABLE, _G.notifs[#_G.notifs].msg)
     end)
 
     it("says so when no conflicted file is left", function()
@@ -2949,35 +2973,43 @@ describe(":Differ mergetool modify/delete", function()
     end)
 
     for _, deleter in ipairs({ "theirs", "ours" }) do
-        it(("refuses a symlink %s deleted, opening nothing"):format(deleter), function()
+        local keeper = deleter == "theirs" and "ours" or "theirs"
+
+        it(("keeps a symlink %s deleted as a link"):format(deleter), function()
             local root = conflict_repo_symlink_modify_delete({ "f.txt" }, deleter)
-            assert.are.same({ "a.lnk", "f.txt" }, require("differ.git").conflicted(root))
             vim.cmd.edit(root .. "/f.txt")
-            local buf = vim.api.nvim_get_current_buf()
-            _G.notifs = {}
-            merge.open({ path = root .. "/a.lnk" })
-            assert.is_nil(merge.current())
-            assert.are.equal(buf, vim.api.nvim_get_current_buf())
+            local s = open_at(root, "a.lnk")
+            assert.are.equal("symlink", s.whole)
+            assert.are.equal(deleter, s.deleted)
             assert.are.equal(
-                "differ: a.lnk can't be opened in the merge tool: resolve with git add/rm",
-                _G.notifs[1].msg
+                "symlink → target.txt",
+                notice(vim.api.nvim_win_get_buf(input(s, keeper).win))
             )
+            fire(s.result_buf, "differ: take " .. keeper)
+            assert.matches("^120000 ", git_ok(root, "ls-files", "-s", "--", "a.lnk"))
+            assert.are.equal("target.txt", vim.uv.fs_readlink(root .. "/a.lnk"))
+            assert.are.same({ "target" }, vim.fn.readfile(root .. "/target.txt"))
+        end)
+
+        it(("deletes a symlink %s deleted on taking that side"):format(deleter), function()
+            local root = conflict_repo_symlink_modify_delete({ "f.txt" }, deleter)
+            vim.cmd.edit(root .. "/f.txt")
+            local s = open_at(root, "a.lnk")
+            confirming(1, function()
+                fire(s.result_buf, "differ: take " .. deleter)
+            end)
+            assert.are.equal("", git_ok(root, "ls-files", "-s", "--", "a.lnk"))
+            assert.is_nil(vim.uv.fs_lstat(root .. "/a.lnk"))
+            assert.are.equal("a.lnk deletion staged", notice(s.result_buf))
         end)
     end
 
-    it("skips a modify/delete symlink with ]f and [f", function()
-        local root = conflict_repo_symlink_modify_delete({ "f.txt", "g.txt" }, "theirs")
+    it("steps onto a modify/delete symlink with ]f", function()
+        local root = conflict_repo_symlink_modify_delete({ "f.txt" }, "theirs")
         vim.cmd.edit(root .. "/f.txt")
-        merge.open({})
-        local s = assert(merge.current())
-        assert.are.equal("f.txt", s.path)
+        local s = open_at(root, "f.txt")
         fire(s.result_buf, "differ: next conflicted file")
-        assert.are.equal("g.txt", merge.current().path)
-        -- forward from g wraps past a.lnk to f, back from f wraps past it to g
-        fire(merge.current().result_buf, "differ: next conflicted file")
-        assert.are.equal("f.txt", merge.current().path)
-        fire(merge.current().result_buf, "differ: previous conflicted file")
-        assert.are.equal("g.txt", merge.current().path)
+        assert.are.equal("a.lnk", merge.current().path)
     end)
 
     it("keeps the file on taking the side that modified it, staying put", function()
@@ -3302,7 +3334,7 @@ describe(":Differ mergetool binary", function()
         vim.cmd.edit(root .. "/f.txt")
         local ours, theirs = oid(root, ":2:a.bin"), oid(root, ":3:a.bin")
         local s = open_at(root, "a.bin")
-        assert.is_true(s.binary)
+        assert.are.equal("binary", s.whole)
         assert.are.equal("acwrite", vim.bo[s.result_buf].buftype)
         assert.are.same({ "" }, vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false))
         assert.are.equal("binary file: take ours or theirs", notice(s.result_buf))
@@ -3369,7 +3401,7 @@ describe(":Differ mergetool binary", function()
             _G.notifs = {}
             fire(s.result_buf, desc)
             assert.are.equal(
-                "differ: a binary file can't be merged: take ours or theirs",
+                "differ: a.bin is a binary file: take ours or theirs",
                 _G.notifs[1].msg
             )
         end
@@ -3394,7 +3426,7 @@ describe(":Differ mergetool binary", function()
         vim.api.nvim_set_current_win(s.result_win)
         _G.notifs = {}
         vim.cmd("silent write")
-        assert.are.equal("differ: a.bin is binary: nothing to write", _G.notifs[1].msg)
+        assert.are.equal("differ: a.bin is a binary file: nothing to write", _G.notifs[1].msg)
         assert.are.equal("UU a.bin", status(root, "a.bin"))
         assert.are.equal("ours\0", bytes(root .. "/a.bin"))
     end)
@@ -3481,6 +3513,108 @@ describe(":Differ mergetool binary", function()
         end)
         assert.are.equal("D  a.bin", status(root, "a.bin"))
         assert.are.equal("a.bin deletion staged", notice(s.result_buf))
+    end)
+end)
+
+describe(":Differ mergetool symlink", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    it("opens a symlink conflict with each side's target, never following the link", function()
+        local root = conflict_repo_symlink({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.lnk")
+        assert.are.equal("symlink", s.whole)
+        assert.are.equal("acwrite", vim.bo[s.result_buf].buftype)
+        assert.are.equal("symlink: take ours or theirs", notice(s.result_buf))
+        assert.are.equal(
+            "symlink → ours-target",
+            notice(vim.api.nvim_win_get_buf(input(s, "ours").win))
+        )
+        assert.are.equal(
+            "symlink → theirs-target",
+            notice(vim.api.nvim_win_get_buf(input(s, "theirs").win))
+        )
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · symlink · not staged · 2 files left",
+            plain(merge.winbar())
+        )
+    end)
+
+    for _, side in ipairs({ "ours", "theirs" }) do
+        it(("stages %s's link on taking it"):format(side), function()
+            local root = conflict_repo_symlink({ "f.txt" })
+            vim.cmd.edit(root .. "/f.txt")
+            local s = open_at(root, "a.lnk")
+            fire(s.result_buf, "differ: take " .. side)
+            local entry = git_ok(root, "ls-files", "-s", "--", "a.lnk")
+            assert.matches("^120000 %x+ 0\t", entry)
+            assert.are.equal(side .. "-target", vim.uv.fs_readlink(root .. "/a.lnk"))
+            assert.are.equal("took " .. side .. ", staged", notice(s.result_buf))
+            assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+        end)
+    end
+
+    it("refuses take base, naming the kind", function()
+        local root = conflict_repo_symlink({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.lnk")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take base")
+        assert.are.equal("differ: a.lnk is a symlink: take ours or theirs", _G.notifs[1].msg)
+        assert.are.same({ "a.lnk", "f.txt" }, require("differ.git").conflicted(root))
+    end)
+end)
+
+describe(":Differ mergetool file set not to merge", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    -- a repo where merging `feature` conflicts on a.txt, which `-merge` keeps git from
+    -- line-merging, sorted before a content conflict in f.txt
+    local conflict_repo_no_merge = fixture.cached(function()
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git_ok(root, "init", "-q")
+        write(root .. "/.gitattributes", "a.txt -merge\n")
+        write(root .. "/a.txt", "a\nb\n")
+        write(root .. "/f.txt", "a\nb\nc\n")
+        git_ok(root, "add", ".")
+        git_ok(root, "commit", "-q", "-m", "base")
+        git_ok(root, "checkout", "-q", "-b", "feature")
+        write(root .. "/a.txt", "a\nTHEIRS\n")
+        write(root .. "/f.txt", "a\nTHEIRS\nc\n")
+        git_ok(root, "commit", "-q", "-am", "theirs")
+        git_ok(root, "checkout", "-q", "main")
+        write(root .. "/a.txt", "a\nOURS\n")
+        write(root .. "/f.txt", "a\nOURS\nc\n")
+        git_ok(root, "commit", "-q", "-am", "ours")
+        git(root, "merge", "feature")
+        return root
+    end)
+
+    it("opens it whole with type and size, and stages theirs whole on taking it", function()
+        local root = conflict_repo_no_merge()
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        assert.are.equal("text", s.whole)
+        assert.are.equal("file git won't merge: take ours or theirs", notice(s.result_buf))
+        local theirs = vim.trim(git_ok(root, "rev-parse", ":3:a.txt"))
+        assert.are.equal(
+            "text · 9 B · " .. theirs:sub(1, 7),
+            notice(vim.api.nvim_win_get_buf(input(s, "theirs").win))
+        )
+        fire(s.result_buf, "differ: take theirs")
+        assert.are.same({ "a", "THEIRS" }, vim.fn.readfile(root .. "/a.txt"))
+        assert.are.equal("M  a.txt", status(root, "a.txt"))
+        assert.matches("^100644 " .. theirs .. " 0", git_ok(root, "ls-files", "-s", "--", "a.txt"))
     end)
 end)
 
@@ -3637,7 +3771,7 @@ describe(":Differ mergetool with no operation", function()
             ["f.txt"] = { "a\n", "a\n", "a\n" },
         })
         local s = open_at(root, "a.bin")
-        assert.is_true(s.binary)
+        assert.are.equal("binary", s.whole)
         fire(s.result_buf, "differ: take theirs")
         assert.are.equal(" M", xy(root, "a.bin"))
         assert.is_false(conflicted(root, "a.bin"))

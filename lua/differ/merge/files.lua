@@ -5,7 +5,7 @@ local notify = require("differ.git.exec").notify
 
 local M = {}
 
--- conflicted paths the merge tool can't open (added by one side, deleted by both, a symlink)
+-- conflicted paths the merge tool can't open (added by one side, deleted by both, a submodule)
 ---@param relpaths string[]
 function M.report_unopenable(relpaths)
     notify(

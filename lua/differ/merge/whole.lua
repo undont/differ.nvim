@@ -1,9 +1,12 @@
--- binary conflicts in the merge tool: git writes no markers into a binary file, so it
--- resolves by checking out one side's stage whole
+-- conflicts git leaves without markers (a binary file, a symlink, a file set not to merge):
+-- they resolve by checking out one side's stage whole, which restores a symlink as a link
 
 local notify = require("differ.git.exec").notify
 
 local M = {}
+
+-- what each kind is called in messages; the winbar uses the kind itself
+local NOUNS = { binary = "binary file", symlink = "symlink", text = "file git won't merge" }
 
 ---@param bytes integer
 ---@return string
@@ -17,14 +20,23 @@ local function size(bytes)
     return ("%.1f MB"):format(bytes / (1024 * 1024))
 end
 
--- the notice an input pane shows for its side's stage
----@param blob differ.merge.Blob
+---@param kind "binary"|"symlink"|"text"
 ---@return string
-function M.describe(blob)
-    return ("binary · %s · %s"):format(size(blob.size), blob.oid:sub(1, 7))
+function M.noun(kind)
+    return NOUNS[kind]
 end
 
--- check out `side`'s stage and resolve the conflict with it; also a binary
+-- the notice an input pane shows for its side's stage
+---@param side differ.merge.Side
+---@return string
+function M.describe(side)
+    if side.kind == "symlink" then
+        return "symlink → " .. side.target
+    end
+    return ("%s · %s · %s"):format(side.kind, size(side.size), side.oid:sub(1, 7))
+end
+
+-- check out `side`'s stage and resolve the conflict with it; also a whole-file
 -- modify/delete's keep
 ---@param s differ.MergeSession
 ---@param side "ours"|"theirs"
@@ -47,7 +59,8 @@ function M.resolve(s, choice)
         return notify(("%s is already resolved"):format(s.path))
     end
     if choice ~= "ours" and choice ~= "theirs" then
-        return notify("a binary file can't be merged: take ours or theirs", vim.log.levels.WARN)
+        local msg = "%s is a %s: take ours or theirs"
+        return notify(msg:format(s.path, NOUNS[s.whole]), vim.log.levels.WARN)
     end
     M.take(s, choice --[[@as "ours"|"theirs"]])
 end

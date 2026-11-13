@@ -27,6 +27,7 @@ local M = {}
 
 M.read = content_ops.read
 M.marker_size = content_ops.marker_size
+M.merges_whole = content_ops.merges_whole
 
 -- git's canonical empty-tree object: the "old" side for a root commit (no parent),
 -- so its files list and read as pure adds (history)
