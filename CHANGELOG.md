@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- With no operation in progress (a stash pop or apply, `checkout -m`), the merge tool staged each file it resolved, so later edits landed unstaged on top; it now leaves the resolution unstaged and says "resolved" instead of "staged"
+- A resolved file dropped out of the merge tool's `]f` / `[f` with nothing saying so; the winbar now shows the conflicted files left on every file
+
+## [0.2.33] — 2026-11-12
+
 ### Changed
 
 - Internal names for the diff view, local view and commit preview are now consistent; no outward facing change in behaviour
