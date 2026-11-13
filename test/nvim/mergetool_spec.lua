@@ -1853,9 +1853,15 @@ describe(":Differ mergetool file stepping", function()
         local root = conflict_repo_two()
         local s = open_at(root, "f.txt")
         vim.g.statusline_winid = s.result_win
-        assert.are.equal("RESULT · file 1/2 · conflict 1/1", plain(merge.winbar()))
+        assert.are.equal(
+            "RESULT · file 1/2 · conflict 1/1 · 2 files left",
+            plain(merge.winbar())
+        )
         fire(s.result_buf, "differ: take ours")
-        assert.are.equal("RESULT · file 1/2 · all resolved · not staged", plain(merge.winbar()))
+        assert.are.equal(
+            "RESULT · file 1/2 · all resolved · not staged · 2 files left",
+            plain(merge.winbar())
+        )
         vim.api.nvim_set_current_win(s.result_win)
         vim.cmd("silent write")
         assert.are.equal("RESULT · file 1/2 · staged · 1 file left", plain(merge.winbar()))
@@ -2897,7 +2903,10 @@ describe(":Differ mergetool modify/delete", function()
         vim.g.statusline_winid = input(s, "ours").win
         assert.are.equal("OURS (HEAD)", merge.winbar())
         vim.g.statusline_winid = s.result_win
-        assert.are.equal("RESULT · file 1/2 · deleted in theirs", plain(merge.winbar()))
+        assert.are.equal(
+            "RESULT · file 1/2 · deleted in theirs · 2 files left",
+            plain(merge.winbar())
+        )
     end)
 
     it("labels the ours pane deleted when ours deleted the file", function()
@@ -3303,7 +3312,10 @@ describe(":Differ mergetool binary", function()
         assert.are.equal("binary · 7 B · " .. theirs:sub(1, 7), notice(theirs_buf))
         assert.are.same({ "" }, vim.api.nvim_buf_get_lines(ours_buf, 0, -1, false))
         vim.g.statusline_winid = s.result_win
-        assert.are.equal("RESULT · file 1/2 · binary · not staged", plain(merge.winbar()))
+        assert.are.equal(
+            "RESULT · file 1/2 · binary · not staged · 2 files left",
+            plain(merge.winbar())
+        )
     end)
 
     it("names theirs from the merge head, having no markers to name it", function()
@@ -3541,6 +3553,73 @@ describe(":Differ mergetool with no operation", function()
         assert.are.equal("edited", vim.fn.readfile(root .. "/f.txt")[1])
         fire(s.result_buf, "differ: next conflicted file")
         assert.are.equal("g.txt", merge.current().path)
+    end)
+
+    it("shows the files left and says resolved in the winbar", function()
+        local root = stash_repo_two()
+        local s = open_at(root, "f.txt")
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · conflict 1/1 · 2 files left",
+            plain(merge.winbar())
+        )
+        fire(s.result_buf, "differ: take theirs")
+        assert.are.equal(
+            "RESULT · file 1/2 · all resolved · not saved · 2 files left",
+            plain(merge.winbar())
+        )
+        vim.api.nvim_set_current_win(s.result_win)
+        vim.cmd("silent write")
+        assert.is_truthy(merge.winbar():find("%#differMergeStaged#resolved%*", 1, true))
+        assert.are.equal("RESULT · file 1/2 · resolved · 1 file left", plain(merge.winbar()))
+        fire(s.result_buf, "differ: next conflicted file")
+        local g = merge.current()
+        vim.g.statusline_winid = g.result_win
+        assert.are.equal("RESULT · file 2/2 · conflict 1/1 · 1 file left", plain(merge.winbar()))
+        fire(g.result_buf, "differ: take theirs")
+        vim.api.nvim_set_current_win(g.result_win)
+        vim.cmd("silent write")
+        assert.are.equal(
+            "RESULT · file 2/2 · resolved · all conflicts resolved",
+            plain(merge.winbar())
+        )
+    end)
+
+    it("says not resolved for a written result a declined marker holds", function()
+        local root = stash_repo_two()
+        local s = open_at(root, "f.txt")
+        local lines = vim.tbl_filter(function(l)
+            return not l:match("^<<<<<<<") and not l:match("^>>>>>>>")
+        end, vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false))
+        vim.api.nvim_buf_set_lines(s.result_buf, 0, -1, false, lines)
+        vim.api.nvim_set_current_win(s.result_win)
+        _G.notifs = {}
+        local prompt = confirming(2, function()
+            vim.cmd("silent write")
+        end)
+        assert.are.equal("Line 3 looks like a conflict marker. Keep it as content?", prompt)
+        assert.matches("incomplete conflict at line 3; not resolved", _G.notifs[1].msg)
+        assert.is_true(conflicted(root, "f.txt"))
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · incomplete conflict at line 3 · not resolved · 2 files left",
+            plain(merge.winbar())
+        )
+    end)
+
+    it("says not resolved for an untaken binary", function()
+        local root = stash_repo({
+            ["a.bin"] = { "base\0", "ours\0", "stash\0" },
+            ["f.txt"] = { "a\n", "b\n", "c\n" },
+        })
+        local s = open_at(root, "a.bin")
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · binary · not resolved · 2 files left",
+            plain(merge.winbar())
+        )
+        fire(s.result_buf, "differ: take theirs")
+        assert.are.equal("RESULT · file 1/2 · resolved · 1 file left", plain(merge.winbar()))
     end)
 
     it("still stages a resolution mid-merge", function()

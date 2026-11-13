@@ -92,7 +92,7 @@ local INPUT_HL = {
 ---@field layout "default"|"diff4"  -- the chosen layout, reused when stepping to another file
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
 ---@field file_index integer            -- this file's position in files
----@field left integer                  -- conflicted files still unstaged (for the winbar)
+---@field left integer                  -- conflicted files left, this one included (for the winbar)
 ---@field resolved boolean              -- this file's conflict was cleared this session
 ---@field removed boolean|nil           -- a modify/delete file deleted this session
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
@@ -1009,44 +1009,65 @@ local function tint(text, hl)
     return ("%%#%s#%s%%*"):format(hl, text)
 end
 
--- the result winbar: file progress, then the conflicts left or this file's index state
+-- what a marker-free write does to this file: mid-operation it stages, with none the
+-- resolution stays in the worktree
+---@param s differ.MergeSession
+---@return string
+local function resolved_as(s)
+    return s.operation and "staged" or "resolved"
+end
+
+-- why this file isn't done: mid-operation it isn't staged; with none, a write resolves it, so
+-- it is unsaved, or written but not resolved (a formatter, a declined marker, a failed add)
+---@param s differ.MergeSession
+---@return string
+local function unresolved(s)
+    local text = "not staged"
+    if not s.operation then
+        text = vim.bo[s.result_buf].modified and "not saved" or "not resolved"
+    end
+    return tint(text, "differMergeUnstaged")
+end
+
+-- the result winbar: file progress, this file's conflicts or index state, then the files left
 ---@param s differ.MergeSession
 ---@return string
 local function result_winbar(s)
     local file = ("RESULT · file %d/%d"):format(s.file_index, #s.files)
+    local left = ""
+    if s.left > 0 and #s.files > 1 then
+        left = (" · %s left"):format(plural(s.left, "file"))
+    end
     local remaining = #s.conflicts
     if s.deleted and not s.resolved then
-        return ("%s · %s"):format(file, tint("deleted in " .. s.deleted, "differMergeUnstaged"))
+        local state = tint("deleted in " .. s.deleted, "differMergeUnstaged")
+        return ("%s · %s%s"):format(file, state, left)
     end
     if s.binary and not s.resolved then
-        return ("%s · binary · %s"):format(file, tint("not staged", "differMergeUnstaged"))
+        return ("%s · binary · %s%s"):format(file, unresolved(s), left)
     end
     if remaining == 0 and s.resolved then
-        local done = tint(s.removed and "deleted" or "staged", "differMergeStaged")
-        if s.left == 0 and s.operation then
-            local hint = require("differ.merge.continue").hint(s.keymaps)
-            return ("%s · %s · all conflicts resolved · %s"):format(file, done, hint)
+        local done = tint(s.removed and "deleted" or resolved_as(s), "differMergeStaged")
+        if s.left > 0 then
+            return ("%s · %s%s"):format(file, done, left)
         end
-        if s.left == 0 then
+        if not s.operation then
             return ("%s · %s · all conflicts resolved"):format(file, done)
         end
-        return ("%s · %s · %s left"):format(file, done, plural(s.left, "file"))
+        local hint = require("differ.merge.continue").hint(s.keymaps)
+        return ("%s · %s · all conflicts resolved · %s"):format(file, done, hint)
     end
     if remaining == 0 and s.orphans[1] then
-        return ("%s · %s · %s"):format(
-            file,
-            incomplete(s.orphans[1]),
-            tint("not staged", "differMergeUnstaged")
-        )
+        return ("%s · %s · %s%s"):format(file, incomplete(s.orphans[1]), unresolved(s), left)
     end
     if remaining == 0 then
-        return ("%s · all resolved · %s"):format(file, tint("not staged", "differMergeUnstaged"))
+        return ("%s · all resolved · %s%s"):format(file, unresolved(s), left)
     end
     local pos = active_pos()
     if not pos then
-        return ("%s · %s"):format(file, plural(remaining, "conflict"))
+        return ("%s · %s%s"):format(file, plural(remaining, "conflict"), left)
     end
-    return ("%s · conflict %d/%d"):format(file, pos, remaining)
+    return ("%s · conflict %d/%d%s"):format(file, pos, remaining, left)
 end
 
 -- winbar text for the merge windows: the result shows the conflict counter, an input
@@ -1233,7 +1254,7 @@ local function show_help()
             { fmt(km.choose_base), "take base" },
             { fmt(km.choose_all), "take both (ours then theirs)" },
             { fmt(km.choose_none), "drop the conflict" },
-            { ":w", "save and stage" },
+            { ":w", session.operation and "save and stage" or "save and resolve" },
         })
     end
     vim.list_extend(rows, {
@@ -1299,12 +1320,15 @@ local function confirm_content(s)
             return false
         end
     end
-    local prompt = ("Line %d looks like a conflict marker. Stage it as content?"):format(
-        s.orphans[1]
+    local verb = s.operation and "Stage" or "Keep"
+    local prompt = ("Line %d looks like a conflict marker. %s it as content?"):format(
+        s.orphans[1],
+        verb
     )
     if #s.orphans > 1 then
-        prompt = ("Lines %s look like conflict markers. Stage them as content?"):format(
-            table.concat(s.orphans, ", ")
+        prompt = ("Lines %s look like conflict markers. %s them as content?"):format(
+            table.concat(s.orphans, ", "),
+            verb
         )
     end
     local tick = vim.api.nvim_buf_get_changedtick(s.result_buf)
@@ -1342,8 +1366,9 @@ local function on_write()
         if not session.autoformat_warned then
             session.autoformat_warned = true
             notify(
-                "a formatter changed the conflict markers on save; not staged. "
-                    .. "your format_on_save ignores vim.b.disable_autoformat",
+                ("a formatter changed the conflict markers on save; not %s. "):format(
+                    resolved_as(s)
+                ) .. "your format_on_save ignores vim.b.disable_autoformat",
                 vim.log.levels.WARN
             )
         end
@@ -1355,7 +1380,7 @@ local function on_write()
     local orphan = s.orphans[1]
     if orphan and not confirm_content(s) then
         if session == s then
-            notify(incomplete(orphan) .. "; not staged", vim.log.levels.WARN)
+            notify(incomplete(orphan) .. "; not " .. resolved_as(s), vim.log.levels.WARN)
         end
         return
     end
@@ -1391,7 +1416,7 @@ local function settle_result()
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
     if warned and conflict.reformatted(lines) then
         notify(
-            ("%s isn't staged: a formatter changed its conflict markers"):format(s.path),
+            ("%s isn't %s: a formatter changed its conflict markers"):format(s.path, resolved_as(s)),
             vim.log.levels.WARN
         )
     end

@@ -1,4 +1,4 @@
--- the merge tool's conflicted files: progress as they are staged, ]f/[f between them, and
+-- the merge tool's conflicted files: progress as they are resolved, ]f/[f between them, and
 -- closing the session once git moves on without it
 
 local notify = require("differ.git.exec").notify
