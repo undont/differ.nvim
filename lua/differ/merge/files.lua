@@ -5,36 +5,22 @@ local notify = require("differ.git.exec").notify
 
 local M = {}
 
--- conflicted paths the merge tool can't open (added by one side, deleted by both, a submodule)
----@param relpaths string[]
-function M.report_unopenable(relpaths)
-    notify(
-        ("%s can't be opened in the merge tool: resolve with git add/rm"):format(
-            table.concat(relpaths, ", ")
-        ),
-        vim.log.levels.WARN
-    )
-end
-
--- the first conflicted path the merge tool can open, with its model
+-- the model for a conflicted `relpath`, else nil after warning why it won't open
 ---@param root string
----@param conflicted string[]
----@return string|nil relpath, differ.MergeModel|nil model
-function M.first_openable(root, conflicted)
-    local build = require("differ.merge.model").build
-    for _, relpath in ipairs(conflicted) do
-        local model = build(root, relpath, nil)
-        if model then
-            return relpath, model
-        end
+---@param relpath string
+---@return differ.MergeModel|nil
+function M.build_or_warn(root, relpath)
+    local model, err = require("differ.merge.model").build(root, relpath, nil)
+    if not model then
+        notify(assert(err), vim.log.levels.WARN)
     end
-    return nil, nil
+    return model
 end
 
 -- mark this file resolved in the same tick as the index write, so the git-dir watcher
--- doesn't read it as resolved outside the session, and name the conflicts left that only
--- git add/rm can resolve. with no operation the resolution stays unstaged: the reset puts
--- the index entry back to HEAD's, leaving the worktree file as the resolution
+-- doesn't read it as resolved outside the session. with no operation the resolution stays
+-- unstaged: the reset puts the index entry back to HEAD's, leaving the worktree file as the
+-- resolution
 ---@param s differ.MergeSession
 function M.mark_resolved(s)
     s.resolved = true
@@ -42,37 +28,36 @@ function M.mark_resolved(s)
     if not s.operation then
         git.unstage(s.root, s.path)
     end
-    local conflicted = git.conflicted(s.root)
-    s.left = #conflicted
-    if #conflicted > 0 and not M.first_openable(s.root, conflicted) then
-        M.report_unopenable(conflicted)
-    end
+    s.left = #git.conflicted(s.root)
 end
 
 -- the next/prev file in the session's list that is still conflicted and builds, wrapping
--- past the ends. staged files drop out of `conflicted`; unopenable ones fail the build
+-- past the ends and warning for each one that won't build. staged files drop out of
+-- `conflicted`
 ---@param s differ.MergeSession
 ---@param conflicted string[]
 ---@param direction "next"|"prev"
----@return string|nil relpath, differ.MergeModel|nil model, boolean wrapped
+---@return string|nil relpath, differ.MergeModel|nil model, boolean wrapped, boolean skipped
 local function find_file(s, conflicted, direction)
-    local build = require("differ.merge.model").build
     local n, from = #s.files, s.file_index
     local step = 1
     if direction == "prev" then
         step = -1
     end
+    local skipped = false
     for k = 1, n - 1 do
         local i = (from - 1 + k * step) % n + 1
         local relpath = s.files[i]
         if vim.tbl_contains(conflicted, relpath) then
-            local model = build(s.root, relpath, nil)
+            local model = M.build_or_warn(s.root, relpath)
             if model then
-                return relpath, model, (step == 1 and i < from) or (step == -1 and i > from)
+                local wrapped = (step == 1 and i < from) or (step == -1 and i > from)
+                return relpath, model, wrapped, skipped
             end
+            skipped = true
         end
     end
-    return nil, nil, false
+    return nil, nil, false, skipped
 end
 
 -- ]f/[f: settle the result, then open the next/prev conflicted file in the session layout
@@ -83,12 +68,13 @@ function M.step(direction)
     if not s or not merge.settle() then
         return
     end
+    local unstaged = merge.unstaged()
     local conflicted = require("differ.git").conflicted(s.root)
-    local relpath, model, wrapped = find_file(s, conflicted, direction)
+    local relpath, model, wrapped, skipped = find_file(s, conflicted, direction)
+    if skipped and not relpath then
+        return
+    end
     if not relpath then
-        local others = vim.tbl_filter(function(p)
-            return p ~= s.path
-        end, conflicted)
         if #conflicted == 0 and s.operation then
             return notify(
                 "no conflicted files left: " .. require("differ.merge.continue").hint(s.keymaps)
@@ -97,10 +83,10 @@ function M.step(direction)
         if #conflicted == 0 then
             return notify("no conflicted files left")
         end
-        if #others == 0 then
-            return notify("no other conflicted file")
-        end
-        return M.report_unopenable(others)
+        return notify("no other conflicted file")
+    end
+    if unstaged then
+        notify(unstaged .. " left unstaged: :w to stage")
     end
     if wrapped and direction == "next" then
         notify("wrapped to the first conflicted file")

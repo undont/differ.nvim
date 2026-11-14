@@ -165,18 +165,28 @@ describe("merge.model.build", function()
         assert.are.equal(2, m.regions[1].result_start)
     end)
 
-    it("returns nil + reason when the file has no conflict markers", function()
-        package.loaded["differ.git"] = fake_git({ worktree = "clean file\n" })
-        local m, err = model.build("/repo", "a.txt", nil)
-        assert.is_nil(m)
-        assert.is_string(err)
-    end)
-
-    it("returns nil + reason when the file is not in the working tree", function()
+    it("names checkout -m for a file both sides kept that isn't in the working tree", function()
         package.loaded["differ.git"] = fake_git({ worktree = false })
         local m, err = model.build("/repo", "gone.txt", nil)
         assert.is_nil(m)
-        assert.is_string(err)
+        assert.are.equal(
+            "gone.txt isn't in the working tree: git checkout -m gone.txt or git rm gone.txt",
+            err
+        )
+    end)
+
+    it("names the surviving side for a modify/delete file not in the working tree", function()
+        package.loaded["differ.git"] =
+            fake_git({ worktree = false, has_stage = { [1] = true, [3] = true } })
+        local _, err = model.build("/repo", "gone.txt", nil)
+        assert.matches("git checkout %-%-theirs gone.txt or git rm gone.txt", err)
+    end)
+
+    it("returns nil + reason when the index has no stages for the path", function()
+        package.loaded["differ.git"] = fake_git({ has_stage = false })
+        local m, err = model.build("/repo", "a.txt", nil)
+        assert.is_nil(m)
+        assert.are.equal("a.txt has no conflict stages", err)
     end)
 
     it("reads an absent stage as empty", function()
@@ -340,7 +350,7 @@ describe("merge.model.build", function()
         assert.are.equal("c3", m.whole.sides.theirs.oid)
     end)
 
-    it("refuses a marker-free text file git would merge", function()
+    it("builds a marker-free text file git would merge as the file, with no conflicts", function()
         package.loaded["differ.git"] = fake_git({
             worktree = "ours\n",
             modes = {
@@ -349,9 +359,11 @@ describe("merge.model.build", function()
                 [3] = { mode = "100644", oid = "c3" },
             },
         })
-        local m, err = model.build("/repo", "a.txt", nil)
-        assert.is_nil(m)
-        assert.is_string(err)
+        local m = assert(model.build("/repo", "a.txt", nil))
+        assert.is_nil(m.whole)
+        assert.is_nil(m.deleted)
+        assert.are.equal(0, #m.conflicts)
+        assert.are.equal("ours\n", m.result_text)
     end)
 
     it("builds a submodule conflict whole, each commit with its subject", function()
@@ -591,7 +603,7 @@ describe("merge.model base recovery", function()
             worktree = file(merge_block({ "ours1" }, { "theirs1" })),
             diff3 = file(diff3_block({ "ours1" }, {}, { "theirs1" })),
             stages = { [2] = "ours1\n", [3] = "theirs1\n" },
-            has_stage = false,
+            has_stage = { [2] = true, [3] = true },
         })
         local m = model.build("/repo", "a.txt", nil)
         assert.is_true(m.no_ancestor)
@@ -741,9 +753,9 @@ describe("merge.model conflicts", function()
             diff3 = file("Title", "=======", "body"),
             stages = { [1] = "Title\n=======\n", [2] = "Title\n=======\n", [3] = "x\n" },
         })
-        local m, err = model.build("/repo", "a.md", nil)
-        assert.is_nil(m)
-        assert.matches("has no conflicts to resolve", err)
+        local m = assert(model.build("/repo", "a.md", nil))
+        assert.are.equal(0, #m.conflicts)
+        assert.are.same({}, m.orphans)
     end)
 
     it("keeps a broken conflict whose only marker is a stage-content =======", function()

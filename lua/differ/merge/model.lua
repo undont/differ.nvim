@@ -350,6 +350,26 @@ local function missing_side(stages)
     return "both"
 end
 
+-- why a text file that isn't on disk can't open, and the git command for each way out.
+-- checkout -m needs both sides' stages
+---@param relpath string
+---@param deleted "ours"|"theirs"|"both"|nil
+---@return string
+local function absent(relpath, deleted)
+    local restore = "-m"
+    if deleted == "theirs" then
+        restore = "--ours"
+    elseif deleted == "ours" then
+        restore = "--theirs"
+    end
+    return ("%s isn't in the working tree: git checkout %s %s or git rm %s"):format(
+        relpath,
+        restore,
+        relpath,
+        relpath
+    )
+end
+
 local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
 
 -- git's modes for a symlink and a submodule commit
@@ -443,9 +463,9 @@ local function whole_model(root, relpath, head, no_ancestor, deleted, kind, side
     }
 end
 
--- build a MergeModel for a conflicted `relpath`. returns nil + a reason when a text file
--- isn't on disk or carries no conflict marker lines and is neither missing on a side nor
--- set not to merge
+-- build a MergeModel for a conflicted `relpath`. a text file with no markers left (rerere,
+-- a checkout --ours, a hand edit) builds with no conflicts. returns nil + a reason when the
+-- index has no stages for it, or a text file isn't on disk and wasn't deleted by both
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -453,24 +473,27 @@ end
 function M.build(root, relpath, head)
     local git = require("differ.git")
     local stages = git.stages(root, relpath)
+    if next(stages) == nil then
+        return nil, relpath .. " has no conflict stages"
+    end
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)
     local theirs_text = git.read_stage(root, relpath, 3)
     local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
     local no_ancestor = stages[1] == nil
+    local missing = missing_side(stages)
     local sides = whole_sides(root, relpath, stages, texts)
     local linked = git.is_symlink(root, relpath)
     local kind = whole_kind(sides, linked)
     if kind ~= "text" then
-        local deleted = missing_side(stages)
-        return whole_model(root, relpath, head, no_ancestor, deleted, kind, sides)
+        return whole_model(root, relpath, head, no_ancestor, missing, kind, sides)
     end
     local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
-        if missing_side(stages) == "both" then
+        if missing == "both" then
             return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
         end
-        return nil, relpath .. " is not in the working tree"
+        return nil, absent(relpath, missing)
     end
     local marker_size = git.marker_size(root, relpath)
     local result_lines = to_lines(result_text)
@@ -496,15 +519,12 @@ function M.build(root, relpath, head)
     end
     local deleted = nil
     if #conflicts == 0 then
-        deleted = missing_side(stages)
+        deleted = missing
         if deleted == "both" then
             return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
         end
-        if not deleted and sides.ours and sides.theirs and git.merges_whole(root, relpath) then
+        if not deleted and git.merges_whole(root, relpath) then
             return whole_model(root, relpath, head, no_ancestor, nil, kind, sides)
-        end
-        if not deleted then
-            return nil, relpath .. " has no conflicts to resolve"
         end
     end
     return {

@@ -96,6 +96,7 @@ local INPUT_HL = {
 ---@field file_index integer            -- this file's position in files
 ---@field left integer                  -- conflicted files left, this one included (for the winbar)
 ---@field resolved boolean              -- this file's conflict was cleared this session
+---@field written boolean               -- the session wrote this file's result
 ---@field removed boolean|nil           -- a modify/delete file deleted this session
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
 ---@field operation string|nil          -- the in-progress operation at session start
@@ -1375,6 +1376,7 @@ local function on_write()
     if not s then
         return
     end
+    s.written = true
     repaint_result()
     local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
     -- a format-on-save that didn't honour disable_autoformat reflows the markers; the
@@ -1404,9 +1406,23 @@ local function on_write()
     stage_result()
 end
 
+-- the open result's path when it has no markers and neither the session nor the user has
+-- written or changed it (rerere, checkout --ours, a hand edit before opening): settling
+-- leaves it unstaged
+---@return string|nil
+function M.unstaged()
+    local s = session
+    if not s or s.resolved or s.written or s.deleted or s.whole or #s.regions > 0 then
+        return nil
+    end
+    if vim.bo[s.result_buf].modified then
+        return nil
+    end
+    return s.path
+end
+
 -- save the result and stage it once marker-free, as a write does. false holds the session
--- on this file: the save failed, or the result is marker-free but unstaged, which
--- model.build couldn't reopen
+-- on this file: the save failed, or a result the session wrote stays unstaged
 ---@return boolean
 local function settle_result()
     local s = assert(session)
@@ -1424,10 +1440,10 @@ local function settle_result()
             notify(tostring(err), vim.log.levels.ERROR)
             return false
         end
-    elseif #s.regions == 0 and not s.resolved then
+    elseif #s.regions == 0 and not s.resolved and s.written then
         on_write() -- written but never staged, e.g. after a failed add
     end
-    if #s.regions > 0 or s.resolved then
+    if #s.regions > 0 or s.resolved or not s.written then
         return true
     end
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
@@ -1590,6 +1606,7 @@ local function lay_out(root, relpath, model, layout, files)
         file_index = assert(file_index, "merge: " .. relpath .. " is not in the file list"),
         left = #git.conflicted(root),
         resolved = false,
+        written = false,
         head = git.head_sha(root),
         operation = git.operation(root),
         result_win = result_win,
@@ -1825,12 +1842,13 @@ function M.after_operation(root)
         end
         return
     end
-    local relpath, model = merge_files.first_openable(root, conflicted)
-    if relpath then
-        local layout = s and s.layout or require("differ").get_config().merge.layout
-        return lay_out(root, relpath, assert(model), layout or "default", conflicted)
+    for _, relpath in ipairs(conflicted) do
+        local model = merge_files.build_or_warn(root, relpath)
+        if model then
+            local layout = s and s.layout or require("differ").get_config().merge.layout
+            return lay_out(root, relpath, model, layout or "default", conflicted)
+        end
     end
-    merge_files.report_unopenable(conflicted)
     M.close()
 end
 
@@ -1858,11 +1876,10 @@ function M.open(opts)
     local layout = opts.layout or merge_cfg.layout or "default"
 
     local function go(relpath)
-        local model = require("differ.merge.model").build(root, relpath, nil)
-        if not model then
-            return merge_files.report_unopenable({ relpath })
+        local model = merge_files.build_or_warn(root, relpath)
+        if model then
+            lay_out(root, relpath, model, layout, conflicted)
         end
-        lay_out(root, relpath, model, layout, conflicted)
     end
 
     if opts.path and opts.path ~= "" then
