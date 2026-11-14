@@ -90,7 +90,7 @@ local INPUT_HL = {
 ---@field labels table<string, string>    -- side -> winbar pane label (OURS (HEAD), ...)
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
 ---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version (MergeModel.deleted)
----@field whole "binary"|"symlink"|"text"|nil -- taken whole: the result is a scratch notice, not the file
+---@field whole differ.merge.WholeKind|nil -- taken whole: the result is a scratch notice, not the file
 ---@field layout "default"|"diff4"  -- the chosen layout, reused when stepping to another file
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
 ---@field file_index integer            -- this file's position in files

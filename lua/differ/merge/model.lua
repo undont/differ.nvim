@@ -35,15 +35,18 @@ local to_lines = require("differ.util.text").to_lines
 ---@field theirs string[]
 ---@field region differ.merge.Region|nil -- the parsed region, nil when its markers are broken
 
+---@alias differ.merge.WholeKind "binary"|"symlink"|"submodule"|"text"
+
 ---@class differ.merge.Whole
----@field kind "binary"|"symlink"|"text" -- text: a file git doesn't line-merge (`-merge`)
+---@field kind differ.merge.WholeKind -- text: a file git doesn't line-merge (`-merge`)
 ---@field sides table<"ours"|"base"|"theirs", differ.merge.Side> -- the present stages
 
 ---@class differ.merge.Side
----@field kind "binary"|"symlink"|"text"
+---@field kind differ.merge.WholeKind
 ---@field oid string
 ---@field size integer
 ---@field target string|nil -- a symlink's target
+---@field subject string|nil -- a submodule commit's subject, when the submodule has it
 
 local M = {}
 
@@ -352,19 +355,23 @@ local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
 -- git's modes for a symlink and a submodule commit
 local SYMLINK, GITLINK = "120000", "160000"
 
--- each present stage as a whole-file side: a symlink by its mode, else a file whose
--- content decides binary or text
+-- each present stage as a whole-file side: a submodule commit or symlink by its mode, else
+-- a file whose content decides binary or text
+---@param root string
+---@param relpath string
 ---@param stages table<integer, { mode: string, oid: string }>
 ---@param texts table<"ours"|"base"|"theirs", string>
 ---@return table<"ours"|"base"|"theirs", differ.merge.Side>
-local function whole_sides(stages, texts)
+local function whole_sides(root, relpath, stages, texts)
     local sides = {}
     for stage, side in pairs(STAGE_SIDES) do
         local entry = stages[stage]
         if entry then
             local text = texts[side]
             local kind = "text"
-            if entry.mode == SYMLINK then
+            if entry.mode == GITLINK then
+                kind = "submodule"
+            elseif entry.mode == SYMLINK then
                 kind = "symlink"
             elseif is_binary(text) then
                 kind = "binary"
@@ -373,17 +380,25 @@ local function whole_sides(stages, texts)
             if kind == "symlink" then
                 sides[side].target = text
             end
+            if kind == "submodule" then
+                sides[side].subject = require("differ.git").commit_subject(root, relpath, entry.oid)
+            end
         end
     end
     return sides
 end
 
--- what a whole-file model resolves as: a symlink on any side or in the worktree, else a
--- binary stage, else text git doesn't merge
+-- what a whole-file model resolves as: a submodule commit on any side, else a symlink on
+-- any side or in the worktree, else a binary stage, else text git doesn't merge
 ---@param sides table<"ours"|"base"|"theirs", differ.merge.Side>
 ---@param linked boolean  -- the worktree holds the path as a symlink
----@return "binary"|"symlink"|"text"
+---@return differ.merge.WholeKind
 local function whole_kind(sides, linked)
+    for _, side in pairs(sides) do
+        if side.kind == "submodule" then
+            return "submodule"
+        end
+    end
     local kind = "text"
     for _, side in pairs(sides) do
         if side.kind == "symlink" then
@@ -405,7 +420,7 @@ end
 ---@param head string|nil
 ---@param no_ancestor boolean
 ---@param deleted "ours"|"theirs"|"both"|nil
----@param kind "binary"|"symlink"|"text"
+---@param kind differ.merge.WholeKind
 ---@param sides table<"ours"|"base"|"theirs", differ.merge.Side>
 ---@return differ.MergeModel
 local function whole_model(root, relpath, head, no_ancestor, deleted, kind, sides)
@@ -428,9 +443,9 @@ local function whole_model(root, relpath, head, no_ancestor, deleted, kind, side
     }
 end
 
--- build a MergeModel for a conflicted `relpath`. returns nil + a reason when a stage is a
--- submodule commit, or a text file isn't on disk or carries no conflict marker lines and is
--- neither missing on a side nor set not to merge
+-- build a MergeModel for a conflicted `relpath`. returns nil + a reason when a text file
+-- isn't on disk or carries no conflict marker lines and is neither missing on a side nor
+-- set not to merge
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -438,17 +453,12 @@ end
 function M.build(root, relpath, head)
     local git = require("differ.git")
     local stages = git.stages(root, relpath)
-    for _, entry in pairs(stages) do
-        if entry.mode == GITLINK then
-            return nil, relpath .. " is a submodule"
-        end
-    end
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)
     local theirs_text = git.read_stage(root, relpath, 3)
     local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
     local no_ancestor = stages[1] == nil
-    local sides = whole_sides(stages, texts)
+    local sides = whole_sides(root, relpath, stages, texts)
     local linked = git.is_symlink(root, relpath)
     local kind = whole_kind(sides, linked)
     if kind ~= "text" then

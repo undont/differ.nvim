@@ -223,6 +223,23 @@ function M.is_symlink(root, relpath)
     return st ~= nil and st.type == "link"
 end
 
+-- the subject of commit `oid` in the submodule at `relpath`, or nil when it isn't checked
+-- out or doesn't have the commit
+---@param root string
+---@param relpath string
+---@param oid string
+---@return string|nil
+function M.commit_subject(root, relpath, oid)
+    if not index_ops.checked_out(root, relpath) then
+        return nil
+    end
+    local out = git({ "log", "-1", "--format=%s", oid }, root .. "/" .. relpath)
+    if not out or chomp(out) == "" then
+        return nil
+    end
+    return chomp(out)
+end
+
 -- re-merge the three stage texts and return the result in diff3 conflict style (a base
 -- slab between ||||||| and =======), whatever the user's merge.conflictStyle is. used to
 -- recover base slabs when the worktree markers omit them (the default `merge` style).
@@ -767,7 +784,8 @@ end
 
 -- the index ops the panel's file keys and the merge tool drive
 M.stage, M.unstage = index_ops.stage, index_ops.unstage
-M.remove, M.take_side = index_ops.remove, index_ops.take_side
+M.remove, M.take_side, M.take_commit = index_ops.remove, index_ops.take_side, index_ops.take_commit
+M.checked_out = index_ops.checked_out
 M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- reverse-apply a single-hunk patch to the worktree, atomically. `--unidiff-zero`

@@ -355,7 +355,7 @@ local conflict_repo_renamed = fixture.cached(function(files, link)
 end)
 
 -- a repo where merging `feature` conflicts on the gitlink a-sub (no submodule checked out),
--- which the merge tool can't open, sorted before a content conflict in each of `files`
+-- sorted before a content conflict in each of `files`
 ---@param files string[]
 local conflict_repo_submodule = fixture.cached(function(files)
     local root = vim.fn.tempname()
@@ -387,9 +387,6 @@ local conflict_repo_submodule = fixture.cached(function(files)
     git(root, "merge", "feature")
     return root
 end)
-
-local SUBMODULE_UNOPENABLE =
-    "differ: a-sub can't be opened in the merge tool: resolve with git add/rm"
 
 -- a repo where merging `feature` conflicts on a.lnk, a symlink to ours-target, base-target
 -- or theirs-target (none exist), sorted before a content conflict in each of `files`
@@ -993,42 +990,6 @@ describe(":Differ mergetool resolution", function()
         assert.are.equal(s, merge.current())
         assert.are.same({}, _G.notifs)
         assert.are.same({}, require("differ.git").conflicted(root))
-    end)
-
-    it("names the conflicts it can't open once only those remain, staying open", function()
-        local root = conflict_repo_submodule({ "f.txt" })
-        vim.cmd.edit(root .. "/f.txt")
-        merge.open({})
-        local s = merge.current()
-        _G.notifs = {}
-        take_ours_and_write(s)
-        assert.are.equal(s, merge.current())
-        local last = _G.notifs[#_G.notifs]
-        assert.are.equal(SUBMODULE_UNOPENABLE, last.msg)
-        for _, n in ipairs(_G.notifs) do
-            assert.is_nil(n.msg:find("continue", 1, true))
-        end
-    end)
-
-    it("closes, naming them, when an operation stops only on conflicts it can't open", function()
-        local root = conflict_repo_submodule({ "f.txt" })
-        vim.cmd.edit(root .. "/f.txt")
-        merge.open({})
-        git_ok(root, "add", "f.txt")
-        _G.notifs = {}
-        merge.after_operation(root)
-        assert.is_nil(merge.current())
-        assert.are.equal(SUBMODULE_UNOPENABLE, _G.notifs[#_G.notifs].msg)
-    end)
-
-    it("says why when asked to open a conflict it can't", function()
-        local root = conflict_repo_submodule({ "f.txt" })
-        vim.cmd.edit(root .. "/f.txt")
-        _G.notifs = {}
-        merge.open({ path = root .. "/a-sub" })
-        assert.is_nil(merge.current())
-        assert.are.equal(SUBMODULE_UNOPENABLE, _G.notifs[1].msg)
-        assert.are.equal(vim.log.levels.WARN, _G.notifs[1].level)
     end)
 
     it("opens a conflicted symlink asked for by path, not its target", function()
@@ -1869,7 +1830,7 @@ describe(":Differ mergetool file stepping", function()
         assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
     end)
 
-    it("skips staged files and ones it can't open", function()
+    it("skips staged files, stepping onto a submodule", function()
         local root = conflict_repo_submodule({ "f.txt", "g.txt", "h.txt" })
         local s = open_at(root, "f.txt")
         assert.are.same({ "a-sub", "f.txt", "g.txt", "h.txt" }, s.files)
@@ -1878,20 +1839,13 @@ describe(":Differ mergetool file stepping", function()
         fire(g.result_buf, "differ: take ours")
         fire(g.result_buf, "differ: next conflicted file") -- g staged -> h
         assert.are.equal("h.txt", merge.current().path)
-        -- forward from h wraps past the submodule (unopenable) to f, back skips g (staged)
+        -- forward from h wraps to the submodule, back from h skips g (staged)
         fire(merge.current().result_buf, "differ: next conflicted file")
-        assert.are.equal("f.txt", merge.current().path)
+        assert.are.equal("a-sub", merge.current().path)
         fire(merge.current().result_buf, "differ: previous conflicted file")
         assert.are.equal("h.txt", merge.current().path)
-    end)
-
-    it("names what's left when no other file can be opened", function()
-        local root = conflict_repo_submodule({ "f.txt" })
-        local s = open_at(root, "f.txt")
-        _G.notifs = {}
-        fire(s.result_buf, "differ: next conflicted file")
-        assert.are.equal(s, merge.current())
-        assert.are.equal(SUBMODULE_UNOPENABLE, _G.notifs[#_G.notifs].msg)
+        fire(merge.current().result_buf, "differ: previous conflicted file")
+        assert.are.equal("f.txt", merge.current().path)
     end)
 
     it("says so when no conflicted file is left", function()
@@ -3775,6 +3729,181 @@ describe(":Differ mergetool symlink", function()
         fire(s.result_buf, "differ: take base")
         assert.are.equal("differ: a.lnk is a symlink: take ours or theirs", _G.notifs[1].msg)
         assert.are.same({ "a.lnk", "f.txt" }, require("differ.git").conflicted(root))
+    end)
+end)
+
+describe(":Differ mergetool submodule", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    -- a repo where merging `feature` conflicts on the checked-out submodule sub, its
+    -- commits diverged ("ours work" vs "theirs work", so neither fast-forwards), sorted
+    -- after a content conflict in f.txt. `deleted` deletes sub on feature instead
+    ---@param deleted boolean|nil
+    local conflict_repo_checked_out_submodule = fixture.cached(function(deleted)
+        local upstream = vim.fn.tempname()
+        vim.fn.mkdir(upstream, "p")
+        git_ok(upstream, "init", "-q")
+        write(upstream .. "/x.txt", "base\n")
+        git_ok(upstream, "add", "x.txt")
+        git_ok(upstream, "commit", "-q", "-m", "base work")
+        for _, side in ipairs({ "ours", "theirs" }) do
+            git_ok(upstream, "checkout", "-q", "-b", side, "main")
+            write(upstream .. "/x.txt", side .. "\n")
+            git_ok(upstream, "commit", "-q", "-am", side .. " work")
+        end
+        git_ok(upstream, "checkout", "-q", "main") -- the commit the submodule add clones at
+        local root = vim.fn.tempname()
+        vim.fn.mkdir(root, "p")
+        git_ok(root, "init", "-q")
+        write(root .. "/f.txt", "a\nb\nc\n")
+        git_ok(root, "-c", "protocol.file.allow=always", "submodule", "add", "-q", upstream, "sub")
+        git_ok(root, "add", ".")
+        git_ok(root, "commit", "-q", "-m", "base")
+        git_ok(root, "checkout", "-q", "-b", "feature")
+        if deleted then
+            git_ok(root, "rm", "-q", "sub")
+        else
+            git_ok(root .. "/sub", "checkout", "-q", "theirs")
+        end
+        write(root .. "/f.txt", "a\nTHEIRS\nc\n")
+        git_ok(root, "commit", "-q", "-am", "theirs")
+        git_ok(root, "checkout", "-q", "main")
+        if deleted then
+            git_ok(root, "submodule", "update", "-q")
+        end
+        git_ok(root .. "/sub", "checkout", "-q", "ours")
+        write(root .. "/f.txt", "a\nOURS\nc\n")
+        git_ok(root, "commit", "-q", "-am", "ours")
+        git(root, "merge", "feature")
+        return root
+    end)
+
+    local function oid(root, spec)
+        return vim.trim(git_ok(root, "rev-parse", spec))
+    end
+
+    it("opens a submodule conflict with each side's commit and subject", function()
+        local root = conflict_repo_checked_out_submodule()
+        vim.cmd.edit(root .. "/f.txt")
+        local ours, theirs = oid(root .. "/sub", "ours"), oid(root .. "/sub", "theirs")
+        local s = open_at(root, "sub")
+        assert.are.equal("submodule", s.whole)
+        assert.are.equal("acwrite", vim.bo[s.result_buf].buftype)
+        assert.are.equal("submodule: take ours or theirs", notice(s.result_buf))
+        assert.are.equal(
+            ("commit %s · ours work"):format(ours:sub(1, 7)),
+            notice(vim.api.nvim_win_get_buf(input(s, "ours").win))
+        )
+        assert.are.equal(
+            ("commit %s · theirs work"):format(theirs:sub(1, 7)),
+            notice(vim.api.nvim_win_get_buf(input(s, "theirs").win))
+        )
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 2/2 · submodule · not staged · 2 files left",
+            plain(merge.winbar())
+        )
+    end)
+
+    for _, side in ipairs({ "ours", "theirs" }) do
+        it(("checks out and stages %s's commit on taking it"):format(side), function()
+            local root = conflict_repo_checked_out_submodule()
+            vim.cmd.edit(root .. "/f.txt")
+            local want = oid(root .. "/sub", side)
+            local s = open_at(root, "sub")
+            after_git_change(s, function()
+                fire(s.result_buf, "differ: take " .. side)
+            end)
+            assert.are.equal(s, merge.current())
+            assert.are.equal(want, oid(root .. "/sub", "HEAD"))
+            local entry = git_ok(root, "ls-files", "-s", "--", "sub")
+            assert.matches("^160000 " .. want .. " 0\t", entry)
+            assert.is_true(s.resolved)
+            assert.are.equal("took " .. side .. ", staged", notice(s.result_buf))
+            assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+        end)
+    end
+
+    it("refuses with git's message when the checkout would lose local changes", function()
+        local root = conflict_repo_checked_out_submodule()
+        vim.cmd.edit(root .. "/f.txt")
+        write(root .. "/sub/x.txt", "local\n")
+        local s = open_at(root, "sub")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take theirs")
+        local last = _G.notifs[#_G.notifs]
+        assert.matches("^differ: checkout in sub failed: .*local changes", last.msg)
+        assert.are.equal(vim.log.levels.ERROR, last.level)
+        assert.is_false(s.resolved)
+        assert.are.equal(oid(root .. "/sub", "ours"), oid(root .. "/sub", "HEAD"))
+        assert.are.same({ "f.txt", "sub" }, require("differ.git").conflicted(root))
+    end)
+
+    it("shows the commit id alone and stages it when the submodule isn't checked out", function()
+        local root = conflict_repo_submodule({ "f.txt" })
+        vim.cmd.edit(root .. "/f.txt")
+        local head = oid(root, "HEAD")
+        local s = open_at(root, "a-sub")
+        local ours = oid(root, ":2:a-sub")
+        assert.are.equal(
+            "commit " .. ours:sub(1, 7),
+            notice(vim.api.nvim_win_get_buf(input(s, "ours").win))
+        )
+        fire(s.result_buf, "differ: take ours")
+        assert.matches("^160000 " .. ours .. " 0\t", git_ok(root, "ls-files", "-s", "--", "a-sub"))
+        -- the commit is in the superproject too, which a checkout there would land on
+        assert.are.equal(head, oid(root, "HEAD"))
+        assert.is_true(s.resolved)
+        assert.are.equal(
+            "took ours, staged: git submodule update --init checks it out",
+            notice(s.result_buf)
+        )
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("refuses the take on a submodule that isn't checked out with no operation", function()
+        local root = conflict_repo_submodule({ "f.txt" })
+        vim.fn.delete(root .. "/.git/MERGE_HEAD") -- the unmerged index a stash pop leaves
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a-sub")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take ours")
+        assert.are.equal(
+            "differ: a-sub isn't checked out, and with no operation in progress nothing would keep the take",
+            _G.notifs[#_G.notifs].msg
+        )
+        assert.is_false(s.resolved)
+        assert.are.same({ "a-sub", "f.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("keeps a submodule theirs deleted by checking out ours", function()
+        local root = conflict_repo_checked_out_submodule(true)
+        vim.cmd.edit(root .. "/f.txt")
+        local want = oid(root .. "/sub", "ours")
+        local s = open_at(root, "sub")
+        assert.are.equal("theirs", s.deleted)
+        assert.are.equal(
+            "deleted in theirs",
+            notice(vim.api.nvim_win_get_buf(input(s, "theirs").win))
+        )
+        fire(s.result_buf, "differ: take ours")
+        assert.matches("^160000 " .. want .. " 0\t", git_ok(root, "ls-files", "-s", "--", "sub"))
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("deletes a submodule theirs deleted with git rm", function()
+        local root = conflict_repo_checked_out_submodule(true)
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "sub")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.are.equal("", git_ok(root, "ls-files", "-s", "--", "sub"))
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
     end)
 end)
 

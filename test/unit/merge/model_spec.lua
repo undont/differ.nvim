@@ -139,6 +139,9 @@ local function fake_git(opts)
         merges_whole = function()
             return opts.merges_whole == true
         end,
+        commit_subject = function(_, _, oid)
+            return (opts.subjects or {})[oid]
+        end,
     }
 end
 
@@ -351,17 +354,41 @@ describe("merge.model.build", function()
         assert.is_string(err)
     end)
 
-    it("refuses a submodule stage, naming it", function()
+    it("builds a submodule conflict whole, each commit with its subject", function()
         package.loaded["differ.git"] = fake_git({
+            stages = {},
             modes = {
                 [1] = { mode = "160000", oid = "a1" },
                 [2] = { mode = "160000", oid = "b2" },
                 [3] = { mode = "160000", oid = "c3" },
             },
+            subjects = { b2 = "ours work" },
         })
         local m, err = model.build("/repo", "sub", nil)
-        assert.is_nil(m)
-        assert.are.equal("sub is a submodule", err)
+        assert.is_nil(err)
+        assert.are.equal("submodule", m.whole.kind)
+        assert.are.same(
+            { kind = "submodule", oid = "b2", size = 0, subject = "ours work" },
+            m.whole.sides.ours
+        )
+        assert.is_nil(m.whole.sides.theirs.subject)
+        assert.is_nil(m.deleted)
+    end)
+
+    it("builds a submodule modify/delete whole, keeping the surviving commit", function()
+        package.loaded["differ.git"] = fake_git({
+            stages = {},
+            worktree = false,
+            modes = {
+                [1] = { mode = "160000", oid = "a1" },
+                [3] = { mode = "160000", oid = "c3" },
+            },
+        })
+        local m, err = model.build("/repo", "sub", nil)
+        assert.is_nil(err)
+        assert.are.equal("submodule", m.whole.kind)
+        assert.are.equal("ours", m.deleted)
+        assert.are.equal("c3", m.whole.sides.theirs.oid)
     end)
 
     it("leaves whole unset on a content conflict", function()

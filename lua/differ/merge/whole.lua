@@ -1,12 +1,22 @@
--- conflicts git leaves without markers (a binary file, a symlink, a file set not to merge):
--- they resolve by checking out one side's stage whole, which restores a symlink as a link
+-- conflicts git leaves without markers (a binary file, a symlink, a submodule commit, a file
+-- set not to merge): they resolve by taking one side's stage whole. a file or symlink is
+-- checked out from the index, which restores a symlink as a link; a submodule checks out
+-- the side's commit inside it
 
 local notify = require("differ.git.exec").notify
+local GITLINK = require("differ.git.index").GITLINK
+
+local STAGES = { ours = 2, theirs = 3 }
 
 local M = {}
 
 -- what each kind is called in messages; the winbar uses the kind itself
-local NOUNS = { binary = "binary file", symlink = "symlink", text = "file git won't merge" }
+local NOUNS = {
+    binary = "binary file",
+    symlink = "symlink",
+    submodule = "submodule",
+    text = "file git won't merge",
+}
 
 ---@param bytes integer
 ---@return string
@@ -20,7 +30,7 @@ local function size(bytes)
     return ("%.1f MB"):format(bytes / (1024 * 1024))
 end
 
----@param kind "binary"|"symlink"|"text"
+---@param kind differ.merge.WholeKind
 ---@return string
 function M.noun(kind)
     return NOUNS[kind]
@@ -33,6 +43,12 @@ function M.describe(side)
     if side.kind == "symlink" then
         return "symlink → " .. side.target
     end
+    if side.kind == "submodule" and side.subject then
+        return ("commit %s · %s"):format(side.oid:sub(1, 7), side.subject)
+    end
+    if side.kind == "submodule" then
+        return "commit " .. side.oid:sub(1, 7)
+    end
     return ("%s · %s · %s"):format(side.kind, size(side.size), side.oid:sub(1, 7))
 end
 
@@ -41,13 +57,32 @@ end
 ---@param s differ.MergeSession
 ---@param side "ours"|"theirs"
 function M.take(s, side)
-    if not require("differ.git").take_side(s.root, s.path, side) then
+    local git = require("differ.git")
+    local entry = git.stages(s.root, s.path)[STAGES[side]]
+    local submodule = entry ~= nil and entry.mode == GITLINK
+    local checked_out = submodule and git.checked_out(s.root, s.path)
+    -- with no operation the resolution is unstaged, and only a checkout would keep it
+    if submodule and not checked_out and not s.operation then
+        local msg =
+            "%s isn't checked out, and with no operation in progress nothing would keep the take"
+        return notify(msg:format(s.path), vim.log.levels.WARN)
+    end
+    local ok
+    if submodule then
+        ok = git.take_commit(s.root, s.path, entry.oid)
+    else
+        ok = git.take_side(s.root, s.path, side)
+    end
+    if not ok then
         return
     end
     require("differ.merge.files").mark_resolved(s)
     local notice = "took " .. side
     if s.operation then
         notice = notice .. ", staged"
+    end
+    if submodule and not checked_out then
+        notice = notice .. ": git submodule update --init checks it out"
     end
     require("differ.merge")._show_notice(s.result_win, s.result_buf, notice)
 end
