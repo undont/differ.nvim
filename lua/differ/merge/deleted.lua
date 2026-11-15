@@ -94,7 +94,7 @@ end
 
 -- delete the file with git rm, once confirmed
 ---@param s differ.MergeSession
-local function delete_file(s)
+function M.delete(s)
     if vim.bo[s.result_buf].modified then
         return notify("unsaved changes: drop them with :e! to delete", vim.log.levels.WARN)
     end
@@ -126,7 +126,7 @@ function M.resolve(s, choice)
         return notify(msg:format(s.path), vim.log.levels.WARN)
     end
     if s.deleted == "both" then
-        return delete_file(s)
+        return M.delete(s)
     end
     if not take and s.no_ancestor then
         return notify(
@@ -141,7 +141,7 @@ function M.resolve(s, choice)
         )
     end
     if choice == s.deleted then
-        return delete_file(s)
+        return M.delete(s)
     end
     keep_file(s)
 end

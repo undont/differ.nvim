@@ -165,21 +165,32 @@ describe("merge.model.build", function()
         assert.are.equal(2, m.regions[1].result_start)
     end)
 
-    it("names checkout -m for a file both sides kept that isn't in the working tree", function()
-        package.loaded["differ.git"] = fake_git({ worktree = false })
-        local m, err = model.build("/repo", "gone.txt", nil)
-        assert.is_nil(m)
-        assert.are.equal(
-            "gone.txt isn't in the working tree: git checkout -m gone.txt or git rm gone.txt",
-            err
-        )
-    end)
+    it(
+        "builds a file both sides kept that isn't in the working tree with the stage texts",
+        function()
+            package.loaded["differ.git"] = fake_git({ worktree = false })
+            local m = assert(model.build("/repo", "gone.txt", nil))
+            assert.is_true(m.gone)
+            assert.is_nil(m.deleted)
+            assert.are.equal("text", m.whole.kind)
+            assert.are.equal("ours\n", m.ours_text)
+            assert.are.equal("base\n", m.base_text)
+            assert.are.equal("theirs\n", m.theirs_text)
+            assert.are.equal("", m.result_text)
+            assert.are.same({}, m.conflicts)
+        end
+    )
 
-    it("names the surviving side for a modify/delete file not in the working tree", function()
-        package.loaded["differ.git"] =
-            fake_git({ worktree = false, has_stage = { [1] = true, [3] = true } })
-        local _, err = model.build("/repo", "gone.txt", nil)
-        assert.matches("git checkout %-%-theirs gone.txt or git rm gone.txt", err)
+    it("builds a modify/delete file not in the working tree, naming the deleting side", function()
+        package.loaded["differ.git"] = fake_git({
+            worktree = false,
+            has_stage = { [1] = true, [3] = true },
+            stages = { [1] = "base\n", [3] = "theirs\n" },
+        })
+        local m = assert(model.build("/repo", "gone.txt", nil))
+        assert.is_true(m.gone)
+        assert.are.equal("ours", m.deleted)
+        assert.are.equal("theirs\n", m.theirs_text)
     end)
 
     it("returns nil + reason when the index has no stages for the path", function()
@@ -243,6 +254,7 @@ describe("merge.model.build", function()
         local m, err = model.build("/repo", "a.txt", nil)
         assert.is_nil(err)
         assert.are.equal("both", m.deleted)
+        assert.is_nil(m.gone)
         assert.is_false(m.no_ancestor)
         assert.are.equal("text", m.whole.kind)
         assert.are.same({ kind = "text", oid = "a1", size = 5 }, m.whole.sides.base)

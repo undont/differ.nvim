@@ -91,6 +91,7 @@ local INPUT_HL = {
 ---@field no_ancestor boolean             -- add/add: the base pane says so rather than sitting empty
 ---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version (MergeModel.deleted)
 ---@field whole differ.merge.WholeKind|nil -- taken whole: the result is a scratch notice, not the file
+---@field gone boolean|nil -- a text file missing from the worktree (MergeModel.gone)
 ---@field layout "default"|"diff4"  -- the chosen layout, reused when stepping to another file
 ---@field files string[]                -- the conflicted files at session start, in git's order (]f/[f)
 ---@field file_index integer            -- this file's position in files
@@ -911,6 +912,9 @@ local function resolve_choice(choice)
     if s.deleted then
         return require("differ.merge.deleted").resolve(s, choice)
     end
+    if s.gone then
+        return require("differ.merge.gone").resolve(s, choice)
+    end
     if s.whole then
         return require("differ.merge.whole").resolve(s, choice)
     end
@@ -1045,6 +1049,9 @@ local function result_winbar(s)
     if s.deleted and not s.resolved then
         local state = tint(merge_deleted.state(s.deleted, s.no_ancestor), "differMergeUnstaged")
         return ("%s · %s%s"):format(file, state, left)
+    end
+    if s.gone and not s.resolved then
+        return ("%s · not in the working tree · %s%s"):format(file, unresolved(s), left)
     end
     if s.whole and not s.resolved then
         return ("%s · %s · %s%s"):format(file, s.whole, unresolved(s), left)
@@ -1248,6 +1255,14 @@ local function show_help()
         vim.list_extend(rows, {
             { fmt(km.choose_ours), deleted == "ours" and "delete the file" or "keep the file" },
             { fmt(km.choose_theirs), deleted == "theirs" and "delete the file" or "keep the file" },
+        })
+    elseif in_result and session.gone then
+        vim.list_extend(rows, {
+            { fmt(km.choose_ours), "take ours" },
+            { fmt(km.choose_theirs), "take theirs" },
+            { fmt(km.choose_base), "take base" },
+            { fmt(km.choose_all), "write it with conflict markers" },
+            { fmt(km.choose_none), "delete the file" },
         })
     elseif in_result and session.whole then
         vim.list_extend(rows, {
@@ -1478,6 +1493,20 @@ local function bind_pane(buf)
     bind(buf, km.help, show_help, "differ: keymap help")
 end
 
+-- the result notice for a text file missing from the worktree, naming what each key does
+---@param model differ.MergeModel
+---@return string
+local function gone_notice(model)
+    local lead = "not in the working tree: "
+    if model.deleted == "theirs" then
+        return lead .. "take ours to keep it or theirs to delete it"
+    end
+    if model.deleted == "ours" then
+        return lead .. "take theirs to keep it or ours to delete it"
+    end
+    return lead .. "take a side, both for conflict markers, none to delete"
+end
+
 -- lay out the render in a fresh session tab and wire navigation
 ---@param root string
 ---@param relpath string
@@ -1558,12 +1587,14 @@ local function lay_out(root, relpath, model, layout, files)
         local absent = merge_deleted.absent(model.deleted, model.no_ancestor, inp.side)
         if absent then
             show_notice(inp.win, buf, absent)
-        elseif model.whole and model.whole.sides[inp.side] then
+        elseif model.whole and not model.gone and model.whole.sides[inp.side] then
             show_notice(inp.win, buf, whole.describe(model.whole.sides[inp.side]))
         end
     end
     dress(result_win)
-    if model.deleted == "both" then
+    if model.gone then
+        show_notice(result_win, result_buf, gone_notice(model))
+    elseif model.deleted == "both" then
         show_notice(result_win, result_buf, "deleted by both: take ours or theirs to delete it")
     elseif model.whole then
         show_notice(result_win, result_buf, whole.noun(model.whole.kind) .. ": take ours or theirs")
@@ -1601,6 +1632,7 @@ local function lay_out(root, relpath, model, layout, files)
         no_ancestor = model.no_ancestor or false,
         deleted = model.deleted,
         whole = model.whole and model.whole.kind,
+        gone = model.gone,
         layout = layout,
         files = files,
         file_index = assert(file_index, "merge: " .. relpath .. " is not in the file list"),
@@ -1720,6 +1752,8 @@ local function lay_out(root, relpath, model, layout, files)
         local msg = ("%s is a %s: nothing to write"):format(relpath, whole.noun(model.whole.kind))
         if model.deleted == "both" then
             msg = relpath .. " was deleted by both: nothing to write"
+        elseif model.gone then
+            msg = relpath .. " isn't in the working tree: nothing to write"
         end
         vim.api.nvim_create_autocmd("BufWriteCmd", {
             buffer = result_buf,

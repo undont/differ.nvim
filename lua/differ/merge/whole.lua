@@ -6,7 +6,7 @@
 local notify = require("differ.git.exec").notify
 local GITLINK = require("differ.git.index").GITLINK
 
-local STAGES = { ours = 2, theirs = 3 }
+local STAGES = { base = 1, ours = 2, theirs = 3 }
 
 local M = {}
 
@@ -55,7 +55,7 @@ end
 -- check out `side`'s stage and resolve the conflict with it; also a whole-file
 -- modify/delete's keep
 ---@param s differ.MergeSession
----@param side "ours"|"theirs"
+---@param side "ours"|"base"|"theirs"
 function M.take(s, side)
     local git = require("differ.git")
     local entry = git.stages(s.root, s.path)[STAGES[side]]

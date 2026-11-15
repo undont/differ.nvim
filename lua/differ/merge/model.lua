@@ -25,6 +25,7 @@ local to_lines = require("differ.util.text").to_lines
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
 ---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version, no regions (no_ancestor: an add)
 ---@field whole differ.merge.Whole|nil -- resolved by taking a stage whole: no regions, empty texts
+---@field gone boolean|nil -- a text file missing from the worktree: whole, but with the stage texts
 
 ---@class differ.merge.Conflict
 ---@field index integer         -- 1-based, conflict order in the file
@@ -350,26 +351,6 @@ local function missing_side(stages)
     return "both"
 end
 
--- why a text file that isn't on disk can't open, and the git command for each way out.
--- checkout -m needs both sides' stages
----@param relpath string
----@param deleted "ours"|"theirs"|"both"|nil
----@return string
-local function absent(relpath, deleted)
-    local restore = "-m"
-    if deleted == "theirs" then
-        restore = "--ours"
-    elseif deleted == "ours" then
-        restore = "--theirs"
-    end
-    return ("%s isn't in the working tree: git checkout %s %s or git rm %s"):format(
-        relpath,
-        restore,
-        relpath,
-        relpath
-    )
-end
-
 local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
 
 -- git's modes for a symlink and a submodule commit
@@ -465,7 +446,7 @@ end
 
 -- build a MergeModel for a conflicted `relpath`. a text file with no markers left (rerere,
 -- a checkout --ours, a hand edit) builds with no conflicts. returns nil + a reason when the
--- index has no stages for it, or a text file isn't on disk and wasn't deleted by both
+-- index has no stages for it
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -490,10 +471,12 @@ function M.build(root, relpath, head)
     end
     local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
     if not result_text then
-        if missing == "both" then
-            return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
+        local model = whole_model(root, relpath, head, no_ancestor, missing, kind, sides)
+        if missing ~= "both" then
+            model.ours_text, model.base_text, model.theirs_text = ours_text, base_text, theirs_text
+            model.gone = true
         end
-        return nil, absent(relpath, missing)
+        return model
     end
     local marker_size = git.marker_size(root, relpath)
     local result_lines = to_lines(result_text)

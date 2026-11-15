@@ -4131,65 +4131,211 @@ describe(":Differ mergetool every conflicted path", function()
         end
     )
 
-    it("steps over a file that isn't in the working tree onto the next, warning", function()
+    -- run `fn` with model.build refusing `relpath`, the way it refuses a path with no stages
+    local function unbuildable(relpath, fn)
+        local model = require("differ.merge.model")
+        local build = model.build
+        model.build = function(root, path, head)
+            if path == relpath then
+                return nil, path .. " has no conflict stages"
+            end
+            return build(root, path, head)
+        end
+        local ok, err = pcall(fn)
+        model.build = build
+        assert(ok, err)
+    end
+
+    it("steps over a file that won't build onto the next, warning", function()
         local root = conflict_repo_mixed()
-        vim.fn.delete(root .. "/a-ours.txt")
         vim.cmd.edit(root .. "/clean.txt")
         local s = open_at(root, "f.txt")
         _G.notifs = {}
-        fire(s.result_buf, "differ: next conflicted file")
+        unbuildable("a-ours.txt", function()
+            fire(s.result_buf, "differ: next conflicted file")
+        end)
         assert.are.equal("a-theirs.txt", merge.current().path)
         local msgs = vim.tbl_map(function(n)
             return n.msg
         end, _G.notifs)
-        assert.is_true(
-            vim.tbl_contains(
-                msgs,
-                "differ: a-ours.txt isn't in the working tree: git checkout --ours a-ours.txt or git rm a-ours.txt"
-            )
-        )
+        assert.is_true(vim.tbl_contains(msgs, "differ: a-ours.txt has no conflict stages"))
     end)
 
     it(
         "opens the first conflicted file that builds after an operation, warning for the rest",
         function()
             local root = conflict_repo_two()
-            vim.fn.delete(root .. "/f.txt")
             _G.notifs = {}
-            merge.after_operation(root)
+            unbuildable("f.txt", function()
+                merge.after_operation(root)
+            end)
             assert.are.equal("g.txt", merge.current().path)
-            assert.are.equal(
-                "differ: f.txt isn't in the working tree: git checkout -m f.txt or git rm f.txt",
-                _G.notifs[1].msg
-            )
+            assert.are.equal("differ: f.txt has no conflict stages", _G.notifs[1].msg)
         end
     )
 
-    it("says how to restore a file both sides kept that isn't in the working tree", function()
-        local root = conflict_repo_two()
-        vim.fn.delete(root .. "/f.txt")
-        vim.cmd.edit(root .. "/g.txt")
-        _G.notifs = {}
-        merge.open({ path = root .. "/f.txt" })
-        assert.is_nil(merge.current())
-        assert.are.equal(
-            "differ: f.txt isn't in the working tree: git checkout -m f.txt or git rm f.txt",
-            _G.notifs[1].msg
-        )
+    it("steps onto a file that isn't in the working tree", function()
+        local root = conflict_repo_mixed()
+        vim.fn.delete(root .. "/a-ours.txt")
+        vim.cmd.edit(root .. "/clean.txt")
+        local s = open_at(root, "f.txt")
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("a-ours.txt", merge.current().path)
+        assert.is_true(merge.current().gone)
     end)
 
     it("stays put on ]f, saying why, when no other file builds", function()
         local root = conflict_repo_two()
         vim.cmd.edit(root .. "/f.txt")
         local s = open_at(root, "f.txt")
-        vim.fn.delete(root .. "/g.txt")
         _G.notifs = {}
-        fire(s.result_buf, "differ: next conflicted file")
+        unbuildable("g.txt", function()
+            fire(s.result_buf, "differ: next conflicted file")
+        end)
         assert.are.equal(s, merge.current())
+        assert.are.equal("differ: g.txt has no conflict stages", _G.notifs[1].msg)
+    end)
+end)
+
+describe(":Differ mergetool on a text file missing from the worktree", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+    end)
+
+    -- f.txt conflicted and deleted from disk, with g.txt still conflicted so the session
+    -- outlives a take
+    local function gone_repo()
+        local root = conflict_repo_two()
+        vim.fn.delete(root .. "/f.txt")
+        vim.cmd.edit(root .. "/g.txt")
+        return root
+    end
+
+    local function lines_of(buf)
+        return vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+    end
+
+    local function pane(s, side)
+        for _, inp in ipairs(s.inputs) do
+            if inp.side == side then
+                return vim.api.nvim_win_get_buf(inp.win)
+            end
+        end
+    end
+
+    local function stage0(root, path)
+        return git_ok(root, "ls-files", "-s", "--", path):match("^%d+ %x+ (%d)")
+    end
+
+    it("opens with each side's text and a result notice naming the keys", function()
+        local root = gone_repo()
+        local s = open_at(root, "f.txt")
+        assert.is_true(s.gone)
+        assert.are.same({ "a", "OURS", "c" }, lines_of(pane(s, "ours")))
+        assert.are.same({ "a", "THEIRS", "c" }, lines_of(pane(s, "theirs")))
         assert.are.equal(
-            "differ: g.txt isn't in the working tree: git checkout -m g.txt or git rm g.txt",
+            "not in the working tree: take a side, both for conflict markers, none to delete",
+            notice(s.result_buf)
+        )
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · not in the working tree · not staged · 2 files left",
+            plain(merge.winbar())
+        )
+        local txt = help_text(s)
+        assert.matches("write it with conflict markers", txt)
+        assert.matches("delete the file", txt)
+    end)
+
+    -- ours is HEAD's content, so taking it stages no change
+    local takes = {
+        { "ours", "OURS", "" },
+        { "theirs", "THEIRS", "M  f.txt" },
+        { "base", "b", "M  f.txt" },
+    }
+    for _, case in ipairs(takes) do
+        local side, line, xy = case[1], case[2], case[3]
+        it("take " .. side .. " restores that stage and stages it", function()
+            local root = gone_repo()
+            local s = open_at(root, "f.txt")
+            fire(s.result_buf, "differ: take " .. side)
+            assert.are.same({ "a", line, "c" }, vim.fn.readfile(root .. "/f.txt"))
+            assert.are.equal("0", stage0(root, "f.txt"))
+            assert.are.equal(xy, status(root, "f.txt"))
+            assert.is_true(s.resolved)
+            assert.are.same({ "g.txt" }, require("differ.git").conflicted(root))
+        end)
+    end
+
+    it("take both writes the markers back and reopens it as a marker conflict", function()
+        local root = gone_repo()
+        local s = open_at(root, "f.txt")
+        fire(s.result_buf, "differ: take both")
+        local reopened = merge.current()
+        assert.are_not.equal(s, reopened)
+        assert.is_nil(reopened.gone)
+        assert.are.equal("f.txt", reopened.path)
+        assert.are.equal(1, reopened.total)
+        assert.is_true(has_marker(reopened.result_buf))
+        assert.are.equal("", vim.bo[reopened.result_buf].buftype)
+        assert.matches("/f%.txt$", vim.api.nvim_buf_get_name(reopened.result_buf))
+        assert.are.same({ "f.txt", "g.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("take none deletes it once confirmed", function()
+        local root = gone_repo()
+        local s = open_at(root, "f.txt")
+        local prompt = confirming(1, function()
+            fire(s.result_buf, "differ: drop the conflict")
+        end)
+        assert.are.equal("Delete f.txt?", prompt)
+        assert.are.equal("D  f.txt", status(root, "f.txt"))
+        assert.is_true(s.removed)
+        assert.are.equal("f.txt deletion staged", notice(s.result_buf))
+    end)
+
+    it("refuses take base on a file added by both", function()
+        local root = conflict_repo_add_add()
+        vim.fn.delete(root .. "/f.txt")
+        vim.cmd.edit(root .. "/seed.txt")
+        local s = open_at(root, "f.txt")
+        _G.notifs = {}
+        fire(s.result_buf, "differ: take base")
+        assert.are.equal(
+            "differ: f.txt was added by both: no base version to take",
             _G.notifs[1].msg
         )
+        assert.is_false(s.resolved)
+        assert.are.same({ "f.txt" }, require("differ.git").conflicted(root))
+    end)
+
+    it("keeps a modify/delete file by restoring the surviving side", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.fn.delete(root .. "/a.txt")
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        assert.are.same({ "OURS" }, lines_of(pane(s, "ours")))
+        assert.are.equal(
+            "not in the working tree: take ours to keep it or theirs to delete it",
+            notice(s.result_buf)
+        )
+        fire(s.result_buf, "differ: take ours")
+        assert.are.same({ "OURS" }, vim.fn.readfile(root .. "/a.txt"))
+        assert.are.equal("0", stage0(root, "a.txt"))
+        assert.are.equal("", status(root, "a.txt"))
+    end)
+
+    it("deletes a modify/delete file once confirmed", function()
+        local root = conflict_repo_modify_delete({ "f.txt" })
+        vim.fn.delete(root .. "/a.txt")
+        vim.cmd.edit(root .. "/f.txt")
+        local s = open_at(root, "a.txt")
+        confirming(1, function()
+            fire(s.result_buf, "differ: take theirs")
+        end)
+        assert.are.equal("D  a.txt", status(root, "a.txt"))
     end)
 end)
 
@@ -4245,6 +4391,37 @@ describe(":Differ mergetool with no operation", function()
     local function conflicted(root, path)
         return vim.tbl_contains(require("differ.git").conflicted(root), path)
     end
+
+    -- the stash pop's f.txt deleted from disk: ours is THEIRS, theirs is STASHED
+    local function open_gone(root)
+        vim.fn.delete(root .. "/f.txt")
+        vim.cmd.edit(root .. "/g.txt")
+        merge.open({ path = root .. "/f.txt" })
+        return assert(merge.current())
+    end
+
+    for _, case in ipairs({ { "theirs", "STASHED" }, { "base", "b" } }) do
+        local side, line = case[1], case[2]
+        it("leaves take " .. side .. " of a file missing from disk in the worktree", function()
+            local root = stash_repo_two()
+            local s = open_gone(root)
+            fire(s.result_buf, "differ: take " .. side)
+            assert.are.same({ "a", line, "c" }, vim.fn.readfile(root .. "/f.txt"))
+            assert.are.equal(" M", xy(root, "f.txt"))
+            assert.is_false(conflicted(root, "f.txt"))
+        end)
+    end
+
+    it("leaves deleting a file missing from disk as an unstaged deletion", function()
+        local root = stash_repo_two()
+        local s = open_gone(root)
+        confirming(1, function()
+            fire(s.result_buf, "differ: drop the conflict")
+        end)
+        assert.are.equal(0, vim.fn.filereadable(root .. "/f.txt"))
+        assert.are.equal(" D", xy(root, "f.txt"))
+        assert.is_false(conflicted(root, "f.txt"))
+    end)
 
     it("leaves a written resolution unstaged, and a later write too", function()
         local root = stash_repo_two()

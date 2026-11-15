@@ -55,16 +55,34 @@ function M.remove(root, path)
     return git_ok({ "rm", "-q", "--", path }, root, "delete")
 end
 
--- resolve a conflict to one side's stage: check it out over the worktree file, then stage it
+-- resolve a conflict to one stage: check it out over the worktree file, then stage it.
+-- checkout has no flag for the base stage
 ---@param root string
 ---@param path string
----@param side "ours"|"theirs"
+---@param side "ours"|"base"|"theirs"
 ---@return boolean ok
 function M.take_side(root, path, side)
-    if not git_ok({ "checkout", "--" .. side, "--", path }, root, "take " .. side) then
+    local args = { "checkout", "--" .. side, "--", path }
+    if side == "base" then
+        args = { "checkout-index", "-f", "--stage=1", "--", path }
+    end
+    if not git_ok(args, root, "take " .. side) then
         return false
     end
     return M.stage(root, path)
+end
+
+-- write a conflicted file again with its conflict markers, from the stages; the index is
+-- left unmerged
+---@param root string
+---@param path string
+---@return boolean ok
+function M.remerge(root, path)
+    return git_ok(
+        { "checkout", "-m", "--", path },
+        root,
+        "recreating the conflict markers in " .. path
+    )
 end
 
 -- whether the submodule at `path` is checked out as its own repo. an uninitialised one is an

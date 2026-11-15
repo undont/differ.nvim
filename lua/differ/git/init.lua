@@ -785,7 +785,7 @@ end
 -- the index ops the panel's file keys and the merge tool drive
 M.stage, M.unstage = index_ops.stage, index_ops.unstage
 M.remove, M.take_side, M.take_commit = index_ops.remove, index_ops.take_side, index_ops.take_commit
-M.checked_out = index_ops.checked_out
+M.checked_out, M.remerge = index_ops.checked_out, index_ops.remerge
 M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- reverse-apply a single-hunk patch to the worktree, atomically. `--unidiff-zero`
