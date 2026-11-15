@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The merge tool opens every conflicted path, resolving each from a take key: binary, symlink, submodule and `-merge` files, files added by one side or deleted by both, and files missing from the working tree. `]f` / `[f` and the picker step through all of them
+
+### Changed
+
+- Stepping past a file that arrived with no conflicts left (rerere, `git checkout --ours`) no longer stages it, and `:Differ continue` names it; the winbar now says `:w` stages a resolved file
+
+## [0.2.34] — 2026-11-13
+
 ### Fixed
 
 - With no operation in progress (a stash pop or apply, `checkout -m`), the merge tool staged each file it resolved, so later edits landed unstaged on top; it now leaves the resolution unstaged and says "resolved" instead of "staged"
