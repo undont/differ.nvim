@@ -1024,6 +1024,13 @@ local function resolved_as(s)
     return s.operation and "staged" or "resolved"
 end
 
+-- what a write does to a marker-free result, as a hint
+---@param s differ.MergeSession
+---@return string
+local function write_hint(s)
+    return s.operation and ":w to stage" or ":w to mark resolved"
+end
+
 -- why this file isn't done: mid-operation it isn't staged; with none, a write resolves it, so
 -- it is unsaved, or written but not resolved (a formatter, a declined marker, a failed add)
 ---@param s differ.MergeSession
@@ -1071,7 +1078,9 @@ local function result_winbar(s)
         return ("%s · %s · %s%s"):format(file, incomplete(s.orphans[1]), unresolved(s), left)
     end
     if remaining == 0 then
-        return ("%s · all resolved · %s%s"):format(file, unresolved(s), left)
+        local state = M.unstaged() and "resolved before opening" or "all resolved"
+        local hint = tint(write_hint(s), "differMergeUnstaged")
+        return ("%s · %s · %s%s"):format(file, state, hint, left)
     end
     local pos = active_pos()
     if not pos then
@@ -1837,6 +1846,14 @@ local function lay_out(root, relpath, model, layout, files)
     end
     vim.cmd("normal! zz")
     on_cursor_moved()
+    if M.unstaged() then
+        notify(
+            ("%s has no conflicts left (rerere or a change outside differ): check it, then %s"):format(
+                relpath,
+                write_hint(session)
+            )
+        )
+    end
 end
 
 -- before :Differ continue runs git: save and stage the open result. false when the save
@@ -1955,5 +1972,6 @@ end
 M._live_session, M._lay_out, M._bind_pane = live_session, lay_out, bind_pane
 M._make_buffer, M._release_result = make_buffer, release_result
 M._dress, M._show_notice = dress, show_notice
+M._write_hint = write_hint
 
 return M

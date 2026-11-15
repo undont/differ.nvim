@@ -86,7 +86,8 @@ function M.step(direction)
         return notify("no other conflicted file")
     end
     if unstaged then
-        notify(unstaged .. " left unstaged: :w to stage")
+        local state = s.operation and "unstaged" or "unresolved"
+        notify(("%s left %s: %s"):format(unstaged, state, merge._write_hint(s)))
     end
     if wrapped and direction == "next" then
         notify("wrapped to the first conflicted file")

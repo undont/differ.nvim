@@ -1871,7 +1871,7 @@ describe(":Differ mergetool file stepping", function()
         )
         fire(s.result_buf, "differ: take ours")
         assert.are.equal(
-            "RESULT · file 1/2 · all resolved · not staged · 2 files left",
+            "RESULT · file 1/2 · all resolved · :w to stage · 2 files left",
             plain(merge.winbar())
         )
         vim.api.nvim_set_current_win(s.result_win)
@@ -1893,7 +1893,7 @@ describe(":Differ mergetool file stepping", function()
         local s = open_at(root, "f.txt")
         vim.g.statusline_winid = s.result_win
         fire(s.result_buf, "differ: take ours")
-        assert.is_truthy(merge.winbar():find("%#differMergeUnstaged#not staged%*", 1, true))
+        assert.is_truthy(merge.winbar():find("%#differMergeUnstaged#:w to stage%*", 1, true))
         vim.api.nvim_set_current_win(s.result_win)
         vim.cmd("silent write")
         assert.is_truthy(merge.winbar():find("%#differMergeStaged#staged%*", 1, true))
@@ -4076,6 +4076,24 @@ describe(":Differ mergetool every conflicted path", function()
         assert.are.same({ "f.txt", "g.txt" }, unmerged(root))
     end)
 
+    it("names a file that arrived with no markers on open and in the winbar", function()
+        local root = conflict_repo_two()
+        write(root .. "/f.txt", "a\nBOTH\nc\n")
+        vim.cmd.edit(root .. "/g.txt")
+        _G.notifs = {}
+        local s = open_at(root, "f.txt")
+        assert.are.equal(
+            "differ: f.txt has no conflicts left (rerere or a change outside differ): "
+                .. "check it, then :w to stage",
+            _G.notifs[#_G.notifs].msg
+        )
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · resolved before opening · :w to stage · 2 files left",
+            plain(merge.winbar())
+        )
+    end)
+
     it("counts an unstaged file that arrived with no markers in the continue picker", function()
         local root = conflict_repo_two()
         write(root .. "/f.txt", "a\nBOTH\nc\n")
@@ -4451,7 +4469,7 @@ describe(":Differ mergetool with no operation", function()
         )
         fire(s.result_buf, "differ: take theirs")
         assert.are.equal(
-            "RESULT · file 1/2 · all resolved · not saved · 2 files left",
+            "RESULT · file 1/2 · all resolved · :w to mark resolved · 2 files left",
             plain(merge.winbar())
         )
         vim.api.nvim_set_current_win(s.result_win)
@@ -4469,6 +4487,28 @@ describe(":Differ mergetool with no operation", function()
             "RESULT · file 2/2 · resolved · all conflicts resolved",
             plain(merge.winbar())
         )
+    end)
+
+    it("says :w marks resolved for a file that arrived with no markers", function()
+        local root = stash_repo_two()
+        write(root .. "/f.txt", "a\nSTASH\nc\n")
+        vim.cmd.edit(root .. "/g.txt")
+        _G.notifs = {}
+        local s = open_at(root, "f.txt")
+        assert.are.equal(
+            "differ: f.txt has no conflicts left (rerere or a change outside differ): "
+                .. "check it, then :w to mark resolved",
+            _G.notifs[#_G.notifs].msg
+        )
+        vim.g.statusline_winid = s.result_win
+        assert.are.equal(
+            "RESULT · file 1/2 · resolved before opening · :w to mark resolved · 2 files left",
+            plain(merge.winbar())
+        )
+        _G.notifs = {}
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("g.txt", merge.current().path)
+        assert.are.equal("differ: f.txt left unresolved: :w to mark resolved", _G.notifs[1].msg)
     end)
 
     it("says not resolved for a written result a declined marker holds", function()
