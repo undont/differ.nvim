@@ -55,16 +55,96 @@ function M.remove(root, path)
     return git_ok({ "rm", "-q", "--", path }, root, "delete")
 end
 
--- resolve a conflict to one side's stage: check it out over the worktree file, then stage it
+-- resolve a conflict to one stage: check it out over the worktree file, then stage it.
+-- checkout has no flag for the base stage
 ---@param root string
 ---@param path string
----@param side "ours"|"theirs"
+---@param side "ours"|"base"|"theirs"
 ---@return boolean ok
 function M.take_side(root, path, side)
-    if not git_ok({ "checkout", "--" .. side, "--", path }, root, "take " .. side) then
+    local args = { "checkout", "--" .. side, "--", path }
+    if side == "base" then
+        args = { "checkout-index", "-f", "--stage=1", "--", path }
+    end
+    if not git_ok(args, root, "take " .. side) then
         return false
     end
     return M.stage(root, path)
+end
+
+-- write a conflicted file again with its conflict markers, from the stages; the index is
+-- left unmerged
+---@param root string
+---@param path string
+---@return boolean ok
+function M.remerge(root, path)
+    return git_ok(
+        { "checkout", "-m", "--", path },
+        root,
+        "recreating the conflict markers in " .. path
+    )
+end
+
+-- whether the submodule at `path` is checked out as its own repo. an uninitialised one is an
+-- empty directory, where git would find the superproject instead
+---@param root string
+---@param path string
+---@return boolean
+function M.checked_out(root, path)
+    return vim.uv.fs_lstat(root .. "/" .. path .. "/.git") ~= nil
+end
+
+-- whether the index resolves `path` to commit `oid` alone, else notify what it holds
+---@param root string
+---@param path string
+---@param oid string
+---@return boolean
+local function staged_commit(root, path, oid)
+    local listed = git({ "ls-files", "-s", "-z", "--", path }, root) or ""
+    local entries = {}
+    for mode, sha, stage in listed:gmatch("(%d+) (%x+) (%d)\t[^%z]*%z") do
+        entries[#entries + 1] = { mode = mode, sha = sha, stage = stage }
+    end
+    local only = entries[1]
+    if #entries == 1 and only.mode == M.GITLINK and only.sha == oid and only.stage == "0" then
+        return true
+    end
+    local held = {}
+    for _, e in ipairs(entries) do
+        held[#held + 1] = ("%s %s stage %s"):format(e.mode, e.sha:sub(1, 7), e.stage)
+    end
+    local holds = "nothing"
+    if #held > 0 then
+        holds = table.concat(held, ", ")
+    end
+    local msg = "%s isn't resolved to %s: the index holds %s"
+    notify(msg:format(path, oid:sub(1, 7), holds), vim.log.levels.ERROR)
+    return false
+end
+
+-- resolve a submodule conflict to commit `oid`: check it out in the submodule and stage
+-- it, or with no checkout, point the index entry at it. checkout --ours/--theirs exits 0
+-- on a gitlink and changes nothing
+---@param root string
+---@param path string
+---@param oid string
+---@return boolean ok
+function M.take_commit(root, path, oid)
+    if not M.checked_out(root, path) then
+        local spec = ("%s,%s,%s"):format(M.GITLINK, oid, path)
+        if not git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path) then
+            return false
+        end
+        return staged_commit(root, path, oid)
+    end
+    local what = "checkout in " .. path
+    if not git_ok({ "checkout", "-q", oid }, root .. "/" .. path, what) then
+        return false
+    end
+    if not M.stage(root, path) then
+        return false
+    end
+    return staged_commit(root, path, oid)
 end
 
 ---@param root string

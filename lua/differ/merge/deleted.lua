@@ -1,20 +1,54 @@
--- modify/delete conflicts in the merge tool: taking the deleting side deletes the file with
--- git rm, taking the other keeps it by writing it
+-- conflicts where a side has no version (modify/delete, added by one side, deleted by both)
+-- in the merge tool: taking the side without one deletes the file with git rm, taking the
+-- other keeps it by writing it. deleted by both only deletes
 
 local notify = require("differ.git.exec").notify
 
 local M = {}
 
--- keep the file: write it as it stands, which resolves it like any write. a binary file is
--- resolved from disk instead, since a write from nvim can change its bytes
+-- the case as the winbar names it, by the side with no version
+---@param deleted "ours"|"theirs"|"both"
+---@param no_ancestor boolean
+---@return string
+function M.state(deleted, no_ancestor)
+    if deleted == "both" then
+        return "deleted by both"
+    end
+    if not no_ancestor then
+        return "deleted in " .. deleted
+    end
+    if deleted == "theirs" then
+        return "added by us"
+    end
+    return "added by them"
+end
+
+-- the notice an input pane shows when its side has no version, or nil
+---@param deleted "ours"|"theirs"|"both"|nil
+---@param no_ancestor boolean
+---@param side "ours"|"base"|"theirs"
+---@return string|nil
+function M.absent(deleted, no_ancestor, side)
+    if side == "base" or (deleted ~= side and deleted ~= "both") then
+        return nil
+    end
+    if no_ancestor then
+        return "not in " .. side
+    end
+    return "deleted in " .. side
+end
+
+-- keep the file: write it as it stands, which resolves it like any write. a whole-file one
+-- is taken from the index instead: a write from nvim can change a binary's bytes, and
+-- would write through a symlink to its target
 ---@param s differ.MergeSession
 local function keep_file(s)
-    if s.binary then
+    if s.whole then
         local surviving = "ours"
         if s.deleted == "ours" then
             surviving = "theirs"
         end
-        return require("differ.merge.binary").take(s, surviving)
+        return require("differ.merge.whole").take(s, surviving)
     end
     local ok, err = pcall(vim.api.nvim_buf_call, s.result_buf, function()
         vim.cmd("silent write")
@@ -60,7 +94,7 @@ end
 
 -- delete the file with git rm, once confirmed
 ---@param s differ.MergeSession
-local function delete_file(s)
+function M.delete(s)
     if vim.bo[s.result_buf].modified then
         return notify("unsaved changes: drop them with :e! to delete", vim.log.levels.WARN)
     end
@@ -79,21 +113,35 @@ local function delete_file(s)
     show_deleted(s)
 end
 
--- taking the deleting side deletes the file, taking the other keeps it
+-- taking the side with no version deletes the file, taking the other keeps it
 ---@param s differ.MergeSession
 ---@param choice "ours"|"theirs"|"both"|"base"|"none"
 function M.resolve(s, choice)
     if s.resolved then
         return notify(("%s is already resolved"):format(s.path))
     end
-    if choice ~= "ours" and choice ~= "theirs" then
+    local take = choice == "ours" or choice == "theirs"
+    if s.deleted == "both" and not take then
+        local msg = "%s was deleted by both: take ours or theirs to delete it"
+        return notify(msg:format(s.path), vim.log.levels.WARN)
+    end
+    if s.deleted == "both" then
+        return M.delete(s)
+    end
+    if not take and s.no_ancestor then
+        return notify(
+            "a file added by one side is kept or deleted: take ours or theirs",
+            vim.log.levels.WARN
+        )
+    end
+    if not take then
         return notify(
             "a modify/delete conflict is kept or deleted: take ours or theirs",
             vim.log.levels.WARN
         )
     end
     if choice == s.deleted then
-        return delete_file(s)
+        return M.delete(s)
     end
     keep_file(s)
 end

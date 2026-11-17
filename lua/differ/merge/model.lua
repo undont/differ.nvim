@@ -23,8 +23,9 @@ local to_lines = require("differ.util.text").to_lines
 ---@field marker_size integer -- the path's conflict-marker-size, 7 by default
 ---@field head string|nil
 ---@field no_ancestor boolean -- add/add: no :1: stage, so no base exists to recover or take
----@field deleted "ours"|"theirs"|nil -- modify/delete: the side that deleted the file, no regions
----@field binary table<"ours"|"base"|"theirs", differ.merge.Blob>|nil -- binary stages: no regions, empty texts
+---@field deleted "ours"|"theirs"|"both"|nil -- the side with no version, no regions (no_ancestor: an add)
+---@field whole differ.merge.Whole|nil -- resolved by taking a stage whole: no regions, empty texts
+---@field gone boolean|nil -- a text file missing from the worktree: whole, but with the stage texts
 
 ---@class differ.merge.Conflict
 ---@field index integer         -- 1-based, conflict order in the file
@@ -35,9 +36,18 @@ local to_lines = require("differ.util.text").to_lines
 ---@field theirs string[]
 ---@field region differ.merge.Region|nil -- the parsed region, nil when its markers are broken
 
----@class differ.merge.Blob
+---@alias differ.merge.WholeKind "binary"|"symlink"|"submodule"|"text"
+
+---@class differ.merge.Whole
+---@field kind differ.merge.WholeKind -- text: a file git doesn't line-merge (`-merge`)
+---@field sides table<"ours"|"base"|"theirs", differ.merge.Side> -- the present stages
+
+---@class differ.merge.Side
+---@field kind differ.merge.WholeKind
 ---@field oid string
 ---@field size integer
+---@field target string|nil -- a symlink's target
+---@field subject string|nil -- a submodule commit's subject, when the submodule has it
 
 local M = {}
 
@@ -323,59 +333,120 @@ local function is_conflict(c, lines, orphans, content, remerged)
     return #conflict.markers(lines, inside, {}, content) > 0
 end
 
--- the side that deleted a modify/delete file: the ancestor and exactly one side's stage
--- are in the index. git leaves the other side's file on disk with no markers
----@param root string
----@param relpath string
----@return "ours"|"theirs"|nil
-local function deleted_side(root, relpath)
-    local git = require("differ.git")
-    if not git.has_stage(root, relpath, 1) then
+-- the side with no version of the file, "both" when only the ancestor is left. a
+-- modify/delete or added-by-one-side file is on disk as the other side left it, with no
+-- markers; a deleted-by-both one isn't on disk
+---@param stages table<integer, { mode: string, oid: string }>
+---@return "ours"|"theirs"|"both"|nil
+local function missing_side(stages)
+    if stages[2] and stages[3] then
         return nil
     end
-    local has_ours = git.has_stage(root, relpath, 2)
-    if has_ours == git.has_stage(root, relpath, 3) then
-        return nil
-    end
-    if has_ours then
+    if stages[2] then
         return "theirs"
     end
-    return "ours"
+    if stages[3] then
+        return "ours"
+    end
+    return "both"
 end
 
 local STAGE_SIDES = { [1] = "base", [2] = "ours", [3] = "theirs" }
 
--- each present stage's object id and size, by side
----@param stages table<integer, { mode: string, oid: string }>
----@param texts table<"ours"|"base"|"theirs", string>
----@return table<"ours"|"base"|"theirs", differ.merge.Blob>
-local function stage_blobs(stages, texts)
-    local blobs = {}
-    for stage, side in pairs(STAGE_SIDES) do
-        if stages[stage] then
-            blobs[side] = { oid = stages[stage].oid, size = #texts[side] }
-        end
-    end
-    return blobs
-end
+-- git's modes for a symlink and a submodule commit
+local SYMLINK, GITLINK = "120000", "160000"
 
--- whether a stage or the worktree holds `relpath` as a symlink
+-- each present stage as a whole-file side: a submodule commit or symlink by its mode, else
+-- a file whose content decides binary or text
 ---@param root string
 ---@param relpath string
 ---@param stages table<integer, { mode: string, oid: string }>
----@return boolean
-local function is_symlink(root, relpath, stages)
-    for stage in pairs(STAGE_SIDES) do
-        if stages[stage] and stages[stage].mode == "120000" then
-            return true
+---@param texts table<"ours"|"base"|"theirs", string>
+---@return table<"ours"|"base"|"theirs", differ.merge.Side>
+local function whole_sides(root, relpath, stages, texts)
+    local sides = {}
+    for stage, side in pairs(STAGE_SIDES) do
+        local entry = stages[stage]
+        if entry then
+            local text = texts[side]
+            local kind = "text"
+            if entry.mode == GITLINK then
+                kind = "submodule"
+            elseif entry.mode == SYMLINK then
+                kind = "symlink"
+            elseif is_binary(text) then
+                kind = "binary"
+            end
+            sides[side] = { kind = kind, oid = entry.oid, size = #text }
+            if kind == "symlink" then
+                sides[side].target = text
+            end
+            if kind == "submodule" then
+                sides[side].subject = require("differ.git").commit_subject(root, relpath, entry.oid)
+            end
         end
     end
-    return require("differ.git").is_symlink(root, relpath)
+    return sides
 end
 
--- build a MergeModel for a conflicted `relpath`. returns nil + a reason when the file
--- is a symlink, isn't on disk, or carries no conflict marker lines and is neither binary
--- nor a modify/delete conflict
+-- what a whole-file model resolves as: a submodule commit on any side, else a symlink on
+-- any side or in the worktree, else a binary stage, else text git doesn't merge
+---@param sides table<"ours"|"base"|"theirs", differ.merge.Side>
+---@param linked boolean  -- the worktree holds the path as a symlink
+---@return differ.merge.WholeKind
+local function whole_kind(sides, linked)
+    for _, side in pairs(sides) do
+        if side.kind == "submodule" then
+            return "submodule"
+        end
+    end
+    local kind = "text"
+    for _, side in pairs(sides) do
+        if side.kind == "symlink" then
+            return "symlink"
+        end
+        if side.kind == "binary" then
+            kind = "binary"
+        end
+    end
+    if linked then
+        return "symlink"
+    end
+    return kind
+end
+
+-- a model with no regions that resolves by taking a stage whole
+---@param root string
+---@param relpath string
+---@param head string|nil
+---@param no_ancestor boolean
+---@param deleted "ours"|"theirs"|"both"|nil
+---@param kind differ.merge.WholeKind
+---@param sides table<"ours"|"base"|"theirs", differ.merge.Side>
+---@return differ.MergeModel
+local function whole_model(root, relpath, head, no_ancestor, deleted, kind, sides)
+    return {
+        path = relpath,
+        root = root,
+        ours_text = "",
+        base_text = "",
+        theirs_text = "",
+        result_text = "",
+        conflicts = {},
+        regions = {},
+        orphans = {},
+        content_markers = {},
+        marker_size = 7, -- the result is never parsed
+        head = head,
+        no_ancestor = no_ancestor,
+        deleted = deleted,
+        whole = { kind = kind, sides = sides },
+    }
+end
+
+-- build a MergeModel for a conflicted `relpath`. a text file with no markers left (rerere,
+-- a checkout --ours, a hand edit) builds with no conflicts. returns nil + a reason when the
+-- index has no stages for it
 ---@param root string
 ---@param relpath string
 ---@param head string|nil
@@ -383,37 +454,29 @@ end
 function M.build(root, relpath, head)
     local git = require("differ.git")
     local stages = git.stages(root, relpath)
-    if is_symlink(root, relpath, stages) then
-        return nil, relpath .. " is a symlink"
-    end
-    local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
-    if not result_text then
-        return nil, relpath .. " is not in the working tree"
+    if next(stages) == nil then
+        return nil, relpath .. " has no conflict stages"
     end
     local ours_text = git.read_stage(root, relpath, 2)
     local base_text = git.read_stage(root, relpath, 1)
     local theirs_text = git.read_stage(root, relpath, 3)
-    -- only ambiguous when the stage read back empty, so the extra call sits inside that
-    local no_ancestor = base_text == "" and not git.has_stage(root, relpath, 1)
-    if is_binary(ours_text) or is_binary(base_text) or is_binary(theirs_text) then
-        local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
-        return {
-            path = relpath,
-            root = root,
-            ours_text = "",
-            base_text = "",
-            theirs_text = "",
-            result_text = "",
-            conflicts = {},
-            regions = {},
-            orphans = {},
-            content_markers = {},
-            marker_size = 7, -- no markers in a binary result
-            head = head,
-            no_ancestor = no_ancestor,
-            deleted = deleted_side(root, relpath),
-            binary = stage_blobs(stages, texts),
-        }
+    local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
+    local no_ancestor = stages[1] == nil
+    local missing = missing_side(stages)
+    local sides = whole_sides(root, relpath, stages, texts)
+    local linked = git.is_symlink(root, relpath)
+    local kind = whole_kind(sides, linked)
+    if kind ~= "text" then
+        return whole_model(root, relpath, head, no_ancestor, missing, kind, sides)
+    end
+    local result_text = git.read({ kind = "worktree", label = "WORKTREE" }, root, relpath)
+    if not result_text then
+        local model = whole_model(root, relpath, head, no_ancestor, missing, kind, sides)
+        if missing ~= "both" then
+            model.ours_text, model.base_text, model.theirs_text = ours_text, base_text, theirs_text
+            model.gone = true
+        end
+        return model
     end
     local marker_size = git.marker_size(root, relpath)
     local result_lines = to_lines(result_text)
@@ -426,7 +489,6 @@ function M.build(root, relpath, head)
     local spun = spine(regions, conflict.incomplete(result_lines, marker_size))
     -- with no ancestor the re-merge still yields empty base slabs, which attach would copy
     -- across as `{}`; that's truthy, so take-base would splice it and silently drop the block
-    local texts = { ours = ours_text, base = base_text, theirs = theirs_text }
     local remerged = attach(spun, result_lines, texts, marker_size, no_ancestor)
     local conflicts = {}
     for _, c in ipairs(spun) do
@@ -440,9 +502,12 @@ function M.build(root, relpath, head)
     end
     local deleted = nil
     if #conflicts == 0 then
-        deleted = deleted_side(root, relpath)
-        if not deleted then
-            return nil, relpath .. " has no conflicts to resolve"
+        deleted = missing
+        if deleted == "both" then
+            return whole_model(root, relpath, head, no_ancestor, "both", kind, sides)
+        end
+        if not deleted and git.merges_whole(root, relpath) then
+            return whole_model(root, relpath, head, no_ancestor, nil, kind, sides)
         end
     end
     return {

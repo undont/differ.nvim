@@ -74,6 +74,17 @@ function M.marker_size(root, relpath)
     return math.floor(size)
 end
 
+-- whether git resolves `relpath` without a line merge: its `merge` attribute is unset
+-- (`-merge`) or `binary`, so a conflict leaves ours's file with no markers
+---@param root string
+---@param relpath string
+---@return boolean
+function M.merges_whole(root, relpath)
+    local out = git({ "check-attr", "merge", "--", relpath }, root)
+    local value = out and out:match(": ([^:\n]*)\n?$")
+    return value == "unset" or value == "binary"
+end
+
 -- worktree bytes as `git add` would store them (the clean filter: eol
 -- conversion, text attrs, custom filters), so worktree-side diffs compare in
 -- the repo domain, like `git diff`, and the hunk patches built from the model

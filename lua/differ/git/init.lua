@@ -27,6 +27,7 @@ local M = {}
 
 M.read = content_ops.read
 M.marker_size = content_ops.marker_size
+M.merges_whole = content_ops.merges_whole
 
 -- git's canonical empty-tree object: the "old" side for a root commit (no parent),
 -- so its files list and read as pure adds (history)
@@ -200,18 +201,6 @@ function M.read_stage(root, relpath, stage)
     return git_raw({ "show", (":%d:"):format(stage) .. relpath }, root) or ""
 end
 
--- whether `relpath` has a stage N entry at all. read_stage folds an absent stage into "",
--- which a genuinely empty one also reads as, and the two want opposite handling: an add/add
--- conflict has no `:1:` and so no base to take, while an empty ancestor has one to take
----@param root string
----@param relpath string
----@param stage 1|2|3
----@return boolean
-function M.has_stage(root, relpath, stage)
-    local spec = (":%d:"):format(stage) .. relpath
-    return vim.system({ "git", "cat-file", "-e", spec }, { cwd = root }):wait().code == 0
-end
-
 -- each present index stage's file mode and object id for `relpath`, by stage number
 ---@param root string
 ---@param relpath string
@@ -232,6 +221,23 @@ end
 function M.is_symlink(root, relpath)
     local st = vim.uv.fs_lstat(root .. "/" .. relpath)
     return st ~= nil and st.type == "link"
+end
+
+-- the subject of commit `oid` in the submodule at `relpath`, or nil when it isn't checked
+-- out or doesn't have the commit
+---@param root string
+---@param relpath string
+---@param oid string
+---@return string|nil
+function M.commit_subject(root, relpath, oid)
+    if not index_ops.checked_out(root, relpath) then
+        return nil
+    end
+    local out = git({ "log", "-1", "--format=%s", oid }, root .. "/" .. relpath)
+    if not out or chomp(out) == "" then
+        return nil
+    end
+    return chomp(out)
 end
 
 -- re-merge the three stage texts and return the result in diff3 conflict style (a base
@@ -778,7 +784,8 @@ end
 
 -- the index ops the panel's file keys and the merge tool drive
 M.stage, M.unstage = index_ops.stage, index_ops.unstage
-M.remove, M.take_side = index_ops.remove, index_ops.take_side
+M.remove, M.take_side, M.take_commit = index_ops.remove, index_ops.take_side, index_ops.take_commit
+M.checked_out, M.remerge = index_ops.checked_out, index_ops.remerge
 M.stage_all, M.unstage_all = index_ops.stage_all, index_ops.unstage_all
 
 -- reverse-apply a single-hunk patch to the worktree, atomically. `--unidiff-zero`

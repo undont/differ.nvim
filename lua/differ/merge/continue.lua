@@ -106,12 +106,24 @@ local function run(root, op, action, accept)
     end, accept)
 end
 
+-- refuse on the merge tool's open file when it has no markers but settling left it
+-- unstaged, naming it
+---@return boolean
+local function refuse_unstaged()
+    local path = require("differ.merge").unstaged()
+    if not path then
+        return false
+    end
+    notify(("%s is resolved but unstaged: :w to stage"):format(path), vim.log.levels.WARN)
+    return true
+end
+
 -- a continue with files still conflicted only gets git's refusal, so refuse here. the
 -- merge tool's open result is saved and staged first
 ---@param root string
 ---@return boolean
 local function resolved(root)
-    if not require("differ.merge").settle() then
+    if not require("differ.merge").settle() or refuse_unstaged() then
         return false
     end
     local left = #require("differ.git").conflicted(root)
@@ -126,7 +138,7 @@ local function resolved(root)
 end
 
 -- the conflicted files left, counting the merge tool's open file by its buffer: the index
--- keeps it conflicted until settle() stages it
+-- keeps it conflicted until settle() stages it, and settle() leaves an unstaged one as it is
 ---@param root string
 ---@return integer
 local function conflicts_left(root)
@@ -138,7 +150,12 @@ local function conflicts_left(root)
     local left = #vim.tbl_filter(function(p)
         return p ~= s.path
     end, conflicted)
-    if #s.conflicts > 0 or #s.orphans > 0 or ((s.deleted or s.binary) and not s.resolved) then
+    local pending = #s.conflicts > 0 or #s.orphans > 0
+    if
+        pending
+        or ((s.deleted or s.whole) and not s.resolved)
+        or require("differ.merge").unstaged()
+    then
         left = left + 1
     end
     return left
@@ -265,7 +282,7 @@ local function settle_without_operation(root)
     if not s and #git.conflicted(root) == 0 then
         return notify("no merge, rebase, cherry-pick, revert or am in progress")
     end
-    if s and not merge.settle() then
+    if s and (not merge.settle() or refuse_unstaged()) then
         return
     end
     local left = #git.conflicted(root)
