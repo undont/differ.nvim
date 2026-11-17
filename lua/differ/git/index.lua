@@ -214,7 +214,7 @@ function M.write_index(root, path, text, mode)
     end
     local sha = exec.chomp(hashed.stdout)
     local spec = ("%s,%s,%s"):format(mode, sha, path)
-    if not git_ok({ "update-index", "--cacheinfo", spec }, root, "staging " .. path) then
+    if not git_ok({ "update-index", "--add", "--cacheinfo", spec }, root, "staging " .. path) then
         return false
     end
     return true, sha
