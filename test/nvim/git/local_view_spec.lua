@@ -212,6 +212,44 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("", status)
     end)
 
+    -- c.lua added empty, then one on disk
+    local function empty_add_view()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "")
+        git(root, "add", "c.lua")
+        write(root .. "/c.lua", "one\n")
+        vim.cmd.edit(root .. "/c.lua")
+        local p, v = local_view_at(1)
+        v:stage_hunk()
+        v:unstage_hunk()
+        return root, p, v
+    end
+
+    it("s in the local view puts back an add its own u took out", function()
+        local root, p, v = empty_add_view()
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = vim.tbl_map(function(n)
+            return n.msg
+        end, _G.notifs)
+        p:close()
+        assert.are.same({}, said)
+        assert.are.equal("one\n", indexed(root, "c.lua"))
+    end)
+
+    it("s in the local view refuses an add staged from outside since u", function()
+        local root, p, v = empty_add_view()
+        write(root .. "/c.lua", "three\n")
+        git(root, "add", "c.lua")
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "c.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal("three\n", index)
+    end)
+
     -- b.dat committed as one, staged as two, then three on disk
     local function binary_staged_then_changed(root)
         write(root .. "/b.dat", "\0one")
