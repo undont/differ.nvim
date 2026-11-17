@@ -212,6 +212,78 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("", status)
     end)
 
+    -- c.lua added empty, then one on disk
+    local function empty_add_view()
+        local root = fresh_repo()
+        write(root .. "/c.lua", "")
+        git(root, "add", "c.lua")
+        write(root .. "/c.lua", "one\n")
+        vim.cmd.edit(root .. "/c.lua")
+        local p, v = local_view_at(1)
+        v:stage_hunk()
+        v:unstage_hunk()
+        return root, p, v
+    end
+
+    it("s in the local view puts back an add its own u took out", function()
+        local root, p, v = empty_add_view()
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = vim.tbl_map(function(n)
+            return n.msg
+        end, _G.notifs)
+        p:close()
+        assert.are.same({}, said)
+        assert.are.equal("one\n", indexed(root, "c.lua"))
+    end)
+
+    it("the re-read u scheduled lands on the add s put back ahead of it", function()
+        local root, p, v = empty_add_view()
+        _G.notifs = {}
+        v:stage_hunk()
+        vim.wait(500, function() -- the local view re-reads on a schedule
+            return view_in_origin(p).model.old_rev == "HEAD"
+        end)
+        local now = view_in_origin(p)
+        local revs, state = { now.model.old_rev, now.model.new_rev }, now:_hunk_state(1)
+        local status = git(root, "status", "--porcelain=v1", "--", "c.lua")
+        p:close()
+        assert.are.same({}, _G.notifs)
+        assert.are.same({ "HEAD", "WORKTREE" }, revs)
+        assert.are.equal("staged", state)
+        assert.are.equal("A  c.lua\n", status)
+    end)
+
+    it("s in the local view refuses a modified file taken out of the index outside", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "local x = 2\nreturn x\n")
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", "local x = 3\nreturn x\n")
+        vim.cmd.edit(root .. "/a.lua")
+        local p, v = local_view_at(1)
+        git(root, "rm", "-qf", "--cached", "a.lua")
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal("D  a.lua\n?? a.lua\n", status)
+    end)
+
+    it("s in the local view refuses an add staged from outside since u", function()
+        local root, p, v = empty_add_view()
+        write(root .. "/c.lua", "three\n")
+        git(root, "add", "c.lua")
+        _G.notifs = {}
+        v:stage_hunk()
+        local said = (_G.notifs[#_G.notifs] or {}).msg
+        local index = indexed(root, "c.lua")
+        p:close()
+        assert.are.equal("differ: the index changed outside differ: re-reading", said)
+        assert.are.equal("three\n", index)
+    end)
+
     -- b.dat committed as one, staged as two, then three on disk
     local function binary_staged_then_changed(root)
         write(root .. "/b.dat", "\0one")

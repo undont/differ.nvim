@@ -40,6 +40,8 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
     -- opens unstaged with it as its old side
     local held = staged and model.new_text or model.old_text
     local held_sha ---@type string|nil -- held's blob id, once a listing has matched it
+    local dropped = false -- the last apply took an add out of the index
+    local held_mode ---@type string|nil -- the mode the last apply wrote
     local at_index = index_path(entry)
     local marks = { old = {}, new = {} }
     ---@param h differ.Hunk
@@ -63,13 +65,18 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
                 return false
             end
             local sha, mode = index_ops.index_entry(ctx.root, at_index, entry.path)
-            if sha and sha ~= held_sha then
+            if sha and sha ~= held_sha and not dropped then
                 local index = content_ops.blob(ctx.root, sha)
                 if index and index.text == held then
                     held_sha = sha
                 end
             end
-            if not sha or sha ~= held_sha then
+            local moved = not sha or sha ~= held_sha
+            if dropped then
+                moved = sha ~= nil or mode ~= nil
+                mode = held_mode
+            end
+            if moved then
                 notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
                 vim.schedule(reopen)
                 return false
@@ -84,6 +91,7 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
             if ok then
                 -- put_index stages a rename at the new path
                 held, held_sha, at_index = text, written, entry.path
+                dropped, held_mode = written == nil, mode
                 return true
             end
             mark(hunk, reverse)
