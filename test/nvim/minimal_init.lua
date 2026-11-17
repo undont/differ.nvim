@@ -1,6 +1,15 @@
 -- busted helper for the headless-nvim suite (wired via .busted `nvim.helper`)
 -- captures notifications into `_G.notifs` so they don't leak into the progress
 -- output; specs can inspect the table if they ever need to assert on a message
+
+-- every git this process starts, fixtures and differ's own, reads test/gitconfig in
+-- place of the machine's global and system config. set before the first spawn
+local here = vim.fs.dirname(vim.fs.abspath(debug.getinfo(1, "S").source:sub(2)))
+vim.env.GIT_CONFIG_GLOBAL = vim.fs.joinpath(vim.fs.dirname(here), "gitconfig")
+vim.env.GIT_CONFIG_NOSYSTEM = "1"
+vim.env.GIT_CONFIG_COUNT = nil
+vim.env.GIT_CONFIG_PARAMETERS = nil
+
 _G.notifs = {}
 ---@diagnostic disable-next-line: duplicate-set-field
 vim.notify = function(msg, level)
