@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- In the local view, `s` typed straight after `u` on an added file warned that the index changed outside differ; it now puts the add back
+
+## [0.2.35] — 2026-11-17
+
 ### Added
 
 - The merge tool opens every conflicted path, resolving each from a take key: binary, symlink, submodule and `-merge` files, files added by one side or deleted by both, and files missing from the working tree. `]f` / `[f` and the picker step through all of them
