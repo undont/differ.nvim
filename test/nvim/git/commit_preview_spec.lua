@@ -456,6 +456,47 @@ describe(":Differ diff hunk staging", function()
         end)
     end
 
+    -- `path` staged +x (as an add when `new`), then -x on disk: only the index has
+    -- 100755
+    local function mode_undone_on_disk(path, new)
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        if new then
+            write(root .. "/" .. path, "one\n")
+        end
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/" .. path, 493))
+        git(root, "add", path)
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/" .. path, 420))
+        vim.cmd.edit(root .. "/" .. path)
+        return root
+    end
+
+    for _, case in ipairs({
+        { name = "a mode change", path = "a.lua", new = false },
+        { name = "an add's mode", path = "c.lua", new = true },
+    }) do
+        it(
+            ("u in the commit preview asks first on %s disk has undone"):format(case.name),
+            function()
+                local root = mode_undone_on_disk(case.path, case.new)
+                local p = open_panel()
+                toggle_preview(p)
+                assert.is_true(p:goto_path(case.path, true))
+                local v = view_in_origin(p)
+                local prompt = confirming(2, function()
+                    v:unstage_hunk()
+                end)
+                local listed = git(root, "ls-files", "-s", "--", case.path)
+                p:close()
+                assert.are.equal(
+                    ("Unstage %s? The staged change will be lost."):format(case.path),
+                    prompt
+                )
+                assert.matches("^100755", listed)
+            end
+        )
+    end
+
     it("s in the commit preview puts back an add its own u took out", function()
         local root = preview_repo()
         local p = open_panel()

@@ -3,6 +3,8 @@
 
 local exec = require("differ.git.exec")
 local index_ops = require("differ.git.index")
+local rev = require("differ.git.rev")
+local raw_line = require("differ.git.content").raw_line
 local git = exec.git
 local index_path = index_ops.index_path
 local gitmod = require("differ.git.staging.write").gitmod
@@ -64,12 +66,41 @@ local function row_state(entry)
     return "unstaged"
 end
 
--- whether the index holds a blob for the row that neither HEAD nor the file on disk
--- has, so taking it out of the index loses it
+-- whether the index holds a mode change the HEAD<->worktree diff can't show: staged,
+-- then put back in the worktree
+---@param modes differ.git.Modes|nil
+---@return boolean
+local function mode_hidden(modes)
+    if not modes then
+        return false
+    end
+    return modes.index ~= modes.head and modes.index ~= modes.worktree
+end
+
+-- the row's modes as git holds them now, nil when either pair has no change left
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@return differ.git.Modes|nil
+local function live_modes(ctx, entry)
+    local head_index = raw_line(ctx.root, { "--cached" }, entry)
+    local index_work = raw_line(ctx.root, {}, entry)
+    if not (head_index and index_work) then
+        return nil
+    end
+    local head, index = rev.parse_raw_modes(head_index)
+    local _, worktree = rev.parse_raw_modes(index_work)
+    return { head = head, index = index, worktree = worktree }
+end
+
+-- whether the row's index entry holds a mode or blob that neither HEAD nor the file
+-- on disk has, so taking it out of the index loses it
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@return boolean
-local function unheld_blob(ctx, entry)
+local function unheld_entry(ctx, entry)
+    if mode_hidden(live_modes(ctx, entry)) then
+        return true
+    end
     local listed = git({ "ls-files", "-s", "--", index_path(entry) }, ctx.root) or ""
     local sha = listed:match("^%d+ (%x+)")
     if not sha then
@@ -93,7 +124,7 @@ local function unheld_blob(ctx, entry)
 end
 
 -- whether staging the whole row loses staged content nothing else holds: a staged
--- change deleted on disk stages as the deletion, dropping the index's blob
+-- change deleted on disk stages as the deletion, dropping the index's blob and mode
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@return boolean
@@ -101,7 +132,7 @@ local function stage_drops(ctx, entry)
     if entry.y ~= "D" or entry.x == " " or entry.x == "D" or entry.status == "U" then
         return false
     end
-    return unheld_blob(ctx, entry)
+    return unheld_entry(ctx, entry)
 end
 
 -- the prompt s and S ask first when staging the row whole drops content now
@@ -122,7 +153,9 @@ return {
     DROP_PROMPTS = DROP_PROMPTS,
     whole_file_revert = whole_file_revert,
     row_state = row_state,
-    unheld_blob = unheld_blob,
+    mode_hidden = mode_hidden,
+    live_modes = live_modes,
+    unheld_entry = unheld_entry,
     stage_drops = stage_drops,
     stage_prompt = stage_prompt,
 }

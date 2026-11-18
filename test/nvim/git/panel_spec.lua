@@ -1034,13 +1034,13 @@ describe(":Differ panel staging (slice C)", function()
         p:close()
     end)
 
-    it("s on an edit deleted on disk asks only when nothing else holds the edit", function()
+    it("s on an edit deleted on disk asks when only the index holds its blob or mode", function()
         local root = fresh_repo()
         write(root .. "/b.lua", "b\n")
         git(root, "add", "b.lua")
         git(root, "commit", "-q", "-m", "b")
         git(root, "update-index", "--chmod=+x", "b.lua")
-        os.remove(root .. "/b.lua") -- MD whose blob HEAD still has
+        os.remove(root .. "/b.lua") -- MD whose blob HEAD still has, but not its mode
         write(root .. "/a.lua", "local x = 2\nreturn x\n")
         git(root, "add", "a.lua")
         os.remove(root .. "/a.lua") -- MD with a new blob
@@ -1049,21 +1049,104 @@ describe(":Differ panel staging (slice C)", function()
         git_src.panel({})
         local p = Panel.current()
 
-        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "b.lua"), 0 })
-        assert.are.same(
-            {},
-            prompts_of(2, function()
+        for _, path in ipairs({ "b.lua", "a.lua" }) do
+            vim.api.nvim_win_set_cursor(p.winid, { file_line(p, path), 0 })
+            local shown = prompts_of(2, function()
                 p:stage_op("stage")
             end)
-        )
-        assert.are.equal("D  b.lua\n", (git(root, "status", "--porcelain=v1", "--", "b.lua")))
+            assert.are.same(
+                { ("Stage the deletion of %s? The staged file will be lost."):format(path) },
+                shown
+            )
+            assert.are.equal(
+                ("MD %s\n"):format(path),
+                (git(root, "status", "--porcelain=v1", "--", path))
+            )
+        end
+        p:close()
+    end)
+
+    -- a.lua staged +x, then -x on disk: only the index holds 100755
+    local function mode_undone_on_disk()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493)) -- 0755
+        git(root, "add", "a.lua")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 420)) -- 0644
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        return root, Panel.current()
+    end
+
+    it("u on a staged mode change disk has undone asks first", function()
+        local root, p = mode_undone_on_disk()
+        assert.are.equal("MM a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
 
         vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
         local shown = prompts_of(2, function()
-            p:stage_op("stage")
+            p:stage_op("unstage")
         end)
-        assert.are.same({ "Stage the deletion of a.lua? The staged file will be lost." }, shown)
-        assert.are.equal("MD a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        assert.are.same({ "Unstage a.lua? The staged change will be lost." }, shown)
+        assert.matches("^100755", git(root, "ls-files", "-s", "--", "a.lua")) -- declined: kept
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        prompts_of(1, function()
+            p:stage_op("unstage")
+        end)
+        assert.are.equal("", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        p:close()
+    end)
+
+    it("U names a staged mode change disk has undone", function()
+        local _, p = mode_undone_on_disk()
+        local shown = prompts_of(2, function()
+            p:stage_op("unstage_all")
+        end)
+        assert.are.same({ "Unstage these files? Staged changes in a.lua will be lost." }, shown)
+        p:close()
+    end)
+
+    it("u on a staged mode change still on disk unstages without asking", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "true")
+        assert((vim.uv or vim.loop).fs_chmod(root .. "/a.lua", 493)) -- 0755
+        git(root, "add", "a.lua")
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("unstage")
+            end)
+        )
+        assert.are.equal(" M a.lua\n", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
+        p:close()
+    end)
+
+    -- with core.fileMode off git reads disk as holding the index's mode, so a mode
+    -- staged with --chmod is still held
+    it("u on a mode staged under core.fileMode=false unstages without asking", function()
+        local root = fresh_repo()
+        git(root, "config", "core.fileMode", "false")
+        git(root, "update-index", "--chmod=+x", "a.lua")
+        write(root .. "/z.lua", "z\n")
+        vim.cmd.edit(root .. "/z.lua")
+        git_src.panel({})
+        local p = Panel.current()
+
+        vim.api.nvim_win_set_cursor(p.winid, { file_line(p, "a.lua"), 0 })
+        assert.are.same(
+            {},
+            prompts_of(2, function()
+                p:stage_op("unstage")
+            end)
+        )
+        assert.are.equal("", (git(root, "status", "--porcelain=v1", "--", "a.lua")))
         p:close()
     end)
 

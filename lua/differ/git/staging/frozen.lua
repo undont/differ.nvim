@@ -17,7 +17,7 @@ local gitmod, put_index = write.gitmod, write.put_index
 local index_unreadable, revert_worktree = write.index_unreadable, write.revert_worktree
 local file_lines = write.file_lines
 local whole_file = require("differ.git.staging.whole_file")
-local whole_file_revert, unheld_blob = whole_file.whole_file_revert, whole_file.unheld_blob
+local whole_file_revert, unheld_entry = whole_file.whole_file_revert, whole_file.unheld_entry
 local stage_prompt = whole_file.stage_prompt
 local hides_staged = require("differ.git.staging.diff_view").hides_staged
 
@@ -142,7 +142,7 @@ local function snapshot_staging(ctx, entry, reopen)
             if entry.x == "A" then
                 return hides_staged(ctx, entry)
             end
-            return unheld_blob(ctx, entry)
+            return unheld_entry(ctx, entry)
         end,
         apply = function(_, _, reverse)
             if ls_files() ~= listed then
