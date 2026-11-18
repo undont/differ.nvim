@@ -106,12 +106,42 @@ describe("sidecar client", function()
     end)
 
     it("queues requests issued before the handshake and flushes them in order", function()
-        -- a fresh client: stop first so the next request starts cold and queues.
+        local saved_config = require("differ").config
+        finally(function()
+            require("differ").config = saved_config
+        end)
+        -- the real binary answers concurrently, so order is only observable through a
+        -- fake that answers in read order, echoing each request and its read position
+        fake_sidecar({
+            "IFS= read -r line",
+            [[printf '{"id":1,"result":{"protocol":1,"binary":"fake"}}\n']],
+            "n=0",
+            "while IFS= read -r line; do",
+            "  n=$((n+1))",
+            [[  id=$(printf '%s\n' "$line" | sed 's/.*"id":\([0-9]*\).*/\1/')]],
+            [[  printf '{"id":%s,"result":{"seq":%s,"request":%s}}\n' "$id" "$n" "$line"]],
+            "done",
+        })
         sidecar.stop()
         vim.wait(100)
-        local err, res = call("cache_clear", nil)
-        assert.is_nil(err)
-        assert.are.same(vim.empty_dict(), res)
+
+        local fired = {}
+        for _, method in ipairs({ "first", "second", "third" }) do
+            sidecar.request(method, nil, function(err, res)
+                table.insert(fired, { method = method, err = err, res = res })
+            end)
+        end
+        assert.is_false(sidecar.is_ready())
+        assert.is_true(vim.wait(5000, function()
+            return #fired == 3
+        end))
+
+        for i, method in ipairs({ "first", "second", "third" }) do
+            assert.are.equal(method, fired[i].method)
+            assert.is_nil(fired[i].err)
+            assert.are.equal(i, fired[i].res.seq)
+            assert.are.equal(method, fired[i].res.request.method)
+        end
     end)
 
     it("leaves no process behind after stop", function()

@@ -43,7 +43,7 @@ local function get_pr_result(overrides)
         url = "https://example.test/acme/widget/pull/7",
         state = "open",
         draft = false,
-        mergeable = true,
+        mergeable = "MERGEABLE",
         files = {
             {
                 path = "a.txt",

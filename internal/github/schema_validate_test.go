@@ -40,6 +40,10 @@ var mutationConstants = []struct {
 	{"mergeLookupQuery", mergeLookupQuery},
 	{"mergePRMutation", mergePRMutation},
 	{"deleteRefMutation", deleteRefMutation},
+	{"readyForReviewMutation", readyForReviewMutation},
+	{"convertToDraftMutation", convertToDraftMutation},
+	{"closePRMutation", closePRMutation},
+	{"reopenPRMutation", reopenPRMutation},
 }
 
 // the one message class a valid document produces here, since no variables are sent. every
