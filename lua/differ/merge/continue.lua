@@ -214,7 +214,7 @@ local function entries(root, op, left)
     list[#list + 1] = {
         label = "abort",
         run = function()
-            if confirm(("Abort the %s? Resolutions so far are lost."):format(op)) then
+            if confirm(("Abort the %s?"):format(op)) then
                 run(root, op, "abort")
             end
         end,
