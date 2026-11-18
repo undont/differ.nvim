@@ -848,23 +848,8 @@ local function slabs_of(s, c)
     return { ours = known.ours, theirs = known.theirs, base = known.base or s.base_slabs[c.index] }
 end
 
----@param a string[]
----@param b string[]
----@return boolean
-local function same(a, b)
-    if #a ~= #b then
-        return false
-    end
-    for i, line in ipairs(a) do
-        if b[i] ~= line then
-            return false
-        end
-    end
-    return true
-end
-
--- whether a broken conflict's range holds only its own slabs between its surviving markers,
--- so a take replaces nothing the user typed
+-- whether every line between a broken conflict's surviving markers appears in one of its
+-- slabs, so a take replaces nothing the user typed
 ---@param s differ.MergeSession
 ---@param c differ.merge.Tracked
 ---@param lines string[]
@@ -874,21 +859,19 @@ local function only_own(s, c, lines)
     for _, lnum in ipairs(s.orphans) do
         marker[lnum] = true
     end
-    local content = {}
-    for lnum = c.result_start, c.result_end do
-        if not marker[lnum] then
-            content[#content + 1] = lines[lnum]
+    local slabs = slabs_of(s, c)
+    local known = {}
+    for _, slab in ipairs({ slabs.ours, slabs.base or {}, slabs.theirs }) do
+        for _, line in ipairs(slab) do
+            known[line] = true
         end
     end
-    local known = s.slabs[c.index]
-    if same(content, vim.list_extend(vim.list_extend({}, known.ours), known.theirs)) then
-        return true
+    for lnum = c.result_start, c.result_end do
+        if not marker[lnum] and not known[lines[lnum]] then
+            return false
+        end
     end
-    if not known.base then
-        return false
-    end
-    local diff3 = vim.list_extend(vim.list_extend({}, known.ours), known.base)
-    return same(content, vim.list_extend(diff3, known.theirs))
+    return true
 end
 
 local TAKE_WORDS = {
