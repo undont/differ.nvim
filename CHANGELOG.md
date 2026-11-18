@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `u` unstaged a staged mode change (`chmod +x`, staged, then undone on disk) without asking, and `s` staged a deletion over one the same way; both now ask first, as they do for staged content
+
+## [0.2.37] — 2026-11-18
+
 ### Changed
 
 - The abort confirm in `:Differ continue` no longer says resolutions so far are lost
