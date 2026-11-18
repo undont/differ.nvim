@@ -15,6 +15,8 @@ local edits, MOVES_OTHERS = write.edits, write.MOVES_OTHERS
 local put_index, index_unreadable = write.put_index, write.index_unreadable
 local revert_worktree = write.revert_worktree
 local selected = require("differ.git.staging.selection")
+local whole_file = require("differ.git.staging.whole_file")
+local mode_hidden, live_modes = whole_file.mode_hidden, whole_file.live_modes
 
 -- the mode of the side S (the worktree) or U (HEAD) takes, or nil when the index is
 -- already there. a `diff --raw` line reads `:<src mode> <dst mode> ...`
@@ -34,32 +36,6 @@ local function side_mode(ctx, entry, staged)
         return nil
     end
     return want
-end
-
--- whether the index holds a mode change the HEAD<->worktree diff can't show: staged,
--- then put back in the worktree
----@param modes differ.git.Modes|nil
----@return boolean
-local function mode_hidden(modes)
-    if not modes then
-        return false
-    end
-    return modes.index ~= modes.head and modes.index ~= modes.worktree
-end
-
--- the row's modes as git holds them now, nil when either pair has no change left
----@param ctx differ.git.StagingCtx
----@param entry differ.FileEntry
----@return differ.git.Modes|nil
-local function live_modes(ctx, entry)
-    local head_index = raw_line(ctx.root, { "--cached" }, entry)
-    local index_work = raw_line(ctx.root, {}, entry)
-    if not (head_index and index_work) then
-        return nil
-    end
-    local head, index = rev.parse_raw_modes(head_index)
-    local _, worktree = rev.parse_raw_modes(index_work)
-    return { head = head, index = index, worktree = worktree }
 end
 
 -- whether U drops staged content neither HEAD nor the worktree holds, read from git
