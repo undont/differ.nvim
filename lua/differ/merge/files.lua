@@ -68,7 +68,6 @@ function M.step(direction)
     if not s or not merge.settle() then
         return
     end
-    local unstaged = merge.unstaged()
     local conflicted = require("differ.git").conflicted(s.root)
     local relpath, model, wrapped, skipped = find_file(s, conflicted, direction)
     if skipped and not relpath then
@@ -84,10 +83,6 @@ function M.step(direction)
             return notify("no conflicted files left")
         end
         return notify("no other conflicted file")
-    end
-    if unstaged then
-        local state = s.operation and "unstaged" or "unresolved"
-        notify(("%s left %s: %s"):format(unstaged, state, merge._write_hint(s)))
     end
     if wrapped and direction == "next" then
         notify("wrapped to the first conflicted file")

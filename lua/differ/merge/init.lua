@@ -2,9 +2,9 @@
 -- top (plus base under the diff4 layout), the result spine full-width below — drive
 -- conflict navigation (]x/[x), and resolve per conflict (take ours/theirs/both/base/none),
 -- splicing the chosen slab into the result and stripping the markers. the result column is
--- the real worktree file: a write auto-stages it once no markers remain, and the session stays
--- on it. ]f/[f save the result, stage it when marker-free, and step to the next/prev conflicted
--- file; the session stays open until :Differ close.
+-- the real worktree file: a write only saves it. ]f/[f, continue, skip and gC save the result
+-- and stage it once marker-free; ]f/[f then step to the next/prev conflicted file. the session
+-- stays open until :Differ close.
 --
 -- each input column is a read-only scratch buffer of a whole stage file, so windows use
 -- native `number` + native syntax; conflict regions are extmark-only in the differ.merge
@@ -98,6 +98,7 @@ local INPUT_HL = {
 ---@field left integer                  -- conflicted files left, this one included (for the winbar)
 ---@field resolved boolean              -- this file's conflict was cleared this session
 ---@field written boolean               -- the session wrote this file's result
+---@field pending boolean|nil           -- written since the last stage
 ---@field removed boolean|nil           -- a modify/delete file deleted this session
 ---@field head string|nil               -- HEAD at session start; a move means the operation went on
 ---@field operation string|nil          -- the in-progress operation at session start
@@ -1007,15 +1008,20 @@ local function resolved_as(s)
     return s.operation and "staged" or "resolved"
 end
 
--- what a write does to a marker-free result, as a hint
+-- what settles a marker-free result, as a hint
 ---@param s differ.MergeSession
 ---@return string
-local function write_hint(s)
-    return s.operation and ":w to stage" or ":w to mark resolved"
+local function settle_hint(s)
+    local verb = s.operation and "stage" or "mark resolved"
+    local key = require("differ.ui.help").fmt(s.keymaps.next_file)
+    if not key then
+        return ":Differ continue to " .. verb
+    end
+    return ("%s to %s"):format(key, verb)
 end
 
--- why this file isn't done: mid-operation it isn't staged; with none, a write resolves it, so
--- it is unsaved, or written but not resolved (a formatter, a declined marker, a failed add)
+-- why this file isn't done: mid-operation it isn't staged; with none, a settle resolves it, so
+-- it is unsaved, or saved but not resolved (a formatter, a declined marker, a failed add)
 ---@param s differ.MergeSession
 ---@return string
 local function unresolved(s)
@@ -1062,7 +1068,7 @@ local function result_winbar(s)
     end
     if remaining == 0 then
         local state = M.unstaged() and "resolved before opening" or "all resolved"
-        local hint = tint(write_hint(s), "differMergeUnstaged")
+        local hint = tint(settle_hint(s), "differMergeUnstaged")
         return ("%s · %s · %s%s"):format(file, state, hint, left)
     end
     local pos = active_pos()
@@ -1233,6 +1239,7 @@ local function show_help()
         return
     end
     local km = session.keymaps
+    local settled = session.operation and "stages" or "marks resolved"
     local help = require("differ.ui.help")
     local fmt, row = help.fmt, help.row
     local rows = { row(km.next_conflict, km.prev_conflict, "%s conflict", "next", "previous") }
@@ -1269,11 +1276,16 @@ local function show_help()
             { fmt(km.choose_base), "take base" },
             { fmt(km.choose_all), "take both (ours then theirs)" },
             { fmt(km.choose_none), "drop the conflict" },
-            { ":w", session.operation and "save and stage" or "save and resolve" },
         })
     end
     vim.list_extend(rows, {
-        row(km.next_file, km.prev_file, "%s file", "next", "previous"),
+        row(
+            km.next_file,
+            km.prev_file,
+            "%s file (" .. settled .. " when no conflicts remain)",
+            "next",
+            "previous"
+        ),
         { fmt(km.commit), "continue once resolved, else skip or abort" },
         { ":Differ close", "close the merge tool" },
         { fmt(km.help), "this help" },
@@ -1316,18 +1328,19 @@ local function side_labels(model)
     return labels
 end
 
--- git add the marker-free result. only the file's first stage reports progress, since an
--- auto-save re-stages it on every later edit; with no operation the first one unstages
--- it again and later edits stay in the worktree
+-- git add the marker-free result. only the file's first stage reports progress; with no
+-- operation the first one unstages it again and later edits stay in the worktree
 local function stage_result()
     local s = assert(session)
     if s.resolved and not s.operation then
+        s.pending = false
         return
     end
-    -- a failed add has already notified; the file stays conflicted so a later write retries
+    -- a failed add has already notified; the file stays conflicted so a later settle retries
     if not require("differ.git").stage(s.root, s.path) then
         return
     end
+    s.pending = false
     if not s.resolved then
         merge_files.mark_resolved(s)
     end
@@ -1376,31 +1389,14 @@ local function confirm_content(s)
     return true
 end
 
--- BufWritePost on the result: stage once no markers remain. repaint so a hand-edit's
--- regions stay current
-local function on_write()
-    local s = session
-    if not s then
-        return
-    end
-    s.written = true
-    repaint_result()
-    local lines = vim.api.nvim_buf_get_lines(session.result_buf, 0, -1, false)
-    -- a format-on-save that didn't honour disable_autoformat reflows the markers; the
-    -- parser loses the region, so guard the stage on the raw buffer, not the count
-    if conflict.reformatted(lines) then
-        if not session.autoformat_warned then
-            session.autoformat_warned = true
-            notify(
-                ("a formatter changed the conflict markers on save; not %s. "):format(
-                    resolved_as(s)
-                ) .. "your format_on_save ignores vim.b.disable_autoformat",
-                vim.log.levels.WARN
-            )
-        end
-        return
-    end
+-- stage the saved result once no markers remain, asking first about marker-shaped lines
+---@param s differ.MergeSession
+local function resolve_written(s)
     if #s.regions > 0 then
+        return
+    end
+    -- a reformatted marker loses its region, so guard on the raw buffer, not the count
+    if conflict.reformatted(vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)) then
         return
     end
     local orphan = s.orphans[1]
@@ -1413,9 +1409,32 @@ local function on_write()
     stage_result()
 end
 
+-- BufWritePost on the result: repaint so a hand-edit's regions stay current. a write never
+-- stages; settling does
+local function on_write()
+    local s = session
+    if not s then
+        return
+    end
+    s.written = true
+    s.pending = true
+    repaint_result()
+    if s.autoformat_warned then
+        return
+    end
+    -- a format-on-save that didn't honour disable_autoformat reflows the markers
+    if conflict.reformatted(vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)) then
+        s.autoformat_warned = true
+        notify(
+            ("a formatter changed the conflict markers on save; not %s. "):format(resolved_as(s))
+                .. "your format_on_save ignores vim.b.disable_autoformat",
+            vim.log.levels.WARN
+        )
+    end
+end
+
 -- the open result's path when it has no markers and neither the session nor the user has
--- written or changed it (rerere, checkout --ours, a hand edit before opening): settling
--- leaves it unstaged
+-- written or changed it (rerere, checkout --ours, a hand edit before opening)
 ---@return string|nil
 function M.unstaged()
     local s = session
@@ -1428,13 +1447,40 @@ function M.unstaged()
     return s.path
 end
 
--- save the result and stage it once marker-free, as a write does. false holds the session
--- on this file: the save failed, or a result the session wrote stays unstaged
+-- stage the open result, for a take that writes it
+function M.resolve_written()
+    if session then
+        resolve_written(session)
+    end
+end
+
+-- the open result's path when it is saved marker-free but not staged, as a close leaves it
+---@return string|nil
+function M.unsettled()
+    local s = session
+    if not s or s.deleted or s.whole or #s.regions > 0 or s.orphans[1] then
+        return nil
+    end
+    if vim.bo[s.result_buf].modified then
+        return nil
+    end
+    if conflict.reformatted(vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)) then
+        return nil
+    end
+    if s.pending and (s.operation or not s.resolved) then
+        return s.path
+    end
+    return M.unstaged()
+end
+
+-- save the result and stage it once marker-free. false holds the session on this file:
+-- the save failed, or the result stays unstaged
 ---@return boolean
 local function settle_result()
     local s = assert(session)
     -- on_write warns about a reformatting formatter once; a later refusal has to say why
     local warned = s.autoformat_warned
+    local unwritten = M.unstaged()
     -- an untouched modify/delete or whole file waits for a take; stepping past isn't one
     if (s.deleted or s.whole) and not s.resolved and not vim.bo[s.result_buf].modified then
         return true
@@ -1447,10 +1493,14 @@ local function settle_result()
             notify(tostring(err), vim.log.levels.ERROR)
             return false
         end
-    elseif #s.regions == 0 and not s.resolved and s.written then
-        on_write() -- written but never staged, e.g. after a failed add
     end
-    if #s.regions > 0 or s.resolved or not s.written then
+    if s.pending or unwritten then
+        resolve_written(s)
+    end
+    if #s.regions > 0 or s.resolved then
+        return true
+    end
+    if not s.written and not unwritten then
         return true
     end
     local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
@@ -1541,7 +1591,7 @@ local function lay_out(root, relpath, model, layout, files)
             result_col = col
         elseif i == result.result_index then
             -- the result is the REAL worktree file: editable, native syntax/undo/LSP, and
-            -- :w writes it for real (BufWritePost stages it once it's marker-free)
+            -- :w writes it for real; settling stages it once it's marker-free
             vim.api.nvim_win_call(result_win, function()
                 vim.cmd.edit(vim.fn.fnameescape(abs))
             end)
@@ -1833,7 +1883,7 @@ local function lay_out(root, relpath, model, layout, files)
         notify(
             ("%s has no conflicts left (rerere or a change outside differ): check it, then %s"):format(
                 relpath,
-                write_hint(session)
+                settle_hint(session)
             )
         )
     end
@@ -1955,6 +2005,5 @@ end
 M._live_session, M._lay_out, M._bind_pane = live_session, lay_out, bind_pane
 M._make_buffer, M._release_result = make_buffer, release_result
 M._dress, M._show_notice = dress, show_notice
-M._write_hint = write_hint
 
 return M
