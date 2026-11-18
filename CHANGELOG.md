@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- The abort confirm in `:Differ continue` no longer says resolutions so far are lost
+
+### Fixed
+
+- In the commit preview, `u` on an added file asked before unstaging even when the file on disk still had every staged line; it now asks only when unstaging would lose staged lines
+- In the merge tool, taking a side in a conflict with edited markers asked to replace your edits even when every line came from a side; it now asks only when the conflict holds a line from no side
+
 ## [0.2.36] — 2026-11-17
 
 ### Fixed
