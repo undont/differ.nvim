@@ -1578,6 +1578,39 @@ describe(":Differ mergetool resolution", function()
         assert.are.same({ "a", "OURS", "c" }, result(s))
     end)
 
+    -- each edit leaves the broken conflict holding only lines from its sides
+    for name, edit in pairs({
+        ["reordered sides"] = function(buf)
+            vim.api.nvim_buf_set_lines(buf, 2, 4, false, { "THEIRS", "OURS" })
+        end,
+        ["a side dropped"] = function(buf)
+            vim.api.nvim_buf_set_lines(buf, 3, 4, false, {})
+        end,
+        ["a side line repeated"] = function(buf)
+            vim.api.nvim_buf_set_lines(buf, 3, 3, false, { "OURS" })
+        end,
+        ["a base line"] = function(buf)
+            vim.api.nvim_buf_set_lines(buf, 3, 4, false, { "b" })
+        end,
+    }) do
+        it("takes a side of a broken conflict holding " .. name .. " without asking", function()
+            local root = conflict_repo()
+            vim.cmd.edit(root .. "/f.txt")
+            merge.open({})
+            local s = merge.current()
+            drop_marker(s, "=======")
+            -- a, <<<<<<< HEAD, OURS, THEIRS, >>>>>>> feature, c
+            edit(s.result_buf)
+            changed(s)
+            vim.api.nvim_win_set_cursor(s.result_win, { 2, 0 })
+            local prompt = confirming(2, function()
+                fire(s.result_buf, "differ: take theirs")
+            end)
+            assert.is_nil(prompt)
+            assert.are.same({ "a", "THEIRS", "c" }, result(s))
+        end)
+    end
+
     it("resolves a conflict whose whole region is deleted, and undo restores it", function()
         local root = conflict_repo_multi()
         vim.cmd.edit(root .. "/f.txt")

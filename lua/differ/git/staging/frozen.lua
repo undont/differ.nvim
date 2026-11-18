@@ -19,6 +19,7 @@ local file_lines = write.file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, unheld_blob = whole_file.whole_file_revert, whole_file.unheld_blob
 local stage_prompt = whole_file.stage_prompt
+local hides_staged = require("differ.git.staging.diff_view").hides_staged
 
 -- the `update-index --chmod` flag that gives a file a mode
 ---@type table<string, string>
@@ -137,6 +138,10 @@ local function snapshot_staging(ctx, entry, reopen)
         whole_file = true,
         refresh = ctx.refresh,
         unheld = function()
+            -- an add's index lines still on disk aren't lost, wherever disk adds to them
+            if entry.x == "A" then
+                return hides_staged(ctx, entry)
+            end
             return unheld_blob(ctx, entry)
         end,
         apply = function(_, _, reverse)
