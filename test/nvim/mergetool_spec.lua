@@ -4625,3 +4625,151 @@ describe(":Differ mergetool with no operation", function()
         assert.are.equal("STASH", vim.fn.readfile(root .. "/a.txt")[1])
     end)
 end)
+
+describe(":Differ mergetool under an auto-save", function()
+    after_each(function()
+        if merge.current() then
+            merge.close()
+        end
+        pcall(vim.api.nvim_del_augroup_by_name, "differ.test.autosave")
+    end)
+
+    -- an auto-save in the ticket's shape. `nested`, or its write fires no BufWritePost
+    local function autosave(buf)
+        local aug = vim.api.nvim_create_augroup("differ.test.autosave", { clear = true })
+        vim.api.nvim_create_autocmd({ "TextChanged", "InsertLeave" }, {
+            group = aug,
+            buffer = buf,
+            nested = true,
+            callback = function(ev)
+                vim.api.nvim_buf_call(ev.buf, function()
+                    vim.cmd("silent! write")
+                end)
+            end,
+        })
+    end
+
+    -- delete the result's first line matching `pattern`, or replace it with `text`, then fire
+    -- the TextChanged the edit would
+    local function edit(s, pattern, text)
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        local i = assert(vim.iter(ipairs(lines)):find(function(_, l)
+            return l:match(pattern) ~= nil
+        end))
+        vim.api.nvim_buf_set_lines(s.result_buf, i - 1, i, false, text and { text } or {})
+        vim.api.nvim_exec_autocmds("TextChanged", { buffer = s.result_buf })
+    end
+
+    -- vim.fn.confirm answering `answers.choice`, counting the prompts in `answers.asked`
+    local function answering(choice)
+        local answers = { choice = choice, asked = 0 }
+        local orig = vim.fn.confirm
+        vim.fn.confirm = function()
+            answers.asked = answers.asked + 1
+            return answers.choice
+        end
+        answers.restore = function()
+            vim.fn.confirm = orig
+        end
+        return answers
+    end
+
+    local function conflicted(root, path)
+        return vim.tbl_contains(require("differ.git").conflicted(root), path)
+    end
+
+    local function xy(root, path)
+        return git_ok(root, "status", "--porcelain", "--", path):sub(1, 2)
+    end
+
+    local function open_at(root, relpath)
+        vim.cmd.edit(root .. "/" .. relpath)
+        merge.open({ path = root .. "/" .. relpath })
+        return assert(merge.current(), vim.inspect(_G.notifs))
+    end
+
+    -- the hand resolution: drop ours and every marker, then keep editing theirs
+    local function resolve_by_hand(s)
+        edit(s, "^<<<<<<<")
+        edit(s, "^OURS$")
+        edit(s, "^=======")
+        edit(s, "^>>>>>>>")
+        edit(s, "^THEIRS$", "THEIRS, edited")
+    end
+
+    it("stages a hand resolution mid-merge on ]f, not on an auto-save", function()
+        local root = operation_repo("merge")
+        local s = open_at(root, "f.txt")
+        autosave(s.result_buf)
+        _G.notifs = {}
+        resolve_by_hand(s)
+        assert.is_true(conflicted(root, "f.txt"))
+        assert.is_false(s.resolved)
+        assert.are.same({}, _G.notifs)
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.are.equal("M ", xy(root, "f.txt"))
+        assert.are.equal("a\nTHEIRS, edited\nc\n", git_ok(root, "show", ":f.txt"))
+    end)
+
+    it("resolves a hand resolution with no operation on ]f, not on an auto-save", function()
+        local root = operation_repo("stash")
+        local s = open_at(root, "f.txt")
+        assert.is_nil(s.operation)
+        autosave(s.result_buf)
+        _G.notifs = {}
+        edit(s, "^<<<<<<<")
+        edit(s, "^THEIRS$")
+        edit(s, "^=======")
+        edit(s, "^>>>>>>>")
+        edit(s, "^STASHED$", "STASHED, edited")
+        assert.is_true(conflicted(root, "f.txt"))
+        assert.is_false(s.resolved)
+        assert.are.same({}, _G.notifs)
+        fire(s.result_buf, "differ: next conflicted file")
+        assert.is_false(conflicted(root, "f.txt"))
+        assert.are.equal(" M", xy(root, "f.txt"))
+        assert.are.equal("STASHED, edited", vim.fn.readfile(root .. "/f.txt")[2])
+    end)
+
+    it("asks about a marker-shaped line once on ]f, not on each auto-save", function()
+        local root = operation_repo("merge")
+        local s = open_at(root, "f.txt")
+        autosave(s.result_buf)
+        local answers = answering(2)
+        local ok, err = pcall(function()
+            edit(s, "^<<<<<<<")
+            edit(s, "^OURS$")
+            edit(s, "^>>>>>>>") -- only ======= left
+            edit(s, "^THEIRS$", "THEIRS, edited")
+            edit(s, "^c$", "c, edited")
+            assert.are.equal(0, answers.asked)
+            answers.choice = 1
+            fire(s.result_buf, "differ: next conflicted file")
+        end)
+        answers.restore()
+        assert(ok, err)
+        assert.are.equal(1, answers.asked)
+        assert.are.equal("M ", xy(root, "f.txt"))
+    end)
+
+    it("holds a conflict whose <<<<<<< went first by its other markers, unasked", function()
+        local root = operation_repo("merge")
+        local s = open_at(root, "f.txt")
+        local answers = answering(1)
+        local ok, err = pcall(function()
+            edit(s, "^<<<<<<<")
+            vim.api.nvim_set_current_win(s.result_win)
+            vim.cmd("silent write")
+        end)
+        answers.restore()
+        assert(ok, err)
+        local lines = vim.api.nvim_buf_get_lines(s.result_buf, 0, -1, false)
+        assert.are.equal(2, #s.orphans)
+        assert.are.same(
+            { "=======", ">>>>>>> feature" },
+            { lines[s.orphans[1]], lines[s.orphans[2]] }
+        )
+        assert.are.equal(0, answers.asked)
+        assert.is_true(conflicted(root, "f.txt"))
+    end)
+end)
