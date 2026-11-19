@@ -8,6 +8,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- In the merge tool, an auto-save staged a hand-resolved file mid-edit and could ask about marker-like lines on every keystroke; a write now only saves, and `]f`/`[f`, continue and `gC` stage the file once no conflicts remain
+
+## [0.2.38] — 2026-11-18
+
+### Fixed
+
 - `u` unstaged a staged mode change (`chmod +x`, staged, then undone on disk) without asking, and `s` staged a deletion over one the same way; both now ask first, as they do for staged content
 
 ## [0.2.37] — 2026-11-18
