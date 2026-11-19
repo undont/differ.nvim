@@ -38,9 +38,9 @@ function M.absent(deleted, no_ancestor, side)
     return "deleted in " .. side
 end
 
--- keep the file: write it as it stands, which resolves it like any write. a whole-file one
--- is taken from the index instead: a write from nvim can change a binary's bytes, and
--- would write through a symlink to its target
+-- keep the file: write it as it stands and resolve it. a whole-file one is taken from the
+-- index instead: a write from nvim can change a binary's bytes, and would write through a
+-- symlink to its target
 ---@param s differ.MergeSession
 local function keep_file(s)
     if s.whole then
@@ -54,8 +54,9 @@ local function keep_file(s)
         vim.cmd("silent write")
     end)
     if not ok then
-        notify(tostring(err), vim.log.levels.ERROR)
+        return notify(tostring(err), vim.log.levels.ERROR)
     end
+    require("differ.merge").resolve_written()
 end
 
 -- after a delete the file is gone, so the result window shows an empty read-only buffer

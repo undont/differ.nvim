@@ -461,7 +461,8 @@ SESSION AND SIDECAR COMMANDS       *differ-usage-session-and-sidecar-commands*
 
   :Differ mergetool [path]            Open the merge tool on a conflicted
                                       file; ]f/[f step between conflicted
-                                      files
+                                      files, staging each once no
+                                      conflicts remain
 
   :Differ continue                    Continue, skip or abort the merge,
                                       rebase, cherry-pick, revert or am

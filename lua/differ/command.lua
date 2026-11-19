@@ -200,8 +200,21 @@ end
 -- git.close to catch, or the review proper) likewise; otherwise close the local git diff
 function M.close()
     local mg = require("differ.merge")
-    if mg.current() then
-        return mg.close()
+    local s = mg.current()
+    if s then
+        local path = mg.unsettled()
+        mg.close()
+        if path then
+            local state, verb = "unstaged", "stage"
+            if not s.operation then
+                state, verb = "unresolved", "mark resolved"
+            end
+            notify(
+                ("%s left %s: reopen it in the merge tool to %s"):format(path, state, verb),
+                vim.log.levels.WARN
+            )
+        end
+        return
     end
     local P = pr()
     if P.current_session() then
