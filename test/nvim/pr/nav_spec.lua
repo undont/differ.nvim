@@ -674,6 +674,47 @@ describe("pr edit verbs (df/de)", function()
         restore()
     end)
 
+    -- a checkout at the head with two lines inserted above, cursor on head line 2
+    local function shifted_checkout()
+        local restore = open_overview(default_responses())
+        local s = enter_review()
+        local tmp = make_worktree_file("a.txt", "x\ny\na\nB\nc\n")
+        s.root, s.view.model.root = tmp.root, tmp.root
+        local col = s.view:column_for("new")
+        for row, l in ipairs(col.map.lines) do
+            if l.new == THREAD_LINE and l.kind ~= "del" then
+                vim.api.nvim_set_current_win(col.winid)
+                vim.api.nvim_win_set_cursor(col.winid, { row, 0 })
+                break
+            end
+        end
+        return s, tmp, restore
+    end
+
+    it("de lands on the head line where the checkout has it", function()
+        local s, tmp, restore = shifted_checkout()
+        review_tab = vim.api.nvim_get_current_tabpage()
+        assert.is_true(fire(s.view:column_for("new").bufnr, EDIT_ZOOM))
+        local lnum, text = vim.api.nvim_win_get_cursor(0)[1], vim.api.nvim_get_current_line()
+        tmp.cleanup()
+        restore()
+        assert.are.equal(4, lnum)
+        assert.are.equal("B", text)
+    end)
+
+    it("df lands on the head line where the checkout has it", function()
+        local s, tmp, restore = shifted_checkout()
+        assert.is_true(fire(s.view:column_for("new").bufnr, EDIT_SPLIT))
+        local win = s.view.edit_win
+        local lnum = vim.api.nvim_win_get_cursor(win)[1]
+        local text =
+            vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), lnum - 1, lnum, false)[1]
+        tmp.cleanup()
+        restore()
+        assert.are.equal(4, lnum)
+        assert.are.equal("B", text)
+    end)
+
     it("df on the overview (no open diff) notifies and no-ops", function()
         local restore = open_overview(default_responses())
         local s = pr.current_session()
