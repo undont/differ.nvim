@@ -12,6 +12,7 @@ local nav = require("differ.nav")
 local keymap = require("differ.util.keymap")
 local bind, unbind = keymap.bind, keymap.unbind
 local find_buf = require("differ.util.buf").find
+local to_lines = require("differ.util.text").to_lines
 
 local ns = vim.api.nvim_create_namespace("differ")
 local staged_ns = vim.api.nvim_create_namespace("differ.staging")
@@ -44,6 +45,25 @@ local function place_cursor(line, col)
     local text = vim.api.nvim_buf_get_lines(0, line - 1, line, false)[1] or ""
     pcall(vim.api.nvim_win_set_cursor, 0, { line, math.min(col, #text) })
     vim.cmd("normal! zz")
+end
+
+-- `lines` as text, ending the way `like` does: only a changed line moves a position
+---@param lines string[]
+---@param like string
+---@return string
+local function joined(lines, like)
+    if #lines == 0 then
+        return ""
+    end
+    return table.concat(lines, "\n") .. (like:sub(-1) == "\n" and "\n" or "")
+end
+
+-- `line` of text `a` carried to where it sits in text `b`, `b_count` lines long
+---@return integer line, boolean unchanged
+local function carry(a, b, b_count, line)
+    local hunks = vim.text.diff(a, b, { result_type = "indices", algorithm = "histogram" })
+    ---@cast hunks integer[][]
+    return nav.carry_line(hunks, line, b_count)
 end
 
 -- monotonic per-view id, for a stable per-view augroup name (the close guard)
@@ -1289,7 +1309,15 @@ function View:cursor_new_line()
     -- stale there. this makes a post-`:w` re-source focus the line just edited
     if self.edit_win and vim.api.nvim_win_is_valid(self.edit_win) then
         local lnum, ccol = unpack(vim.api.nvim_win_get_cursor(self.edit_win))
-        return lnum, ccol
+        if not self:_new_side_off_disk() then
+            return lnum, ccol
+        end
+        local lines =
+            vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(self.edit_win), 0, -1, false)
+        local new_text = self.model.new_text --[[@as string]]
+        local new_count = #to_lines(new_text)
+        local line, unchanged = carry(joined(lines, new_text), new_text, new_count, lnum)
+        return line, unchanged and ccol or 0
     end
     local col = self.columns[#self.columns]
     if not (col and col.winid and vim.api.nvim_win_is_valid(col.winid)) then
@@ -2123,7 +2151,7 @@ function View:jump_to_file()
     local col = self:_focused_column()
     local win = (col.winid and vim.api.nvim_win_is_valid(col.winid)) and col.winid
         or vim.api.nvim_get_current_win()
-    local target, tcol = self:_file_pos(col, win)
+    local target, tcol = self:_disk_pos(col, win, abs)
 
     -- end the session: closing the panel/history tabcloses the differ tab (via its
     -- on_close). then hop back to the invoking tab and open the real file there, so
@@ -2167,6 +2195,36 @@ function View:_file_pos(col, win)
     return target, tcol
 end
 
+-- whether the new side is some other text than the worktree file: the index in the
+-- commit preview, a commit, a pr head
+---@return boolean
+function View:_new_side_off_disk()
+    return self.model.new_rev ~= "WORKTREE" and self.model.new_text ~= nil
+end
+
+-- _file_pos carried into the worktree file `abs`: its loaded buffer, unsaved edits
+-- included, else the file on disk. the column holds only on a line that carries unchanged
+---@param col differ.ViewColumn
+---@param win integer
+---@param abs string
+---@return integer|nil line, integer col
+function View:_disk_pos(col, win, abs)
+    local target, tcol = self:_file_pos(col, win)
+    if not (target and self:_new_side_off_disk()) then
+        return target, tcol
+    end
+    local bufnr = find_buf(abs)
+    local lines ---@type string[]
+    if bufnr and vim.api.nvim_buf_is_loaded(bufnr) then
+        lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+    else
+        lines = vim.fn.readfile(abs)
+    end
+    local new_text = self.model.new_text --[[@as string]]
+    local line, unchanged = carry(new_text, joined(lines, new_text), #lines, target)
+    return line, unchanged and tcol or 0
+end
+
 -- whether edit-in-review applies: the diff is the working tree (or index) against its
 -- immediate committed/staged base, so every shown hunk is an uncommitted change and the
 -- file on disk is the editable target. the daily staging sources qualify (HEAD<->worktree,
@@ -2192,12 +2250,13 @@ function View:edit_file()
             vim.log.levels.WARN
         )
     end
-    if self.staging and self.staging.leave then
-        self.staging.leave()
-    end
+    -- read before leave: leaving re-sources the view and moves its cursor
     local t = self:_edit_target()
     if not t then
         return
+    end
+    if self.staging and self.staging.leave then
+        self.staging.leave()
     end
     self:_open_edit_window(t.abs, t.target, t.tcol, t.anchor_win)
 end
@@ -2299,7 +2358,7 @@ function View:_edit_target()
     local col = self:_focused_column()
     local win = (col.winid and vim.api.nvim_win_is_valid(col.winid)) and col.winid
         or vim.api.nvim_get_current_win()
-    local target, tcol = self:_file_pos(col, win)
+    local target, tcol = self:_disk_pos(col, win, abs)
     return { abs = abs, target = target, tcol = tcol, anchor_win = col.winid }
 end
 

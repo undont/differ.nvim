@@ -136,4 +136,31 @@ function M.file_line(map, lnum)
     return nil
 end
 
+-- line `line` of text A carried into text B through `vim.text.diff(a, b,
+-- { result_type = "indices" })` hunks. a line inside a changed or deleted block
+-- lands on the block's first B line, clamped to `b_lines`; `unchanged` is true
+-- only when the line itself survived, so the caller can keep its column
+---@param hunks integer[][]  -- { a_start, a_count, b_start, b_count }
+---@param line integer
+---@param b_lines integer
+---@return integer line
+---@return boolean unchanged
+function M.carry_line(hunks, line, b_lines)
+    local delta = 0
+    for _, h in ipairs(hunks) do
+        local a_start, a_count, b_start, b_count = h[1], h[2], h[3], h[4]
+        -- a pure insertion sits after `a_start`; a pure deletion's `b_start` is the B line before the gap
+        local a_end = a_count > 0 and (a_start + a_count - 1) or a_start
+        if line <= a_end then
+            if a_count == 0 or line < a_start then
+                break
+            end
+            local block_start = b_count > 0 and b_start or (b_start + 1)
+            return math.max(1, math.min(block_start, b_lines)), false
+        end
+        delta = delta + b_count - a_count
+    end
+    return line + delta, true
+end
+
 return M

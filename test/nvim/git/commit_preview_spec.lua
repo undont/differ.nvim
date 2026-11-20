@@ -844,6 +844,85 @@ describe(":Differ diff hunk staging", function()
         assert.is_truthy(win)
     end)
 
+    -- line 6 staged as 6x, then the worktree set to `work`; the diff opened on it in
+    -- the commit preview (or not), its cursor on new-side line `line` at column 1.
+    -- `unsaved` lines go in at the top of the file's buffer without a write
+    local function staged_six(work, preview, line, unsaved)
+        local root = fresh_repo()
+        write(root .. "/a.lua", twelve({}))
+        git(root, "commit", "-q", "-am", "twelve lines")
+        write(root .. "/a.lua", twelve({ [6] = "6x" }))
+        git(root, "add", "a.lua")
+        write(root .. "/a.lua", work)
+        vim.cmd.edit(root .. "/a.lua")
+        if unsaved then
+            vim.api.nvim_buf_set_lines(0, 0, 0, false, unsaved)
+        end
+        local p, v = open_panel()
+        if preview then
+            v:toggle_commit_preview()
+            v = view_in_origin(p)
+        end
+        local col = v.columns[#v.columns]
+        for row, l in ipairs(col.map.lines) do
+            if l.new == line and l.kind ~= "del" then
+                vim.api.nvim_set_current_win(col.winid)
+                vim.api.nvim_win_set_cursor(col.winid, { row, 1 })
+                break
+            end
+        end
+        return p, v
+    end
+    local above = "u1\nu2\nu3\n" .. twelve({ [6] = "6x" })
+
+    it("de from the commit preview lands on the staged line where the file has it", function()
+        staged_six(above, true, 6)
+        view_in_origin(require("differ.panel").current()):jump_to_file()
+        local pos, text = vim.api.nvim_win_get_cursor(0), vim.api.nvim_get_current_line()
+        assert.are.same({ 9, 1 }, pos)
+        assert.are.equal("6x", text)
+    end)
+
+    it("df from the commit preview lands on the staged line where the file has it", function()
+        local p, v = staged_six(above, true, 6)
+        v:edit_file()
+        local pos = vim.api.nvim_win_get_cursor(v.edit_win)
+        p:close()
+        assert.are.same({ 9, 1 }, pos)
+    end)
+
+    it("de from the commit preview carries through unsaved edits", function()
+        staged_six(above, true, 6, { "unsaved" })
+        view_in_origin(require("differ.panel").current()):jump_to_file()
+        local lnum, text = vim.api.nvim_win_get_cursor(0)[1], vim.api.nvim_get_current_line()
+        vim.cmd("bwipeout!")
+        assert.are.equal(10, lnum)
+        assert.are.equal("6x", text)
+    end)
+
+    it("de from the commit preview lands at the start of an unstaged edit to its line", function()
+        staged_six("u1\n" .. twelve({ [6] = "6y\n6z" }), true, 6)
+        view_in_origin(require("differ.panel").current()):jump_to_file()
+        assert.are.same({ 7, 0 }, vim.api.nvim_win_get_cursor(0))
+    end)
+
+    it("de from the whole change lands on the line as the diff shows it", function()
+        staged_six(above, false, 9)
+        view_in_origin(require("differ.panel").current()):jump_to_file()
+        assert.are.same({ 9, 1 }, vim.api.nvim_win_get_cursor(0))
+    end)
+
+    it("holds a df edit window's line as the commit preview's own", function()
+        local p, v = staged_six(above, false, 9)
+        v:edit_file()
+        v:toggle_commit_preview()
+        v = view_in_origin(p)
+        local line = v:cursor_new_line()
+        p:close()
+        assert.are.equal("INDEX", v.model.new_rev)
+        assert.are.equal(6, line)
+    end)
+
     -- confirm X's prompt, then wait out the re-read the preview schedules
     local function revert_confirmed(v)
         local opened = v.staging

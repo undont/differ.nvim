@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- `de` from a history or commit diff opens the file at that line's place on disk now, not at its line number in the commit
+
+### Fixed
+
+- In the commit preview and the pr review, `de` and `df` opened the file off by however many lines unstaged or local edits added or removed above the cursor, and `df` from the commit preview opened at line 1; both now land on the cursor's line in the file on disk
+
+## [0.2.39] — 2026-11-19
+
 ### Fixed
 
 - In the merge tool, an auto-save staged a hand-resolved file mid-edit and could ask about marker-like lines on every keystroke; a write now only saves, and `]f`/`[f`, continue and `gC` stage the file once no conflicts remain

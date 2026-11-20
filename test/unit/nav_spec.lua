@@ -291,3 +291,75 @@ describe("nav.merge", function()
         assert.are.equal(old_map, nav.merge({ old_map }))
     end)
 end)
+
+describe("nav.carry_line", function()
+    -- hunk indices are vim.text.diff(a, b, { result_type = "indices" }) output for
+    -- the a/b texts beside each case
+
+    -- returns carry_line's two results as one table for a single assertion
+    local function carry(hunks, line, b_lines)
+        local lnum, unchanged = nav.carry_line(hunks, line, b_lines)
+        return { lnum, unchanged }
+    end
+
+    it("keeps the line when there are no hunks", function()
+        -- a = b = "a\nb\nc\n"
+        assert.are.same({ 2, true }, carry({}, 2, 3))
+    end)
+
+    it("shifts down past an insertion above", function()
+        -- a = "a\nb\nc\n", b = "a\nX\nY\nb\nc\n"
+        local hunks = { { 1, 0, 2, 2 } }
+        assert.are.same({ 1, true }, carry(hunks, 1, 5))
+        assert.are.same({ 4, true }, carry(hunks, 2, 5))
+        assert.are.same({ 5, true }, carry(hunks, 3, 5))
+    end)
+
+    it("shifts up past a deletion above", function()
+        -- a = "a\nb\nc\nd\n", b = "a\nd\n"
+        assert.are.same({ 2, true }, carry({ { 2, 2, 1, 0 } }, 4, 2))
+    end)
+
+    it("lands a line inside a replaced block on the block's start", function()
+        -- a = "a\nb\nc\nd\ne\n", b = "a\nX\ne\n"
+        local hunks = { { 2, 3, 2, 1 } }
+        assert.are.same({ 2, false }, carry(hunks, 2, 3))
+        assert.are.same({ 2, false }, carry(hunks, 4, 3))
+        assert.are.same({ 3, true }, carry(hunks, 5, 3))
+    end)
+
+    it("lands a line inside a deleted block on the line after the gap", function()
+        -- a = "a\nb\nc\nd\n", b = "a\nd\n"
+        assert.are.same({ 2, false }, carry({ { 2, 2, 1, 0 } }, 3, 2))
+    end)
+
+    it("clamps a deleted block at the bottom to b's last line", function()
+        -- a = "a\nb\nc\n", b = "a\n"
+        assert.are.same({ 1, false }, carry({ { 2, 2, 1, 0 } }, 3, 1))
+    end)
+
+    it("shifts every line past an insertion at the top", function()
+        -- a = "a\nb\n", b = "X\nY\na\nb\n"
+        local hunks = { { 0, 0, 1, 2 } }
+        assert.are.same({ 3, true }, carry(hunks, 1, 4))
+        assert.are.same({ 4, true }, carry(hunks, 2, 4))
+    end)
+
+    it("leaves lines above an insertion at the bottom alone", function()
+        -- a = "a\nb\n", b = "a\nb\nX\n"
+        assert.are.same({ 2, true }, carry({ { 2, 0, 3, 1 } }, 2, 3))
+    end)
+
+    it("adds up the shift across several hunks", function()
+        -- a = "a\nb\nc\nd\ne\nf\ng\n", b = "X\na\nc\nd\nY\nZ\ne\nf\ng\n"
+        local hunks = { { 0, 0, 1, 1 }, { 2, 1, 2, 0 }, { 4, 0, 5, 2 } }
+        assert.are.same({ 4, true }, carry(hunks, 4, 9))
+        assert.are.same({ 7, true }, carry(hunks, 5, 9))
+        assert.are.same({ 9, true }, carry(hunks, 7, 9))
+    end)
+
+    it("lands on line 1 when b is empty", function()
+        -- a = "a\nb\n", b = ""
+        assert.are.same({ 1, false }, carry({ { 1, 2, 0, 0 } }, 2, 0))
+    end)
+end)
