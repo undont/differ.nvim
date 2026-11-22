@@ -792,6 +792,127 @@ describe(":Differ diff hunk staging", function()
         end
     )
 
+    -- the commit preview of a staged_as repo
+    local function ds_of(p)
+        local v = view_in_origin(p)
+        v:toggle_commit_preview()
+        return view_in_origin(p)
+    end
+
+    it("visual X in ds drops the selected row from the index and the file", function()
+        local root, p =
+            staged_as("1\n2\n3\n4\n5\n6\n7\n", "1\nA\nB\nC\nD\nE\n7\n", "1\nA\nB\nC\nD\nE\n7\n")
+        local v = ds_of(p)
+        v:toggle_layout()
+
+        local row = v.columns[1].map.from_old[2]
+        local prompt = confirming(1, function()
+            visual(v.columns[2], row, row, "X")
+        end)
+        assert.are.equal("Revert 2 lines in a.lua?", prompt)
+        assert.are.equal("1\n2\nB\nC\nD\nE\n7\n", indexed(root, "a.lua"))
+        assert.are.equal("1\n2\nB\nC\nD\nE\n7\n", worktree(root, "a.lua"))
+        vim.wait(500, function() -- the re-read runs on a schedule
+            return v.model.new_text == indexed(root, "a.lua")
+        end)
+        assert.are.equal("1\n2\nB\nC\nD\nE\n7\n", v.model.new_text)
+        assert.are.equal("STAGED", v.staging.badge)
+        p:close()
+    end)
+
+    -- the file has a line of its own above the selected hunk
+    it("visual X in ds reverts the file where its own edits have moved the lines", function()
+        local root, p = staged_as(
+            twelve({}),
+            twelve({ "1x", [12] = "12x" }),
+            twelve({ "1x", [6] = "6\nnew", [12] = "12x" })
+        )
+        local v = ds_of(p)
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_old[12], col.map.from_new[12], "X")
+        end)
+        assert.are.equal(twelve({ "1x" }), indexed(root, "a.lua"))
+        assert.are.equal(twelve({ "1x", [6] = "6\nnew" }), worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    -- 1x staged and then put back to 1 in the worktree: X takes it out of the index only
+    it("visual X in ds moves only the index where the file already put the lines back", function()
+        local root, p =
+            staged_as(twelve({}), twelve({ "1x", [12] = "12x" }), twelve({ [12] = "12x" }))
+        local v = ds_of(p)
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[1], col.map.from_new[12], "X")
+        end)
+        assert.are.equal("Revert 4 lines in a.lua?", prompt)
+        assert.are.equal(twelve({}), indexed(root, "a.lua"))
+        assert.are.equal(twelve({}), worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X in ds refuses lines the file has changed, before any prompt", function()
+        local root, p = staged_as("x\n", "A\nB\nC\n", "A\nB\nC2\n")
+        local v = ds_of(p)
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_new[3], col.map.from_new[3], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.are.equal("differ: the file has changed these lines: nothing reverted", last_said())
+        assert.are.equal("A\nB\nC\n", indexed(root, "a.lua"))
+        assert.are.equal("A\nB\nC2\n", worktree(root, "a.lua"))
+
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[1], "X")
+        end)
+        assert.are.equal("B\nC\n", indexed(root, "a.lua"))
+        assert.are.equal("B\nC2\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it(
+        "visual X in ds refuses an index staged outside since it opened, before any prompt",
+        function()
+            local root, p =
+                staged_as("1\n2\n3\n4\n5\n6\n7\n", "1\nA\nB\nC\nD\nE\n7\n", "1\nA\nB\nC\nD\nE\n7\n")
+            local v = ds_of(p)
+            stage_behind(root, "1\nA\nB\nC\nD\nE\n7x\n")
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, col.map.from_old[2], col.map.from_new[2], "X")
+            end)
+            assert.is_nil(prompt)
+            assert.is_truthy(last_said():find("re-reading", 1, true))
+            assert.are.equal("1\nA\nB\nC\nD\nE\n7x\n", indexed(root, "a.lua"))
+            assert.are.equal("1\nA\nB\nC\nD\nE\n7\n", worktree(root, "a.lua"))
+            p:close()
+        end
+    )
+
+    it("visual X in ds after u on the hunk reverts only the file", function()
+        local root, p =
+            staged_as(twelve({}), twelve({ "1x", [12] = "12x" }), twelve({ "1x", [12] = "12x" }))
+        local v = ds_of(p)
+        local col = v.columns[1]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        assert.are.equal(twelve({ [12] = "12x" }), indexed(root, "a.lua"))
+
+        confirming(1, function()
+            visual(col, col.map.from_old[1], col.map.from_new[1], "X")
+        end)
+        assert.are.equal(twelve({ [12] = "12x" }), indexed(root, "a.lua"))
+        assert.are.equal(twelve({ [12] = "12x" }), worktree(root, "a.lua"))
+        p:close()
+    end)
+
     local function added_in_ds(index, work)
         local root = fresh_repo()
         write(root .. "/new.lua", index)
@@ -894,32 +1015,19 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    for _, case in ipairs({
-        { key = "ds", toggle = "toggle_commit_preview" },
-    }) do
-        it(("visual X in %s says to go back and reverts nothing"):format(case.key), function()
-            local root = fresh_repo()
-            write(root .. "/a.lua", "1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n")
-            git(root, "commit", "-q", "-am", "ten lines")
-            write(root .. "/a.lua", "1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n")
-            git(root, "add", "a.lua")
-            write(root .. "/a.lua", "1\n2\n3y\n4\n5\n6\n7\n8\n9\n10\n")
-            vim.cmd.edit(root .. "/a.lua")
-            local p, v = open_panel()
-            v[case.toggle](v)
-            v = view_in_origin(p)
+    it("visual X in ds on an added file says to go back and reverts nothing", function()
+        local root, p, v = added_in_ds("1\n2\n3\n", "1\n2\n3\n")
 
-            local col = v.columns[1]
-            local prompt = confirming(1, function()
-                visual(col, 1, #col.map.lines, "X")
-            end)
-            assert.is_nil(prompt)
-            assert.is_truthy(last_said():find(case.key .. " goes back", 1, true))
-            assert.are.equal("1\n2\n3y\n4\n5\n6\n7\n8\n9\n10\n", worktree(root, "a.lua"))
-            assert.are.equal("1\n2\n3x\n4\n5\n6\n7\n8\n9\n10\n", indexed(root, "a.lua"))
-            p:close()
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_new[2], col.map.from_new[2], "X")
         end)
-    end
+        assert.is_nil(prompt)
+        assert.are.equal("differ: X reverts lines from the whole change; ds goes back", last_said())
+        assert.are.equal("1\n2\n3\n", worktree(root, "new.lua"))
+        assert.are.equal("1\n2\n3\n", indexed(root, "new.lua"))
+        p:close()
+    end)
 
     -- a real confirm reads typeahead, so a queued key would answer it
     it("visual X asks in normal mode with nothing left in typeahead", function()
