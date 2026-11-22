@@ -20,6 +20,7 @@ local file_lines = write.file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, unheld_entry = whole_file.whole_file_revert, whole_file.unheld_entry
 local stage_prompt = whole_file.stage_prompt
+local mode_hidden, live_modes = whole_file.mode_hidden, whole_file.live_modes
 local diff_view = require("differ.git.staging.diff_view")
 local hides_staged, select_refusal = diff_view.hides_staged, diff_view.select_refusal
 local selected = require("differ.git.staging.selection")
@@ -27,6 +28,19 @@ local selected = require("differ.git.staging.selection")
 -- the `update-index --chmod` flag that gives a file a mode
 ---@type table<string, string>
 local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
+
+-- whether line `l` of the old side falls inside one of `hunks`
+---@param hunks differ.Hunk[]
+---@param l integer
+---@return boolean
+local function in_old_side(hunks, l)
+    for _, h in ipairs(hunks) do
+        if h.old_start <= l and l < h.old_start + h.old_count then
+            return true
+        end
+    end
+    return false
+end
 
 -- staging frozen at the index the view opened on: s and u rebuild it from the model's
 -- old side plus the hunks marked staged, so a marked hunk stays on screen. an index
@@ -183,6 +197,11 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
             notify("these lines are already " .. state_now, vim.log.levels.INFO)
             return false
         end
+        -- an emptied add leaves the index, and its mode with it
+        if text == "" and entry.x == "A" and mode_hidden(live_modes(ctx, entry)) then
+            notify(select_refusal(ctx.keys, "unheld", op), vim.log.levels.WARN)
+            return false, true
+        end
         if not put(text, mode) then
             return false
         end
@@ -330,9 +349,55 @@ local function placed_on(drift, m, h, work)
     return nil
 end
 
+-- X on a HEAD<->index row as a whole file: refused where the worktree has changes on
+-- top, which this view doesn't show
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param staging differ.view.Staging
+---@param preview boolean
+local function index_file_revert(ctx, entry, staging, preview)
+    staging.revert, staging.revert_label, staging.no_revert =
+        whole_file_revert(ctx, entry, entry.x, preview)
+    if entry.x == "A" and entry.y == "D" then
+        staging.revert_label = "deletes the staged file"
+    end
+    -- read again at X: an edit since the view opened counts as well
+    local why = "discard is disabled"
+    local discard_key = help.key(ctx.keys, "discard")
+    if discard_key then
+        why = ("%s would also discard the unstaged changes to %s"):format(discard_key, entry.path)
+    end
+    local function unstaged_on_top(y)
+        return y ~= " " and y ~= "D"
+    end
+    local discard = staging.revert
+    if unstaged_on_top(entry.y) then
+        staging.revert, staging.revert_label, staging.no_revert = nil, nil, why
+        return
+    end
+    if not discard then
+        return
+    end
+    staging.revert = function(...)
+        local live = gitmod().live_row(ctx.root, entry)
+        -- u here took the change out of the index: X has nothing staged to
+        -- discard, and s puts it back
+        if live and (live.x == " " or live.x == "?") then
+            local msg = "%s has nothing staged now: %s stages it back"
+            notify(msg:format(entry.path, help.key(ctx.keys, "stage")))
+            return false
+        end
+        if live and unstaged_on_top(live.y) then
+            notify(why, vim.log.levels.WARN)
+            return false
+        end
+        return discard(...)
+    end
+end
+
 -- staging for a row drawn HEAD<->index, in the commit preview or where that is the
--- only diff the row has. an add or a deletion is one unit whose index entry comes
--- and goes, so it stages as a file
+-- only diff the row has. a deletion, or an add whose file is gone, is one unit whose
+-- index entry comes and goes, so it stages as a file
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel  -- HEAD<->index
@@ -340,8 +405,10 @@ end
 ---@return differ.view.Staging
 local function for_index(ctx, entry, model, preview)
     local staging
-    if #model.hunks > 0 and entry.x ~= "A" and entry.x ~= "D" then
-        staging = frozen_staging(ctx, entry, model, true, function()
+    local whole = entry.x == "D" or (entry.x == "A" and entry.y == "D")
+    if #model.hunks > 0 and not whole then
+        local apply_lines
+        staging, apply_lines = frozen_staging(ctx, entry, model, true, function()
             ctx.retarget(false)
         end)
         -- the file against the index this view opened on: s and u move the index
@@ -362,13 +429,18 @@ local function for_index(ctx, entry, model, preview)
             }).hunks
             return drift, head_work.new_text
         end
+        local state = require("differ.model.marks").state
         -- a staged hunk whose index lines the file doesn't hold goes with u
         staging.unheld = function(m, idx)
+            -- an add is one hunk against an empty HEAD: u empties it, and the entry
+            -- leaves the index with a mode the file may not have
+            if entry.x == "A" and mode_hidden(live_modes(ctx, entry)) then
+                return true
+            end
             local drift, work = drift_of(m)
             if not (drift and work) then
                 return false
             end
-            local state = require("differ.model.marks").state
             for i, h in ipairs(m.hunks) do
                 local wanted = idx == nil or i == idx
                 if
@@ -380,6 +452,33 @@ local function for_index(ctx, entry, model, preview)
                 end
             end
             return false
+        end
+        -- whether u on `selection` takes out a staged index line the file has changed
+        ---@param m differ.DiffModel
+        ---@param selection differ.model.Selection
+        ---@return boolean
+        local function drops_unheld(m, selection)
+            local drift = drift_of(m)
+            if not drift then
+                return false
+            end
+            for _, h in ipairs(m.hunks) do
+                if state(staging.marks, h) == "staged" then
+                    for l = h.new_start, h.new_start + h.new_count - 1 do
+                        if selection.new[l] and in_old_side(drift, l) then
+                            return true
+                        end
+                    end
+                end
+            end
+            return false
+        end
+        staging.apply_lines = function(m, selection, reverse)
+            if reverse and drops_unheld(m, selection) then
+                notify(select_refusal(ctx.keys, "unheld", "unstage"), vim.log.levels.WARN)
+                return false, true
+            end
+            return apply_lines(m, selection, reverse)
         end
         staging.revert = function(m, idx)
             local h = m.hunks[idx]
@@ -402,48 +501,16 @@ local function for_index(ctx, entry, model, preview)
             local offset = require("differ.model.marks").shift(drift, at, "old")
             return revert_frozen(ctx, entry, m, staging, idx, offset, reopen)
         end
+        if entry.x == "A" then
+            staging.drops_entry = true
+            -- throwing away an add is deleting the file, not reverting a hunk of it
+            index_file_revert(ctx, entry, staging, preview)
+        end
     else
         staging = snapshot_staging(ctx, entry, function()
             ctx.retarget(false)
         end)
-        staging.revert, staging.revert_label, staging.no_revert =
-            whole_file_revert(ctx, entry, entry.x, preview)
-        if entry.x == "A" and entry.y == "D" then
-            staging.revert_label = "deletes the staged file"
-        end
-        -- a whole-file discard takes the worktree too, and this view shows none of it.
-        -- read again at X: an edit since the view opened counts as well
-        local why = "discard is disabled"
-        local discard_key = help.key(ctx.keys, "discard")
-        if discard_key then
-            why = ("%s would also discard the unstaged changes to %s"):format(
-                discard_key,
-                entry.path
-            )
-        end
-        local function unstaged_on_top(y)
-            return y ~= " " and y ~= "D"
-        end
-        local discard = staging.revert
-        if unstaged_on_top(entry.y) then
-            staging.revert, staging.revert_label, staging.no_revert = nil, nil, why
-        elseif discard then
-            staging.revert = function(...)
-                local live = gitmod().live_row(ctx.root, entry)
-                -- u here took the change out of the index: X has nothing staged to
-                -- discard, and s puts it back
-                if live and (live.x == " " or live.x == "?") then
-                    local msg = "%s has nothing staged now: %s stages it back"
-                    notify(msg:format(entry.path, help.key(ctx.keys, "stage")))
-                    return false
-                end
-                if live and unstaged_on_top(live.y) then
-                    notify(why, vim.log.levels.WARN)
-                    return false
-                end
-                return discard(...)
-            end
-        end
+        index_file_revert(ctx, entry, staging, preview)
     end
     staging.badge = "INDEX"
     return staging

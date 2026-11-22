@@ -127,6 +127,7 @@ local armed_view = nil
 -- `unheld` says u on slot `idx`, or U when it's nil, drops staged content neither HEAD
 -- nor the file holds, so the key confirms first
 ---@field unheld? fun(model: differ.DiffModel, idx: integer|nil): boolean
+---@field drops_entry? boolean  -- an add: its one hunk is the file, and u takes it out of the index
 ---@field confirm_stage? fun(): string|nil  -- read at the keypress: the prompt s and S ask first, `%s` the path
 -- `drop_scope` names the lines u on `!` hunk `idx` takes back, when wider than the hunk
 ---@field drop_scope? fun(idx: integer): string|nil
@@ -1654,7 +1655,7 @@ function View:_drop_prompt(idx)
     if scope then
         return ("Unstage %s in %s? The staged change will be lost."):format(scope, self.model.path)
     end
-    if idx and not self:_whole_file() then
+    if idx and not self:_whole_file() and not self.staging.drops_entry then
         return ("Unstage hunk %d/%d in %s? The staged change will be lost."):format(
             idx,
             #self.model.hunks,

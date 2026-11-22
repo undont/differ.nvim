@@ -74,6 +74,7 @@ local function for_head_work(ctx, entry, diff)
     if by_line(entry) and #diff.hunks > 0 then
         local staging = diff_view_staging(ctx, entry, diff)
         if entry.x == "A" then
+            staging.drops_entry = true
             -- throwing away an add is deleting the file, not reverting a hunk of it
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(ctx, entry, "A", false)

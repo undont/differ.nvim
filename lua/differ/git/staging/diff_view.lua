@@ -86,8 +86,15 @@ local UNSHOWN = { "blocked by a staged change this view can't show", "%s shows i
 
 -- why a selection can't move, staged (`take`), unstaged or reverted: the refusal,
 -- then a hint naming the action's key
----@type table<differ.model.SelectRefusal, table<"stage"|"unstage"|"revert", string[]>>
+---@type table<differ.model.SelectRefusal|"unheld", table<"stage"|"unstage"|"revert", string[]>>
 local SELECT_REFUSALS = {
+    unheld = {
+        unstage = {
+            "unstaging these lines would drop staged content the file doesn't have",
+            "%s unstages the whole hunk",
+            "unstage",
+        },
+    },
     between = {
         stage = {
             "these lines can't be staged on their own here",
@@ -167,7 +174,7 @@ local SELECT_REFUSALS = {
 
 -- a selection's refusal for `op`, its hint dropped when the hint's action is disabled
 ---@param keys differ.KeymapSet
----@param refused differ.model.SelectRefusal
+---@param refused differ.model.SelectRefusal|"unheld"
 ---@param op "stage"|"unstage"|"revert"
 ---@return string
 local function select_refusal(keys, refused, op)
@@ -411,6 +418,11 @@ local function apply_lines(source, model, selection, reverse)
         notify("these lines are already " .. state, vim.log.levels.INFO)
         return false
     end
+    -- an emptied add leaves the index, and its mode with it
+    if text == "" and entry.x == "A" and mode_hidden(live_modes(ctx, entry)) then
+        notify(select_refusal(ctx.keys, "unheld", "unstage"), vim.log.levels.WARN)
+        return false, true
+    end
     if not put(source, text, mode) then
         return false
     end
@@ -631,6 +643,11 @@ local function unheld(source, model, idx)
     local ctx, entry = source.ctx, source.entry
     if not idx then
         return hides_staged(ctx, entry)
+    end
+    -- an add is one hunk against an empty HEAD: u takes the entry out of the index,
+    -- with a mode the file may not have
+    if entry.x == "A" and mode_hidden(live_modes(ctx, entry)) then
+        return true
     end
     local head_work, head_index, index_work = op_models(source)
     if not (head_work and head_index and index_work) then
