@@ -60,7 +60,8 @@ end
 
 -- the index s (`take`) or u on `selection` writes and the pairs it makes. nil and why
 -- where it refuses; nil alone where the drawn marks have every selected line where the
--- op puts it. a selected hunk holding a line neither side has refuses first
+-- op puts it. a file too big to read refuses first, then a selected hunk holding a line
+-- neither side has
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
@@ -71,11 +72,14 @@ end
 ---@return string|nil text, differ.DiffModel[]|nil after, differ.git.SelectionRefusal|nil refusal
 function M.stage(root, path, head_work, head_index, index_work, selection, take)
     local stage = require("differ.model.stage")
+    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
+    if unread then
+        return nil, nil, "unread"
+    end
     local text, refused = stage.select_index(head_work, head_index, selection, take)
     if refused then
         return nil, nil, refused
     end
-    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
     local want = stage.flipped(head_work, m, selection, take)
     if want.enter == 0 and want.leave == 0 then
         return nil
@@ -83,9 +87,6 @@ function M.stage(root, path, head_work, head_index, index_work, selection, take)
     if not text then
         -- the cut has the selection in place where the drawn marks don't
         return nil, nil, "between"
-    end
-    if unread then
-        return nil, nil, "unread"
     end
     local after, refusal =
         read_back(root, path, head_work, head_index, hidden, selection, want, take, text)
@@ -95,8 +96,8 @@ function M.stage(root, path, head_work, head_index, index_work, selection, take)
     return text, after
 end
 
--- the index and file X on `selection` writes. nil and why where it refuses; nil alone
--- where it touches no hunk
+-- the index and file X on `selection` writes. nil and why where it refuses, a file too
+-- big to read first; nil alone where it touches no hunk
 ---@param root string
 ---@param path string
 ---@param head_work differ.DiffModel
@@ -106,6 +107,10 @@ end
 ---@return string|nil index_text, differ.DiffModel|nil reverted, differ.git.SelectionRefusal|nil refusal
 function M.revert(root, path, head_work, head_index, index_work, selection)
     local stage = require("differ.model.stage")
+    local m, hidden, _, unread = stage.marks_of(head_work, head_index, index_work)
+    if unread then
+        return nil, nil, "unread"
+    end
     local text, refused = stage.select_index(head_work, head_index, selection, false)
     if refused then
         return nil, nil, refused
@@ -119,7 +124,6 @@ function M.revert(root, path, head_work, head_index, index_work, selection)
         return nil
     end
     local index_text = text or head_index.new_text
-    local m, hidden = stage.marks_of(head_work, head_index, index_work)
     local want = stage.reverted(head_work, m, selection, origins)
     local after =
         { content.three_diffs(root, path, head_work.old_text, index_text, reverted.old_text) }

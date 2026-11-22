@@ -440,9 +440,9 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    -- a 100-line rewrite makes the file too big to read, and a staged 5q the worktree
-    -- has undone keeps the index from cutting into blocks
-    local function unread_repo()
+    -- a 100-line rewrite of o1..o100 to n1..n100 between 3 and 4, `index` and `work`
+    -- written around it
+    local function rewritten(index, work)
         local root = fresh_repo()
         local olds, news = {}, {}
         for k = 1, 100 do
@@ -451,11 +451,20 @@ describe(":Differ diff hunk staging", function()
         local old, new = table.concat(olds, "\n"), table.concat(news, "\n")
         write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5\n6\n")
         git(root, "commit", "-q", "-am", "long")
-        write(root .. "/a.lua", "1\n2\n3\n" .. old .. "\n4\n5q\n6\n")
+        local function filled(text)
+            return (text:gsub("OLD", old):gsub("NEW", new))
+        end
+        write(root .. "/a.lua", filled(index))
         git(root, "add", "a.lua")
-        write(root .. "/a.lua", "1\n2x\n3\n" .. new .. "\n4\n5\n6\n")
+        write(root .. "/a.lua", filled(work))
         vim.cmd.edit(root .. "/a.lua")
         return root
+    end
+
+    -- the rewrite makes the file too big to read, and a staged 5q the worktree has
+    -- undone keeps the index from cutting into blocks
+    local function unread_repo()
+        return rewritten("1\n2\n3\nOLD\n4\n5q\n6\n", "1\n2x\n3\nNEW\n4\n5\n6\n")
     end
 
     it("visual s refuses lines in a file too big to read", function()
@@ -465,7 +474,10 @@ describe(":Differ diff hunk staging", function()
 
         local col = v.columns[1]
         visual(col, col.map.from_old[2], col.map.from_new[2], "s")
-        assert.is_truthy(last_said():find("can't be staged on their own here", 1, true))
+        assert.are.equal(
+            "differ: this file's changes are too big to stage by line here; stage them from dw",
+            last_said()
+        )
         assert.are.equal(before, indexed(root, "a.lua"))
         p:close()
     end)
@@ -480,8 +492,138 @@ describe(":Differ diff hunk staging", function()
             visual(col, col.map.from_old[2], col.map.from_new[2], "X")
         end)
         assert.is_nil(prompt)
-        assert.is_truthy(last_said():find("only dw shows", 1, true))
+        assert.are.equal(
+            "differ: this file's changes are too big to revert by line here",
+            last_said()
+        )
         assert.are.equal(before, worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("hunk s and X refuse in a file too big to read", function()
+        local root = unread_repo()
+        local p, v = open_panel()
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+
+        local col = v.columns[1]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+        assert.are.equal(
+            "differ: this file's changes are too big to stage a hunk here; stage it from dw",
+            last_said()
+        )
+        local prompt = confirming(1, function()
+            v:revert_hunk()
+        end)
+        assert.is_nil(prompt)
+        assert.are.equal(
+            "differ: this file's changes are too big to revert a hunk here",
+            last_said()
+        )
+        assert.are.equal(index, indexed(root, "a.lua"))
+        assert.are.equal(work, worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    -- the index cuts into blocks, 2y hidden in the first, but the rewrite is still too big
+    -- to read
+    it("visual s and X refuse a file too big to read whose index cuts into blocks", function()
+        local root = rewritten("1\n2y\n3\nOLD\n4\n5\n6\n", "1\n2x\n3\nNEW\n4\n5x\n6\n")
+        local p, v = open_panel()
+        local index, work = indexed(root, "a.lua"), worktree(root, "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[105], col.map.from_new[105], "s")
+        assert.are.equal(
+            "differ: this file's changes are too big to stage by line here; stage them from dw",
+            last_said()
+        )
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_old[105], col.map.from_new[105], "X")
+        end)
+        assert.is_nil(prompt)
+        assert.are.equal(
+            "differ: this file's changes are too big to revert by line here",
+            last_said()
+        )
+        assert.are.equal(index, indexed(root, "a.lua"))
+        assert.are.equal(work, worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("dw stages lines of a file too big to read in the union view", function()
+        local root = unread_repo()
+        local p = open_panel()
+        view_in_origin(p):toggle_local()
+        local v = view_in_origin(p)
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "s")
+        assert.are.equal("1\n2x\n3\n", indexed(root, "a.lua"):sub(1, 7))
+        p:close()
+    end)
+
+    -- staged whole, the index cuts into the worktree's blocks, so the file reads
+    it("visual s says a fully staged rewrite is already staged", function()
+        local root = rewritten("1\n2x\n3\nNEW\n4\n5\n6\n", "1\n2x\n3\nNEW\n4\n5\n6\n")
+        local p, v = open_panel()
+        local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "s")
+        assert.are.equal("M  a.lua\n", status)
+        assert.are.equal("differ: these lines are already staged", last_said())
+        p:close()
+    end)
+
+    it("visual u says an unstaged rewrite is already unstaged", function()
+        local root = rewritten("1\n2\n3\nOLD\n4\n5\n6\n", "1\n2x\n3\nNEW\n4\n5\n6\n")
+        local p, v = open_panel()
+        local status = git(root, "status", "--porcelain=v1", "--", "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "u")
+        assert.are.equal(" M a.lua\n", status)
+        assert.are.equal("differ: these lines are already unstaged", last_said())
+        p:close()
+    end)
+
+    -- 2x staged and on disk, 5q staged and undone
+    local function unread_staged_repo()
+        return rewritten("1\n2x\n3\nOLD\n4\n5q\n6\n", "1\n2x\n3\nNEW\n4\n5\n6\n")
+    end
+
+    it("visual u and hunk u refuse in a file too big to read", function()
+        local root = unread_staged_repo()
+        local p, v = open_panel()
+        local before = indexed(root, "a.lua")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "u")
+        assert.are.equal(
+            "differ: this file's changes are too big to unstage by line here; unstage them from ds",
+            last_said()
+        )
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:unstage_hunk()
+        assert.are.equal(
+            "differ: this file's changes are too big to unstage a hunk here; unstage it from ds",
+            last_said()
+        )
+        assert.are.equal(before, indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("ds unstages lines of a file too big to read in the union view", function()
+        local root = unread_staged_repo()
+        local p = open_panel()
+        view_in_origin(p):toggle_commit_preview()
+        local v = view_in_origin(p)
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[2], col.map.from_new[2], "u")
+        assert.are.equal("1\n2\n3\n", indexed(root, "a.lua"):sub(1, 6))
         p:close()
     end)
 

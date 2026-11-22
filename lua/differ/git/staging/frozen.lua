@@ -182,9 +182,13 @@ local function frozen_staging(ctx, entry, model, staged, reopen, place)
             selected.stage(ctx.root, entry.path, base, base_index, index_work, selection, take)
         -- held is the model's old side with whole hunks spliced in, so a cut that fails
         -- or reads back as others has no other view to send the lines to
-        if refused == "unread" or refused == "moves_others" or refused == "between" then
+        if refused == "moves_others" or refused == "between" then
             notify(MOVES_OTHERS, vim.log.levels.WARN)
             return nil, nil, true
+        end
+        -- hunk keys here splice whole hunks with no read-back
+        if refused == "unread" then
+            refused = "large"
         end
         if refused then
             ---@cast refused differ.model.SelectRefusal

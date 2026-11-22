@@ -86,8 +86,21 @@ local UNSHOWN = { "blocked by a staged change this view can't show", "%s shows i
 
 -- why a selection can't move, staged (`take`), unstaged or reverted: the refusal,
 -- then a hint naming the action's key
----@type table<differ.model.SelectRefusal|"unheld", table<"stage"|"unstage"|"revert", string[]>>
+---@type table<differ.model.SelectRefusal|"unheld"|"unread", table<"stage"|"unstage"|"revert", string[]>>
 local SELECT_REFUSALS = {
+    unread = {
+        stage = {
+            "this file's changes are too big to stage by line here",
+            "stage them from %s",
+            "toggle_local",
+        },
+        unstage = {
+            "this file's changes are too big to unstage by line here",
+            "unstage them from %s",
+            "commit_preview",
+        },
+        revert = { "this file's changes are too big to revert by line here" },
+    },
     unheld = {
         unstage = {
             "unstaging these lines would drop staged content the file doesn't have",
@@ -110,17 +123,17 @@ local SELECT_REFUSALS = {
     },
     large = {
         stage = {
-            "this file's changes are too large to stage by line",
+            "this file's changes are too big to stage by line here",
             "%s stages a hunk whole",
             "stage",
         },
         unstage = {
-            "this file's changes are too large to unstage by line",
+            "this file's changes are too big to unstage by line here",
             "%s unstages a hunk whole",
             "unstage",
         },
         revert = {
-            "this file's changes are too large to revert by line",
+            "this file's changes are too big to revert by line here",
             "%s reverts a hunk whole",
             "discard",
         },
@@ -172,13 +185,28 @@ local SELECT_REFUSALS = {
     },
 }
 
--- a selection's refusal for `op`, its hint dropped when the hint's action is disabled
+-- a hunk op's refusal in a file too big to read back
+---@type table<"stage"|"unstage"|"revert", string[]>
+local UNREAD_HUNK = {
+    stage = {
+        "this file's changes are too big to stage a hunk here",
+        "stage it from %s",
+        "toggle_local",
+    },
+    unstage = {
+        "this file's changes are too big to unstage a hunk here",
+        "unstage it from %s",
+        "commit_preview",
+    },
+    revert = { "this file's changes are too big to revert a hunk here" },
+}
+
+-- a refusal and its hint, the hint dropped when its action is disabled
 ---@param keys differ.KeymapSet
----@param refused differ.model.SelectRefusal|"unheld"
----@param op "stage"|"unstage"|"revert"
+---@param why_hint string[]  -- why, then hint and action where it has one
 ---@return string
-local function select_refusal(keys, refused, op)
-    local why, hint, action = unpack(SELECT_REFUSALS[refused][op])
+local function hinted(keys, why_hint)
+    local why, hint, action = unpack(why_hint)
     local key = action and help.key(keys, action)
     if not key then
         return why
@@ -186,10 +214,18 @@ local function select_refusal(keys, refused, op)
     return ("%s; %s"):format(why, hint:format(key))
 end
 
+---@param keys differ.KeymapSet
+---@param refused differ.model.SelectRefusal|"unheld"|"unread"
+---@param op "stage"|"unstage"|"revert"
+---@return string
+local function select_refusal(keys, refused, op)
+    return hinted(keys, SELECT_REFUSALS[refused][op])
+end
+
 -- X's refusal for a selection. an index that can't be cut holds a change the
 -- HEAD<->worktree can't show, or only repeats lines the cut can't place
 ---@param keys differ.KeymapSet
----@param refused differ.model.SelectRefusal
+---@param refused differ.model.SelectRefusal|"unread"
 ---@param head_work differ.DiffModel   -- HEAD<->worktree
 ---@param head_index differ.DiffModel  -- HEAD<->index
 ---@param index_work differ.DiffModel  -- index<->worktree
@@ -237,7 +273,7 @@ local function revert_texts(ctx, entry, head_work, head_index, index_work, selec
         return nil, nil, MOVES_OTHERS
     end
     if refused then
-        ---@cast refused differ.model.SelectRefusal
+        ---@cast refused differ.model.SelectRefusal|"unread"
         return nil, nil, revert_refusal(ctx.keys, refused, head_work, head_index, index_work)
     end
     return index_text, reverted
@@ -398,11 +434,15 @@ local function apply(source, model, hunk, reverse)
             text
         )
     end
+    local op = "unstage"
+    if take then
+        op = "stage"
+    end
+    if refused == "unread" then
+        notify(hinted(ctx.keys, UNREAD_HUNK[op]), vim.log.levels.WARN)
+        return false, true
+    end
     if refused == "unshown" then
-        local op = "unstage"
-        if take then
-            op = "stage"
-        end
         notify(select_refusal(ctx.keys, "unshown", op), vim.log.levels.WARN)
         return false, true
     end
@@ -438,12 +478,12 @@ local function apply_lines(source, model, selection, reverse)
     local take = not reverse
     local text, after, refused =
         selected.stage(ctx.root, entry.path, head_work, head_index, index_work, selection, take)
-    if refused == "unread" or refused == "moves_others" then
+    if refused == "moves_others" then
         notify(MOVES_OTHERS, vim.log.levels.WARN)
         return false, true
     end
     if refused then
-        ---@cast refused differ.model.SelectRefusal
+        ---@cast refused differ.model.SelectRefusal|"unread"
         local op = "unstage"
         if take then
             op = "stage"
@@ -509,7 +549,7 @@ local function revert_hunk_texts(ctx, entry, model, idx, head_work, head_index, 
     }
     local after = { three_diffs(ctx.root, entry.path, head_work.old_text, index_text, work_text) }
     if unread then
-        return nil, nil, "this hunk can't be reverted on its own here"
+        return nil, nil, hinted(ctx.keys, UNREAD_HUNK.revert)
     end
     local ok, unshown = stage.reads_as(want, before, selection, unpack(after))
     if unshown then
