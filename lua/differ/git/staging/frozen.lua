@@ -11,15 +11,18 @@ local entry_paths = index_ops.entry_paths
 local set_staged, index_path = index_ops.set_staged, index_ops.index_path
 local content_ops = require("differ.git.content")
 local read, raw_line = content_ops.read, content_ops.raw_line
-local three_models, INDEX = content_ops.three_models, content_ops.INDEX
+local three_models, three_diffs = content_ops.three_models, content_ops.three_diffs
+local INDEX = content_ops.INDEX
 local write = require("differ.git.staging.write")
-local gitmod, put_index = write.gitmod, write.put_index
+local gitmod, put_index, MOVES_OTHERS = write.gitmod, write.put_index, write.MOVES_OTHERS
 local index_unreadable, revert_worktree = write.index_unreadable, write.revert_worktree
 local file_lines = write.file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, unheld_entry = whole_file.whole_file_revert, whole_file.unheld_entry
 local stage_prompt = whole_file.stage_prompt
-local hides_staged = require("differ.git.staging.diff_view").hides_staged
+local diff_view = require("differ.git.staging.diff_view")
+local hides_staged, select_refusal = diff_view.hides_staged, diff_view.select_refusal
+local selected = require("differ.git.staging.selection")
 
 -- the `update-index --chmod` flag that gives a file a mode
 ---@type table<string, string>
@@ -33,7 +36,8 @@ local CHMOD = { ["100644"] = "-x", ["100755"] = "+x" }
 ---@param model differ.DiffModel  -- read once, with at least one hunk
 ---@param staged boolean  -- every hunk's opening state
 ---@param reopen fun()
----@return differ.view.Staging
+---@return differ.view.Staging staging
+---@return fun(m: differ.DiffModel, selection: differ.model.Selection, reverse: boolean): boolean, boolean? apply_lines
 local function frozen_staging(ctx, entry, model, staged, reopen)
     local splice = require("differ.model.apply").splice
     local state = require("differ.model.marks").state
@@ -58,28 +62,51 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
     for _, h in ipairs(model.hunks) do
         mark(h, staged)
     end
-    return {
+    -- the index's mode, or false once the index has moved outside differ since the last
+    -- write, which re-reads the view
+    ---@return boolean unmoved, string|nil mode
+    local function unmoved()
+        local sha, mode = index_ops.index_entry(ctx.root, at_index, entry.path)
+        if sha and sha ~= held_sha and not dropped then
+            local index = content_ops.blob(ctx.root, sha)
+            if index and index.text == held then
+                held_sha = sha
+            end
+        end
+        local moved = not sha or sha ~= held_sha
+        if dropped then
+            moved = sha ~= nil or mode ~= nil
+            mode = held_mode
+        end
+        if moved then
+            notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
+            vim.schedule(reopen)
+            return false
+        end
+        return true, mode
+    end
+    ---@param text string
+    ---@param mode string|nil
+    ---@return boolean
+    local function put(text, mode)
+        local ok, written = put_index(ctx, entry, text, mode)
+        if ok then
+            -- put_index stages a rename at the new path
+            held, held_sha, at_index = text, written, entry.path
+            dropped, held_mode = written == nil, mode
+        end
+        return ok
+    end
+    ---@type differ.view.Staging
+    local staging = {
         marks = marks,
         refresh = ctx.refresh,
         apply = function(_, hunk, reverse)
             if not hunk then
                 return false
             end
-            local sha, mode = index_ops.index_entry(ctx.root, at_index, entry.path)
-            if sha and sha ~= held_sha and not dropped then
-                local index = content_ops.blob(ctx.root, sha)
-                if index and index.text == held then
-                    held_sha = sha
-                end
-            end
-            local moved = not sha or sha ~= held_sha
-            if dropped then
-                moved = sha ~= nil or mode ~= nil
-                mode = held_mode
-            end
-            if moved then
-                notify("the index changed outside differ: re-reading", vim.log.levels.WARN)
-                vim.schedule(reopen)
+            local ok, mode = unmoved()
+            if not ok then
                 return false
             end
             mark(hunk, not reverse)
@@ -87,18 +114,87 @@ local function frozen_staging(ctx, entry, model, staged, reopen)
             for i, h in ipairs(model.hunks) do
                 applied[i] = state(marks, h) == "staged"
             end
-            local text = splice(model, applied)
-            local ok, written = put_index(ctx, entry, text, mode)
-            if ok then
-                -- put_index stages a rename at the new path
-                held, held_sha, at_index = text, written, entry.path
-                dropped, held_mode = written == nil, mode
+            if put(splice(model, applied), mode) then
                 return true
             end
             mark(hunk, reverse)
             return false
         end,
     }
+    -- whether `selection` meets an unmarked `!` hunk, whose staged change u would drop
+    ---@param m differ.DiffModel
+    ---@param selection differ.model.Selection
+    ---@return boolean
+    local function meets_hidden(m, selection)
+        for _, idx in ipairs(staging.hidden_in or {}) do
+            local h = m.hunks[idx]
+            if h and state(marks, h) == "unstaged" then
+                for l = h.old_start, h.old_start + h.old_count - 1 do
+                    if selection.old[l] then
+                        return true
+                    end
+                end
+                for l = h.new_start, h.new_start + h.new_count - 1 do
+                    if selection.new[l] then
+                        return true
+                    end
+                end
+            end
+        end
+        return false
+    end
+    -- s (`take`) or u on a selection: the index takes those lines of the model's pair,
+    -- read back with the model's old side as base. the marks number the lines the view
+    -- opened on, so a write re-reads the view
+    ---@param m differ.DiffModel
+    ---@param selection differ.model.Selection
+    ---@param reverse boolean
+    ---@return boolean, boolean?
+    local function apply_lines(m, selection, reverse)
+        local ok, mode = unmoved()
+        if not ok then
+            return false
+        end
+        local take = not reverse
+        local op, state_now = "unstage", "unstaged"
+        if take then
+            op, state_now = "stage", "staged"
+        end
+        if reverse and meets_hidden(m, selection) then
+            notify(select_refusal(ctx.keys, "hidden", op), vim.log.levels.WARN)
+            return false, true
+        end
+        local base, base_index, index_work =
+            three_diffs(ctx.root, entry.path, m.old_text, held, m.new_text)
+        local text, _, refused =
+            selected.stage(ctx.root, entry.path, base, base_index, index_work, selection, take)
+        -- held is the model's old side with whole hunks spliced in, so a cut that fails
+        -- or reads back as others has no other view to send the lines to
+        if refused == "unread" or refused == "moves_others" or refused == "between" then
+            notify(MOVES_OTHERS, vim.log.levels.WARN)
+            return false, true
+        end
+        if refused then
+            ---@cast refused differ.model.SelectRefusal
+            notify(select_refusal(ctx.keys, refused, op), vim.log.levels.WARN)
+            return false, true
+        end
+        if not text then
+            notify("these lines are already " .. state_now, vim.log.levels.INFO)
+            return false
+        end
+        if not put(text, mode) then
+            return false
+        end
+        vim.schedule(function()
+            local current = ctx.current_view()
+            if current and current.staging == staging then
+                reopen()
+            end
+        end)
+        return true
+    end
+    return staging, apply_lines
 end
 
 -- whole-file staging frozen at the index the view opened on: u resets the row's
@@ -523,7 +619,8 @@ end
 ---@return differ.view.Staging
 local function for_local(ctx, entry, model, reopen)
     if #model.hunks > 0 and entry.y ~= "D" and entry.y ~= "T" then
-        local staging = frozen_staging(ctx, entry, model, false, reopen)
+        local staging, apply_lines = frozen_staging(ctx, entry, model, false, reopen)
+        staging.apply_lines = apply_lines
         local _, head_index = three_models(ctx.root, entry)
         -- an add has no HEAD lines for a rewritten line to go back to
         if head_index and entry.x ~= "A" then

@@ -11,6 +11,10 @@ local confirming = helpers.confirming
 local indexed = helpers.indexed
 local worktree = helpers.worktree
 local committed = helpers.committed
+local staged_as = helpers.staged_as
+local twelve = helpers.twelve
+local hunk_line = helpers.hunk_line
+local stage_behind = helpers.stage_behind
 
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
@@ -584,6 +588,91 @@ describe(":Differ diff hunk staging", function()
         assert.is_nil(prompt)
         assert.is_truthy(last_said():find("re-reading", 1, true))
         assert.are.equal("1\n2\n3y\n4\n5\n6\n7\n8z\n9y\n10\n", worktree(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s in dw stages the selected row and re-reads the rest", function()
+        local root, p =
+            staged_as("1\n2\n3\n4\n5\n6\n7\n", "1\nA\nB\nC\nD\nE\n7\n", "1\nA2\n3\n4\nD2\nE2\n7\n")
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v = view_in_origin(p)
+        v:toggle_layout()
+        assert.are.equal("LOCAL", v.staging.badge)
+
+        local row = v.columns[1].map.from_old[2]
+        assert.are.equal(row, v.columns[2].map.from_new[2])
+        visual(v.columns[2], row, row, "s")
+        assert.are.equal("1\nA2\nB\nC\nD\nE\n7\n", indexed(root, "a.lua"))
+        vim.wait(500, function() -- the re-read runs on a schedule
+            return v.model.old_text == indexed(root, "a.lua")
+        end)
+        assert.are.equal("LOCAL", v.staging.badge)
+        assert.are.equal("1\nA2\nB\nC\nD\nE\n7\n", v.model.old_text)
+        assert.are.equal("unstaged", v:_hunk_state(1))
+        p:close()
+    end)
+
+    it("visual s in dw refuses lines that would read back as others", function()
+        local root, p = staged_as("c\n", "c\nc\na", "c\nb\nb\nc")
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v = view_in_origin(p)
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.is_truthy(last_said():find("without changing others", 1, true))
+        assert.are.equal("c\nc\na", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s in dw refuses an index staged outside since it opened", function()
+        local root, p =
+            staged_as("1\n2\n3\n4\n5\n6\n7\n", "1\nA\nB\nC\nD\nE\n7\n", "1\nA2\n3\n4\nD2\nE2\n7\n")
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v = view_in_origin(p)
+        stage_behind(root, "1\nA\nB\nC\nD\nE\n7x\n")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.is_truthy(last_said():find("re-reading", 1, true))
+        assert.are.equal("1\nA\nB\nC\nD\nE\n7x\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    it("visual s in dw after s on a hunk keeps that hunk staged", function()
+        local root, p =
+            staged_as(twelve({}), twelve({ "1x" }), twelve({ "1x", [3] = "3x", [12] = "12x" }))
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v = view_in_origin(p)
+        assert.are.equal(2, #v.model.hunks)
+        local col = v.columns[1]
+        vim.api.nvim_set_current_win(col.winid)
+        vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+        v:stage_hunk()
+
+        visual(col, col.map.from_new[12], col.map.from_new[12], "s")
+        assert.are.equal(twelve({ "1x", [3] = "3x" }) .. "12x\n", indexed(root, "a.lua"))
+        p:close()
+    end)
+
+    -- 1x staged and then put back to 1 in the worktree: the local hunk undoing it is `!`
+    it("visual u in dw on a ! hunk refuses and says which key drops it", function()
+        local root, p = staged_as(twelve({}), twelve({ "1x" }), twelve({ [12] = "12x" }))
+        local v = view_in_origin(p)
+        v:toggle_local()
+        v = view_in_origin(p)
+        assert.are.same({ 1 }, v.staging.hidden_in)
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[1], col.map.from_new[1], "u")
+        assert.are.equal(
+            "differ: this hunk holds staged content it can't show; u unstages the whole hunk",
+            last_said()
+        )
+        assert.are.equal(twelve({ "1x" }), indexed(root, "a.lua"))
         p:close()
     end)
 

@@ -119,15 +119,19 @@ local SELECT_REFUSALS = {
         },
     },
     hidden = {
-        stage = { "this hunk holds staged content it can't show", "%s stages it whole", "stage" },
+        stage = {
+            "this hunk holds staged content it can't show",
+            "%s stages the whole hunk",
+            "stage",
+        },
         unstage = {
             "this hunk holds staged content it can't show",
-            "%s unstages it whole",
+            "%s unstages the whole hunk",
             "unstage",
         },
         revert = {
             "this hunk holds staged content it can't show",
-            "%s reverts it whole",
+            "%s reverts the whole hunk",
             "discard",
         },
     },
@@ -712,4 +716,8 @@ local function diff_view_staging(ctx, entry, shown)
     return staging
 end
 
-return { diff_view_staging = diff_view_staging, hides_staged = hides_staged }
+return {
+    diff_view_staging = diff_view_staging,
+    hides_staged = hides_staged,
+    select_refusal = select_refusal,
+}
