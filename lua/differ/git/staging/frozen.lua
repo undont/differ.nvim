@@ -547,15 +547,10 @@ local function for_index(ctx, entry, model, preview)
             end
             return table.concat(patches)
         end
-        -- an add's X throws the file away whole
-        local place = nil
-        if entry.x ~= "A" then
-            place = file_patch
-        end
         local apply_lines
         staging, apply_lines = frozen_staging(ctx, entry, model, true, function()
             ctx.retarget(false)
-        end, place)
+        end, file_patch)
         local state = require("differ.model.marks").state
         -- a staged hunk whose index lines the file doesn't hold goes with u
         staging.unheld = function(m, idx)

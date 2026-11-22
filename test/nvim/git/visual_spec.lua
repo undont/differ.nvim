@@ -1015,17 +1015,92 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
-    it("visual X in ds on an added file says to go back and reverts nothing", function()
+    it(
+        "visual X in ds drops the selected lines of an added file from the index and the file",
+        function()
+            local root, p, v = added_in_ds("1\n2\n3\n", "1\n2\n3\n4\n")
+
+            local col = v.columns[1]
+            local prompt = confirming(1, function()
+                visual(col, col.map.from_new[2], col.map.from_new[2], "X")
+            end)
+            assert.are.equal("Revert 1 line in new.lua?", prompt)
+            assert.are.equal("1\n3\n", indexed(root, "new.lua"))
+            assert.are.equal("1\n3\n4\n", worktree(root, "new.lua"))
+            p:close()
+        end
+    )
+
+    it("visual X in ds on all of an added file takes it out of the index and empties it", function()
         local root, p, v = added_in_ds("1\n2\n3\n", "1\n2\n3\n")
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[3], "X")
+        end)
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        assert.are.equal("", table.concat(vim.fn.readfile(root .. "/new.lua"), "\n"))
+        p:close()
+    end)
+
+    it("visual X in ds refuses added lines the file has changed, before any prompt", function()
+        local root, p, v = added_in_ds("1\n2\n3\n", "1\n2x\n3\n")
 
         local col = v.columns[1]
         local prompt = confirming(1, function()
             visual(col, col.map.from_new[2], col.map.from_new[2], "X")
         end)
         assert.is_nil(prompt)
-        assert.are.equal("differ: X reverts lines from the whole change; ds goes back", last_said())
-        assert.are.equal("1\n2\n3\n", worktree(root, "new.lua"))
+        assert.are.equal("differ: the file has changed these lines: nothing reverted", last_said())
         assert.are.equal("1\n2\n3\n", indexed(root, "new.lua"))
+        assert.are.equal("1\n2x\n3\n", worktree(root, "new.lua"))
+        p:close()
+    end)
+
+    it("visual X in ds empties an add whose mode disk has undone", function()
+        local root, p, v = added_exec_in_ds("1\n2\n3\n")
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[3], "X")
+        end)
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        p:close()
+    end)
+
+    -- an add drawn HEAD<->worktree, staged as `index`
+    local function added(index, work)
+        local root = fresh_repo()
+        write(root .. "/new.lua", index)
+        git(root, "add", "new.lua")
+        write(root .. "/new.lua", work)
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        return root, p, v
+    end
+
+    it("visual X on an added file drops a staged line from the index and the file", function()
+        local root, p, v = added("1\n2\n3\n", "1\n2\n3\n4\n")
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_new[2], col.map.from_new[2], "X")
+        end)
+        assert.are.equal("1\n3\n", indexed(root, "new.lua"))
+        assert.are.equal("1\n3\n4\n", worktree(root, "new.lua"))
+        p:close()
+    end)
+
+    it("visual X on all of an added file takes it out of the index and empties it", function()
+        local root, p, v = added("1\n2\n3\n", "1\n2\n3\n4\n")
+
+        local col = v.columns[1]
+        local prompt = confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[4], "X")
+        end)
+        assert.are.equal("Revert 4 lines in new.lua?", prompt)
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        assert.are.equal("", table.concat(vim.fn.readfile(root .. "/new.lua"), "\n"))
         p:close()
     end)
 
