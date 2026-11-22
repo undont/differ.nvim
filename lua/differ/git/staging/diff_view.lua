@@ -279,6 +279,44 @@ local function remark(source, head_work, head_index, index_work, index)
     end
 end
 
+-- the mode git gives `path` on its first add: 100755 for a file its owner can run,
+-- unless core.filemode is off. nil for anything but a regular file
+---@param root string
+---@param path string
+---@return string|nil
+local function added_mode(root, path)
+    local st = vim.uv.fs_lstat(root .. "/" .. path)
+    if not (st and st.type == "file") then
+        return nil
+    end
+    if bit.band(st.mode, 64) == 0 then -- S_IXUSR
+        return "100644"
+    end
+    local filemode = exec.git({ "config", "--get", "--type=bool", "core.filemode" }, root)
+    if filemode and vim.trim(filemode) == "false" then
+        return "100644"
+    end
+    return "100755"
+end
+
+-- op_models for a file not yet in the index: an empty index, and the mode its first
+-- write takes
+---@param source differ.git.HeadWorkSource
+---@return differ.DiffModel|nil head_work
+---@return differ.DiffModel|nil head_index
+---@return differ.DiffModel|nil index_work
+---@return string|nil mode
+local function untracked_models(source)
+    local ctx, entry = source.ctx, source.entry
+    local mode = added_mode(ctx.root, entry.path)
+    local work = content_ops.read(content_ops.WORKTREE, ctx.root, entry.path)
+    if not (mode and work) then
+        return nil
+    end
+    local head_work, head_index, index_work = three_diffs(ctx.root, entry.path, "", "", work)
+    return head_work, head_index, index_work, mode
+end
+
 -- an op's three diffs, nil when the index has no entry to read. one listing gives
 -- the index blob's id and the mode a write takes; the blob's bytes are read only when
 -- the id isn't the one last read or written
@@ -290,6 +328,9 @@ end
 local function op_models(source)
     local ctx, entry = source.ctx, source.entry
     local sha, mode = index_ops.index_entry(ctx.root, index_ops.index_path(entry), entry.path)
+    if not sha and entry.x == "?" then
+        return untracked_models(source)
+    end
     if not sha then
         return nil
     end
@@ -425,6 +466,11 @@ local function apply_lines(source, model, selection, reverse)
     end
     if not put(source, text, mode) then
         return false
+    end
+    if entry.x == "?" then
+        -- the row is an add now, with A's staging
+        ctx.retarget_later()
+        return true
     end
     remark(source, unpack(after))
     return true
@@ -733,8 +779,26 @@ local function diff_view_staging(ctx, entry, shown)
     return staging
 end
 
+-- visual s and u on an untracked file's whole-file staging, for a regular file. s's
+-- first write adds the file to the index holding the selected lines alone
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param staging differ.view.Staging
+local function untracked_lines(ctx, entry, staging)
+    local st = vim.uv.fs_lstat(ctx.root .. "/" .. entry.path)
+    if not (st and st.type == "file") then
+        return
+    end
+    ---@type differ.git.HeadWorkSource
+    local source = { ctx = ctx, entry = entry, staging = staging, mode_change = false }
+    staging.apply_lines = function(model, selection, reverse)
+        return apply_lines(source, model, selection, reverse)
+    end
+end
+
 return {
     diff_view_staging = diff_view_staging,
+    untracked_lines = untracked_lines,
     hides_staged = hides_staged,
     select_refusal = select_refusal,
 }

@@ -94,15 +94,15 @@ describe(":Differ diff hunk staging", function()
 
     it("visual s on a file that stages whole says so and stages nothing", function()
         local root = fresh_repo()
-        write(root .. "/new.lua", "one\ntwo\n")
-        vim.cmd.edit(root .. "/new.lua")
+        vim.uv.fs_symlink("a.lua", root .. "/link")
+        vim.cmd.edit(root .. "/link")
         local p, v = open_panel()
-        assert.are.equal("new.lua", v.model.path)
+        assert.are.equal("link", v.model.path)
 
         local col = v.columns[1]
         visual(col, 1, #col.map.lines, "s")
         assert.is_truthy(last_said():find("stages whole", 1, true))
-        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        assert.are.equal("", git(root, "ls-files", "--", "link"))
         p:close()
     end)
 
@@ -218,6 +218,97 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal("Revert 1 line in new.lua?", prompt)
         assert.are.equal("one\nthree\n", worktree(root, "new.lua"))
         assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        p:close()
+    end)
+
+    it("visual s on an untracked file stages the selected lines alone", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\nthree\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.are.equal("two\n", indexed(root, "new.lua"))
+        assert.are.equal("one\ntwo\nthree\n", worktree(root, "new.lua"))
+        assert.are.equal("100644", git(root, "ls-files", "-s", "--", "new.lua"):match("^%d+"))
+        p:close()
+    end)
+
+    it(
+        "visual s on an untracked file retargets onto the add, where visual u takes lines back",
+        function()
+            local root = fresh_repo()
+            write(root .. "/new.lua", "one\ntwo\nthree\n")
+            vim.cmd.edit(root .. "/new.lua")
+            local p, v = open_panel()
+
+            local col = v.columns[1]
+            visual(col, col.map.from_new[1], col.map.from_new[2], "s")
+            assert.are.equal("one\ntwo\n", indexed(root, "new.lua"))
+            vim.wait(500, function() -- the retarget runs on a schedule
+                return not v.staging.whole_file
+            end)
+            assert.is_falsy(v.staging.whole_file)
+            assert.are.equal("partial", v:_hunk_state(1))
+
+            col = v.columns[1]
+            visual(col, col.map.from_new[1], col.map.from_new[1], "u")
+            assert.are.equal("two\n", indexed(root, "new.lua"))
+            p:close()
+        end
+    )
+
+    it("visual s on an untracked file keeps the file's executable bit", function()
+        local root = fresh_repo()
+        write(root .. "/run.sh", "one\ntwo\nthree\n")
+        vim.uv.fs_chmod(root .. "/run.sh", tonumber("755", 8))
+        vim.cmd.edit(root .. "/run.sh")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.are.equal("two\n", indexed(root, "run.sh"))
+        assert.are.equal("100755", git(root, "ls-files", "-s", "--", "run.sh"):match("^%d+"))
+        p:close()
+    end)
+
+    it("visual u on an untracked file has nothing to unstage", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\nthree\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "u")
+        assert.is_truthy(last_said():find("already unstaged", 1, true))
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        p:close()
+    end)
+
+    it("visual s on an untracked file edited under the view re-reads and stages nothing", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo\nthree\n")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        write(root .. "/new.lua", "one\ntwo\nthree\nfour\n")
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.is_truthy(last_said():find("re-reading", 1, true))
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        p:close()
+    end)
+
+    it("visual s on an untracked file's last line keeps it without a newline", function()
+        local root = fresh_repo()
+        write(root .. "/new.lua", "one\ntwo")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+        assert.are.equal("two", indexed(root, "new.lua"))
         p:close()
     end)
 

@@ -9,6 +9,7 @@ local set_staged = index_ops.set_staged
 local raw_line = require("differ.git.content").raw_line
 local diff_view = require("differ.git.staging.diff_view")
 local diff_view_staging, hides_staged = diff_view.diff_view_staging, diff_view.hides_staged
+local untracked_lines = diff_view.untracked_lines
 local file_lines = require("differ.git.staging.write").file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, row_state = whole_file.whole_file_revert, whole_file.row_state
@@ -148,6 +149,7 @@ local function for_head_work(ctx, entry, diff)
                 ctx.refresh()
                 ctx.retarget(false)
             end)
+            untracked_lines(ctx, entry, staging)
         end
         return staging
     end

@@ -1130,7 +1130,9 @@ function View:show_help()
     -- per-file, not session-wide: a source without `apply` would advertise keys that refuse
     if self:_can_stage_hunk() then
         local what = "%s hunk"
-        if self:_whole_file() then
+        if self:_whole_file() and self:_can_stage_lines() then
+            what = "%s file (visual: selected lines)"
+        elseif self:_whole_file() then
             what = "%s file"
         elseif self:_can_stage_lines() then
             what = "%s hunk (visual: selected lines)"
@@ -1606,7 +1608,7 @@ end
 ---@param want_staged boolean
 function View:_toggle_lines(want_staged)
     local selection = self:_selected_lines()
-    if self:_whole_file() then
+    if self:_whole_file() and not self:_can_stage_lines() then
         return vim.notify("differ: this file stages whole, not by line", vim.log.levels.WARN)
     end
     if not self:_can_stage_lines() then
