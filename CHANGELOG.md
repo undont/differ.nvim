@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- Visual `s`, `u` and `X` work wherever the hunk keys do: in the local view (`dw`), the commit preview (`ds`), and on added and untracked files
+
+### Fixed
+
+- Visual `X` turned an added symlink into an empty file, and on an untracked symlink asked then did nothing; symlinks now act whole, and a file that can't take lines says why
+- In the main diff, `u` on an added file whose staged mode the disk has undone dropped the mode without asking; it now asks first
+- In a partly staged file whose changes are too large to place line by line, a selection refused with an unrelated reason; it now says so and points at `dw`
+
+## [0.2.40] — 2026-11-20
+
 ### Changed
 
 - `de` from a history or commit diff opens the file at that line's place on disk now, not at its line number in the commit
