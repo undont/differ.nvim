@@ -21,6 +21,8 @@ local FILE_CHANGED = write.FILE_CHANGED
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, unheld_entry = whole_file.whole_file_revert, whole_file.unheld_entry
 local stage_prompt = whole_file.stage_prompt
+local kind_of, no_lines, symlink_add =
+    whole_file.kind_of, whole_file.no_lines, whole_file.symlink_add
 local mode_hidden, live_modes = whole_file.mode_hidden, whole_file.live_modes
 local diff_view = require("differ.git.staging.diff_view")
 local hides_staged, select_refusal = diff_view.hides_staged, diff_view.select_refusal
@@ -485,8 +487,8 @@ local function index_file_revert(ctx, entry, staging, preview)
 end
 
 -- staging for a row drawn HEAD<->index, in the commit preview or where that is the
--- only diff the row has. a deletion, or an add whose file is gone, is one unit whose
--- index entry comes and goes, so it stages as a file
+-- only diff the row has. a deletion, a type change, a symlink add, or an add whose
+-- file is gone, is one unit whose index entry comes and goes, so it stages as a file
 ---@param ctx differ.git.StagingCtx
 ---@param entry differ.FileEntry
 ---@param model differ.DiffModel  -- HEAD<->index
@@ -494,7 +496,8 @@ end
 ---@return differ.view.Staging
 local function for_index(ctx, entry, model, preview)
     local staging
-    local whole = entry.x == "D" or (entry.x == "A" and entry.y == "D")
+    local gone = entry.x == "A" and entry.y == "D"
+    local whole = entry.x == "D" or entry.x == "T" or gone or symlink_add(entry)
     if #model.hunks > 0 and not whole then
         -- the file against the index this view opened on: s and u move the index
         -- since, never the file
@@ -637,6 +640,7 @@ local function for_index(ctx, entry, model, preview)
             ctx.retarget(false)
         end)
         index_file_revert(ctx, entry, staging, preview)
+        no_lines(ctx, staging, kind_of(ctx, entry, model, entry.x, "head", "index"))
     end
     staging.badge = "INDEX"
     return staging
@@ -651,13 +655,7 @@ local function for_preview(ctx, entry, model)
     local staging = for_index(ctx, entry, model, true)
     staging.badge = "STAGED"
     local back = help.key(ctx.keys, "commit_preview")
-    local discard = help.key(ctx.keys, "discard")
     staging.no_local = ("the commit preview has no local view: %s goes back"):format(back)
-    staging.no_revert_lines = "discard is disabled"
-    if discard then
-        local msg = "%s reverts lines from the whole change; %s goes back"
-        staging.no_revert_lines = msg:format(discard, back)
-    end
     staging.leave = function()
         ctx.preview_off()
     end
@@ -890,6 +888,7 @@ local function for_local(ctx, entry, model, reopen)
         return local_file_revert(ctx, entry)
     end
     staging.revert_label = "resets it to the index"
+    no_lines(ctx, staging, kind_of(ctx, entry, model, entry.y, "index", "worktree"))
     local drop = local_file_unstage(ctx, entry, model)
     if drop then
         staging.hidden_in = { 1 }

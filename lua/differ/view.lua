@@ -115,6 +115,7 @@ local armed_view = nil
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field no_revert_lines? string  -- why X on a selection does nothing here
+---@field no_stage_lines? string  -- why s / u on a selection do nothing here
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- HEAD<->worktree source: which lines the index holds, kept current by the source
 ---@field hidden? boolean  -- HEAD<->worktree source: some staged content isn't on screen
@@ -1608,11 +1609,13 @@ end
 ---@param want_staged boolean
 function View:_toggle_lines(want_staged)
     local selection = self:_selected_lines()
-    if self:_whole_file() and not self:_can_stage_lines() then
-        return vim.notify("differ: this file stages whole, not by line", vim.log.levels.WARN)
-    end
     if not self:_can_stage_lines() then
-        return vim.notify("differ: line staging isn't available here", vim.log.levels.WARN)
+        local why = self.staging and self.staging.no_stage_lines
+        if not why and self:_whole_file() then
+            why = "this file stages whole, not by line"
+        end
+        why = why or "line staging isn't available here"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
     if not selection then
         return vim.notify("differ: no changed lines selected", vim.log.levels.WARN)

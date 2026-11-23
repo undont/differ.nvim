@@ -377,6 +377,171 @@ describe(":Differ diff hunk staging", function()
         end)
     end
 
+    local function link(root, path, target)
+        os.remove(root .. "/" .. path)
+        vim.uv.fs_symlink(target, root .. "/" .. path)
+    end
+    -- rows that stage whole in each view: s / u / X on a selection name the kind of
+    -- row, refuse before any prompt and write nothing
+    for _, case in ipairs({
+        {
+            view = "diff",
+            what = "a file gone from disk",
+            said = "a file gone from disk has no lines to revert; X deletes the staged file",
+            change = function(root)
+                git(root, "add", "a.lua")
+                os.remove(root .. "/a.lua")
+            end,
+            added = true,
+        },
+        {
+            view = "diff",
+            what = "a type change",
+            said = "a type change has no lines to revert; X resets it to HEAD",
+            change = function(root)
+                link(root, "a.lua", "keep.lua")
+            end,
+        },
+        {
+            view = "diff",
+            what = "a symlink",
+            said = "a symlink has no lines to revert; X deletes the file",
+            change = function(root)
+                link(root, "a.lua", "keep.lua")
+                git(root, "add", "a.lua")
+            end,
+            added = true,
+        },
+        {
+            view = "diff",
+            what = "a symlink",
+            said = "a symlink has no lines to revert; X deletes the file",
+            change = function(root)
+                link(root, "a.lua", "keep.lua")
+            end,
+            added = true,
+            untracked = true,
+        },
+        {
+            view = "dw",
+            what = "a type change",
+            said = "a type change has no lines to revert; X resets it to the index",
+            change = function(root)
+                git(root, "add", "a.lua")
+                link(root, "a.lua", "keep.lua")
+            end,
+        },
+        {
+            view = "dw",
+            what = "a binary file",
+            said = "a binary file has no lines to revert; X resets it to the index",
+            change = function(root)
+                git(root, "add", "a.lua")
+                write(root .. "/a.lua", "\0bin\0two\n")
+            end,
+        },
+        {
+            view = "ds",
+            what = "a deleted file",
+            said = "a deleted file has no lines to revert; X restores the file",
+            change = function(root)
+                git(root, "rm", "-q", "a.lua")
+            end,
+            committed = true,
+        },
+        {
+            view = "ds",
+            what = "a file gone from disk",
+            said = "a file gone from disk has no lines to revert; X deletes the staged file",
+            change = function(root)
+                git(root, "add", "a.lua")
+                os.remove(root .. "/a.lua")
+            end,
+            added = true,
+        },
+        {
+            view = "ds",
+            what = "a mode change",
+            said = "a mode change has no lines to revert; X resets it to HEAD",
+            change = function(root)
+                vim.fn.setfperm(root .. "/a.lua", "rwxr-xr-x")
+                git(root, "add", "a.lua")
+            end,
+            committed = true,
+        },
+        {
+            view = "ds",
+            what = "a type change",
+            said = "a type change has no lines to revert; X resets it to HEAD",
+            change = function(root)
+                link(root, "a.lua", "keep.lua")
+                git(root, "add", "a.lua")
+            end,
+            committed = true,
+        },
+        {
+            view = "ds",
+            what = "a symlink",
+            said = "a symlink has no lines to revert; X deletes the file",
+            change = function(root)
+                link(root, "a.lua", "keep.lua")
+                git(root, "add", "a.lua")
+            end,
+            added = true,
+        },
+    }) do
+        local row = case.what
+        if case.untracked then
+            row = "an untracked symlink"
+        end
+        it(("visual s / u / X in %s on %s say why"):format(case.view, row), function()
+            local root = fresh_repo()
+            write(root .. "/keep.lua", "keep\n")
+            git(root, "add", "keep.lua")
+            if case.added then
+                git(root, "rm", "-q", "--cached", "a.lua")
+                git(root, "commit", "-q", "-m", "keep only")
+            else
+                write(root .. "/a.lua", "one\ntwo\n")
+                git(root, "commit", "-q", "-am", "base")
+                if not case.committed and case.view ~= "diff" then
+                    write(root .. "/a.lua", "one\ntwo\nstaged\n") -- dw needs a staged change
+                end
+            end
+            if case.added and not case.untracked and case.view ~= "ds" then
+                write(root .. "/a.lua", "added\n")
+            end
+            case.change(root)
+            vim.cmd.edit(root .. "/keep.lua")
+            local p, v = open_panel()
+            if case.view == "dw" then
+                v:toggle_local()
+                v = view_in_origin(p)
+                assert.are.equal("LOCAL", v.staging.badge)
+            elseif case.view == "ds" then
+                v:toggle_commit_preview()
+                v = view_in_origin(p)
+            end
+            assert.are.equal("a.lua", v.model.path)
+            local before = git(root, "status", "--porcelain=v2") .. git(root, "ls-files", "-s")
+
+            local col = v.columns[#v.columns]
+            local said = {}
+            local prompt = confirming(1, function()
+                for _, key in ipairs({ "s", "u", "X" }) do
+                    visual(col, 1, math.max(1, #col.map.lines), key)
+                    said[key] = last_said()
+                end
+            end)
+            local after = git(root, "status", "--porcelain=v2") .. git(root, "ls-files", "-s")
+            p:close()
+            local stages = ("differ: %s stages whole, not by line"):format(case.what)
+            assert.are.same({ s = stages, u = stages, X = "differ: " .. case.said }, said)
+            assert.is_nil(prompt)
+            assert.are.equal(before, after)
+        end)
+    end
+
     -- lines 3 and 4 staged, then `work` on disk. putting 3 back leaves the index
     -- changing a line between hunks
     ---@param root string

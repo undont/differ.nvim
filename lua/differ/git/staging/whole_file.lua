@@ -2,12 +2,15 @@
 -- staged content s or u would lose
 
 local exec = require("differ.git.exec")
+local help = require("differ.ui.help")
 local index_ops = require("differ.git.index")
 local rev = require("differ.git.rev")
 local raw_line = require("differ.git.content").raw_line
 local git = exec.git
 local index_path = index_ops.index_path
 local gitmod = require("differ.git.staging.write").gitmod
+
+local SYMLINK = "120000"
 
 -- the confirms before s/S or u/U drop staged content nothing else holds, in the panel
 -- and a file's own view
@@ -149,8 +152,79 @@ local function stage_prompt(ctx, entry)
     return nil
 end
 
+-- whether the row stages a symlink as an add. emptying it by line leaves a regular
+-- file, so it stages whole
+---@param entry differ.FileEntry
+---@return boolean
+local function symlink_add(entry)
+    return entry.x == "A" and entry.modes ~= nil and entry.modes.index == SYMLINK
+end
+
+-- what a row that stages whole is, for a selection's refusal. `letters` are the row's
+-- status letters on the view's two sides, and `old` / `new` name those sides in its modes
+---@param ctx differ.git.StagingCtx
+---@param entry differ.FileEntry
+---@param model differ.DiffModel
+---@param letters string
+---@param old "head"|"index"
+---@param new "index"|"worktree"
+---@return string
+local function kind_of(ctx, entry, model, letters, old, new)
+    local modes = entry.modes or {}
+    local new_mode = modes[new]
+    if not new_mode and new == "worktree" then
+        local st = vim.uv.fs_lstat(ctx.root .. "/" .. entry.path)
+        if st and st.type == "link" then
+            new_mode = SYMLINK
+        end
+    end
+    if entry.x == "A" and entry.y == "D" then
+        return "a file gone from disk"
+    end
+    if letters:find("D") then
+        return "a deleted file"
+    end
+    if letters:find("T") then
+        return "a type change"
+    end
+    if modes[old] == index_ops.GITLINK or new_mode == index_ops.GITLINK then
+        return "a submodule"
+    end
+    if model.binary then
+        return "a binary file"
+    end
+    if new_mode == SYMLINK then
+        return "a symlink"
+    end
+    if letters:find("[RC]") and #model.hunks == 0 then
+        return "a move"
+    end
+    if modes[old] and new_mode and modes[old] ~= new_mode then
+        return "a mode change"
+    end
+    return "this file"
+end
+
+-- s / u / X's refusals on a selection of a row that stages whole. X names what it
+-- does instead where it acts on the row
+---@param ctx differ.git.StagingCtx
+---@param staging differ.view.Staging
+---@param kind string  -- from kind_of
+local function no_lines(ctx, staging, kind)
+    staging.no_stage_lines = kind .. " stages whole, not by line"
+    local msg = kind .. " has no lines to revert"
+    local discard = help.key(ctx.keys, "discard")
+    if staging.revert and staging.revert_label and discard then
+        msg = ("%s; %s %s"):format(msg, discard, staging.revert_label)
+    end
+    staging.no_revert_lines = msg
+end
+
 return {
     DROP_PROMPTS = DROP_PROMPTS,
+    symlink_add = symlink_add,
+    kind_of = kind_of,
+    no_lines = no_lines,
     whole_file_revert = whole_file_revert,
     row_state = row_state,
     mode_hidden = mode_hidden,
