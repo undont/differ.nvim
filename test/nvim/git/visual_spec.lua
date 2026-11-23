@@ -15,6 +15,7 @@ local staged_as = helpers.staged_as
 local twelve = helpers.twelve
 local hunk_line = helpers.hunk_line
 local stage_behind = helpers.stage_behind
+local paths = helpers.paths
 
 describe(":Differ diff hunk staging", function()
     local Panel = require("differ.panel")
@@ -1310,6 +1311,90 @@ describe(":Differ diff hunk staging", function()
         assert.are.equal(twelve({ [12] = "12x" }), worktree(root, "a.lua"))
         p:close()
     end)
+
+    -- the file has a line of its own, so a.lua stays listed as unstaged
+    local function drifted()
+        return staged_as(
+            twelve({}),
+            twelve({ "1x", [12] = "12x" }),
+            twelve({ "1x", [6] = "6\nnew", [12] = "12x" })
+        )
+    end
+    local function said(msg)
+        for _, n in ipairs(_G.notifs) do
+            if n.msg == msg then
+                return true
+            end
+        end
+        return false
+    end
+
+    it("visual X in ds over every staged line hands back every change", function()
+        local root, p = drifted()
+        local v = ds_of(p)
+        _G.notifs = {}
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_old[1], col.map.from_new[12], "X")
+        end)
+        assert.are.equal(twelve({}), indexed(root, "a.lua"))
+        assert.are.equal(twelve({ [6] = "6\nnew" }), worktree(root, "a.lua"))
+        vim.wait(500, function()
+            return view_in_origin(p).staging.badge == nil
+        end)
+        v = view_in_origin(p)
+        assert.is_nil(v.staging.badge)
+        assert.are.equal(twelve({ [6] = "6\nnew" }), v.model.new_text)
+        assert.is_true(said("differ: nothing staged: back to every change"))
+        assert.is_truthy(file_line(p, "a.lua", false))
+        p:close()
+    end)
+
+    it("visual X in ds over every staged line moves on to the next staged file", function()
+        local root, p = drifted()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        local v = ds_of(p)
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_old[1], col.map.from_new[12], "X")
+        end)
+        vim.wait(500, function()
+            return view_in_origin(p).model.path == "b.lua"
+        end)
+        v = view_in_origin(p)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("STAGED", v.staging.badge)
+        assert.are.same({ "b.lua" }, paths(p))
+        p:close()
+    end)
+
+    it(
+        "visual X in ds on the last staged lines after u on a hunk hands back every change",
+        function()
+            local root, p = drifted()
+            local v = ds_of(p)
+            local col = v.columns[1]
+            vim.api.nvim_set_current_win(col.winid)
+            vim.api.nvim_win_set_cursor(col.winid, { hunk_line(v, 1), 0 })
+            v:unstage_hunk()
+            _G.notifs = {}
+
+            confirming(1, function()
+                visual(col, col.map.from_old[12], col.map.from_new[12], "X")
+            end)
+            assert.are.equal(twelve({}), indexed(root, "a.lua"))
+            assert.are.equal(twelve({ "1x", [6] = "6\nnew" }), worktree(root, "a.lua"))
+            vim.wait(500, function()
+                return view_in_origin(p).staging.badge == nil
+            end)
+            assert.is_nil(view_in_origin(p).staging.badge)
+            assert.is_true(said("differ: nothing staged: back to every change"))
+            p:close()
+        end
+    )
 
     local function added_in_ds(index, work)
         local root = fresh_repo()

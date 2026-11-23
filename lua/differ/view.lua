@@ -85,7 +85,8 @@ local armed_view = nil
 ---@field side differ.ColumnSide
 ---@field folds? differ.FoldRange[]
 
--- X on lines, and the revert it wrote, as select_worktree gives it
+-- X on lines, and the revert it wrote, as select_worktree gives it; no revert where
+-- the source re-reads the view itself
 ---@alias differ.view.RevertLines
 ---| fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?, differ.DiffModel?
 
@@ -2109,8 +2110,12 @@ function View:revert_lines()
 
     local focus = self:cursor_new_line()
     local ok, _, reverted = revert(self.model, selection)
-    if not (ok and reverted) then
+    if not ok then
         return
+    end
+    -- a frozen source re-reads the view itself, from the panel list refreshed here
+    if not reverted then
+        return self.staging.refresh()
     end
 
     local model = self.model
