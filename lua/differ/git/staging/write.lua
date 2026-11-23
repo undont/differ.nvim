@@ -30,6 +30,9 @@ end
 -- why a selection whose texts read back as other marks writes nothing
 local MOVES_OTHERS = "these lines can't be moved on their own without changing others"
 
+-- why X refuses where the file no longer holds the lines it would give back
+local FILE_CHANGED = "the file has changed these lines: nothing reverted"
+
 local LEAVES_ENDING = "reverting these lines would leave a line with no newline above others"
 
 -- why X refuses where a last line and its ending would come apart
@@ -88,7 +91,7 @@ end
 ---@return boolean
 local function revert_worktree(ctx, entry, p, stage_index)
     if not gitmod().revert_patch(ctx.root, p, true) then
-        notify("the file has changed these lines: nothing reverted", vim.log.levels.WARN)
+        notify(FILE_CHANGED, vim.log.levels.WARN)
         return false
     end
     if not stage_index() then
@@ -177,6 +180,7 @@ return {
     gitmod = gitmod,
     edits = edits,
     MOVES_OTHERS = MOVES_OTHERS,
+    FILE_CHANGED = FILE_CHANGED,
     REVERT_ENDING = REVERT_ENDING,
     put_index = put_index,
     index_unreadable = index_unreadable,

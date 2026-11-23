@@ -68,7 +68,7 @@ describe(":Differ diff notices with remapped keys", function()
         v:revert_lines()
         local said = last_said()
         p:close()
-        assert.are.equal("differ: a mode change has no lines to revert; zx resets it whole", said)
+        assert.are.equal("differ: a mode change has no lines to revert; zx resets it to HEAD", said)
     end)
 
     it("names the remapped commit preview key in the preview's dw refusal", function()

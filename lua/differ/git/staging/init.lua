@@ -9,11 +9,14 @@ local set_staged = index_ops.set_staged
 local raw_line = require("differ.git.content").raw_line
 local diff_view = require("differ.git.staging.diff_view")
 local diff_view_staging, hides_staged = diff_view.diff_view_staging, diff_view.hides_staged
+local untracked_lines = diff_view.untracked_lines
 local file_lines = require("differ.git.staging.write").file_lines
 local whole_file = require("differ.git.staging.whole_file")
 local whole_file_revert, row_state = whole_file.whole_file_revert, whole_file.row_state
 local unheld_entry, stage_drops = whole_file.unheld_entry, whole_file.stage_drops
 local stage_prompt = whole_file.stage_prompt
+local kind_of, no_lines, symlink_add =
+    whole_file.kind_of, whole_file.no_lines, whole_file.symlink_add
 local frozen = require("differ.git.staging.frozen")
 local for_index, for_preview, for_local = frozen.for_index, frozen.for_preview, frozen.for_local
 
@@ -44,22 +47,8 @@ M.DROP_PROMPTS = whole_file.DROP_PROMPTS
 ---@return boolean
 local function by_line(entry)
     local content = entry.status == "M" or entry.status == "R" or entry.status == "C"
-    local added = entry.status == "A" and entry.x == "A"
+    local added = entry.status == "A" and entry.x == "A" and not symlink_add(entry)
     return (content or added) and entry.x ~= "D" and entry.y ~= "T"
-end
-
--- X's refusal on a selection of a file that reverts whole
----@param ctx differ.git.StagingCtx
----@param what string  -- the kind of file
----@param does string  -- what X does to it
----@return string
-local function no_lines(ctx, what, does)
-    local msg = what .. " has no lines to revert"
-    local discard = help.key(ctx.keys, "discard")
-    if discard then
-        msg = ("%s; %s %s it whole"):format(msg, discard, does)
-    end
-    return msg
 end
 
 -- staging for a row's HEAD<->worktree diff: by hunk through diff_view_staging, else the file as one unit
@@ -74,6 +63,7 @@ local function for_head_work(ctx, entry, diff)
     if by_line(entry) and #diff.hunks > 0 then
         local staging = diff_view_staging(ctx, entry, diff)
         if entry.x == "A" then
+            staging.drops_entry = true
             -- throwing away an add is deleting the file, not reverting a hunk of it
             staging.revert, staging.revert_label, staging.no_revert =
                 whole_file_revert(ctx, entry, "A", false)
@@ -103,6 +93,7 @@ local function for_head_work(ctx, entry, diff)
             return stage_prompt(ctx, entry)
         end,
     }
+    local kind = kind_of(ctx, entry, diff, (entry.x or "") .. (entry.y or ""), "head", "worktree")
     -- X puts a mode change or a binary file back as HEAD has it. a move stays with the
     -- panel row's keys, and a submodule has no X
     if entry.status == "M" then
@@ -111,13 +102,8 @@ local function for_head_work(ctx, entry, diff)
         local why = index_ops.discard_refusal(ctx.keys, entry, head_mode, work_mode)
         if why then
             staging.no_revert = why
-            staging.no_revert_lines = "a submodule has no lines to revert"
         else
             staging.revert, staging.revert_label = whole_file_revert(ctx, entry, "M", false)
-            staging.no_revert_lines = no_lines(ctx, "a mode change", "resets")
-            if diff.binary then
-                staging.no_revert_lines = no_lines(ctx, "a binary file", "resets")
-            end
         end
     end
     if entry.status == "M" or entry.status == "R" or entry.status == "C" then
@@ -128,6 +114,7 @@ local function for_head_work(ctx, entry, diff)
                 staging.no_revert = ("%s on the panel row undoes the move"):format(discard)
             end
         end
+        no_lines(ctx, staging, kind)
         return staging
     end
     -- an add's discard drops the staged entry before removing the file; a
@@ -135,11 +122,9 @@ local function for_head_work(ctx, entry, diff)
     if REVERTABLE_WHOLE[entry.status] then
         staging.revert, staging.revert_label, staging.no_revert =
             whole_file_revert(ctx, entry, entry.status, false)
-        if entry.status == "D" then
-            staging.no_revert_lines = no_lines(ctx, "a deleted file", "restores")
-        elseif diff.binary then
-            staging.no_revert_lines = no_lines(ctx, "a binary file", "resets")
-        elseif entry.status == "?" and #diff.hunks > 0 then
+        no_lines(ctx, staging, kind)
+        local regular = not diff.binary and kind ~= "a symlink"
+        if entry.status == "?" and regular and #diff.hunks > 0 then
             -- an untracked file goes back to nothing, so its selected lines just leave it
             file_lines(ctx, entry, staging, function()
                 return ""
@@ -147,6 +132,7 @@ local function for_head_work(ctx, entry, diff)
                 ctx.refresh()
                 ctx.retarget(false)
             end)
+            untracked_lines(ctx, entry, staging)
         end
         return staging
     end

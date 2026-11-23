@@ -85,7 +85,8 @@ local armed_view = nil
 ---@field side differ.ColumnSide
 ---@field folds? differ.FoldRange[]
 
--- X on lines, and the revert it wrote, as select_worktree gives it
+-- X on lines, and the revert it wrote, as select_worktree gives it; no revert where
+-- the source re-reads the view itself
 ---@alias differ.view.RevertLines
 ---| fun(model: differ.DiffModel, lines: differ.model.Selection): boolean, boolean?, differ.DiffModel?
 
@@ -115,6 +116,7 @@ local armed_view = nil
 ---@field revert_label? string  -- e.g. "deletes the file"
 ---@field no_revert? string  -- why X does nothing here, in place of the default refusal
 ---@field no_revert_lines? string  -- why X on a selection does nothing here
+---@field no_stage_lines? string  -- why s / u on a selection do nothing here
 ---@field refresh fun()
 ---@field marks? differ.model.Marks  -- HEAD<->worktree source: which lines the index holds, kept current by the source
 ---@field hidden? boolean  -- HEAD<->worktree source: some staged content isn't on screen
@@ -127,6 +129,7 @@ local armed_view = nil
 -- `unheld` says u on slot `idx`, or U when it's nil, drops staged content neither HEAD
 -- nor the file holds, so the key confirms first
 ---@field unheld? fun(model: differ.DiffModel, idx: integer|nil): boolean
+---@field drops_entry? boolean  -- an add: its one hunk is the file, and u takes it out of the index
 ---@field confirm_stage? fun(): string|nil  -- read at the keypress: the prompt s and S ask first, `%s` the path
 -- `drop_scope` names the lines u on `!` hunk `idx` takes back, when wider than the hunk
 ---@field drop_scope? fun(idx: integer): string|nil
@@ -1129,7 +1132,9 @@ function View:show_help()
     -- per-file, not session-wide: a source without `apply` would advertise keys that refuse
     if self:_can_stage_hunk() then
         local what = "%s hunk"
-        if self:_whole_file() then
+        if self:_whole_file() and self:_can_stage_lines() then
+            what = "%s file (visual: selected lines)"
+        elseif self:_whole_file() then
             what = "%s file"
         elseif self:_can_stage_lines() then
             what = "%s hunk (visual: selected lines)"
@@ -1605,11 +1610,13 @@ end
 ---@param want_staged boolean
 function View:_toggle_lines(want_staged)
     local selection = self:_selected_lines()
-    if self:_whole_file() then
-        return vim.notify("differ: this file stages whole, not by line", vim.log.levels.WARN)
-    end
     if not self:_can_stage_lines() then
-        return vim.notify("differ: line staging isn't available here", vim.log.levels.WARN)
+        local why = self.staging and self.staging.no_stage_lines
+        if not why and self:_whole_file() then
+            why = "this file stages whole, not by line"
+        end
+        why = why or "line staging isn't available here"
+        return vim.notify("differ: " .. why, vim.log.levels.WARN)
     end
     if not selection then
         return vim.notify("differ: no changed lines selected", vim.log.levels.WARN)
@@ -1654,7 +1661,7 @@ function View:_drop_prompt(idx)
     if scope then
         return ("Unstage %s in %s? The staged change will be lost."):format(scope, self.model.path)
     end
-    if idx and not self:_whole_file() then
+    if idx and not self:_whole_file() and not self.staging.drops_entry then
         return ("Unstage hunk %d/%d in %s? The staged change will be lost."):format(
             idx,
             #self.model.hunks,
@@ -2103,8 +2110,12 @@ function View:revert_lines()
 
     local focus = self:cursor_new_line()
     local ok, _, reverted = revert(self.model, selection)
-    if not (ok and reverted) then
+    if not ok then
         return
+    end
+    -- a frozen source re-reads the view itself, from the panel list refreshed here
+    if not reverted then
+        return self.staging.refresh()
     end
 
     local model = self.model
