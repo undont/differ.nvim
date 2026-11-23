@@ -1587,6 +1587,207 @@ describe(":Differ diff hunk staging", function()
         p:close()
     end)
 
+    -- the panel rows listing `path`, as "<section> <x><y>"
+    local function rows_of(p, path)
+        local out = {}
+        for _, sec in ipairs(p.sections) do
+            for _, e in ipairs(sec.entries) do
+                if e.path == path then
+                    out[#out + 1] = ("%s %s%s"):format(sec.title, e.x or "", e.y or "")
+                end
+            end
+        end
+        return out
+    end
+    -- wait for the view in the origin window to satisfy `pred`, and return it
+    local function settled_view(p, pred)
+        vim.wait(1000, function()
+            return pred(view_in_origin(p))
+        end)
+        return view_in_origin(p)
+    end
+
+    it("visual u in ds on all of the only staged add hands back every change", function()
+        local _, p, v = added_in_ds("1\n2\n3\n", "1\n2\n3\n")
+        _G.notifs = {}
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[1], col.map.from_new[3], "u")
+        v = settled_view(p, function(sv)
+            return sv.staging.badge == nil
+        end)
+        assert.is_nil(v.staging.badge)
+        assert.are.equal("new.lua", v.model.path)
+        assert.are.equal("1\n2\n3\n", v.model.new_text)
+        assert.is_true(said("differ: nothing staged: back to every change"))
+        assert.are.same({ "Untracked ??" }, rows_of(p, "new.lua"))
+        p:close()
+    end)
+
+    it("visual u in ds on all of an add moves on to the next staged file", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        write(root .. "/new.lua", "1\n2\n3\n")
+        git(root, "add", "new.lua")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        v = view_in_origin(p)
+        assert.are.equal("new.lua", v.model.path)
+
+        local col = v.columns[1]
+        visual(col, col.map.from_new[1], col.map.from_new[3], "u")
+        v = settled_view(p, function(sv)
+            return sv.model.path == "b.lua"
+        end)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("STAGED", v.staging.badge)
+        assert.are.same({ "b.lua" }, paths(p))
+        p:close()
+    end)
+
+    it("visual X in ds on all of the only staged add hands back every change", function()
+        local root, p, v = added_in_ds("1\n2\n3\n", "1\n2\n3\n")
+        _G.notifs = {}
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[3], "X")
+        end)
+        assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+        v = settled_view(p, function(sv)
+            return sv.staging.badge == nil
+        end)
+        assert.is_nil(v.staging.badge)
+        assert.is_true(said("differ: nothing staged: back to every change"))
+        assert.are.same({ "Untracked ??" }, rows_of(p, "new.lua"))
+        p:close()
+    end)
+
+    it("visual X in ds on all of an add moves on to the next staged file", function()
+        local root = fresh_repo()
+        write(root .. "/b.lua", "b\n")
+        git(root, "add", "b.lua")
+        write(root .. "/new.lua", "1\n2\n3\n")
+        git(root, "add", "new.lua")
+        vim.cmd.edit(root .. "/new.lua")
+        local p, v = open_panel()
+        v:toggle_commit_preview()
+        v = view_in_origin(p)
+        assert.are.equal("new.lua", v.model.path)
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[3], "X")
+        end)
+        v = settled_view(p, function(sv)
+            return sv.model.path == "b.lua"
+        end)
+        assert.are.equal("b.lua", v.model.path)
+        assert.are.equal("STAGED", v.staging.badge)
+        assert.are.same({ "b.lua" }, paths(p))
+        p:close()
+    end)
+
+    it("visual X on all of an added file retargets onto the emptied untracked file", function()
+        local _, p, v = added("1\n2\n3\n", "1\n2\n3\n")
+
+        local col = v.columns[1]
+        local added_staging = v.staging
+        confirming(1, function()
+            visual(col, col.map.from_new[1], col.map.from_new[3], "X")
+        end)
+        v = settled_view(p, function(sv)
+            return sv.staging ~= added_staging
+        end)
+        assert.are.equal("new.lua", v.model.path)
+        assert.is_true(v.staging.whole_file)
+        assert.are.equal("unstaged", v.staging.initial)
+        assert.are.equal("", v.model.new_text)
+        assert.are.equal(0, #v.model.hunks)
+        assert.are.same({ "Untracked ??" }, rows_of(p, "new.lua"))
+        p:close()
+    end)
+
+    it(
+        "visual u on the only staged lines of an add retargets back onto the untracked file",
+        function()
+            local root = fresh_repo()
+            write(root .. "/new.lua", "one\ntwo\nthree\n")
+            vim.cmd.edit(root .. "/new.lua")
+            local p, v = open_panel()
+            local col = v.columns[1]
+            visual(col, col.map.from_new[2], col.map.from_new[2], "s")
+            v = settled_view(p, function(sv)
+                return not sv.staging.whole_file and sv:_hunk_state(1) == "partial"
+            end)
+            assert.are.same({ "Partial AM" }, rows_of(p, "new.lua"))
+
+            col = v.columns[1]
+            local added_staging = v.staging
+            visual(col, col.map.from_new[2], col.map.from_new[2], "u")
+            assert.are.equal("", git(root, "ls-files", "--", "new.lua"))
+            v = settled_view(p, function(sv)
+                return sv.staging ~= added_staging
+            end)
+            assert.are.same({ "Untracked ??" }, rows_of(p, "new.lua"))
+            assert.are.equal("unstaged", v:_hunk_state(1))
+
+            -- the untracked file's own staging: s creates the index entry again
+            col = v.columns[1]
+            visual(col, col.map.from_new[1], col.map.from_new[1], "s")
+            assert.are.equal("one\n", indexed(root, "new.lua"))
+            p:close()
+        end
+    )
+
+    -- the +/- the commit preview's panel lists for `path`
+    local function staged_counts(p, path)
+        for _, e in ipairs(p.sections[1].entries) do
+            if e.path == path then
+                return { e.additions, e.deletions }
+            end
+        end
+    end
+
+    it("visual u in ds on some lines updates the panel's counts and keeps the view", function()
+        local root, p =
+            staged_as(twelve({}), twelve({ "1x", [12] = "12x" }), twelve({ "1x", [12] = "12x" }))
+        local v = ds_of(p)
+        assert.are.same({ 2, 2 }, staged_counts(p, "a.lua"))
+
+        local col = v.columns[1]
+        visual(col, col.map.from_old[1], col.map.from_new[1], "u")
+        assert.are.equal(twelve({ [12] = "12x" }), indexed(root, "a.lua"))
+        v = settled_view(p, function(sv)
+            return sv.model.new_text == twelve({ [12] = "12x" })
+        end)
+        assert.are.equal("STAGED", v.staging.badge)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.same({ 1, 1 }, staged_counts(p, "a.lua"))
+        p:close()
+    end)
+
+    it("visual X in ds on some lines updates the panel's counts and keeps the view", function()
+        local root, p =
+            staged_as(twelve({}), twelve({ "1x", [12] = "12x" }), twelve({ "1x", [12] = "12x" }))
+        local v = ds_of(p)
+
+        local col = v.columns[1]
+        confirming(1, function()
+            visual(col, col.map.from_old[1], col.map.from_new[1], "X")
+        end)
+        assert.are.equal(twelve({ [12] = "12x" }), indexed(root, "a.lua"))
+        v = settled_view(p, function(sv)
+            return sv.model.new_text == twelve({ [12] = "12x" })
+        end)
+        assert.are.equal("STAGED", v.staging.badge)
+        assert.are.equal("a.lua", v.model.path)
+        assert.are.same({ 1, 1 }, staged_counts(p, "a.lua"))
+        p:close()
+    end)
+
     -- a real confirm reads typeahead, so a queued key would answer it
     it("visual X asks in normal mode with nothing left in typeahead", function()
         local root = fresh_repo()
