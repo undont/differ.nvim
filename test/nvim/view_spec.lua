@@ -1826,6 +1826,66 @@ describe("view teardown", function()
         assert.is_false(group_exists("differ.view.edit." .. v.id))
     end)
 
+    describe("the edit window's g?", function()
+        local function help_desc(buf)
+            local m = vim.api.nvim_buf_call(buf, function()
+                return vim.fn.maparg("g?", "n", false, true)
+            end)
+            return m.buffer == 1 and m.desc or nil
+        end
+
+        -- `f.txt` loaded ahead of the session with a buffer-local g? of its own
+        local function file_with_map(dir, desc)
+            write(dir, "f.txt", "a\nB\nc\n")
+            vim.cmd.edit(vim.fn.fnameescape(dir .. "/f.txt"))
+            local buf = vim.api.nvim_get_current_buf()
+            vim.keymap.set("n", "g?", function() end, { buffer = buf, desc = desc })
+            return buf
+        end
+
+        it("puts the file's own map back on teardown", function()
+            vim.cmd("silent! only")
+            local dir = vim.fn.tempname()
+            local real = file_with_map(dir, "mine")
+            local v = open_view(dir)
+            v:edit_file()
+            assert.are.equal(real, vim.api.nvim_get_current_buf())
+            assert.are.equal("differ: keymap help", help_desc(real))
+
+            v:close()
+            assert.are.equal("mine", help_desc(real))
+        end)
+
+        it("keeps the file's own map as the one to restore across a re-arm", function()
+            vim.cmd("silent! only")
+            local dir = vim.fn.tempname()
+            local real = file_with_map(dir, "mine")
+            local v = open_view(dir)
+            v:edit_file()
+            local edit_win = vim.api.nvim_get_current_win()
+
+            vim.keymap.del("n", "g?", { buffer = real }) -- taken off under us
+            vim.cmd("wincmd p")
+            vim.api.nvim_set_current_win(edit_win) -- focus fires the re-arm
+            assert.are.equal("differ: keymap help", help_desc(real))
+
+            v:close()
+            assert.are.equal("mine", help_desc(real))
+        end)
+
+        it("leaves a map set over differ's mid-edit in place", function()
+            vim.cmd("silent! only")
+            local dir = vim.fn.tempname()
+            local v = open_view(dir)
+            v:edit_file()
+            local real = vim.api.nvim_get_current_buf()
+            vim.keymap.set("n", "g?", function() end, { buffer = real, desc = "later" })
+
+            v:close()
+            assert.are.equal("later", help_desc(real))
+        end)
+    end)
+
     it("drops the zoom-return hook when the session ends before the zoom tab", function()
         vim.cmd("silent! only")
         local v = open_view(vim.fn.tempname())

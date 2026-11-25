@@ -10,7 +10,7 @@ local syntax = require("differ.syntax")
 local statuscolumn = require("differ.ui.statuscolumn")
 local nav = require("differ.nav")
 local keymap = require("differ.util.keymap")
-local bind, unbind = keymap.bind, keymap.unbind
+local bind = keymap.bind
 local find_buf = require("differ.util.buf").find
 local to_lines = require("differ.util.text").to_lines
 
@@ -167,9 +167,15 @@ local armed_view = nil
 ---@field _edit_group integer|nil  -- augroup id for the edit window's WinClosed sync
 ---@field _lockstep_group integer|nil  -- augroup id for the split fold + scroll sync
 ---@field _synced table<integer, differ.view.Scroll>  -- where the last scroll sync left each column
----@field _edit_map { buf: integer, spec: string|string[]|false }|nil  -- g? bound on a real file buffer
+---@field _edit_map differ.view.EditMap|nil  -- g? held on a real file buffer
 local View = {}
 View.__index = View
+
+---@class differ.view.EditMap
+---@field buf integer
+---@field spec string|string[]|false
+---@field fn fun()
+---@field held differ.keymap.Held[]
 
 ---@class differ.view.Opts
 ---@field layout differ.Layout
@@ -2443,17 +2449,19 @@ function View:_open_edit_window(abs, target, tcol, anchor_win)
     self:_bind_edit_map(vim.api.nvim_get_current_buf())
 end
 
--- bind g? on `buf` and record it: teardown has to unbind by hand on a buffer we don't own
+-- hold g? on `buf`, keeping the file's own buffer-local map for teardown to put back
 ---@param buf integer
 function View:_bind_edit_map(buf)
-    bind(buf, self.keymaps.help, function()
+    local fn = function()
         self:show_help()
-    end, "differ: keymap help")
-    self._edit_map = { buf = buf, spec = self.keymaps.help }
+    end
+    local held = keymap.hold(buf, self.keymaps.help, fn, "differ: keymap help")
+    self._edit_map = { buf = buf, spec = self.keymaps.help, fn = fn, held = held }
 end
 
--- the merge tool loads the same real file, so on a conflicted path it shares this bufnr
--- and its teardown takes g? off. re-arm on focus, leaving a live merge tool's own bind
+-- the real file buffer is shared (the merge tool loads the same bufnr on a conflicted
+-- path), so g? can be taken off under us. re-arm on focus, leaving any other buffer-local
+-- g? in place
 function View:_rearm_edit_map()
     local m = self._edit_map
     if not m or not self.edit_win or vim.api.nvim_get_current_win() ~= self.edit_win then
@@ -2467,16 +2475,18 @@ function View:_rearm_edit_map()
     then
         return
     end
-    self:_bind_edit_map(m.buf)
+    -- the same fn so release still matches it; holding again would record no prior and
+    -- lose the first hold's
+    bind(m.buf, m.spec, m.fn, "differ: keymap help")
 end
 
--- take our g? back off the real file buffer. it isn't ours to delete, so nothing
--- reclaims the mapping for us
+-- take our g? back off the real file buffer and put back what it replaced. it isn't
+-- ours to delete, so nothing reclaims the mapping for us
 function View:_drop_edit_map()
     if not self._edit_map then
         return
     end
-    unbind(self._edit_map.buf, self._edit_map.spec)
+    keymap.release(self._edit_map.buf, self._edit_map.held)
     self._edit_map = nil
 end
 
