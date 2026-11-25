@@ -637,9 +637,10 @@ end
 -- "no next/previous hunk" — always handled here, so the caller never notifies itself
 ---@param direction "next"|"prev"
 ---@param view differ.View|nil the driven view, to focus its last hunk going backward
+---@param keep_focus boolean
 ---@return true handled -- goto_hunk should not also notify
-function History:goto_hunk_fallback(direction, view)
-    if self:step_within_commit(direction, true) then
+function History:goto_hunk_fallback(direction, view, keep_focus)
+    if self:step_within_commit(direction, keep_focus) then
         if direction == "prev" and view then
             view:_focus_last_hunk()
         end
@@ -786,8 +787,8 @@ function History:_setup_window()
     end
     -- past the last/first hunk: overflow into the next/prev file within the commit
     -- (range mode; file mode's fallback is always a no-op, so it just stops)
-    local function hunk_fallback(direction)
-        return self:goto_hunk_fallback(direction, require("differ").active_view())
+    local function hunk_fallback(direction, keep_focus)
+        return self:goto_hunk_fallback(direction, require("differ").active_view(), keep_focus)
     end
     map(km.next_hunk, function()
         require("differ").goto_hunk("next", { fallback = hunk_fallback })

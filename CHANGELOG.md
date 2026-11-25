@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- `]c` / `[c` from the file panel or the history panel moved focus into the diff when they crossed into another file; focus now stays in the panel
+
+## [0.2.41] — 2026-11-23
+
 ### Added
 
 - Visual `s`, `u` and `X` work wherever the hunk keys do: in the local view (`dw`), the commit preview (`ds`), and on added and untracked files

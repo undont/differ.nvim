@@ -901,10 +901,11 @@ end
 -- in range mode; a no-op everywhere else, leaving the plain stop-and-notify boundary)
 ---@param direction "next"|"prev"
 ---@param view differ.View
+---@param keep_focus boolean
 ---@return boolean moved
-local function history_hunk_fallback(direction, view)
+local function history_hunk_fallback(direction, view, keep_focus)
     local history = require("differ.history").current()
-    return history ~= nil and history:goto_hunk_fallback(direction, view)
+    return history ~= nil and history:goto_hunk_fallback(direction, view, keep_focus)
 end
 
 -- per-window appearance + buffer-local motions. our own dual-rail gutter replaces
@@ -955,15 +956,15 @@ function View:_setup_window(winid, bufnr)
     local km = self.keymaps
     bind(bufnr, km.next_hunk, function()
         self:goto_hunk("next", {
-            fallback = function(direction)
-                return history_hunk_fallback(direction, self)
+            fallback = function(direction, keep_focus)
+                return history_hunk_fallback(direction, self, keep_focus)
             end,
         })
     end, "differ: next hunk")
     bind(bufnr, km.prev_hunk, function()
         self:goto_hunk("prev", {
-            fallback = function(direction)
-                return history_hunk_fallback(direction, self)
+            fallback = function(direction, keep_focus)
+                return history_hunk_fallback(direction, self, keep_focus)
             end,
         })
     end, "differ: previous hunk")
@@ -1062,19 +1063,24 @@ end
 -- step the file panel's selection (and re-source this view) without leaving the diff
 -- window, the in-view counterpart to the panel's own ]f / [f. `wrap` defaults on (for
 -- ]f / [f); the staging review flow passes false so s/S/u/U stop at the list ends.
+-- `keep_focus` defaults on; false returns focus to the panel (its own ]c / [c).
 -- returns whether a file/commit was actually opened (false at a no-wrap list end),
 -- which the hunk-nav and review callers use to notify at the change-set boundary
 ---@param direction "next"|"prev"
 ---@param wrap? boolean
+---@param keep_focus? boolean
 ---@return boolean moved
-function View:step_file(direction, wrap)
+function View:step_file(direction, wrap, keep_focus)
+    if keep_focus == nil then
+        keep_focus = true
+    end
     local panel = require("differ.panel").current()
     -- stepping off a file the s walk stopped on leaves it: the walk doesn't come back
     if panel and self:_can_stage_hunk() and self:_review_done(false) then
         panel:accept_review(false)
     end
     if panel and panel:is_open() then
-        return panel:goto_file(direction, true, wrap) -- keep focus in the diff window
+        return panel:goto_file(direction, keep_focus, wrap)
     end
     -- file history: one file, so ]f / [f step commits instead
     local history = require("differ.history").current()
@@ -1084,7 +1090,7 @@ function View:step_file(direction, wrap)
     -- sidebar hidden but the panel session is live: step from internal selection so
     -- ]f / [f still walk files with no panel window to read the cursor from
     if panel then
-        return panel:goto_file(direction, true, wrap)
+        return panel:goto_file(direction, keep_focus, wrap)
     end
     return false
 end
@@ -1207,17 +1213,29 @@ function View:_hunk_map()
     end, self.columns))
 end
 
-local function run_hunk_fallback(direction, opts)
-    return opts and opts.fallback and opts.fallback(direction)
+local function run_hunk_fallback(direction, opts, keep_focus)
+    return opts and opts.fallback and opts.fallback(direction, keep_focus)
+end
+
+---@return boolean
+function View:_has_focus()
+    local win = vim.api.nvim_get_current_win()
+    for _, c in ipairs(self.columns) do
+        if c.winid == win then
+            return true
+        end
+    end
+    return false
 end
 
 -- move the cursor to the next/prev hunk in the focused column. at a change-set
 -- boundary it flows into the adjacent file (no wrap); a log/history session is the
 -- exception: hunk nav stays within the current commit's diff (commits step via ]f/[f),
 -- so it stops at the first/last hunk rather than crossing into the next commit
--- `fallback` runs past the first/last hunk (a history session steps within its commit)
+-- `fallback` runs past the first/last hunk (a history session steps within its commit).
+-- crossing a file keeps focus where it started: the diff window, or the panel
 ---@class differ.HunkNavOpts
----@field fallback? fun(direction: "next"|"prev"): boolean|nil
+---@field fallback? fun(direction: "next"|"prev", keep_focus: boolean): boolean|nil
 
 ---@param direction "next"|"prev"
 ---@param opts? differ.HunkNavOpts
@@ -1241,17 +1259,18 @@ function View:goto_hunk(direction, opts)
     -- don't flow into the adjacent commit (that's ]f/[f); just stop with a notice
     local history = require("differ.history").current()
     local in_history = history ~= nil and history:is_open()
+    local keep_focus = self:_has_focus()
     if direction == "next" then
         -- past the last hunk: flow into the next file (no wrap), or notify at the last one
-        if in_history or not self:step_file("next", false) then
-            if not run_hunk_fallback(direction, opts) then
+        if in_history or not self:step_file("next", false, keep_focus) then
+            if not run_hunk_fallback(direction, opts, keep_focus) then
                 vim.notify("differ: no next hunk", vim.log.levels.INFO)
             end
         end
-    elseif not in_history and self:step_file("prev", false) then
+    elseif not in_history and self:step_file("prev", false, keep_focus) then
         self:_focus_last_hunk() -- landed on the previous file: continue the backward flow
     else
-        if not run_hunk_fallback(direction, opts) then
+        if not run_hunk_fallback(direction, opts, keep_focus) then
             vim.notify("differ: no previous hunk", vim.log.levels.INFO)
         end
     end
