@@ -521,13 +521,16 @@ describe(":Differ diff hunk staging", function()
 
         local p, v = open_panel()
         assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(p.origin_win, vim.api.nvim_get_current_win())
 
         v:goto_hunk("next") -- past a.lua's only (last) hunk: flow into z.lua
         assert.are.equal("z.lua", v.model.path)
+        assert.are.equal(p.origin_win, vim.api.nvim_get_current_win()) -- focus stays in the diff
         -- lands on a real hunk row in the file it stepped into, not just anywhere in it
         assert.is_not_nil(v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk)
         v:goto_hunk("prev") -- before z.lua's only (first) hunk: flow back into a.lua
         assert.are.equal("a.lua", v.model.path)
+        assert.are.equal(p.origin_win, vim.api.nvim_get_current_win())
         assert.is_not_nil(v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk)
         p:close()
     end)

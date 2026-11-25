@@ -1692,6 +1692,44 @@ describe(":Differ panel <-> diff wiring", function()
         p:close()
     end)
 
+    it("keeps focus in the panel when its ]c/[c cross a file boundary", function()
+        local root = fresh_repo()
+        write(root .. "/a.lua", "1\n2\n")
+        write(root .. "/z.lua", "z1\nz2\n")
+        git(root, "add", "z.lua")
+        git(root, "commit", "-q", "-am", "two files")
+        write(root .. "/a.lua", "1x\n2\n") -- a.lua: one hunk
+        write(root .. "/z.lua", "z1x\nz2\n") -- z.lua: one hunk
+        vim.cmd.edit(root .. "/a.lua")
+        local p = open_panel()
+        local function press(key)
+            for _, m in ipairs(vim.api.nvim_buf_get_keymap(p.bufnr, "n")) do
+                if m.lhs == key and m.callback then
+                    return m.callback()
+                end
+            end
+            error("no " .. key .. " keymap bound in the panel")
+        end
+        -- the driven view, read without moving focus
+        local function view_at()
+            return require("differ.view").for_buf(vim.api.nvim_win_get_buf(p.origin_win))
+        end
+        local function on_hunk()
+            local v = view_at()
+            return v.columns[1].map.lines[vim.api.nvim_win_get_cursor(p.origin_win)[1]].hunk
+        end
+
+        vim.api.nvim_set_current_win(p.winid)
+        press("]c") -- past a.lua's only hunk: opens z.lua
+        assert.are.equal("z.lua", view_at().model.path)
+        assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+        press("[c") -- back over the boundary onto a.lua's last hunk
+        assert.are.equal("a.lua", view_at().model.path)
+        assert.is_not_nil(on_hunk())
+        assert.are.equal(p.winid, vim.api.nvim_get_current_win())
+        p:close()
+    end)
+
     it("gofile works from the panel, acting on the driven view", function()
         local root = fresh_repo()
         write(root .. "/a.lua", "local x = 2\nreturn x\n")

@@ -205,6 +205,23 @@ describe(":Differ log <range> (branch-range history)", function()
         h:close()
     end)
 
+    it("the history panel's ]c / [c overflow keeps focus in the panel", function()
+        local root = repo_with_branch()
+        vim.cmd.edit(root .. "/a.lua")
+        git_src.range_history({ range = "main..HEAD" })
+        local h = History.current()
+        h:_open_file(2, 1, false) -- c3 (two files): its first, a.lua
+        assert.are.equal(h.winid, vim.api.nvim_get_current_win())
+
+        goto_hunk(h.bufnr, "]c") -- past a.lua's only hunk: overflow into c.lua
+        assert.are.equal(2, h.file_index)
+        assert.are.equal(h.winid, vim.api.nvim_get_current_win())
+        goto_hunk(h.bufnr, "[c") -- back over the file boundary to a.lua
+        assert.are.equal(1, h.file_index)
+        assert.are.equal(h.winid, vim.api.nvim_get_current_win())
+        h:close()
+    end)
+
     it("toggles a commit's fold with za, hiding its files", function()
         local root = repo_with_branch()
         vim.cmd.edit(root .. "/a.lua")
