@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
-- `:Differ edit` overwrote a buffer-local `g?` the file already had and deleted it on close, along with one set during the edit; both are now kept
+- `:Differ edit` overwrote a buffer-local `g?` the file already had and deleted it on close, along with one set during the edit, or the merge tool's own when both had the file open; all are now kept
 
 ## [0.2.42] — 2026-11-25
 
