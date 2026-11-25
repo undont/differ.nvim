@@ -2894,6 +2894,38 @@ describe("g? over a buffer the merge tool shares", function()
 
         assert.are.equal(merge_desc, help_desc(edit_buf)) -- not stolen back mid-merge
     end)
+
+    -- the file's own g?, set before differ holds the buffer
+    ---@return table view, integer buf
+    local function edit_window_over_own_map(root)
+        vim.cmd.edit(root .. "/f.txt")
+        vim.keymap.set("n", "g?", function() end, { buffer = true, desc = "own help" })
+        return edit_window_over(root)
+    end
+
+    it("gives the file its own g? back when the diff session closes first", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over_own_map(root)
+
+        merge.open({})
+        assert.are.equal(edit_buf, assert(merge.current()).result_buf)
+        assert(Panel.current()):close()
+        merge.close()
+
+        assert.are.equal("own help", help_desc(edit_buf))
+    end)
+
+    it("gives the file its own g? back when the merge tool closes first", function()
+        local root = conflict_repo()
+        local _, edit_buf = edit_window_over_own_map(root)
+
+        merge.open({})
+        merge.close()
+        assert.are.equal("differ: keymap help", help_desc(edit_buf))
+        assert(Panel.current()):close()
+
+        assert.are.equal("own help", help_desc(edit_buf))
+    end)
 end)
 
 local function open_at(root, relpath)

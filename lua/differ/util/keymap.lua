@@ -43,6 +43,51 @@ end
 ---@field fn fun()
 ---@field prior table|nil -- the buffer-local maparg() dict bind replaced
 
+-- live holds per buffer and lhs, oldest first, so a release under another hold can
+-- hand its prior up instead of having it put back over a live map
+---@type table<integer, table<string, differ.keymap.Held[]>>
+local stacks = {}
+local wipe_group = nil
+
+---@param bufnr integer
+---@param h differ.keymap.Held
+local function push(bufnr, h)
+    if not wipe_group then
+        wipe_group = vim.api.nvim_create_augroup("differ.keymap.hold", { clear = true })
+        vim.api.nvim_create_autocmd("BufWipeout", {
+            group = wipe_group,
+            callback = function(args)
+                stacks[args.buf] = nil
+            end,
+        })
+    end
+    stacks[bufnr] = stacks[bufnr] or {}
+    local stack = stacks[bufnr][h.lhs] or {}
+    stacks[bufnr][h.lhs] = stack
+    stack[#stack + 1] = h
+end
+
+-- take `h` off its stack; a hold that replaced h's map takes h's prior
+---@param bufnr integer
+---@param h differ.keymap.Held
+local function splice(bufnr, h)
+    local stack = stacks[bufnr] and stacks[bufnr][h.lhs]
+    if not stack then
+        return
+    end
+    for i = #stack, 1, -1 do
+        local other = stack[i]
+        if other == h then
+            table.remove(stack, i)
+        elseif other.prior and other.prior.callback == h.fn then
+            other.prior = h.prior
+        end
+    end
+    if #stack == 0 then
+        stacks[bufnr][h.lhs] = nil
+    end
+end
+
 -- bind on a buffer we don't own, keeping each lhs's prior buffer-local map for release
 ---@param bufnr integer
 ---@param spec string|string[]|false|nil
@@ -57,7 +102,9 @@ function M.hold(bufnr, spec, fn, desc)
     vim.api.nvim_buf_call(bufnr, function()
         for _, lhs in ipairs(type(spec) == "table" and spec or { spec }) do
             local prior = vim.fn.maparg(lhs, "n", false, true)
-            held[#held + 1] = { lhs = lhs, fn = fn, prior = prior.buffer == 1 and prior or nil }
+            local h = { lhs = lhs, fn = fn, prior = prior.buffer == 1 and prior or nil }
+            held[#held + 1] = h
+            push(bufnr, h)
         end
     end)
     M.bind(bufnr, spec, fn, desc)
@@ -65,7 +112,8 @@ function M.hold(bufnr, spec, fn, desc)
 end
 
 -- the inverse of hold: drop each map still ours and put back the one it replaced. a map
--- set over ours since (an LSP attaching mid-session) stays
+-- set over ours since (an LSP attaching mid-session) stays, and a hold over ours puts
+-- back our prior when it releases
 ---@param bufnr integer
 ---@param held differ.keymap.Held[]
 function M.release(bufnr, held)
@@ -81,6 +129,7 @@ function M.release(bufnr, held)
                     vim.fn.mapset(h.prior)
                 end
             end
+            splice(bufnr, h)
         end
     end)
 end
