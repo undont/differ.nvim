@@ -548,7 +548,10 @@ describe(":Differ mergetool", function()
     end)
 
     it("notifies rather than opening when invoked outside a git repository", function()
-        require("differ.git") -- warm the require cache before chdir makes it unresolvable
+        -- warm the require cache before chdir makes it unresolvable
+        require("differ.git")
+        require("differ.panel")
+        require("differ.history")
         local outside = vim.fn.tempname()
         vim.fn.mkdir(outside, "p")
         local cwd = vim.fn.getcwd()

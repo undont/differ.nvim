@@ -43,6 +43,8 @@ local current = nil
 ---@field winid integer|nil
 ---@field origin_win integer|nil
 ---@field return_tab integer|nil
+---@field session_tab integer|nil
+---@field git_root string|nil -- the repo's absolute path
 ---@field commits differ.git.Commit[]
 ---@field mode "file"|"range"
 ---@field index integer            -- selected commit
