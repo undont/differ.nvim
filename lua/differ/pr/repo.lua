@@ -44,14 +44,6 @@ function M.parse_remote(url)
     return { owner = owner, repo = repo }
 end
 
--- the repo to operate on: the current file's repo if it's a real file, else cwd
----@return string|nil
-local function repo_root()
-    local file = vim.api.nvim_buf_get_name(0)
-    local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
-    return require("differ.git").root(anchor)
-end
-
 -- the configured remotes, in git's listing order
 ---@param root string
 ---@return string[]
@@ -86,7 +78,7 @@ function M.resolve(opts, cb)
     if opts.coords then
         return cb(nil, opts.coords)
     end
-    local root = repo_root()
+    local root = require("differ.git").target_root()
     if not root then
         return cb({ code = "bad_request", message = "not inside a git repository" })
     end

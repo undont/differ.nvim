@@ -339,9 +339,7 @@ local SUB = {
 ---@return string|nil root, string[] paths
 local function conflicts()
     local git = require("differ.git")
-    local file = vim.api.nvim_buf_get_name(0)
-    local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
-    local root = git.root(anchor)
+    local root = git.target_root()
     if not root then
         return nil, {}
     end

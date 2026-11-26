@@ -1171,7 +1171,7 @@ end
 
 -- the repo to operate on: the current file's repo if it's a real file, else cwd
 ---@return string|nil
-function M.repo_root()
+function M.target_root()
     return M.root(M.current_file() or vim.fn.getcwd())
 end
 
@@ -1210,7 +1210,7 @@ end
 -- the base ref the caller suffixes (`...HEAD` for log, `...` for diff), or nil
 ---@return string|nil
 function M.resolve_base()
-    local root = M.repo_root()
+    local root = M.target_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -1295,7 +1295,7 @@ function M.panel(opts)
     local origin_file = vim.api.nvim_buf_get_name(0)
     local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
 
-    local root = opts.root or M.repo_root()
+    local root = opts.root or M.target_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -2277,7 +2277,7 @@ function M.range_history(opts)
     if not range or range == "" then
         return notify("range history needs a rev-range (e.g. main...HEAD)", vim.log.levels.WARN)
     end
-    local root = M.repo_root()
+    local root = M.target_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
