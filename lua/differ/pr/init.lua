@@ -82,13 +82,13 @@ local function short(sha)
     return sha and sha:sub(1, 7) or "?"
 end
 
--- the cwd's repo, but only when it is a clone of the pr's own repo. an unrelated
--- checkout has its own files at the same paths, so the edit verbs would open those as
--- "the real file" and checkout would fetch into it; nil disables both instead
+-- the command's target repo, but only when it is a clone of the pr's own repo. an
+-- unrelated checkout has its own files at the same paths, so the edit verbs would open
+-- those as "the real file" and checkout would fetch into it; nil disables both instead
 ---@param coords { owner: string, repo: string }
 ---@return string|nil
 local function local_root(coords)
-    local root = require("differ.git").root(vim.fn.getcwd())
+    local root = require("differ.git").target_root()
     if root and require("differ.pr.repo").has_remote(root, coords) then
         return root
     end
@@ -680,7 +680,8 @@ end
 ---@param pr { owner: string, repo: string, number: integer }
 ---@param detail table  -- get_pr result
 ---@param opts { after?: fun(), land?: string, review?: boolean }|nil
-local function open_session(pr, detail, opts)
+---@param root string|nil  -- local_root(pr)
+local function open_session(pr, detail, opts, root)
     local entries = M.map_files(detail.files)
     if #entries == 0 then
         return notify("no changed files in this pull request")
@@ -720,7 +721,7 @@ local function open_session(pr, detail, opts)
             draft = detail.draft,
             mergeable = detail.mergeable,
         },
-        root = local_root(pr), -- optional; for jump-to-file
+        root = root, -- optional; for jump-to-file
         entries = entries, -- flat FileEntry[] (single section), shared by ref with the panel
         versions = {}, -- per-path blob memo; valid for the session (shas are pinned)
         prefetching = {}, -- paths with an in-flight predictive prefetch (dedupe guard)
@@ -850,6 +851,8 @@ local function open_session(pr, detail, opts)
             end,
         }):open()
         panel.return_tab = return_tab
+        panel.session_tab = session_tab
+        panel.git_root = session.root
         session.panel = panel
     end
 
@@ -925,6 +928,8 @@ end
 function M.show(pr, opts)
     open_gen = open_gen + 1
     local gen = open_gen
+    -- resolved before the fetch, from the tab and buffer the command ran in
+    local root = local_root(pr)
     client.get_pr(pr, function(err, detail)
         if gen ~= open_gen then
             return -- a later open superseded this one; its error isn't the user's problem
@@ -932,7 +937,7 @@ function M.show(pr, opts)
         if err then
             return notify_err(err)
         end
-        open_session(pr, detail, opts)
+        open_session(pr, detail, opts, root)
     end)
 end
 

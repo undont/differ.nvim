@@ -374,9 +374,15 @@ describe("pr session root", function()
     end)
 
     -- session.root drives the edit verbs (which open root/path as "the real file") and
-    -- :Differ pr checkout (which fetches into it), so an unrelated cwd must not set it
-    local function show_from(cwd)
+    -- :Differ pr checkout (which fetches into it), so an unrelated repo must not set it
+    ---@param cwd string
+    ---@param file string|nil  -- a real file on screen when the pr opens
+    local function show_from(cwd, file)
         vim.cmd.cd(vim.fn.fnameescape(cwd)) -- global: after_each puts it back
+        vim.cmd("enew!")
+        if file then
+            vim.cmd.edit(vim.fn.fnameescape(file))
+        end
         local restore = stub_sidecar({
             get_pr = { result = get_pr_result() },
             get_file_versions = {
@@ -415,6 +421,26 @@ describe("pr session root", function()
     it("leaves root nil in an unrelated repo, rather than adopting its files", function()
         local root = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
         assert.is_nil(show_from(root).root)
+    end)
+
+    it("takes the clone of the file on screen over an unrelated cwd", function()
+        local clone = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        vim.fn.writefile({ "x" }, clone .. "/a.txt")
+        local s = show_from(other, clone .. "/a.txt")
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.root))
+        -- the pr tab now resolves to the clone, whatever cwd says
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.panel.git_root))
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(require("differ.git").target_root()))
+    end)
+
+    it("leaves root nil with an unrelated repo's file on screen, even from a clone", function()
+        local clone = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        vim.fn.writefile({ "x" }, other .. "/a.txt")
+        local s = show_from(clone, other .. "/a.txt")
+        assert.is_nil(s.root)
+        assert.is_nil(s.panel.git_root)
     end)
 
     it(
