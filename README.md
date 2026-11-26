@@ -239,6 +239,16 @@ The highlight groups differ defines are listed in [recipes](RECIPES.md#highlight
 
 Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>...`) also list untracked files. `git diff` can't see them whatever refs you pass it, so differ unions in `git ls-files --others --exclude-standard` to bring them in with the other changes.
 
+### Which repo a command acts on
+
+Every command picks its repo by the same rule, taking the first that applies:
+
+1. A differ session in the current tab (the merge tool, a panel, history, or a PR with a local clone of its repo) means that session's repo. A session in another tab doesn't count.
+2. A file on disk means the file's repo. When the file is in no repo, the command refuses rather than fall back to the working directory.
+3. Anything else (a dashboard, a terminal, an empty buffer) means the working directory's repo, honouring `:tcd` and `:lcd`, and the command refuses when that isn't one.
+
+Commands about one file, `:Differ log` on a file and `:Differ edit`, always act on that file. `:Differ pr` finds both the GitHub repo and your local checkout this way, and only uses the checkout when it's a clone of the PR's repo.
+
 ### Staging
 
 Every changed path takes only one row. Its diff spans `HEAD` to the worktree, with the lines already in the index shaded, and each row can either be `Conflicts`, `Staged`, `Unstaged`, `Partial` (not fully staged file) or `Untracked`. In the diff, `s` and `u` stage and unstage a hunk respectively, with repeated presses walking through/back your hunks; `X` discards a hunk on both sides (effectively hard resetting the hunk). Similarly in the panel, `s` and `u` stage and unstage entire rows/files (works on sections, directories and individual rows). `S` and `U` are available in both contexts as stage/unstage-all.
