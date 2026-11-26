@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Every command now picks its repo through one shared helper, with no change in behaviour
+
+## [0.2.43] — 2026-11-26
+
 ### Fixed
 
 - `:Differ edit` overwrote a buffer-local `g?` the file already had and deleted it on close, along with one set during the edit, or the merge tool's own when both had the file open; all are now kept

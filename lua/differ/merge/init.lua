@@ -1944,9 +1944,7 @@ function M.open(opts)
     opts = opts or {}
     local git = require("differ.git")
 
-    local file = vim.api.nvim_buf_get_name(0)
-    local anchor = (file ~= "" and vim.fn.filereadable(file) == 1) and file or vim.fn.getcwd()
-    local root = git.root(anchor)
+    local root = git.target_root()
     if not root then
         return notify("not inside a git repository", vim.log.levels.WARN)
     end
@@ -1982,6 +1980,7 @@ function M.open(opts)
 
     -- no explicit path: prefer the current file when it's one of the conflicted
     local rel
+    local file = vim.api.nvim_buf_get_name(0)
     if file ~= "" then
         local resolved = vim.fn.resolve(file)
         if resolved:sub(1, #root + 1) == root .. "/" then
