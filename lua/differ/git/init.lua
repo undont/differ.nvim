@@ -1159,14 +1159,17 @@ local function blank_window(win, map)
     vim.api.nvim_win_set_buf(win, buf)
 end
 
--- the current buffer's file when it's a real one on disk
+-- the current buffer's file when it names a path in a real directory, saved or not
 ---@return string|nil
 function M.current_file()
-    local file = vim.api.nvim_buf_get_name(0)
-    if file ~= "" and vim.fn.filereadable(file) == 1 then
-        return file
+    if vim.bo.buftype ~= "" then
+        return nil
     end
-    return nil
+    local file = vim.api.nvim_buf_get_name(0)
+    if vim.fn.isabsolutepath(file) == 0 or vim.fn.isdirectory(vim.fs.dirname(file)) == 0 then
+        return nil
+    end
+    return file
 end
 
 -- the repo of a differ session hosted in the current tabpage. the session singletons are
@@ -1189,19 +1192,15 @@ local function session_root()
     return nil
 end
 
--- the repo a command acts on: a differ session's in this tab, else the current file's
--- (nil when it's in no repo), else cwd's
+-- the repo a command acts on: the current file's (nil when it's in no repo), else a differ
+-- session's in this tab, else cwd's
 ---@return string|nil
 function M.target_root()
-    local root = session_root()
-    if root then
-        return root
-    end
     local file = M.current_file()
     if file then
         return M.root(file)
     end
-    return M.root(vim.fn.getcwd())
+    return session_root() or M.root(vim.fn.getcwd())
 end
 
 -- true when `source` is the default HEAD-vs-worktree view: the only source git
