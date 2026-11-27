@@ -1172,35 +1172,45 @@ function M.current_file()
     return file
 end
 
--- the repo of a differ session hosted in the current tabpage. the session singletons are
--- global, so one in another tab never counts
----@return string|nil
+-- the repo of a differ session hosted in the current tabpage, and whether one is. the
+-- session singletons are global, so one in another tab never counts. a pr session with no
+-- verified local clone matches with a nil repo
+---@return string|nil root
+---@return boolean matched
 local function session_root()
     local tab = vim.api.nvim_get_current_tabpage()
     local merge = require("differ.merge").current()
     if merge and merge.session_tab == tab then
-        return merge.root
+        return merge.root, true
+    end
+    local pr = require("differ.pr").current_session()
+    if pr and pr.session_tab == tab then
+        return pr.root, true
     end
     local panel = require("differ.panel").current()
-    if panel and panel.root and panel.session_tab == tab then
-        return panel.root
+    if panel and panel.session_tab == tab then
+        return panel.root, true
     end
     local history = require("differ.history").current()
     if history and history.session_tab == tab then
-        return history.root
+        return history.root, true
     end
-    return nil
+    return nil, false
 end
 
 -- the repo a command acts on: the current file's (nil when it's in no repo), else a differ
--- session's in this tab, else cwd's
+-- session's in this tab (nil for a pr with no local clone), else cwd's
 ---@return string|nil
 function M.target_root()
     local file = M.current_file()
     if file then
         return M.root(file)
     end
-    return session_root() or M.root(vim.fn.getcwd())
+    local root, matched = session_root()
+    if matched then
+        return root
+    end
+    return M.root(vim.fn.getcwd())
 end
 
 -- true when `source` is the default HEAD-vs-worktree view: the only source git
@@ -1291,6 +1301,11 @@ function M.panel(opts)
         or (type(opts.rev) == "table" and #opts.rev > 0)
     -- before a supersede closes the session this tab may be showing
     local root = opts.root or M.target_root()
+    local existing = Panel.current()
+    -- refuse before closing anything: only revealing or toggling a live panel needs no repo
+    if not root and (not existing or (opts.supersede and has_rev)) then
+        return notify("not inside a git repository", vim.log.levels.WARN)
+    end
     if opts.supersede then
         -- a log/history session isn't a Panel, so it's invisible to the check below;
         -- `opts.supersede` is set for both a bare `:Differ` and `:Differ <rev>` (unlike
@@ -1304,7 +1319,6 @@ function M.panel(opts)
             history:close() -- close cascades to the diff view + session tab; current = nil
         end
     end
-    local existing = Panel.current()
     if existing then
         if opts.supersede and has_rev then
             existing:close() -- close cascades to the diff view + session tab; current = nil
@@ -1324,10 +1338,7 @@ function M.panel(opts)
     -- that position (mapped into the diff) instead of the first listed file
     local origin_file = vim.api.nvim_buf_get_name(0)
     local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
-
-    if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
-    end
+    ---@cast root string
     -- repo-relative origin path; resolve symlinks so the prefix strip lines up with
     -- git's realpath toplevel (as M.history does), and only when the file is under it
     local origin_rel ---@type string|nil
@@ -2302,14 +2313,14 @@ function M.range_history(opts)
     -- `:Differ <rev>`'s panel idempotency): close a live panel (`:Differ base`/`<rev>`) or
     -- history, then open the new one, so we never stack a second session in its own tab
     local root = M.target_root()
+    if not root then
+        return notify("not inside a git repository", vim.log.levels.WARN)
+    end
     supersede_local_session()
 
     local range = opts.range
     if not range or range == "" then
         return notify("range history needs a rev-range (e.g. main...HEAD)", vim.log.levels.WARN)
-    end
-    if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
     end
     local commits, err = M.range_commits(root, range)
     if #commits == 0 then

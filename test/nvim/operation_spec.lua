@@ -1,6 +1,11 @@
 -- runs under headless nvim against throwaway repos stopped mid-operation: continue, skip
 -- and abort run without a terminal and never open an editor
 
+-- some specs change cwd, and the runner's package.path is relative to the repo
+local repo_dir = vim.fn.getcwd()
+package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s/?.lua;"):format(repo_dir, repo_dir, repo_dir)
+    .. package.path
+
 local git_src = require("differ.git")
 local operation = require("differ.git.operation")
 local merge = require("differ.merge")

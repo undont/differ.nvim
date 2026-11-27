@@ -2,6 +2,11 @@
 -- exercises the slice-2 merge session end-to-end (layout, region highlight, conflict
 -- nav). identity is pinned inline so commits work without a global gitconfig
 
+-- some specs change cwd, and the runner's package.path is relative to the repo
+local repo_dir = vim.fn.getcwd()
+package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s/?.lua;"):format(repo_dir, repo_dir, repo_dir)
+    .. package.path
+
 local merge = require("differ.merge")
 local fixture = require("test.nvim.fixture")
 

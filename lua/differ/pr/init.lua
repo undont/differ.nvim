@@ -851,8 +851,6 @@ local function open_session(pr, detail, opts, root)
             end,
         }):open()
         panel.return_tab = return_tab
-        panel.session_tab = session_tab
-        panel.root = session.root
         session.panel = panel
     end
 
@@ -921,15 +919,14 @@ function M.enter_at(target, review)
 end
 
 -- M.show(pr): fetch the PR and open its session. opts threads the landing target into
--- open_session: land ("overview"|"files"), review (fire start_review after landing), and
--- after (resume uses it to reattach the pending draft once the session is built)
+-- open_session: land ("overview"|"files"), review (fire start_review after landing),
+-- after (resume uses it to reattach the pending draft once the session is built), and
+-- root (local_root, resolved by the caller from the tab and buffer the command ran in)
 ---@param pr { owner: string, repo: string, number: integer }
----@param opts { after?: fun(), land?: string, review?: boolean }|nil
+---@param opts { after?: fun(), land?: string, review?: boolean, root?: string }|nil
 function M.show(pr, opts)
     open_gen = open_gen + 1
     local gen = open_gen
-    -- resolved before the fetch, from the tab and buffer the command ran in
-    local root = local_root(pr)
     client.get_pr(pr, function(err, detail)
         if gen ~= open_gen then
             return -- a later open superseded this one; its error isn't the user's problem
@@ -937,7 +934,7 @@ function M.show(pr, opts)
         if err then
             return notify_err(err)
         end
-        open_session(pr, detail, opts, root)
+        open_session(pr, detail, opts, opts and opts.root)
     end)
 end
 
@@ -946,7 +943,7 @@ end
 -- whichever `land` the caller chose (a bare list lands on the overview, view on files)
 ---@param coords { owner: string, repo: string }
 ---@param prs table[]
----@param land_opts { land?: string, review?: boolean }|nil
+---@param land_opts { land?: string, review?: boolean, root?: string }|nil
 local function pick(coords, prs, land_opts)
     vim.ui.select(prs, {
         prompt = "Select a pull request",
@@ -1003,10 +1000,12 @@ function M.open(opts)
         if not coords then
             return
         end
+        -- before the picker, which runs from whatever buffer is current when it returns
+        local land_opts = { land = opts.land, review = opts.review, root = local_root(coords) }
         if opts.number then
             return M.show(
                 { owner = coords.owner, repo = coords.repo, number = opts.number },
-                { land = opts.land, review = opts.review }
+                land_opts
             )
         end
         client.list_prs(coords, opts.filter, function(lerr, prs)
@@ -1020,7 +1019,7 @@ function M.open(opts)
                 end
                 return notify(msg)
             end
-            pick(coords, prs, { land = opts.land, review = opts.review })
+            pick(coords, prs, land_opts)
         end)
     end)
 end
@@ -1302,6 +1301,7 @@ end
 function M.resume(arg)
     local function open_then_reattach(pr)
         M.show(pr, {
+            root = local_root(pr),
             after = function()
                 if session then
                     require("differ.pr.review").reattach(session)
