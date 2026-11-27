@@ -1944,9 +1944,9 @@ function M.open(opts)
     opts = opts or {}
     local git = require("differ.git")
 
-    local root = git.target_root()
+    local root = git.target_root_or_warn()
     if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
+        return
     end
 
     local conflicted = git.conflicted(root)

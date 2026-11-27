@@ -241,13 +241,7 @@ Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ <a>.
 
 ### Which repo a command acts on
 
-Every command picks its repo by the same rule, taking the first that applies:
-
-1. A file on screen, saved or not, means the file's repo. When the file is in no repo, the command refuses rather than fall back to the working directory. Help pages, terminals and differ's own buffers aren't files here.
-2. A differ session in the current tab (the merge tool, a panel, history, or a PR) means that session's repo. A session in another tab doesn't count. A PR with no local clone of its repo refuses.
-3. Anything else (a dashboard, a terminal, an empty buffer) means the working directory's repo, honouring `:tcd` and `:lcd`, and the command refuses when that isn't one.
-
-Commands about one file, `:Differ log` on a file and `:Differ edit`, always act on that file. `:Differ pr` finds both the GitHub repo and your local checkout this way; typed in a PR's tab with no file on screen, it stays on that PR's repo. The checkout is only used when it's a clone of the PR's repo, and a clone of a fork counts when one of its remotes (usually `upstream`) points at the PR's repo.
+Commands act on the repo of the file under the cursor. When the cursor isn't in a file (the panel, a terminal, an empty buffer), they fall back to the differ session in the current tab, then the working directory. A file outside any repo, or a PR with no local clone, refuses with a message instead of falling back.
 
 ### Staging
 

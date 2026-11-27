@@ -85,9 +85,9 @@ function M.resolve(opts, cb)
     if session and session.session_tab == tab and not git.current_file() then
         return cb(nil, session.coords)
     end
-    local root = git.target_root()
+    local root, refusal = git.target_root()
     if not root then
-        return cb({ code = "bad_request", message = "not inside a git repository" })
+        return cb({ code = "bad_request", message = refusal })
     end
 
     local remotes = list_remotes(root)

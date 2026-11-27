@@ -1174,9 +1174,10 @@ end
 
 -- the repo of a differ session hosted in the current tabpage, and whether one is. the
 -- session singletons are global, so one in another tab never counts. a pr session with no
--- verified local clone matches with a nil repo
+-- verified local clone matches with a nil repo and the refusal
 ---@return string|nil root
 ---@return boolean matched
+---@return string|nil refusal
 local function session_root()
     local tab = vim.api.nvim_get_current_tabpage()
     local merge = require("differ.merge").current()
@@ -1185,6 +1186,9 @@ local function session_root()
     end
     local pr = require("differ.pr").current_session()
     if pr and pr.session_tab == tab then
+        if not pr.root then
+            return nil, true, ("no local clone of %s/%s"):format(pr.coords.owner, pr.coords.repo)
+        end
         return pr.root, true
     end
     local panel = require("differ.panel").current()
@@ -1198,19 +1202,41 @@ local function session_root()
     return nil, false
 end
 
--- the repo a command acts on: the current file's (nil when it's in no repo), else a differ
--- session's in this tab (nil for a pr with no local clone), else cwd's
----@return string|nil
+-- the repo a command acts on: the current file's, else a differ session's in this tab,
+-- else cwd's. nil with the refusal when the one that applies has no repo
+---@return string|nil root
+---@return string|nil refusal
 function M.target_root()
     local file = M.current_file()
     if file then
-        return M.root(file)
+        local root = M.root(file)
+        if not root then
+            return nil, "not inside a git repository"
+        end
+        return root
     end
-    local root, matched = session_root()
+    local root, matched, refusal = session_root()
+    if matched and not root then
+        return nil, refusal
+    end
     if matched then
         return root
     end
-    return M.root(vim.fn.getcwd())
+    root = M.root(vim.fn.getcwd())
+    if not root then
+        return nil, "not inside a git repository"
+    end
+    return root
+end
+
+-- target_root, warning with the refusal when there's no repo
+---@return string|nil
+function M.target_root_or_warn()
+    local root, refusal = M.target_root()
+    if not root then
+        notify(refusal --[[@as string]], vim.log.levels.WARN)
+    end
+    return root
 end
 
 -- true when `source` is the default HEAD-vs-worktree view: the only source git
@@ -1248,9 +1274,9 @@ end
 -- the base ref the caller suffixes (`...HEAD` for log, `...` for diff), or nil
 ---@return string|nil
 function M.resolve_base()
-    local root = M.target_root()
+    local root = M.target_root_or_warn()
     if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
+        return nil
     end
     local base = base_ref(root)
     if not base then
@@ -1300,11 +1326,14 @@ function M.panel(opts)
     local has_rev = (type(opts.rev) == "string" and opts.rev ~= "")
         or (type(opts.rev) == "table" and #opts.rev > 0)
     -- before a supersede closes the session this tab may be showing
-    local root = opts.root or M.target_root()
+    local root, refusal = opts.root, nil
+    if not root then
+        root, refusal = M.target_root()
+    end
     local existing = Panel.current()
     -- refuse before closing anything: only revealing or toggling a live panel needs no repo
     if not root and (not existing or (opts.supersede and has_rev)) then
-        return notify("not inside a git repository", vim.log.levels.WARN)
+        return notify(refusal --[[@as string]], vim.log.levels.WARN)
     end
     if opts.supersede then
         -- a log/history session isn't a Panel, so it's invisible to the check below;
@@ -2312,9 +2341,9 @@ function M.range_history(opts)
     -- re-running `:Differ log <range>` over any live local session supersedes it (mirrors
     -- `:Differ <rev>`'s panel idempotency): close a live panel (`:Differ base`/`<rev>`) or
     -- history, then open the new one, so we never stack a second session in its own tab
-    local root = M.target_root()
+    local root = M.target_root_or_warn()
     if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
+        return
     end
     supersede_local_session()
 

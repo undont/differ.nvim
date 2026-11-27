@@ -262,9 +262,9 @@ function M.pick_resolved(root)
     if refuse_while_running() then
         return
     end
-    root = root or require("differ.git").target_root()
+    root = root or require("differ.git").target_root_or_warn()
     if not root then
-        return notify("no merge, rebase, cherry-pick, revert or am in progress")
+        return
     end
     local op = require("differ.git").operation(root)
     if not op then
@@ -279,9 +279,9 @@ function M.pick(root)
     if refuse_while_running() then
         return
     end
-    root = root or require("differ.git").target_root()
+    root = root or require("differ.git").target_root_or_warn()
     if not root then
-        return notify("no merge, rebase, cherry-pick, revert or am in progress")
+        return
     end
     local op = require("differ.git").operation(root)
     if not op then

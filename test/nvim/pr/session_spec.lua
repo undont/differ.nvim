@@ -491,7 +491,7 @@ describe("pr session root", function()
         command.continue()
         vim.ui.select = select
         assert.is_false(shown)
-        assert.matches("no merge, rebase", _G.notifs[#_G.notifs].msg)
+        assert.matches("no local clone of acme/widget", _G.notifs[#_G.notifs].msg)
 
         for _, run in ipairs({
             function()
@@ -503,7 +503,7 @@ describe("pr session root", function()
         }) do
             _G.notifs = {}
             run()
-            assert.matches("not inside a git repository", _G.notifs[#_G.notifs].msg)
+            assert.matches("no local clone of acme/widget", _G.notifs[#_G.notifs].msg)
             assert.are.equal(s, pr.current_session())
             assert.is_true(s.panel:is_open())
         end
@@ -514,7 +514,9 @@ describe("pr session root", function()
         local s = show_from(other, nil, "overview")
         assert.is_nil(s.panel)
         assert.are.equal(s.session_tab, vim.api.nvim_get_current_tabpage())
-        assert.is_nil(require("differ.git").target_root())
+        local root, refusal = require("differ.git").target_root()
+        assert.is_nil(root)
+        assert.are.equal("no local clone of acme/widget", refusal)
     end)
 
     it("opens :Differ pr <n> from a pr tab on the session's repo, not cwd's", function()
