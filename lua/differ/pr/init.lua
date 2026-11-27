@@ -826,7 +826,7 @@ local function open_session(pr, detail, opts, root)
         end
         local panel = Panel.new({
             sections = { { title = ("#%d %s"):format(pr.number, title), entries = entries } },
-            root = ("%s/%s"):format(pr.owner, pr.repo),
+            header_label = ("%s/%s"):format(pr.owner, pr.repo),
             footer = detail.url or detail.head_ref,
             keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
             extra_keymaps = panel_extra,
@@ -852,7 +852,7 @@ local function open_session(pr, detail, opts, root)
         }):open()
         panel.return_tab = return_tab
         panel.session_tab = session_tab
-        panel.git_root = session.root
+        panel.root = session.root
         session.panel = panel
     end
 

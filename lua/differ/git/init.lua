@@ -1179,12 +1179,12 @@ local function session_root()
         return merge.root
     end
     local panel = require("differ.panel").current()
-    if panel and panel.git_root and panel.session_tab == tab then
-        return panel.git_root
+    if panel and panel.root and panel.session_tab == tab then
+        return panel.root
     end
     local history = require("differ.history").current()
     if history and history.session_tab == tab then
-        return history.git_root
+        return history.root
     end
     return nil
 end
@@ -1983,7 +1983,7 @@ function M.panel(opts)
     local release_reads ---@type fun()|nil -- set once the session opens
     panel = Panel.new({
         sections = nonempty,
-        root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
+        header_label = vim.fn.fnamemodify(root, ":~"),
         footer = function(reads)
             return footer_label(args, reads)
         end,
@@ -2125,7 +2125,7 @@ function M.panel(opts)
     release_reads = cat_file.hold(root)
     panel.return_tab = return_tab
     panel.session_tab = session_tab
-    panel.git_root = root
+    panel.root = root
     if kept_empty then
         blank_window(panel.origin_win, commit_map(root, diff_keys.commit))
     elseif opts.open_first then
@@ -2285,7 +2285,7 @@ function M.history(opts)
     release_reads = cat_file.hold(root)
     history.return_tab = return_tab
     history.session_tab = session_tab
-    history.git_root = root
+    history.root = root
     return history
 end
 
@@ -2366,7 +2366,7 @@ function M.range_history(opts)
     release_reads = cat_file.hold(root)
     history.return_tab = return_tab
     history.session_tab = session_tab
-    history.git_root = root
+    history.root = root
     return history
 end
 

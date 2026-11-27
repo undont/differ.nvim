@@ -194,7 +194,7 @@ describe("git.target_root", function()
         vim.cmd("new")
         git_src.panel({ rev = "HEAD", open_first = true, supersede = true })
         local p = assert(require("differ.panel").current())
-        same(b, p.git_root)
+        same(b, p.root)
     end)
 end)
 

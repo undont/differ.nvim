@@ -430,7 +430,7 @@ describe("pr session root", function()
         local s = show_from(other, clone .. "/a.txt")
         assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.root))
         -- the pr tab now resolves to the clone, whatever cwd says
-        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.panel.git_root))
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.panel.root))
         assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(require("differ.git").target_root()))
     end)
 
@@ -440,7 +440,7 @@ describe("pr session root", function()
         vim.fn.writefile({ "x" }, other .. "/a.txt")
         local s = show_from(clone, other .. "/a.txt")
         assert.is_nil(s.root)
-        assert.is_nil(s.panel.git_root)
+        assert.is_nil(s.panel.root)
     end)
 
     it(

@@ -33,7 +33,7 @@ describe("panel rendering", function()
     end)
 
     it("strips a 2+ level common prefix to a header subtitle in tree mode", function()
-        local p = panel({ fe("a/b/c/x.lua"), fe("a/b/d/y.lua") }, { root = "/repo" })
+        local p = panel({ fe("a/b/c/x.lua"), fe("a/b/d/y.lua") }, { header_label = "/repo" })
         p:open()
         -- "a/b/" is shared and 2 levels deep: stripped, shown as a bare subtitle
         -- line (the helper's section has no title); c/ and d/ become the top dirs
@@ -289,7 +289,10 @@ describe("panel navigation", function()
     end)
 
     it("paints the diff --stat totals as virt_text on the help line", function()
-        local p = panel({ fe("a.lua", "M", 31, 1), fe("b.lua", "M", 39, 2) }, { root = "/repo" })
+        local p = panel(
+            { fe("a.lua", "M", 31, 1), fe("b.lua", "M", 39, 2) },
+            { header_label = "/repo" }
+        )
         p:open()
         assert.are.equal(70, p.add_total)
         assert.are.equal(3, p.del_total)

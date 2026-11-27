@@ -101,7 +101,7 @@ local LINE_HL = {
 ---@field origin_win integer|nil
 ---@field return_tab integer|nil
 ---@field session_tab integer|nil
----@field git_root string|nil -- the repo's absolute path: local git panels, pr panels with a local clone
+---@field root string|nil -- the repo's absolute path: local git panels, pr panels with a local clone
 ---@field progress boolean  -- file-position meter in the panel winbar
 ---@field sections differ.panel.Section[]
 ---@field listing "tree"|"name"
@@ -112,7 +112,7 @@ local LINE_HL = {
 ---@field on_empty fun()|nil
 ---@field on_refresh fun(reads: any)|nil
 ---@field on_staged fun(paths: table<string, boolean>|nil, reads: any)|nil
----@field root string|nil
+---@field header_label string|nil
 ---@field chrome_sources { footer?: string|(fun(reads: any): string|nil), operation?: (fun(reads: any): string|nil) }
 ---@field chrome { footer?: string, operation?: string } -- chrome_sources as last read
 ---@field actions differ.panel.Actions|nil
@@ -160,7 +160,7 @@ Panel.__index = Panel
 -- drives, with the reads of the reload just before it. separate from on_refresh, which
 -- every reload fires: the diff window's own s / u keep their frozen marks
 ---@field on_staged? fun(paths: table<string, boolean>|nil, reads: any)
----@field root? string  -- repo/worktree path shown in the panel header
+---@field header_label? string  -- the header line: a repo path, or "owner/repo" for a pr
 -- rev spec shown under "Showing changes for:"; a function is re-read on every reload, as
 -- is `operation`, the in-progress git operation
 ---@field footer? string|fun(reads: any): string|nil
@@ -219,7 +219,7 @@ function Panel.new(opts)
         on_empty = opts.on_empty,
         on_refresh = opts.on_refresh,
         on_staged = opts.on_staged,
-        root = opts.root,
+        header_label = opts.header_label,
         chrome_sources = { footer = opts.footer, operation = opts.operation },
         chrome = {},
         actions = opts.actions,
@@ -348,8 +348,8 @@ function Panel:render()
     -- winbar meter, so the totals show the +A -B the count doesn't repeat)
     self.add_total, self.del_total = add_total, del_total
     local header ---@type differ.panel.Header|nil
-    if self.root then
-        header = { path = self.root, operation = self.chrome.operation, help = "g?" }
+    if self.header_label then
+        header = { path = self.header_label, operation = self.chrome.operation, help = "g?" }
         if header.operation then
             header.continue = require("differ.merge.continue").hint(self.keymaps)
         end

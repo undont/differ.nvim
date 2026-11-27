@@ -1752,7 +1752,7 @@ describe(":Differ mergetool in-progress operation", function()
             assert.are.equal("differ: conflicts resolved", _G.notifs[1].msg)
             assert.is_nil(merge.current())
             local p = assert(require("differ.panel").current())
-            assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(p.git_root))
+            assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(p.root))
             assert.is_false(picked)
         end)
 
