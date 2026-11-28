@@ -335,7 +335,7 @@ local SUB = {
     cache = M.cache,
 }
 
--- the conflicted files in the tree the current buffer (or cwd) sits in, with its root
+-- the conflicted files in the repo the command acts on, with its root
 ---@return string|nil root, string[] paths
 local function conflicts()
     local git = require("differ.git")

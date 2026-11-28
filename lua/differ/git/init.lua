@@ -1159,20 +1159,84 @@ local function blank_window(win, map)
     vim.api.nvim_win_set_buf(win, buf)
 end
 
--- the current buffer's file when it's a real one on disk
+-- the current buffer's file when it names a path in a real directory, saved or not
 ---@return string|nil
 function M.current_file()
-    local file = vim.api.nvim_buf_get_name(0)
-    if file ~= "" and vim.fn.filereadable(file) == 1 then
-        return file
+    if vim.bo.buftype ~= "" then
+        return nil
     end
-    return nil
+    local file = vim.api.nvim_buf_get_name(0)
+    if vim.fn.isabsolutepath(file) == 0 or vim.fn.isdirectory(vim.fs.dirname(file)) == 0 then
+        return nil
+    end
+    return file
 end
 
--- the repo to operate on: the current file's repo if it's a real file, else cwd
----@return string|nil
+-- the repo of a differ session hosted in the current tabpage, and whether one is. the
+-- session singletons are global, so one in another tab never counts. a pr session with no
+-- verified local clone matches with a nil repo and the refusal
+---@return string|nil root
+---@return boolean matched
+---@return string|nil refusal
+local function session_root()
+    local tab = vim.api.nvim_get_current_tabpage()
+    local merge = require("differ.merge").current()
+    if merge and merge.session_tab == tab then
+        return merge.root, true
+    end
+    local pr = require("differ.pr").current_session()
+    if pr and pr.session_tab == tab then
+        if not pr.root then
+            return nil, true, ("no local clone of %s/%s"):format(pr.coords.owner, pr.coords.repo)
+        end
+        return pr.root, true
+    end
+    local panel = require("differ.panel").current()
+    if panel and panel.session_tab == tab then
+        return panel.root, true
+    end
+    local history = require("differ.history").current()
+    if history and history.session_tab == tab then
+        return history.root, true
+    end
+    return nil, false
+end
+
+-- the repo a command acts on: the current file's, else a differ session's in this tab,
+-- else cwd's. nil with the refusal when the one that applies has no repo
+---@return string|nil root
+---@return string|nil refusal
 function M.target_root()
-    return M.root(M.current_file() or vim.fn.getcwd())
+    local file = M.current_file()
+    if file then
+        local root = M.root(file)
+        if not root then
+            return nil, "not inside a git repository"
+        end
+        return root
+    end
+    local root, matched, refusal = session_root()
+    if matched and not root then
+        return nil, refusal
+    end
+    if matched then
+        return root
+    end
+    root = M.root(vim.fn.getcwd())
+    if not root then
+        return nil, "not inside a git repository"
+    end
+    return root
+end
+
+-- target_root, warning with the refusal when there's no repo
+---@return string|nil
+function M.target_root_or_warn()
+    local root, refusal = M.target_root()
+    if not root then
+        notify(refusal --[[@as string]], vim.log.levels.WARN)
+    end
+    return root
 end
 
 -- true when `source` is the default HEAD-vs-worktree view: the only source git
@@ -1210,9 +1274,9 @@ end
 -- the base ref the caller suffixes (`...HEAD` for log, `...` for diff), or nil
 ---@return string|nil
 function M.resolve_base()
-    local root = M.target_root()
+    local root = M.target_root_or_warn()
     if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
+        return nil
     end
     local base = base_ref(root)
     if not base then
@@ -1261,6 +1325,16 @@ function M.panel(opts)
     -- close` ends the session
     local has_rev = (type(opts.rev) == "string" and opts.rev ~= "")
         or (type(opts.rev) == "table" and #opts.rev > 0)
+    -- before a supersede closes the session this tab may be showing
+    local root, refusal = opts.root, nil
+    if not root then
+        root, refusal = M.target_root()
+    end
+    local existing = Panel.current()
+    -- refuse before closing anything: only revealing or toggling a live panel needs no repo
+    if not root and (not existing or (opts.supersede and has_rev)) then
+        return notify(refusal --[[@as string]], vim.log.levels.WARN)
+    end
     if opts.supersede then
         -- a log/history session isn't a Panel, so it's invisible to the check below;
         -- `opts.supersede` is set for both a bare `:Differ` and `:Differ <rev>` (unlike
@@ -1274,7 +1348,6 @@ function M.panel(opts)
             history:close() -- close cascades to the diff view + session tab; current = nil
         end
     end
-    local existing = Panel.current()
     if existing then
         if opts.supersede and has_rev then
             existing:close() -- close cascades to the diff view + session tab; current = nil
@@ -1294,11 +1367,7 @@ function M.panel(opts)
     -- that position (mapped into the diff) instead of the first listed file
     local origin_file = vim.api.nvim_buf_get_name(0)
     local origin_line, origin_col = unpack(vim.api.nvim_win_get_cursor(0))
-
-    local root = opts.root or M.target_root()
-    if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
-    end
+    ---@cast root string
     -- repo-relative origin path; resolve symlinks so the prefix strip lines up with
     -- git's realpath toplevel (as M.history does), and only when the file is under it
     local origin_rel ---@type string|nil
@@ -1953,7 +2022,7 @@ function M.panel(opts)
     local release_reads ---@type fun()|nil -- set once the session opens
     panel = Panel.new({
         sections = nonempty,
-        root = vim.fn.fnamemodify(root, ":~"), -- ~-relative repo path for the header
+        header_label = vim.fn.fnamemodify(root, ":~"),
         footer = function(reads)
             return footer_label(args, reads)
         end,
@@ -2094,9 +2163,8 @@ function M.panel(opts)
     }):open()
     release_reads = cat_file.hold(root)
     panel.return_tab = return_tab
-    if stageable then
-        panel.git_root = root
-    end
+    panel.session_tab = session_tab
+    panel.root = root
     if kept_empty then
         blank_window(panel.origin_win, commit_map(root, diff_keys.commit))
     elseif opts.open_first then
@@ -2255,6 +2323,8 @@ function M.history(opts)
     }):open()
     release_reads = cat_file.hold(root)
     history.return_tab = return_tab
+    history.session_tab = session_tab
+    history.root = root
     return history
 end
 
@@ -2271,15 +2341,15 @@ function M.range_history(opts)
     -- re-running `:Differ log <range>` over any live local session supersedes it (mirrors
     -- `:Differ <rev>`'s panel idempotency): close a live panel (`:Differ base`/`<rev>`) or
     -- history, then open the new one, so we never stack a second session in its own tab
+    local root = M.target_root_or_warn()
+    if not root then
+        return
+    end
     supersede_local_session()
 
     local range = opts.range
     if not range or range == "" then
         return notify("range history needs a rev-range (e.g. main...HEAD)", vim.log.levels.WARN)
-    end
-    local root = M.target_root()
-    if not root then
-        return notify("not inside a git repository", vim.log.levels.WARN)
     end
     local commits, err = M.range_commits(root, range)
     if #commits == 0 then
@@ -2334,6 +2404,8 @@ function M.range_history(opts)
     }):open()
     release_reads = cat_file.hold(root)
     history.return_tab = return_tab
+    history.session_tab = session_tab
+    history.root = root
     return history
 end
 

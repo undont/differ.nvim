@@ -82,13 +82,13 @@ local function short(sha)
     return sha and sha:sub(1, 7) or "?"
 end
 
--- the cwd's repo, but only when it is a clone of the pr's own repo. an unrelated
--- checkout has its own files at the same paths, so the edit verbs would open those as
--- "the real file" and checkout would fetch into it; nil disables both instead
+-- the command's target repo, but only when it is a clone of the pr's own repo. an
+-- unrelated checkout has its own files at the same paths, so the edit verbs would open
+-- those as "the real file" and checkout would fetch into it; nil disables both instead
 ---@param coords { owner: string, repo: string }
 ---@return string|nil
 local function local_root(coords)
-    local root = require("differ.git").root(vim.fn.getcwd())
+    local root = require("differ.git").target_root()
     if root and require("differ.pr.repo").has_remote(root, coords) then
         return root
     end
@@ -680,7 +680,8 @@ end
 ---@param pr { owner: string, repo: string, number: integer }
 ---@param detail table  -- get_pr result
 ---@param opts { after?: fun(), land?: string, review?: boolean }|nil
-local function open_session(pr, detail, opts)
+---@param root string|nil  -- local_root(pr)
+local function open_session(pr, detail, opts, root)
     local entries = M.map_files(detail.files)
     if #entries == 0 then
         return notify("no changed files in this pull request")
@@ -720,7 +721,7 @@ local function open_session(pr, detail, opts)
             draft = detail.draft,
             mergeable = detail.mergeable,
         },
-        root = local_root(pr), -- optional; for jump-to-file
+        root = root, -- optional; for jump-to-file
         entries = entries, -- flat FileEntry[] (single section), shared by ref with the panel
         versions = {}, -- per-path blob memo; valid for the session (shas are pinned)
         prefetching = {}, -- paths with an in-flight predictive prefetch (dedupe guard)
@@ -825,7 +826,7 @@ local function open_session(pr, detail, opts)
         end
         local panel = Panel.new({
             sections = { { title = ("#%d %s"):format(pr.number, title), entries = entries } },
-            root = ("%s/%s"):format(pr.owner, pr.repo),
+            header_label = ("%s/%s"):format(pr.owner, pr.repo),
             footer = detail.url or detail.head_ref,
             keymaps = cfg.keymaps.panel --[[@as differ.KeymapSet]],
             extra_keymaps = panel_extra,
@@ -918,10 +919,11 @@ function M.enter_at(target, review)
 end
 
 -- M.show(pr): fetch the PR and open its session. opts threads the landing target into
--- open_session: land ("overview"|"files"), review (fire start_review after landing), and
--- after (resume uses it to reattach the pending draft once the session is built)
+-- open_session: land ("overview"|"files"), review (fire start_review after landing),
+-- after (resume uses it to reattach the pending draft once the session is built), and
+-- root (local_root, resolved by the caller from the tab and buffer the command ran in)
 ---@param pr { owner: string, repo: string, number: integer }
----@param opts { after?: fun(), land?: string, review?: boolean }|nil
+---@param opts { after?: fun(), land?: string, review?: boolean, root?: string }|nil
 function M.show(pr, opts)
     open_gen = open_gen + 1
     local gen = open_gen
@@ -932,7 +934,7 @@ function M.show(pr, opts)
         if err then
             return notify_err(err)
         end
-        open_session(pr, detail, opts)
+        open_session(pr, detail, opts, opts and opts.root)
     end)
 end
 
@@ -941,7 +943,7 @@ end
 -- whichever `land` the caller chose (a bare list lands on the overview, view on files)
 ---@param coords { owner: string, repo: string }
 ---@param prs table[]
----@param land_opts { land?: string, review?: boolean }|nil
+---@param land_opts { land?: string, review?: boolean, root?: string }|nil
 local function pick(coords, prs, land_opts)
     vim.ui.select(prs, {
         prompt = "Select a pull request",
@@ -998,10 +1000,12 @@ function M.open(opts)
         if not coords then
             return
         end
+        -- before the picker, which runs from whatever buffer is current when it returns
+        local land_opts = { land = opts.land, review = opts.review, root = local_root(coords) }
         if opts.number then
             return M.show(
                 { owner = coords.owner, repo = coords.repo, number = opts.number },
-                { land = opts.land, review = opts.review }
+                land_opts
             )
         end
         client.list_prs(coords, opts.filter, function(lerr, prs)
@@ -1015,7 +1019,7 @@ function M.open(opts)
                 end
                 return notify(msg)
             end
-            pick(coords, prs, { land = opts.land, review = opts.review })
+            pick(coords, prs, land_opts)
         end)
     end)
 end
@@ -1297,6 +1301,7 @@ end
 function M.resume(arg)
     local function open_then_reattach(pr)
         M.show(pr, {
+            root = local_root(pr),
             after = function()
                 if session then
                     require("differ.pr.review").reattach(session)

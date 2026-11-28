@@ -8,29 +8,6 @@ local M = {}
 
 local notify = exec.notify
 
--- the repo the command acts on: a merge session's, else the current file's, else a
--- worktree panel's, else cwd's
----@return string|nil
-local function target_root()
-    local s = require("differ.merge").current()
-    if s then
-        return s.root
-    end
-    local git = require("differ.git")
-    local file = git.current_file()
-    if file then
-        local root = git.root(file)
-        if root then
-            return root
-        end
-    end
-    local panel = require("differ.panel").current()
-    if panel and panel.git_root then
-        return panel.git_root
-    end
-    return git.root(vim.fn.getcwd())
-end
-
 -- say how the run left the repo
 ---@param root string
 ---@param op string
@@ -209,7 +186,7 @@ end
 -- whether the current repo has an operation the picker can act on
 ---@return boolean
 function M.in_progress()
-    local root = target_root()
+    local root = require("differ.git").target_root()
     return root ~= nil and require("differ.git").operation(root) ~= nil
 end
 
@@ -285,9 +262,9 @@ function M.pick_resolved(root)
     if refuse_while_running() then
         return
     end
-    root = root or target_root()
+    root = root or require("differ.git").target_root_or_warn()
     if not root then
-        return notify("no merge, rebase, cherry-pick, revert or am in progress")
+        return
     end
     local op = require("differ.git").operation(root)
     if not op then
@@ -302,9 +279,9 @@ function M.pick(root)
     if refuse_while_running() then
         return
     end
-    root = root or target_root()
+    root = root or require("differ.git").target_root_or_warn()
     if not root then
-        return notify("no merge, rebase, cherry-pick, revert or am in progress")
+        return
     end
     local op = require("differ.git").operation(root)
     if not op then

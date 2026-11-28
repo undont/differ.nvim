@@ -10,6 +10,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Every command now picks its repo through one shared helper, with no change in behaviour
 
+### Fixed
+
+- Commands could act on the working directory's repo instead of the one on screen, e.g. from the panel, a PR tab or a file outside any repo; they now use the file under the cursor, else the differ session in the current tab, else the working directory, and refuse for a file outside any repo or a PR with no local clone
+
 ## [0.2.43] — 2026-11-26
 
 ### Fixed

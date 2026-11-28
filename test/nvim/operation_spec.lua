@@ -1,6 +1,11 @@
 -- runs under headless nvim against throwaway repos stopped mid-operation: continue, skip
 -- and abort run without a terminal and never open an editor
 
+-- some specs change cwd, and the runner's package.path is relative to the repo
+local repo_dir = vim.fn.getcwd()
+package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s/?.lua;"):format(repo_dir, repo_dir, repo_dir)
+    .. package.path
+
 local git_src = require("differ.git")
 local operation = require("differ.git.operation")
 local merge = require("differ.merge")
@@ -1315,7 +1320,7 @@ describe(":Differ continue", function()
         assert.is_nil(noted("in progress"))
     end)
 
-    it("continues a real file's repo over the panel's", function()
+    it("continues a split file's repo over the panel's in its tab", function()
         local root = with_h("rebase", true)
         resolve_all(root)
         in_repo(root)
@@ -1325,7 +1330,27 @@ describe(":Differ continue", function()
         vim.api.nvim_set_current_win(p.origin_win)
         local other = stopped("merge")
         resolve_all(other)
-        in_repo(other)
+        vim.cmd.vsplit(vim.fn.fnameescape(other .. "/f.txt"))
+        continue_cmd()
+        assert.are.equal("merge options", assert(shown).prompt)
+    end)
+
+    it("continues the file's repo once an :edit from the diff window ends the panel", function()
+        local root = stopped("rebase")
+        in_repo(root)
+        git_src.panel({ rev = {}, open_first = true })
+        local p = assert(require("differ.panel").current())
+        assert(require("differ.view").current())
+        vim.api.nvim_set_current_win(p.origin_win)
+        local other = stopped("merge")
+        resolve_all(other)
+        vim.cmd.edit(vim.fn.fnameescape(other .. "/f.txt"))
+        assert(
+            vim.wait(1000, function()
+                return not p:is_alive()
+            end),
+            "the panel outlived the :edit"
+        )
         continue_cmd()
         assert.are.equal("merge options", assert(shown).prompt)
     end)

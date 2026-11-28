@@ -12,6 +12,7 @@ Table of Contents                                   *differ-table-of-contents*
   - Other managers                        |differ-installation-other-managers|
 4. Configuration                                        |differ-configuration|
 5. Usage                                                        |differ-usage|
+  - Which repo a command acts on   |differ-usage-which-repo-a-command-acts-on|
   - Staging                                             |differ-usage-staging|
   - Runtime controls                           |differ-usage-runtime-controls|
   - PR review                                         |differ-usage-pr-review|
@@ -300,6 +301,15 @@ Sources with worktree on the new side (`:Differ`, `:Differ <rev>`, `:Differ
 <a>...`) also list untracked files. `git diff` can’t see them whatever refs
 you pass it, so differ unions in `git ls-files --others --exclude-standard` to
 bring them in with the other changes.
+
+
+WHICH REPO A COMMAND ACTS ON       *differ-usage-which-repo-a-command-acts-on*
+
+Commands act on the repo of the file under the cursor. When the cursor isn’t
+in a file (the panel, a terminal, an empty buffer), they fall back to the
+differ session in the current tab, then the working directory. A file outside
+any repo, or a PR with no local clone, refuses with a message instead of
+falling back.
 
 
 STAGING                                                 *differ-usage-staging*

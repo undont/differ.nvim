@@ -66,8 +66,9 @@ local function remote_url(name, root)
     return vim.trim(res.stdout or "")
 end
 
--- resolve the repo coords for the cwd's repo and call cb(err, {owner, repo}).
--- precedence: an explicit `opts.coords` override; then `upstream` over `origin`
+-- resolve the repo coords for the command's repo and call cb(err, {owner, repo}).
+-- precedence: an explicit `opts.coords` override; then a pr session in the current tab
+-- (its base repo) when no file is on screen; then the target repo's `upstream` over `origin`
 -- (an upstream remote is itself the fork signal, so this gives fork support with no
 -- gh/API call); then `origin`; then the first github remote. a non-github remote is
 -- a clear, once-surfaced error
@@ -78,9 +79,15 @@ function M.resolve(opts, cb)
     if opts.coords then
         return cb(nil, opts.coords)
     end
-    local root = require("differ.git").target_root()
+    local git = require("differ.git")
+    local session = require("differ.pr").current_session()
+    local tab = vim.api.nvim_get_current_tabpage()
+    if session and session.session_tab == tab and not git.current_file() then
+        return cb(nil, session.coords)
+    end
+    local root, refusal = git.target_root()
     if not root then
-        return cb({ code = "bad_request", message = "not inside a git repository" })
+        return cb({ code = "bad_request", message = refusal })
     end
 
     local remotes = list_remotes(root)

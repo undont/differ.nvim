@@ -200,7 +200,7 @@ local function settle(p)
     local exec = require("differ.git.exec")
     assert(
         vim.wait(5000, function()
-            return exec.idle(p.git_root)
+            return exec.idle(p.root)
         end, 5),
         "background refresh never landed"
     )

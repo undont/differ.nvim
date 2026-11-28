@@ -20,14 +20,14 @@ end
 -- cwd's. a spec that opens one without a file of its throwaway repo focused lands on
 -- the repo the suite runs from, so that fails here before any key can write to it
 local suite_root = vim.fn.systemlist({ "git", "rev-parse", "--show-toplevel" })[1]
-local suite_label = vim.fn.fnamemodify(suite_root, ":~") -- the form Panel.root holds
+local suite_label = vim.fn.fnamemodify(suite_root, ":~") -- the form Panel.header_label holds
 local git = require("differ.git")
 local panel = git.panel
 ---@diagnostic disable-next-line: duplicate-set-field
 git.panel = function(opts)
     local out = panel(opts)
     local p = require("differ.panel").current()
-    if p and p.root == suite_label then
+    if p and p.header_label == suite_label then
         p:close()
         error("a spec opened a panel on the repo the suite runs from")
     end

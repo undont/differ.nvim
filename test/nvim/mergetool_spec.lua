@@ -2,6 +2,11 @@
 -- exercises the slice-2 merge session end-to-end (layout, region highlight, conflict
 -- nav). identity is pinned inline so commits work without a global gitconfig
 
+-- some specs change cwd, and the runner's package.path is relative to the repo
+local repo_dir = vim.fn.getcwd()
+package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s/?.lua;"):format(repo_dir, repo_dir, repo_dir)
+    .. package.path
+
 local merge = require("differ.merge")
 local fixture = require("test.nvim.fixture")
 
@@ -548,7 +553,10 @@ describe(":Differ mergetool", function()
     end)
 
     it("notifies rather than opening when invoked outside a git repository", function()
-        require("differ.git") -- warm the require cache before chdir makes it unresolvable
+        -- warm the require cache before chdir makes it unresolvable
+        require("differ.git")
+        require("differ.panel")
+        require("differ.history")
         local outside = vim.fn.tempname()
         vim.fn.mkdir(outside, "p")
         local cwd = vim.fn.getcwd()
@@ -1749,7 +1757,7 @@ describe(":Differ mergetool in-progress operation", function()
             assert.are.equal("differ: conflicts resolved", _G.notifs[1].msg)
             assert.is_nil(merge.current())
             local p = assert(require("differ.panel").current())
-            assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(p.git_root))
+            assert.are.equal(vim.fn.resolve(root), vim.fn.resolve(p.root))
             assert.is_false(picked)
         end)
 

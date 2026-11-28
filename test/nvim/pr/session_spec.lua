@@ -3,6 +3,11 @@
 -- differ.sidecar.request (see pr/client.lua), so stubbing that one seam is enough to
 -- drive a real session (get_pr -> open_session -> panel + diff) without a Go subprocess
 
+-- some specs change cwd, and the runner's package.path is relative to the repo
+local repo_dir = vim.fn.getcwd()
+package.path = ("%s/lua/?.lua;%s/lua/?/init.lua;%s/?.lua;"):format(repo_dir, repo_dir, repo_dir)
+    .. package.path
+
 require("differ").setup({})
 
 local sidecar = require("differ.sidecar")
@@ -373,23 +378,50 @@ describe("pr session root", function()
         assert.is_false(repo.has_remote(root, { owner = "acme", repo = "widget" }))
     end)
 
-    -- session.root drives the edit verbs (which open root/path as "the real file") and
-    -- :Differ pr checkout (which fetches into it), so an unrelated cwd must not set it
-    local function show_from(cwd)
-        vim.cmd.cd(vim.fn.fnameescape(cwd)) -- global: after_each puts it back
-        local restore = stub_sidecar({
+    local COORDS = { owner = PR.owner, repo = PR.repo }
+
+    ---@param extra table|nil  -- more canned sidecar responses
+    local function stub_pr(extra)
+        return stub_sidecar(vim.tbl_extend("force", {
             get_pr = { result = get_pr_result() },
             get_file_versions = {
                 result = { base = { content = "a\n" }, head = { content = "b\n" } },
             },
             get_threads = { result = {} },
-        })
-        pr.show(PR)
+        }, extra or {}))
+    end
+
+    ---@param cwd string
+    ---@param file string|nil  -- a real file on screen when the command runs
+    local function go(cwd, file)
+        vim.cmd.cd(vim.fn.fnameescape(cwd)) -- global: after_each puts it back
+        vim.cmd("enew!")
+        if file then
+            vim.cmd.edit(vim.fn.fnameescape(file))
+        end
+    end
+
+    local function landed(want)
         assert.is_true(vim.wait(1000, function()
             local s = pr.current_session()
+            if want == "overview" then
+                return s ~= nil
+            end
             return s and s.view and s.view:is_open()
         end))
-        local s = pr.current_session()
+        return pr.current_session()
+    end
+
+    -- session.root drives the edit verbs (which open root/path as "the real file") and
+    -- :Differ pr checkout (which fetches into it), so an unrelated repo must not set it
+    ---@param cwd string
+    ---@param file string|nil  -- a real file on screen when the pr opens
+    ---@param land string|nil
+    local function show_from(cwd, file, land)
+        go(cwd, file)
+        local restore = stub_pr()
+        pr.open({ number = PR.number, coords = COORDS, land = land or "files" })
+        local s = landed(land)
         restore()
         return s
     end
@@ -415,6 +447,159 @@ describe("pr session root", function()
     it("leaves root nil in an unrelated repo, rather than adopting its files", function()
         local root = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
         assert.is_nil(show_from(root).root)
+    end)
+
+    it("takes the clone of the file on screen over an unrelated cwd", function()
+        local clone = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        vim.fn.writefile({ "x" }, clone .. "/a.txt")
+        local s = show_from(other, clone .. "/a.txt")
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.root))
+        -- the pr tab now resolves to the clone, whatever cwd says
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(require("differ.git").target_root()))
+    end)
+
+    it("leaves root nil with an unrelated repo's file on screen, even from a clone", function()
+        local clone = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        vim.fn.writefile({ "x" }, other .. "/a.txt")
+        local s = show_from(clone, other .. "/a.txt")
+        assert.is_nil(s.root)
+    end)
+
+    it("takes a fork clone whose upstream is the pr's repo", function()
+        local fork = repo_with_remotes({
+            origin = "git@github.com:me/widget.git",
+            upstream = "git@github.com:acme/widget.git",
+        })
+        assert.are.equal(vim.fn.resolve(fork), vim.fn.resolve(show_from(fork).root))
+    end)
+
+    it("refuses repo commands in a pr tab with no local clone, keeping the session", function()
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        git(other, "commit", "-q", "--allow-empty", "-m", "init")
+        local s = show_from(other)
+        local command = require("differ.command")
+        assert.is_nil(require("differ.git").target_root())
+
+        local select = vim.ui.select
+        local shown = false
+        vim.ui.select = function()
+            shown = true
+        end
+        _G.notifs = {}
+        command.continue()
+        vim.ui.select = select
+        assert.is_false(shown)
+        assert.matches("no local clone of acme/widget", _G.notifs[#_G.notifs].msg)
+
+        for _, run in ipairs({
+            function()
+                command.log()
+            end,
+            function()
+                command.dispatch({ "HEAD" })
+            end,
+        }) do
+            _G.notifs = {}
+            run()
+            assert.matches("no local clone of acme/widget", _G.notifs[#_G.notifs].msg)
+            assert.are.equal(s, pr.current_session())
+            assert.is_true(s.panel:is_open())
+        end
+    end)
+
+    it("refuses repo commands on an overview-only pr tab with no local clone", function()
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        local s = show_from(other, nil, "overview")
+        assert.is_nil(s.panel)
+        assert.are.equal(s.session_tab, vim.api.nvim_get_current_tabpage())
+        local root, refusal = require("differ.git").target_root()
+        assert.is_nil(root)
+        assert.are.equal("no local clone of acme/widget", refusal)
+    end)
+
+    it("opens :Differ pr <n> from a pr tab on the session's repo, not cwd's", function()
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        show_from(other)
+        local asked
+        local real = sidecar.request
+        local restore = stub_pr()
+        local stubbed = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_pr" then
+                asked = params
+            end
+            return stubbed(method, params, cb)
+        end
+        pr.open({ number = 8, land = "files" })
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s.pr.number == 8
+        end))
+        sidecar.request = real
+        restore()
+        assert.are.equal("acme", asked.owner)
+        assert.are.equal("widget", asked.repo)
+    end)
+
+    it("opens :Differ pr <n> on the repo of a file split into a pr tab", function()
+        local mine = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/other.git" })
+        vim.fn.writefile({ "x" }, other .. "/a.txt")
+        show_from(mine)
+        vim.cmd.vsplit(vim.fn.fnameescape(other .. "/a.txt"))
+        local asked
+        local real = sidecar.request
+        local restore = stub_pr()
+        local stubbed = sidecar.request
+        sidecar.request = function(method, params, cb)
+            if method == "get_pr" then
+                asked = params
+            end
+            return stubbed(method, params, cb)
+        end
+        pr.open({ number = 8, land = "files" })
+        assert.is_true(vim.wait(1000, function()
+            local s = pr.current_session()
+            return s ~= nil and s.pr.number == 8
+        end))
+        sidecar.request = real
+        restore()
+        assert.are.equal("acme", asked.owner)
+        assert.are.equal("other", asked.repo)
+    end)
+
+    it("resolves the picker's local root from the buffer the command ran in", function()
+        local clone = repo_with_remotes({ origin = "git@github.com:acme/widget.git" })
+        local other = repo_with_remotes({ origin = "git@github.com:acme/mine.git" })
+        vim.fn.writefile({ "x" }, other .. "/a.txt")
+        go(clone)
+        local restore = stub_pr({
+            list_prs = {
+                result = {
+                    { number = 7, title = "add widget", author = "octocat", updated_at = "" },
+                },
+            },
+        })
+        local select = vim.ui.select
+        local on_choice
+        vim.ui.select = function(items, _, cb)
+            on_choice = function()
+                cb(items[1])
+            end
+        end
+        pr.open({ coords = COORDS, land = "files" })
+        assert.is_true(vim.wait(1000, function()
+            return on_choice ~= nil
+        end))
+        vim.ui.select = select
+        -- the picker returns with another repo's file current
+        vim.cmd.edit(vim.fn.fnameescape(other .. "/a.txt"))
+        on_choice()
+        local s = landed()
+        restore()
+        assert.are.equal(vim.fn.resolve(clone), vim.fn.resolve(s.root))
     end)
 
     it(
